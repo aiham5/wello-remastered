@@ -8,8 +8,22 @@
     "assetBundlePatterns": [
       "**/*"
     ],
+    "ios": {
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Wello uses your location to show nearby businesses and offers.",
+        "NSCameraUsageDescription": "Wello uses the camera to scan QR codes for offer redemption."
+      }
+    },
+    "android": {
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA"
+      ]
+    },
     "plugins": [
-      "expo-font"
+      "expo-font",
+      "expo-camera"
     ]
   }
 }
