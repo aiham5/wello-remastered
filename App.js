@@ -4,6 +4,7 @@ import {
   Dimensions,
   FlatList,
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   PanResponder,
@@ -14,15 +15,22 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  UIManager,
+  View,
+  findNodeHandle
 } from "react-native";
 import MapView, { Marker } from "react-native-maps";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Font from "expo-font";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system";
+import { toByteArray } from "base64-js";
 import * as Location from "expo-location";
+import QRCode from "qrcode";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import * as Clipboard from "expo-clipboard";
 import { supabase } from "./lib/supabase";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
@@ -37,6 +45,10 @@ const SAFE_TOP = Platform.OS === "android"
   : IS_COMPACT ? 8 : 12;
 const CARD_WIDTH = Math.min(280, Math.max(210, Math.round(SCREEN_WIDTH * 0.7)));
 const CARD_GAP = Math.round(Math.max(10, SCREEN_WIDTH * 0.03));
+const OFFER_IMAGE_ASPECT = 2 / 1;
+const CARD_MEDIA_HEIGHT = Math.round(
+  (CARD_WIDTH - (IS_COMPACT ? 28 : 32)) / OFFER_IMAGE_ASPECT
+);
 const QR_SIZE = Math.min(200, Math.max(130, Math.round(SCREEN_WIDTH * 0.42)));
 const SCANNER_FRAME = Math.min(300, Math.max(210, Math.round(SCREEN_HEIGHT * 0.32)));
 const SCANNER_CARD_WIDTH = Math.max(280, SCREEN_WIDTH - 40);
@@ -46,6 +58,7 @@ const ADDRESS_DEBOUNCE_MS = 300;
 const GOOGLE_PLACES_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+const STRIPE_PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY;
 const ANDROID_MARKER_SIZE = 34;
 const ANDROID_MARKER_SELECTED_SIZE = 44;
 const CONFETTI_PIECES = 20;
@@ -55,6 +68,7 @@ const NAV_PADDING = IS_COMPACT ? 8 : 10;
 const TIME_SELECT_MAX = Math.min(160, Math.round(SCREEN_WIDTH * 0.42));
 const TIME_SELECT_MIN = IS_COMPACT ? 80 : 96;
 const TIME_MERIDIEM_WIDTH = IS_COMPACT ? 68 : 80;
+const OFFERS_REFRESH_INTERVAL_MS = 1000 * 60 * 2;
 const TIME_OPTIONS = [
   "12:00",
   "12:30",
@@ -355,6 +369,21 @@ const BUSINESSES = [
   }
 ];
 
+const OFFER_SEEDS = BUSINESSES.flatMap((business, index) => [
+  {
+    id: `seed-${business.id}-main`,
+    businessId: business.id,
+    title: business.offer || "Local offer",
+    description: "Tap to redeem this in-store offer.",
+    offerType: "discount",
+    imageUrl: "",
+    active: true,
+    approvalStatus: "approved",
+    createdAt: daysAgo(index + 1),
+    business
+  }
+]);
+
 const BUSINESS_ANALYTICS = {
   "1": { views: 1840, saves: 312, redemptions: 86, reach: "6.2k" },
   "2": { views: 1620, saves: 276, redemptions: 63, reach: "5.4k" },
@@ -406,27 +435,33 @@ const mapSupabaseBusiness = (row, index) => {
   const latitude = row.latitude !== null ? Number(row.latitude) : null;
   const longitude = row.longitude !== null ? Number(row.longitude) : null;
   const hasCoordinates = Number.isFinite(latitude) && Number.isFinite(longitude);
+  const safeIndex = Number.isFinite(index) ? index : 0;
+  const fallbackCoordinate = {
+    latitude: MAP_REGION.latitude + safeIndex * 0.002,
+    longitude: MAP_REGION.longitude - safeIndex * 0.002
+  };
   return {
     id: String(row.id || index + 1),
     ownerId: row.owner_id || null,
     name: row.name || "Wello business",
+    address: row.address || "",
     category: row.category_label || categoryConfig.display,
     categoryKey,
     offer: row.offer_highlight || "New offer available",
-    distance: "—",
+    distance: "--",
     subscription: formatSubscription(row.subscription_plan, row.subscription_price_cents),
     rating: 4.7,
     tags: Array.isArray(row.tags) && row.tags.length ? row.tags : ["local"],
     isOpen: row.is_open ?? true,
     hours: row.hours || "Hours available upon request",
     phone: row.phone || "",
+    city: row.city || "",
+    state: row.state || "",
+    postalCode: row.postal_code || "",
     createdAt: row.created_at ? new Date(row.created_at).getTime() : daysAgo(5),
-    coordinate: hasCoordinates
-      ? { latitude, longitude }
-      : {
-          latitude: MAP_REGION.latitude + index * 0.002,
-          longitude: MAP_REGION.longitude - index * 0.002
-        },
+    coordinate: hasCoordinates ? { latitude, longitude } : null,
+    fallbackCoordinate,
+    hasCoordinates,
     approved: row.approval_status === "approved",
     rejected: row.approval_status === "rejected",
     qrCode: row.qr_code || "",
@@ -434,10 +469,21 @@ const mapSupabaseBusiness = (row, index) => {
   };
 };
 
+const mapSupabaseOffer = (row) => ({
+  id: String(row.id),
+  businessId: row.business_id,
+  title: row.title || "",
+  description: row.description || "",
+  offerType: row.offer_type || "",
+  imageUrl: row.image_url || "",
+  active: row.active ?? true,
+  approvalStatus: row.approval_status || "approved",
+  createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+  business: row.business || null
+});
+
 const INVITE_ROLE_LABELS = {
-  consumer: "Member",
-  business_owner: "Business",
-  admin: "Admin"
+  business_owner: "Business"
 };
 
 const generateInviteCode = () => {
@@ -457,6 +503,148 @@ const formatDisplayName = (email) => {
 
 const formatBusinessHours = (startTime, startMeridiem, endTime, endMeridiem) =>
   `${startTime} ${startMeridiem} - ${endTime} ${endMeridiem}`;
+
+const parseBusinessHours = (value) => {
+  if (!value) return null;
+  const parts = String(value).split(" - ");
+  if (parts.length !== 2) return null;
+  const parsePart = (part) => {
+    const [time, meridiem] = part.trim().split(" ");
+    if (!time) return null;
+    return {
+      time,
+      meridiem: meridiem || "AM"
+    };
+  };
+  const start = parsePart(parts[0]);
+  const end = parsePart(parts[1]);
+  if (!start || !end) return null;
+  return {
+    startTime: start.time,
+    startMeridiem: start.meridiem,
+    endTime: end.time,
+    endMeridiem: end.meridiem
+  };
+};
+
+const levenshteinDistance = (value, target) => {
+  const a = String(value || "");
+  const b = String(target || "");
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const rows = Array.from({ length: a.length + 1 }, () =>
+    Array(b.length + 1).fill(0)
+  );
+  for (let i = 0; i <= a.length; i += 1) rows[i][0] = i;
+  for (let j = 0; j <= b.length; j += 1) rows[0][j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      rows[i][j] = Math.min(
+        rows[i - 1][j] + 1,
+        rows[i][j - 1] + 1,
+        rows[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return rows[a.length][b.length];
+};
+
+const OFFER_TYPE_LABELS = {
+  bogo: "BOGO",
+  discount: "Discount",
+  bundle: "Bundle",
+  freebie: "Freebie",
+  event: "Event"
+};
+
+const normalizeOfferType = (input) => {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  const aliases = {
+    "buy one get one": "bogo",
+    "buy1get1": "bogo",
+    "b1g1": "bogo",
+    "2 for 1": "bogo",
+    "2for1": "bogo",
+    "two for one": "bogo",
+    "two-for-one": "bogo",
+    bogo: "bogo",
+    discount: "discount",
+    "percent off": "discount",
+    "percentage off": "discount",
+    promo: "discount",
+    bundle: "bundle",
+    free: "freebie",
+    freebie: "freebie",
+    event: "event"
+  };
+  if (aliases[lower]) return OFFER_TYPE_LABELS[aliases[lower]];
+  const entries = Object.entries(OFFER_TYPE_LABELS);
+  for (const [, label] of entries) {
+    const labelLower = label.toLowerCase();
+    if (labelLower.includes(lower) || lower.includes(labelLower)) {
+      return label;
+    }
+  }
+  let bestLabel = raw;
+  let bestScore = Number.POSITIVE_INFINITY;
+  entries.forEach(([key, label]) => {
+    const labelLower = label.toLowerCase();
+    const score = Math.min(
+      levenshteinDistance(lower, key),
+      levenshteinDistance(lower, labelLower)
+    );
+    if (score < bestScore) {
+      bestScore = score;
+      bestLabel = label;
+    }
+  });
+  const threshold = Math.max(2, Math.floor(raw.length * 0.3));
+  return bestScore <= threshold ? bestLabel : raw;
+};
+
+const parseClockMinutes = (time, meridiem) => {
+  if (!time) return null;
+  const [hoursRaw, minutesRaw = "0"] = String(time).split(":");
+  const hours = Number(hoursRaw);
+  const minutes = Number(minutesRaw);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  const normalizedHours = ((hours % 12) + 12) % 12;
+  const isPm = String(meridiem).toUpperCase() === "PM";
+  return (normalizedHours + (isPm ? 12 : 0)) * 60 + minutes;
+};
+
+const isBusinessOpenNow = (value) => {
+  const parsed = parseBusinessHours(value);
+  if (!parsed) return null;
+  const start = parseClockMinutes(parsed.startTime, parsed.startMeridiem);
+  const end = parseClockMinutes(parsed.endTime, parsed.endMeridiem);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const now = new Date();
+  const current = now.getHours() * 60 + now.getMinutes();
+  if (start === end) return true;
+  if (end > start) {
+    return current >= start && current <= end;
+  }
+  return current >= start || current <= end;
+};
+
+const parseAddressComponents = (components = []) => {
+  const get = (type) =>
+    components.find((component) => component.types.includes(type))?.long_name ||
+    "";
+  const streetNumber = get("street_number");
+  const route = get("route");
+  const street = [streetNumber, route].filter(Boolean).join(" ").trim();
+  return {
+    street,
+    city: get("locality"),
+    state: get("administrative_area_level_1"),
+    postalCode: get("postal_code")
+  };
+};
 
 const MAP_STYLE = [
   {
@@ -537,6 +725,7 @@ const PLAN_OPTIONS = [
     enabled: false
   }
 ];
+
 
 const CATEGORY_CONFIG = {
   restaurant: {
@@ -622,6 +811,56 @@ function getBusinessQrCode(business) {
   return business.qrCode || `WELLO-${business.id}-${hash}`;
 }
 
+const OFFER_IMAGE_BUCKET = "offer-images";
+
+const uploadOfferImage = async (image, businessId) => {
+  if (!image?.uri && !image?.base64) return { url: null, error: null };
+  const safeBusinessId = String(businessId || "business").replace(/[^a-zA-Z0-9-]/g, "");
+  const uri = image.uri || "";
+  const rawName = image.fileName || uri.split("/").pop() || "offer.jpg";
+  const cleanedName = rawName.split("?")[0];
+  const extension = cleanedName.split(".").pop()?.toLowerCase() || "jpg";
+  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+  const filePath = `${safeBusinessId}/${fileName}`;
+
+  try {
+    const contentType =
+      image.mimeType ||
+      (extension === "jpg" || extension === "jpeg"
+        ? "image/jpeg"
+        : `image/${extension}`);
+    const base64 =
+      image.base64 ||
+      (uri
+        ? await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType.Base64
+          })
+        : "");
+    if (!base64) {
+      return { url: null, error: "Unable to read image data." };
+    }
+    const normalizedBase64 = base64.includes(",")
+      ? base64.split(",")[1]
+      : base64;
+    const data = toByteArray(normalizedBase64);
+    const { error } = await supabase.storage
+      .from(OFFER_IMAGE_BUCKET)
+      .upload(filePath, data, {
+        contentType,
+        upsert: false
+      });
+    if (error) {
+      return { url: null, error: error.message || "Upload failed." };
+    }
+    const { data: publicData } = supabase.storage
+      .from(OFFER_IMAGE_BUCKET)
+      .getPublicUrl(filePath);
+    return { url: publicData?.publicUrl || null, error: null };
+  } catch (error) {
+    return { url: null, error: error?.message || "Upload failed." };
+  }
+};
+
 function getPendingEditLabel(field) {
   switch (field) {
     case "name":
@@ -632,6 +871,12 @@ function getPendingEditLabel(field) {
       return "Category";
     case "offer":
       return "Offer";
+    case "city":
+      return "City";
+    case "state":
+      return "State";
+    case "postalCode":
+      return "Zip code";
     default:
       return "Detail";
   }
@@ -643,43 +888,104 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
     item.rating && Number.isFinite(item.rating)
       ? item.rating.toFixed(1)
       : "New";
+  const offerTitle = item.offerTitle || item.offer;
+  const offerDescription = item.offerDescription || "";
+  const hoursValue = item.hours || item.business?.hours || "";
+  const openFromHours = isBusinessOpenNow(hoursValue);
+  const isOpen =
+    openFromHours === null
+      ? item.isOpen ?? item.business?.isOpen ?? true
+      : openFromHours;
+  const tags = Array.isArray(item.tags) ? item.tags : [];
+  const visibleTags = tags.slice(0, 2);
+  const extraTagCount = tags.length - visibleTags.length;
   return (
-    <TouchableOpacity
-      style={[styles.card, selected && styles.cardSelected]}
-      onPress={onPress}
-      activeOpacity={0.85}
-    >
-      <View style={styles.cardHeader}>
-        <Text style={styles.cardName}>{item.name}</Text>
-        <View style={styles.cardBadge}>
-          <Text style={styles.cardBadgeText}>{item.distance}</Text>
-        </View>
-      </View>
-      <Text style={styles.cardCategory}>{category.display}</Text>
-      <Text style={styles.cardOffer}>{item.offer}</Text>
+    <View style={styles.cardShell}>
       <TouchableOpacity
-        style={styles.redeemButton}
-        onPress={onRedeem}
+        style={[styles.card, selected && styles.cardSelected]}
+        onPress={onPress}
         activeOpacity={0.85}
       >
-        <Text style={styles.redeemButtonText}>Redeem offer</Text>
+      <View style={styles.cardHeader}>
+        <Text style={styles.cardName} numberOfLines={1}>
+          {item.name}
+        </Text>
+        {isOpen && (
+          <View style={[styles.cardBadge, styles.cardBadgeOpen]}>
+            <Text style={styles.cardBadgeText}>Open</Text>
+          </View>
+        )}
+      </View>
+        <Text style={styles.cardCategory}>{category.display}</Text>
+        {offerTitle ? (
+          <Text style={styles.cardOfferTitle} numberOfLines={1}>
+            {offerTitle}
+          </Text>
+        ) : null}
+        {offerDescription ? (
+          <Text style={styles.cardOffer} numberOfLines={2}>
+            {offerDescription}
+          </Text>
+        ) : null}
+      <TouchableOpacity
+        style={[styles.redeemButton, !isOpen && styles.redeemButtonDisabled]}
+        onPress={onRedeem}
+        activeOpacity={0.85}
+        disabled={!isOpen}
+      >
+        <Text
+          style={[
+            styles.redeemButtonText,
+            !isOpen && styles.redeemButtonTextDisabled
+          ]}
+        >
+          {isOpen ? "Redeem offer" : "Closed now"}
+        </Text>
       </TouchableOpacity>
       <View style={styles.cardMetaRow}>
-        <Text style={styles.cardMeta}>{item.subscription}</Text>
+        <Text style={styles.cardMeta}>{item.distance || "--"}</Text>
         <Text style={styles.cardMeta}>Rating {ratingLabel}</Text>
       </View>
-      <View style={styles.cardTags}>
-        {item.tags.map((tag) => (
-          <View key={tag} style={styles.tagPill}>
-            <Text style={styles.tagText}>{tag}</Text>
-          </View>
-        ))}
-      </View>
       <View style={styles.cardMedia}>
-        <Ionicons name="image-outline" size={18} color={COLORS.muted} />
-        <Text style={styles.cardMediaLabel}>Offer image</Text>
-      </View>
-    </TouchableOpacity>
+        {tags.length > 0 && (
+          <View style={styles.cardMediaOverlay}>
+            {visibleTags.map((tag) => (
+              <View key={tag} style={[styles.tagPill, styles.tagPillOverlay]}>
+                <Text style={[styles.tagText, styles.tagTextOverlay]}>
+                  {tag}
+                </Text>
+              </View>
+            ))}
+            {extraTagCount > 0 && (
+              <View style={[styles.tagPill, styles.tagPillOverlay]}>
+                <Text style={[styles.tagText, styles.tagTextOverlay]}>
+                  +{extraTagCount}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+        {item.imageUrl ? (
+          <Image
+            source={{ uri: item.imageUrl }}
+            style={styles.cardMediaImage}
+            resizeMode="cover"
+              onError={(event) => {
+                console.warn("Wello offer image load failed:", {
+                  uri: item.imageUrl,
+                  error: event.nativeEvent?.error
+                });
+              }}
+            />
+          ) : (
+            <>
+              <Ionicons name="image-outline" size={18} color={COLORS.muted} />
+              <Text style={styles.cardMediaLabel}>Offer image</Text>
+            </>
+          )}
+        </View>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -688,6 +994,8 @@ export default function App() {
   const [fontError, setFontError] = useState(null);
   const mapRef = useRef(null);
   const cardListRef = useRef(null);
+  const sheetScrollRef = useRef(null);
+  const isMountedRef = useRef(true);
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState("discover");
   const [activeFilters, setActiveFilters] = useState([]);
@@ -696,7 +1004,9 @@ export default function App() {
   const [mapRegion, setMapRegion] = useState(MAP_REGION);
   const initialBusinesses =
     SUPABASE_URL && SUPABASE_ANON_KEY ? [] : BUSINESSES;
+  const initialOffers = SUPABASE_URL && SUPABASE_ANON_KEY ? [] : OFFER_SEEDS;
   const [businesses, setBusinesses] = useState(initialBusinesses);
+  const [offers, setOffers] = useState(initialOffers);
   const defaultOwnerId =
     SUPABASE_URL && SUPABASE_ANON_KEY
       ? null
@@ -713,7 +1023,6 @@ export default function App() {
   const [signInError, setSignInError] = useState(null);
   const [signUpEmail, setSignUpEmail] = useState("");
   const [signUpPassword, setSignUpPassword] = useState("");
-  const [signUpCode, setSignUpCode] = useState("");
   const [signUpError, setSignUpError] = useState(null);
   const [businessEmail, setBusinessEmail] = useState("");
   const [businessPassword, setBusinessPassword] = useState("");
@@ -721,6 +1030,10 @@ export default function App() {
   const [businessName, setBusinessName] = useState("");
   const [businessCategoryKey, setBusinessCategoryKey] = useState("restaurant");
   const [businessAddress, setBusinessAddress] = useState("");
+  const [businessAddressCoords, setBusinessAddressCoords] = useState(null);
+  const [businessAddressCity, setBusinessAddressCity] = useState("");
+  const [businessAddressState, setBusinessAddressState] = useState("");
+  const [businessAddressPostal, setBusinessAddressPostal] = useState("");
   const [businessPhone, setBusinessPhone] = useState("");
   const [businessHoursStart, setBusinessHoursStart] = useState("");
   const [businessHoursStartMeridiem, setBusinessHoursStartMeridiem] =
@@ -744,25 +1057,57 @@ export default function App() {
   const [profileMessage, setProfileMessage] = useState(null);
   const [accountRole, setAccountRole] = useState("consumer");
   const [authUserId, setAuthUserId] = useState(null);
+  const [authBusinessDraft, setAuthBusinessDraft] = useState(null);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState(null);
   const [scannerVisible, setScannerVisible] = useState(false);
   const [scannerBusiness, setScannerBusiness] = useState(null);
+  const [scannerOffer, setScannerOffer] = useState(null);
   const [scannerStatus, setScannerStatus] = useState(null);
   const [scannerEnabled, setScannerEnabled] = useState(true);
+  const redemptionLoggedRef = useRef(false);
   const [qrExpandedId, setQrExpandedId] = useState(null);
+  const [qrImageMap, setQrImageMap] = useState({});
+  const geocodeCacheRef = useRef(new Map());
+  const [keyboardInset, setKeyboardInset] = useState(0);
   const [isEditingBusiness, setIsEditingBusiness] = useState(false);
+  const [businessSaveBusy, setBusinessSaveBusy] = useState(false);
   const [remoteStatus, setRemoteStatus] = useState({
     loading: false,
     error: null
   });
-  const [inviteRole, setInviteRole] = useState("business_owner");
+  const [offerStatus, setOfferStatus] = useState({
+    loading: false,
+    error: null
+  });
+  const [pendingOfferStatus, setPendingOfferStatus] = useState({
+    loading: false,
+    error: null
+  });
+  const [pendingOffers, setPendingOffers] = useState([]);
+  const [changeRequestStatus, setChangeRequestStatus] = useState({
+    loading: false,
+    error: null
+  });
+  const [changeRequests, setChangeRequests] = useState([]);
   const [inviteStatus, setInviteStatus] = useState({
     loading: false,
     error: null,
     code: null
   });
+  const [inviteCopied, setInviteCopied] = useState(false);
   const [inviteList, setInviteList] = useState([]);
+  const [profileStatus, setProfileStatus] = useState({
+    loading: false,
+    error: null
+  });
+  const [profileList, setProfileList] = useState([]);
+  const [supervisorSearch, setSupervisorSearch] = useState("");
+  const [supervisorStatus, setSupervisorStatus] = useState({
+    loading: false,
+    error: null,
+    success: null
+  });
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [ownerBusinessId, setOwnerBusinessId] = useState(defaultOwnerId);
   const [androidMarkerIcons, setAndroidMarkerIcons] = useState(null);
@@ -771,6 +1116,9 @@ export default function App() {
     address: "",
     addressPlaceId: null,
     addressCoords: null,
+    city: "",
+    state: "",
+    postalCode: "",
     categoryKey: "restaurant",
     offer: "",
     hours: "",
@@ -778,6 +1126,47 @@ export default function App() {
     tags: "",
     isOpen: true
   });
+  const [createBusinessForm, setCreateBusinessForm] = useState({
+    name: "",
+    address: "",
+    addressCoords: null,
+    city: "",
+    state: "",
+    postalCode: "",
+    categoryKey: "restaurant",
+    offer: "",
+    phone: "",
+    tags: ""
+  });
+  const [createBusinessBusy, setCreateBusinessBusy] = useState(false);
+  const [createBusinessError, setCreateBusinessError] = useState(null);
+  const [paymentMessage, setPaymentMessage] = useState(null);
+  const [createHoursStart, setCreateHoursStart] = useState("");
+  const [createHoursStartMeridiem, setCreateHoursStartMeridiem] =
+    useState("AM");
+  const [createHoursEnd, setCreateHoursEnd] = useState("");
+  const [createHoursEndMeridiem, setCreateHoursEndMeridiem] = useState("PM");
+  const [editHoursStart, setEditHoursStart] = useState("");
+  const [editHoursStartMeridiem, setEditHoursStartMeridiem] = useState("AM");
+  const [editHoursEnd, setEditHoursEnd] = useState("");
+  const [editHoursEndMeridiem, setEditHoursEndMeridiem] = useState("PM");
+  const [createAddressResults, setCreateAddressResults] = useState([]);
+  const [createAddressLoading, setCreateAddressLoading] = useState(false);
+  const [createAddressError, setCreateAddressError] = useState(null);
+  const createAddressRequestRef = useRef(0);
+  const createAddressSelectionRef = useRef(false);
+  const [offerForm, setOfferForm] = useState({
+    title: "",
+    description: "",
+    type: ""
+  });
+  const [offerImage, setOfferImage] = useState(null);
+  const [offerImageStatus, setOfferImageStatus] = useState({
+    uploading: false,
+    error: null
+  });
+  const [offerBusy, setOfferBusy] = useState(false);
+  const [offerError, setOfferError] = useState(null);
   const [formMessage, setFormMessage] = useState(null);
   const [addressResults, setAddressResults] = useState([]);
   const [addressLoading, setAddressLoading] = useState(false);
@@ -798,23 +1187,36 @@ export default function App() {
     const fallbackName = formatDisplayName(email);
     const { data, error } = await supabase
       .from("profiles")
-      .select("full_name, email, role")
+      .select("full_name, email, role, phone, company")
       .eq("id", user.id)
       .maybeSingle();
     if (error) {
       console.warn("Wello profile fetch failed:", error.message);
     }
-    const metadataRole = user.user_metadata?.role;
+    const metadata = user.user_metadata || {};
+    const metadataRole = metadata.role;
+    const metadataName = metadata.full_name || metadata.name || "";
+    const metadataPhone = metadata.phone || "";
+    const metadataCompany = metadata.company || "";
+    const metadataDraft = metadata.business_draft || null;
     let nextRole = roleOverride || data?.role || metadataRole || "consumer";
-    const fullName = data?.full_name || fallbackName;
+    const validRoles = ["consumer", "business_owner", "admin", "supervisor"];
+    if (!validRoles.includes(nextRole)) {
+      nextRole = "consumer";
+    }
+    const fullName = data?.full_name || metadataName || fallbackName;
     const profileEmailValue = data?.email || email;
+    const profilePhoneValue = data?.phone || metadataPhone || "";
+    const profileCompanyValue = data?.company || metadataCompany || "";
 
     if (!data || roleOverride) {
       const { error: upsertError } = await supabase.from("profiles").upsert({
         id: user.id,
         email: profileEmailValue,
         full_name: fullName,
-        role: nextRole
+        role: nextRole,
+        phone: profilePhoneValue || null,
+        company: profileCompanyValue || null
       });
       if (upsertError && !data) {
         console.warn("Wello profile upsert failed:", upsertError.message);
@@ -824,6 +1226,9 @@ export default function App() {
 
     setProfileName(fullName);
     setProfileEmail(profileEmailValue);
+    setProfilePhone(profilePhoneValue);
+    setProfileCompany(profileCompanyValue);
+    setAuthBusinessDraft(metadataDraft);
     setAccountRole(nextRole);
     console.log("Wello role hydrate:", {
       email: profileEmailValue,
@@ -928,6 +1333,61 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleKeyboardShow = (event) => {
+      const height = event?.endCoordinates?.height || 0;
+      setKeyboardInset(height);
+      const scrollView = sheetScrollRef.current;
+      if (!scrollView) return;
+      const focused = TextInput.State?.currentlyFocusedInput?.();
+      const scrollNode = findNodeHandle(scrollView);
+      const targetNode =
+        typeof focused === "number" ? focused : findNodeHandle(focused);
+      if (!scrollNode || !targetNode) return;
+      const scrollToFocused = (attempt = 0) => {
+        UIManager.measureLayout(
+          targetNode,
+          scrollNode,
+          () => {},
+          (_x, y, _width, height) => {
+            const targetOffset = Math.max(0, y - 20 + height);
+            scrollView.scrollTo({ y: targetOffset, animated: true });
+          }
+        );
+        if (attempt < 2) {
+          setTimeout(() => scrollToFocused(attempt + 1), 120);
+        }
+      };
+      setTimeout(() => scrollToFocused(0), Platform.OS === "ios" ? 140 : 0);
+    };
+    const handleKeyboardHide = () => {
+      setKeyboardInset(0);
+    };
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showSubscription = Keyboard.addListener(
+      showEvent,
+      handleKeyboardShow
+    );
+    const hideSubscription = Keyboard.addListener(
+      hideEvent,
+      handleKeyboardHide
+    );
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
     let isMounted = true;
     const loadRemoteBusinesses = async () => {
@@ -940,6 +1400,9 @@ export default function App() {
             "owner_id",
             "name",
             "address",
+            "city",
+            "state",
+            "postal_code",
             "phone",
             "category_key",
             "category_label",
@@ -971,6 +1434,7 @@ export default function App() {
       if (Array.isArray(data) && data.length) {
         const mapped = data.map(mapSupabaseBusiness);
         setBusinesses(mapped);
+        hydrateBusinessCoordinates(mapped);
       }
       setRemoteStatus({ loading: false, error: null });
     };
@@ -980,6 +1444,27 @@ export default function App() {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    loadRemoteOffers();
+  }, [loadRemoteOffers]);
+
+  useEffect(() => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    const intervalId = setInterval(() => {
+      loadRemoteOffers({ silent: true });
+      if (ownerBusiness?.id) {
+        loadOwnerOffers(ownerBusiness.id);
+      }
+    }, OFFERS_REFRESH_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [loadRemoteOffers, loadOwnerOffers, ownerBusiness?.id]);
+
+  useEffect(() => {
+    if (!ownerBusiness?.id) return;
+    loadOwnerOffers(ownerBusiness.id);
+  }, [ownerBusiness?.id, loadOwnerOffers]);
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
@@ -1146,6 +1631,23 @@ export default function App() {
     () => businesses.filter((business) => business.approved && !business.rejected),
     [businesses]
   );
+  const publicOffers = useMemo(
+    () =>
+      offers.filter(
+        (offer) => offer.active && offer.approvalStatus === "approved"
+      ),
+    [offers]
+  );
+  const offersByBusiness = useMemo(() => {
+    const map = new Map();
+    publicOffers.forEach((offer) => {
+      if (!map.has(offer.businessId)) {
+        map.set(offer.businessId, []);
+      }
+      map.get(offer.businessId).push(offer);
+    });
+    return map;
+  }, [publicOffers]);
 
   const filteredBusinesses = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
@@ -1158,6 +1660,10 @@ export default function App() {
     );
     if (!trimmed) return baseList;
     return baseList.filter((business) => {
+      const offerText = (offersByBusiness.get(business.id) || [])
+        .map((offer) => `${offer.title} ${offer.description}`)
+        .join(" ")
+        .toLowerCase();
       const haystack = [
         business.name,
         business.category,
@@ -1167,9 +1673,86 @@ export default function App() {
       ]
         .join(" ")
         .toLowerCase();
-      return haystack.includes(trimmed);
+      return haystack.includes(trimmed) || offerText.includes(trimmed);
     });
-  }, [query, approvedBusinesses, activeFilters, filterPredicates]);
+  }, [query, approvedBusinesses, activeFilters, filterPredicates, offersByBusiness]);
+
+  const offerCards = useMemo(() => {
+    const businessMap = new Map(
+      businesses.map((business) => [business.id, business])
+    );
+    return publicOffers
+      .map((offer) => {
+        const business = offer.business || businessMap.get(offer.businessId);
+        if (!business) return null;
+        const categoryKey =
+          business.categoryKey || business.category_key || "restaurant";
+        const categoryLabel =
+          business.category ||
+          business.category_label ||
+          getCategoryConfig(categoryKey).display;
+        const offerTitle = offer.title || business.offer || "New offer";
+        const offerType = offer.offerType || offer.offer_type || "";
+        const offerDescription = offer.description || "";
+        const searchText = [
+          business.name,
+          categoryLabel,
+          offerTitle,
+          offerDescription,
+          offerType,
+          business.tags?.join(" ") || ""
+        ]
+          .join(" ")
+          .toLowerCase();
+        return {
+          id: offer.id,
+          offerId: offer.id,
+          businessId: business.id,
+          business,
+          name: business.name,
+          categoryKey,
+          offer: offerTitle,
+          offerTitle,
+          offerDescription,
+          offerType,
+          distance: business.distance || "--",
+          subscription:
+            business.subscription ||
+            formatSubscription(
+              business.subscription_plan,
+              business.subscription_price_cents
+            ) ||
+            "Starter $50/mo",
+          rating: business.rating || 4.7,
+          tags: business.tags || [],
+          imageUrl: offer.imageUrl,
+          searchText
+        };
+      })
+      .filter(Boolean);
+  }, [publicOffers, businesses]);
+
+  const filteredOfferCards = useMemo(() => {
+    const trimmed = query.trim().toLowerCase();
+    const visibleBusinessIds = new Set(
+      filteredBusinesses.map((business) => business.id)
+    );
+    return offerCards.filter((card) => {
+      if (!visibleBusinessIds.has(card.businessId)) return false;
+      if (!trimmed) return true;
+      return card.searchText.includes(trimmed);
+    });
+  }, [offerCards, filteredBusinesses, query]);
+
+  const ownerOffers = useMemo(() => {
+    if (!ownerBusiness?.id) return [];
+    return offers.filter((offer) => offer.businessId === ownerBusiness.id);
+  }, [offers, ownerBusiness?.id]);
+  const offerTypeSuggestion = normalizeOfferType(offerForm.type);
+  const showOfferTypeSuggestion =
+    offerForm.type &&
+    offerTypeSuggestion &&
+    offerTypeSuggestion.toLowerCase() !== offerForm.type.trim().toLowerCase();
 
   const ownerBusiness = useMemo(() => {
     if (authUserId) {
@@ -1193,16 +1776,24 @@ export default function App() {
     [businesses]
   );
   const isAdmin = accountRole === "admin";
+  const isSupervisor = accountRole === "supervisor";
   const isOwner = accountRole === "business_owner";
-  const roleLabel = isAdmin ? "Admin" : isOwner ? "Owner" : "Member";
+  const isStaff = isAdmin || isSupervisor;
+  const roleLabel = isAdmin
+    ? "Admin"
+    : isSupervisor
+    ? "Supervisor"
+    : isOwner
+    ? "Owner"
+    : "Member";
   const visibleTabs = useMemo(
     () => [
       { key: "discover", label: "Discover", show: true },
-      { key: "business", label: "Business", show: isOwner },
-      { key: "admin", label: "Admin", show: isAdmin },
+      { key: "business", label: "Dashboard", show: isOwner },
+      { key: "admin", label: "Admin", show: isStaff },
       { key: "profile", label: "Profile", show: true }
     ].filter((tab) => tab.show),
-    [isOwner, isAdmin]
+    [isOwner, isStaff]
   );
   const navContainerWidth = useMemo(() => {
     const count = visibleTabs.length || 1;
@@ -1234,6 +1825,22 @@ export default function App() {
     const sum = rated.reduce((acc, business) => acc + business.rating, 0);
     return (sum / rated.length).toFixed(1);
   }, [approvedBusinesses]);
+  const filteredProfiles = useMemo(() => {
+    const trimmed = supervisorSearch.trim().toLowerCase();
+    if (!trimmed) return profileList;
+    return profileList.filter((profile) => {
+      const haystack = [
+        profile.full_name,
+        profile.email,
+        profile.phone,
+        profile.company
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(trimmed);
+    });
+  }, [profileList, supervisorSearch]);
 
   useEffect(() => {
     if (!businesses.length) return;
@@ -1248,23 +1855,86 @@ export default function App() {
   useEffect(() => {
     if (activeTab === "admin" && isAdmin) {
       loadInvites();
+      loadProfiles();
     }
-  }, [activeTab, isAdmin, loadInvites]);
+  }, [activeTab, isAdmin, loadInvites, loadProfiles]);
 
   useEffect(() => {
-    if (activeTab === "admin" && !isAdmin) {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    if (activeTab === "admin" && isStaff) {
+      loadChangeRequests({ status: "pending" });
+      loadPendingOffers();
+    }
+  }, [
+    activeTab,
+    isStaff,
+    loadChangeRequests,
+    loadPendingOffers,
+    SUPABASE_URL,
+    SUPABASE_ANON_KEY
+  ]);
+
+  useEffect(() => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    if (activeTab === "business" && isOwner && ownerBusiness?.id) {
+      loadChangeRequests({ businessId: ownerBusiness.id, status: "pending" });
+    }
+  }, [
+    activeTab,
+    isOwner,
+    ownerBusiness?.id,
+    loadChangeRequests,
+    SUPABASE_URL,
+    SUPABASE_ANON_KEY
+  ]);
+
+  useEffect(() => {
+    if (!qrExpandedId) return;
+    const business = approvedBusinesses.find(
+      (item) => String(item.id) === String(qrExpandedId)
+    );
+    if (!business) return;
+    if (BUSINESS_QR_IMAGES[business.id] || qrImageMap[business.id]) return;
+    let isMounted = true;
+    const payload = getBusinessQrCode(business);
+    QRCode.toDataURL(payload, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 240
+    })
+      .then((dataUrl) => {
+        if (!isMounted) return;
+        setQrImageMap((prev) => ({ ...prev, [business.id]: dataUrl }));
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        const fallbackUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(
+          payload
+        )}`;
+        setQrImageMap((prev) => ({ ...prev, [business.id]: fallbackUrl }));
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [approvedBusinesses, qrExpandedId, qrImageMap]);
+
+  useEffect(() => {
+    if (activeTab === "admin" && !isStaff) {
       setActiveTab("discover");
     }
     if (activeTab === "business" && !isOwner) {
       setActiveTab("discover");
     }
-  }, [activeTab, isAdmin, isOwner]);
+  }, [activeTab, isOwner, isStaff]);
 
   const buildFormFromBusiness = (business) => ({
     name: business?.name || "",
     address: business?.address || "",
     addressPlaceId: null,
     addressCoords: business?.coordinate || null,
+    city: business?.city || "",
+    state: business?.state || "",
+    postalCode: business?.postalCode || "",
     categoryKey: business?.categoryKey || "restaurant",
     offer: business?.offer || "",
     hours: business?.hours || "",
@@ -1278,7 +1948,126 @@ export default function App() {
     setFormData(buildFormFromBusiness(ownerBusiness));
     setFormMessage(null);
     setIsEditingBusiness(false);
+    const parsed = parseBusinessHours(ownerBusiness.hours);
+    if (parsed) {
+      setEditHoursStart(parsed.startTime);
+      setEditHoursStartMeridiem(parsed.startMeridiem);
+      setEditHoursEnd(parsed.endTime);
+      setEditHoursEndMeridiem(parsed.endMeridiem);
+    } else {
+      setEditHoursStart("");
+      setEditHoursEnd("");
+    }
   }, [activeTab, ownerBusiness?.id]);
+
+  useEffect(() => {
+    if (activeTab !== "business" || ownerBusiness || !isOwner) return;
+    setCreateBusinessForm((prev) => ({
+      ...prev,
+      name: prev.name || profileCompany || profileName,
+      phone: prev.phone || profilePhone
+    }));
+  }, [activeTab, ownerBusiness, isOwner, profileCompany, profileName, profilePhone]);
+
+  useEffect(() => {
+    if (activeTab !== "business" || ownerBusiness || !isOwner) return;
+    if (!authBusinessDraft) return;
+    setCreateBusinessForm((prev) => ({
+      ...prev,
+      name: prev.name || authBusinessDraft.name || "",
+      address: prev.address || authBusinessDraft.address || "",
+      addressCoords: prev.addressCoords || authBusinessDraft.addressCoords || null,
+      city: prev.city || authBusinessDraft.city || "",
+      state: prev.state || authBusinessDraft.state || "",
+      postalCode: prev.postalCode || authBusinessDraft.postalCode || "",
+      categoryKey:
+        prev.categoryKey || authBusinessDraft.categoryKey || "restaurant",
+      phone: prev.phone || authBusinessDraft.phone || ""
+    }));
+    if (!createHoursStart && authBusinessDraft.hours) {
+      const parts = authBusinessDraft.hours.split(" - ");
+      if (parts.length === 2) {
+        const [start, end] = parts;
+        const [startTime, startMeridiem] = start.trim().split(" ");
+        const [endTime, endMeridiem] = end.trim().split(" ");
+        if (startTime) setCreateHoursStart(startTime);
+        if (startMeridiem) setCreateHoursStartMeridiem(startMeridiem);
+        if (endTime) setCreateHoursEnd(endTime);
+        if (endMeridiem) setCreateHoursEndMeridiem(endMeridiem);
+      }
+    }
+  }, [activeTab, ownerBusiness, isOwner, authBusinessDraft, createHoursStart]);
+
+  useEffect(() => {
+    if (!isEditingBusiness) return;
+    if (!editHoursStart || !editHoursEnd) return;
+    setFormData((prev) => ({
+      ...prev,
+      hours: formatBusinessHours(
+        editHoursStart,
+        editHoursStartMeridiem,
+        editHoursEnd,
+        editHoursEndMeridiem
+      )
+    }));
+  }, [
+    isEditingBusiness,
+    editHoursStart,
+    editHoursStartMeridiem,
+    editHoursEnd,
+    editHoursEndMeridiem
+  ]);
+
+  useEffect(() => {
+    if (!GOOGLE_PLACES_KEY) {
+      setCreateAddressResults([]);
+      setCreateAddressLoading(false);
+      return;
+    }
+    const query = createBusinessForm.address.trim();
+    if (createAddressSelectionRef.current) {
+      createAddressSelectionRef.current = false;
+      setCreateAddressLoading(false);
+      return;
+    }
+    if (query.length < 3) {
+      setCreateAddressResults([]);
+      setCreateAddressLoading(false);
+      return;
+    }
+
+    setCreateAddressLoading(true);
+    const requestId = ++createAddressRequestRef.current;
+    const timeout = setTimeout(() => {
+      fetch(
+        `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
+          query
+        )}&types=address&key=${GOOGLE_PLACES_KEY}`
+      )
+        .then((response) => response.json())
+        .then((data) => {
+          if (createAddressRequestRef.current !== requestId) return;
+          if (data.status && data.status !== "OK" && data.status !== "ZERO_RESULTS") {
+            setCreateAddressError(
+              data.error_message || "Unable to load suggestions."
+            );
+            setCreateAddressResults([]);
+          } else {
+            setCreateAddressError(null);
+            setCreateAddressResults(data.predictions || []);
+          }
+          setCreateAddressLoading(false);
+        })
+        .catch(() => {
+          if (createAddressRequestRef.current !== requestId) return;
+          setCreateAddressError("Unable to load suggestions.");
+          setCreateAddressResults([]);
+          setCreateAddressLoading(false);
+        });
+    }, ADDRESS_DEBOUNCE_MS);
+
+    return () => clearTimeout(timeout);
+  }, [createBusinessForm.address]);
 
   const ensureSupabaseReady = (setError) => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -1286,6 +2075,20 @@ export default function App() {
       return false;
     }
     return true;
+  };
+
+  const stripeEnabled = Boolean(STRIPE_PUBLISHABLE_KEY);
+
+  const handleStartSubscription = () => {
+    if (!stripeEnabled) {
+      setPaymentMessage(
+        "Stripe is not connected yet. Add your publishable key to enable payments."
+      );
+      return;
+    }
+    setPaymentMessage(
+      "Stripe checkout will be wired here before launch."
+    );
   };
 
   const handleSignIn = async () => {
@@ -1328,36 +2131,9 @@ export default function App() {
     setSignUpError(null);
     try {
       const email = signUpEmail.trim().toLowerCase();
-      let inviteRole = null;
-      let inviteId = null;
-
-      if (signUpCode.trim()) {
-        const normalizedCode = signUpCode.trim().toUpperCase();
-        const { data, error } = await supabase
-          .from("invites")
-          .select("id, role, used_at")
-          .eq("code", normalizedCode)
-          .limit(1)
-          .maybeSingle();
-
-        if (error || !data || data.used_at) {
-          setSignUpError("That invite code is not valid.");
-          return;
-        }
-        if (data.role === "business_owner") {
-          setSignUpError(
-            "Use the business signup form for business invites."
-          );
-          return;
-        }
-        inviteRole = data.role || "admin";
-        inviteId = data.id;
-      }
-
       const { data, error } = await supabase.auth.signUp({
         email,
-        password: signUpPassword,
-        options: inviteRole ? { data: { role: inviteRole } } : undefined
+        password: signUpPassword
       });
       if (error) {
         setSignUpError(error.message || "Unable to create account.");
@@ -1367,26 +2143,9 @@ export default function App() {
         setSignUpError("Check your email to confirm your account.");
         return;
       }
-      if (inviteId) {
-        const { error: updateError } = await supabase
-          .from("invites")
-          .update({
-            used_at: new Date().toISOString(),
-            used_by: email,
-            used_by_name: formatDisplayName(email),
-            used_by_user_id: data.user.id
-          })
-          .eq("id", inviteId)
-          .is("used_at", null);
-        if (updateError) {
-          setSignUpError("Unable to claim invite code. Try again.");
-          return;
-        }
-      }
-      await hydrateProfile(data.user, inviteRole || "consumer");
+      await hydrateProfile(data.user, "consumer");
       setIsSignedIn(true);
       setSignUpPassword("");
-      setSignUpCode("");
     } finally {
       setAuthBusy(false);
     }
@@ -1435,10 +2194,42 @@ export default function App() {
         return;
       }
 
+      const hoursValue = formatBusinessHours(
+        businessHoursStart,
+        businessHoursStartMeridiem,
+        businessHoursEnd,
+        businessHoursEndMeridiem
+      );
+      let signupCoords = businessAddressCoords;
+      if (!signupCoords && businessAddress.trim()) {
+        signupCoords = await geocodeAddress(businessAddress.trim());
+        if (signupCoords) {
+          setBusinessAddressCoords(signupCoords);
+        }
+      }
+      const businessDraft = {
+        name: businessName.trim(),
+        address: businessAddress.trim(),
+        phone: businessPhone.trim(),
+        categoryKey: businessCategoryKey,
+        hours: hoursValue,
+        city: businessAddressCity.trim(),
+        state: businessAddressState.trim(),
+        postalCode: businessAddressPostal.trim(),
+        addressCoords: signupCoords
+      };
       const { data, error: signUpError } = await supabase.auth.signUp({
         email,
         password: businessPassword,
-        options: { data: { role: "business_owner" } }
+        options: {
+          data: {
+            role: "business_owner",
+            full_name: businessName.trim(),
+            phone: businessPhone.trim(),
+            company: businessName.trim(),
+            business_draft: businessDraft
+          }
+        }
       });
       if (signUpError) {
         setBusinessSignUpError(signUpError.message || "Unable to create account.");
@@ -1449,7 +2240,23 @@ export default function App() {
         return;
       }
 
-      const { error: updateError } = await supabase
+      if (data.session) {
+        const { error: profileUpsertError } = await supabase
+          .from("profiles")
+          .upsert({
+            id: data.user.id,
+            email,
+            full_name: businessName.trim(),
+            phone: businessPhone.trim() || null,
+            company: businessName.trim(),
+            role: "business_owner"
+          });
+        if (profileUpsertError) {
+          console.warn("Wello profile upsert failed:", profileUpsertError.message);
+        }
+      }
+
+      const { data: claimedInvite, error: updateError } = await supabase
         .from("invites")
         .update({
           used_at: new Date().toISOString(),
@@ -1459,27 +2266,32 @@ export default function App() {
           used_by_user_id: data.user.id
         })
         .eq("id", invite.id)
-        .is("used_at", null);
-      if (updateError) {
+        .is("used_at", null)
+        .select("id");
+      if (updateError || !claimedInvite?.length) {
         setBusinessSignUpError("Unable to claim invite code. Try again.");
         return;
       }
 
-      await hydrateProfile(data.user, "business_owner");
+      if (data.session) {
+        await hydrateProfile(data.user, "business_owner");
+      } else {
+        setBusinessSignUpError(
+          "Check your email to confirm, then sign in to finish your profile."
+        );
+        return;
+      }
 
       const categoryConfig = getCategoryConfig(businessCategoryKey);
-      const hoursValue = formatBusinessHours(
-        businessHoursStart,
-        businessHoursStartMeridiem,
-        businessHoursEnd,
-        businessHoursEndMeridiem
-      );
       const { data: businessRows, error: businessError } = await supabase
         .from("businesses")
         .insert({
           owner_id: data.user.id,
           name: businessName.trim(),
           address: businessAddress.trim(),
+          city: businessAddressCity.trim() || null,
+          state: businessAddressState.trim() || null,
+          postal_code: businessAddressPostal.trim() || null,
           phone: businessPhone.trim() || null,
           category_key: businessCategoryKey,
           category_label: categoryConfig.display,
@@ -1488,7 +2300,9 @@ export default function App() {
           subscription_price_cents: 5000,
           approval_status: "pending",
           status: "active",
-          is_open: true
+          is_open: true,
+          latitude: signupCoords?.latitude ?? null,
+          longitude: signupCoords?.longitude ?? null
         })
         .select(
           [
@@ -1496,6 +2310,9 @@ export default function App() {
             "owner_id",
             "name",
             "address",
+            "city",
+            "state",
+            "postal_code",
             "phone",
             "category_key",
             "category_label",
@@ -1528,9 +2345,13 @@ export default function App() {
       setIsSignedIn(true);
       setBusinessPassword("");
       setBusinessInviteCode("");
-      setBusinessName("");
-      setBusinessAddress("");
-      setBusinessPhone("");
+    setBusinessName("");
+    setBusinessAddress("");
+    setBusinessAddressCoords(null);
+    setBusinessAddressCity("");
+    setBusinessAddressState("");
+    setBusinessAddressPostal("");
+    setBusinessPhone("");
       setBusinessHoursStart("");
       setBusinessHoursEnd("");
       setBusinessHoursStartMeridiem("AM");
@@ -1548,14 +2369,49 @@ export default function App() {
   const handleSelectTime = (time) => {
     if (timePickerTarget === "start") {
       setBusinessHoursStart(time);
-    } else {
+    } else if (timePickerTarget === "end") {
       setBusinessHoursEnd(time);
+    } else if (timePickerTarget === "editStart") {
+      setEditHoursStart(time);
+    } else if (timePickerTarget === "editEnd") {
+      setEditHoursEnd(time);
+    } else if (timePickerTarget === "createStart") {
+      setCreateHoursStart(time);
+    } else if (timePickerTarget === "createEnd") {
+      setCreateHoursEnd(time);
     }
     setTimePickerVisible(false);
   };
 
-  const handleProfileSave = () => {
-    setProfileMessage("Profile updated.");
+  const handleProfileSave = async () => {
+    if (!ensureSupabaseReady(setProfileMessage)) return;
+    if (!authUserId) {
+      setProfileMessage("Sign in to update your profile.");
+      return;
+    }
+    setProfileMessage(null);
+    try {
+      const payload = {
+        id: authUserId,
+        full_name: profileName.trim() || null,
+        email: profileEmail.trim().toLowerCase() || null,
+        phone: profilePhone.trim() || null,
+        company: profileCompany.trim() || null
+      };
+      const { error } = await supabase.from("profiles").upsert(payload);
+      if (error) {
+        setProfileMessage(error.message || "Unable to save profile.");
+        return;
+      }
+      setProfileList((prev) =>
+        prev.map((profile) =>
+          profile.id === authUserId ? { ...profile, ...payload } : profile
+        )
+      );
+      setProfileMessage("Profile updated.");
+    } catch (error) {
+      setProfileMessage("Unable to save profile.");
+    }
   };
 
   const handleSignOut = async () => {
@@ -1567,31 +2423,61 @@ export default function App() {
     setAccountRole("consumer");
     setAuthUserId(null);
     setAuthEmail("");
+    setAuthBusinessDraft(null);
     setSignInError(null);
     setSignUpError(null);
     setBusinessSignUpError(null);
     setSignInEmail("");
     setSignUpEmail("");
-    setSignUpCode("");
     setBusinessEmail("");
     setBusinessInviteCode("");
     setBusinessName("");
     setBusinessAddress("");
+    setBusinessAddressCoords(null);
+    setBusinessAddressCity("");
+    setBusinessAddressState("");
+    setBusinessAddressPostal("");
     setBusinessPhone("");
     setBusinessHoursStart("");
     setBusinessHoursEnd("");
     setBusinessHoursStartMeridiem("AM");
     setBusinessHoursEndMeridiem("PM");
+    setCreateBusinessForm({
+      name: "",
+      address: "",
+      addressCoords: null,
+      city: "",
+      state: "",
+      postalCode: "",
+      categoryKey: "restaurant",
+      offer: "",
+      phone: "",
+      tags: ""
+    });
+    setCreateBusinessError(null);
+    setPaymentMessage(null);
+    setCreateHoursStart("");
+    setCreateHoursEnd("");
+    setCreateHoursStartMeridiem("AM");
+    setCreateHoursEndMeridiem("PM");
     setTimePickerVisible(false);
     setTimePickerTarget("start");
     setAuthView("menu");
     setActiveTab("discover");
+    setOfferForm({ title: "", description: "", type: "" });
+    setOfferImage(null);
+    setOfferError(null);
+    setOfferBusy(false);
   };
 
-  const handleRedeemOffer = (business) => {
+  const handleRedeemOffer = (card) => {
+    const business = resolveBusinessFromCard(card);
+    if (!business) return;
     setScannerBusiness(business);
+    setScannerOffer(card);
     setScannerStatus(null);
     setScannerEnabled(true);
+    redemptionLoggedRef.current = false;
     setScannerVisible(true);
   };
 
@@ -1599,6 +2485,8 @@ export default function App() {
     setScannerVisible(false);
     setScannerStatus(null);
     setScannerEnabled(true);
+    setScannerOffer(null);
+    redemptionLoggedRef.current = false;
   };
 
   const handleScanCode = ({ data }) => {
@@ -1607,6 +2495,17 @@ export default function App() {
     const expected = getBusinessQrCode(scannerBusiness);
     if (data && expected && data.includes(expected)) {
       setScannerStatus("success");
+      if (!redemptionLoggedRef.current) {
+        redemptionLoggedRef.current = true;
+        if (SUPABASE_URL && SUPABASE_ANON_KEY && authUserId) {
+          supabase.from("redemptions").insert({
+            business_id: scannerBusiness.id,
+            offer_id: scannerOffer?.offerId || scannerOffer?.id || null,
+            qr_payload: data,
+            scanned_by: authUserId
+          });
+        }
+      }
     } else {
       setScannerStatus("invalid");
     }
@@ -1658,7 +2557,9 @@ export default function App() {
   };
 
   const scrollToBusiness = (business) => {
-    const index = filteredBusinesses.findIndex((item) => item.id === business.id);
+    const index = filteredOfferCards.findIndex(
+      (item) => item.businessId === business.id
+    );
     if (index >= 0 && cardListRef.current) {
       cardListRef.current.scrollToIndex({ index, animated: true });
     }
@@ -1670,16 +2571,131 @@ export default function App() {
     scrollToBusiness(business);
   };
 
-  const handleCardPress = (business) => {
-    openSheetForBusiness(business);
-    mapRef.current?.animateToRegion(
-      {
-        ...business.coordinate,
-        latitudeDelta: MAP_REGION.latitudeDelta,
-        longitudeDelta: MAP_REGION.longitudeDelta
-      },
-      500
+  const resolveBusinessFromCard = (card) =>
+    businesses.find((business) => business.id === card?.businessId) ||
+    card?.business ||
+    card;
+
+  const getBusinessCoordinate = (business) => {
+    if (!business) return null;
+    if (business.hasCoordinates === false) return null;
+    const latitude = Number(
+      business.coordinate?.latitude ?? business.latitude ?? business.lat
     );
+    const longitude = Number(
+      business.coordinate?.longitude ?? business.longitude ?? business.lng
+    );
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return null;
+    }
+    if (latitude === 0 && longitude === 0) return null;
+    if (business.fallbackCoordinate) {
+      const deltaLat = Math.abs(latitude - business.fallbackCoordinate.latitude);
+      const deltaLng = Math.abs(
+        longitude - business.fallbackCoordinate.longitude
+      );
+      if (deltaLat < 0.0001 && deltaLng < 0.0001) return null;
+    }
+    if (business.address) {
+      const deltaLatDefault = Math.abs(latitude - MAP_REGION.latitude);
+      const deltaLngDefault = Math.abs(longitude - MAP_REGION.longitude);
+      if (deltaLatDefault < 0.001 && deltaLngDefault < 0.001) {
+        return null;
+      }
+    }
+    return { latitude, longitude };
+  };
+
+  const geocodeAddress = useCallback(async (address) => {
+    if (!GOOGLE_PLACES_KEY || !address) return null;
+    try {
+      const response = await fetch(
+        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+          address
+        )}&key=${GOOGLE_PLACES_KEY}`
+      );
+      const data = await response.json();
+      const location = data.results?.[0]?.geometry?.location;
+      if (!location) return null;
+      return { latitude: location.lat, longitude: location.lng };
+    } catch (error) {
+      console.warn("Wello geocode failed:", error?.message || error);
+      return null;
+    }
+  }, []);
+
+  const hydrateBusinessCoordinates = useCallback(
+    async (list) => {
+      if (!GOOGLE_PLACES_KEY || !Array.isArray(list) || list.length === 0) {
+        return;
+      }
+      const missing = list.filter(
+        (business) =>
+          business.source === "supabase" &&
+          !business.hasCoordinates &&
+          business.address
+      );
+      if (missing.length === 0) return;
+      const batch = missing.slice(0, 8);
+      for (const business of batch) {
+        if (!isMountedRef.current) return;
+        if (geocodeCacheRef.current.has(business.id)) continue;
+        const coords = await geocodeAddress(business.address);
+        if (!coords) continue;
+        geocodeCacheRef.current.set(business.id, coords);
+        if (isMountedRef.current) {
+          setBusinesses((prev) =>
+            prev.map((item) =>
+              item.id === business.id
+                ? { ...item, coordinate: coords, hasCoordinates: true }
+                : item
+            )
+          );
+        }
+        if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+          const { error } = await supabase
+            .from("businesses")
+            .update({
+              latitude: coords.latitude,
+              longitude: coords.longitude
+            })
+            .eq("id", business.id);
+          if (error) {
+            console.warn("Wello geocode save failed:", error.message);
+          }
+        }
+      }
+    },
+    [geocodeAddress]
+  );
+
+  const handleCardPress = async (card) => {
+    const business = resolveBusinessFromCard(card);
+    if (!business) return;
+    openSheetForBusiness(business);
+    let coordinate = getBusinessCoordinate(business);
+    if (!coordinate && business.address) {
+      const cached = geocodeCacheRef.current.get(business.id);
+      coordinate = cached || (await geocodeAddress(business.address));
+      if (coordinate) {
+        geocodeCacheRef.current.set(business.id, coordinate);
+        setBusinesses((prev) =>
+          prev.map((item) =>
+            item.id === business.id
+              ? { ...item, coordinate, hasCoordinates: true }
+              : item
+          )
+        );
+      }
+    }
+    if (!coordinate) return;
+    const nextRegion = {
+      ...coordinate,
+      latitudeDelta: MAP_REGION.latitudeDelta,
+      longitudeDelta: MAP_REGION.longitudeDelta
+    };
+    setMapRegion(nextRegion);
+    mapRef.current?.animateToRegion(nextRegion, 500);
   };
 
   const handleMarkerPress = (business) => {
@@ -1711,19 +2727,28 @@ export default function App() {
       ...prev,
       address: value,
       addressPlaceId: null,
-      addressCoords: null
+      addressCoords: null,
+      city: "",
+      state: "",
+      postalCode: ""
     }));
   };
 
   const handleBusinessAddressChange = (value) => {
     businessAddressSelectionRef.current = false;
     setBusinessAddressError(null);
+    setBusinessAddressCoords(null);
+    setBusinessAddressCity("");
+    setBusinessAddressState("");
+    setBusinessAddressPostal("");
     setBusinessAddress(value);
   };
 
   const handleSelectBusinessSuggestion = async (suggestion) => {
     businessAddressSelectionRef.current = true;
+    businessAddressRequestRef.current += 1;
     setBusinessAddressResults([]);
+    setBusinessAddressLoading(false);
     setBusinessAddressError(null);
     setBusinessAddress(suggestion.description);
 
@@ -1733,7 +2758,7 @@ export default function App() {
       const response = await fetch(
         `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(
           suggestion.place_id
-        )}&fields=formatted_address&key=${GOOGLE_PLACES_KEY}`
+        )}&fields=formatted_address,address_components,geometry&key=${GOOGLE_PLACES_KEY}`
       );
       const data = await response.json();
       if (data.status && data.status !== "OK") {
@@ -1741,6 +2766,17 @@ export default function App() {
       }
       if (data.result?.formatted_address) {
         setBusinessAddress(data.result.formatted_address);
+      }
+      const parsed = parseAddressComponents(data.result?.address_components);
+      setBusinessAddressCity(parsed.city || "");
+      setBusinessAddressState(parsed.state || "");
+      setBusinessAddressPostal(parsed.postalCode || "");
+      const location = data.result?.geometry?.location;
+      if (location) {
+        setBusinessAddressCoords({
+          latitude: location.lat,
+          longitude: location.lng
+        });
       }
     } catch (error) {
       setBusinessAddressError(error.message || "Unable to load place details.");
@@ -1751,7 +2787,9 @@ export default function App() {
 
   const handleSelectSuggestion = async (suggestion) => {
     addressSelectionRef.current = true;
+    addressRequestRef.current += 1;
     setAddressResults([]);
+    setAddressLoading(false);
     setAddressError(null);
     setFormData((prev) => ({
       ...prev,
@@ -1765,7 +2803,7 @@ export default function App() {
       const response = await fetch(
         `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(
           suggestion.place_id
-        )}&fields=geometry,formatted_address&key=${GOOGLE_PLACES_KEY}`
+        )}&fields=geometry,formatted_address,address_components&key=${GOOGLE_PLACES_KEY}`
       );
       const data = await response.json();
       if (data.status && data.status !== "OK") {
@@ -1773,10 +2811,14 @@ export default function App() {
       }
       const location = data.result?.geometry?.location;
       if (location) {
+        const parsed = parseAddressComponents(data.result?.address_components);
         setFormData((prev) => ({
           ...prev,
           address: data.result.formatted_address || prev.address,
-          addressCoords: { latitude: location.lat, longitude: location.lng }
+          addressCoords: { latitude: location.lat, longitude: location.lng },
+          city: parsed.city || prev.city,
+          state: parsed.state || prev.state,
+          postalCode: parsed.postalCode || prev.postalCode
         }));
         mapRef.current?.animateToRegion(
           {
@@ -1795,15 +2837,16 @@ export default function App() {
     }
   };
 
-  const handleSaveBusiness = () => {
+  const handleSaveBusiness = async () => {
     if (!ownerBusiness) return;
-    if (!formData.name.trim() || !formData.offer.trim()) {
+    if (!formData.name.trim()) {
       setFormMessage({
         type: "error",
-        text: "Business name and offer are required."
+        text: "Business name is required."
       });
       return;
     }
+    setFormMessage(null);
 
     const tagList = formData.tags
       .split(",")
@@ -1811,7 +2854,9 @@ export default function App() {
       .filter(Boolean);
     const trimmedName = formData.name.trim();
     const trimmedAddress = formData.address.trim();
-    const trimmedOffer = formData.offer.trim();
+    const trimmedCity = formData.city.trim();
+    const trimmedState = formData.state.trim();
+    const trimmedPostal = formData.postalCode.trim();
     const selectedPlan =
       PLAN_OPTIONS.find((plan) => plan.key === formData.planKey) ||
       PLAN_OPTIONS[0];
@@ -1827,11 +2872,17 @@ export default function App() {
         pendingEdits.coordinate = formData.addressCoords;
       }
     }
+    if (trimmedCity !== (ownerBusiness.city || "")) {
+      pendingEdits.city = trimmedCity;
+    }
+    if (trimmedState !== (ownerBusiness.state || "")) {
+      pendingEdits.state = trimmedState;
+    }
+    if (trimmedPostal !== (ownerBusiness.postalCode || "")) {
+      pendingEdits.postalCode = trimmedPostal;
+    }
     if (formData.categoryKey !== ownerBusiness.categoryKey) {
       pendingEdits.categoryKey = formData.categoryKey;
-    }
-    if (trimmedOffer !== ownerBusiness.offer) {
-      pendingEdits.offer = trimmedOffer;
     }
 
     const hasPendingEdits = Object.keys(pendingEdits).length > 0;
@@ -1844,9 +2895,12 @@ export default function App() {
       ...ownerBusiness,
       name: hasPendingEdits ? ownerBusiness.name : trimmedName,
       address: hasPendingEdits ? ownerBusiness.address : trimmedAddress,
+      city: hasPendingEdits ? ownerBusiness.city : trimmedCity,
+      state: hasPendingEdits ? ownerBusiness.state : trimmedState,
+      postalCode: hasPendingEdits ? ownerBusiness.postalCode : trimmedPostal,
       category: categoryDisplay,
       categoryKey: nextCategoryKey,
-      offer: hasPendingEdits ? ownerBusiness.offer : trimmedOffer,
+      offer: ownerBusiness.offer,
       subscription: `${approvedPlan.label} ${approvedPlan.price}`,
       tags: tagList.length ? tagList : ["local"],
       isOpen: formData.isOpen,
@@ -1858,61 +2912,408 @@ export default function App() {
       pendingEditsAt: hasPendingEdits ? Date.now() : null
     };
 
-    setBusinesses((prev) =>
-      prev.map((business) =>
-        business.id === ownerBusiness.id ? updatedBusiness : business
-      )
-    );
-    setFormMessage({
-      type: "success",
-      text: hasPendingEdits
-        ? "Changes sent for approval. You'll see updates once approved."
-        : "Changes saved."
-    });
-    setIsEditingBusiness(false);
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || ownerBusiness.source !== "supabase") {
+      setBusinesses((prev) =>
+        prev.map((business) =>
+          business.id === ownerBusiness.id ? updatedBusiness : business
+        )
+      );
+      setFormMessage({
+        type: "success",
+        text: hasPendingEdits
+          ? "Changes sent for approval. You'll see updates once approved."
+          : "Changes saved."
+      });
+      setIsEditingBusiness(false);
+      return;
+    }
+
+    setBusinessSaveBusy(true);
+    try {
+      let pendingRequestId = ownerBusiness.pendingRequestId || null;
+      if (hasPendingEdits) {
+        const { data: request, error: requestError } = await supabase
+          .from("change_requests")
+          .insert({
+            entity_type: "business",
+            entity_id: ownerBusiness.id,
+            business_id: ownerBusiness.id,
+            submitted_by: authUserId,
+            payload: pendingEdits,
+            status: "pending"
+          })
+          .select("id, entity_type, business_id, payload, status, created_at")
+          .maybeSingle();
+        if (requestError || !request) {
+          setFormMessage({
+            type: "error",
+            text: requestError?.message || "Unable to submit changes."
+          });
+          return;
+        }
+        pendingRequestId = request.id;
+        const nextRequests = [
+          request,
+          ...changeRequests.filter((item) => item.id !== request.id)
+        ];
+        setChangeRequests(nextRequests);
+        applyPendingEditsFromRequests(nextRequests);
+      }
+
+      const priceValue = Number(
+        String(approvedPlan.price || "")
+          .replace(/[^0-9]/g, "")
+          .trim()
+      );
+      const priceCents = Number.isFinite(priceValue) ? priceValue * 100 : 5000;
+      const updatePayload = {
+        tags: tagList.length ? tagList : [],
+        hours: formData.hours.trim() || ownerBusiness.hours || null,
+        is_open: formData.isOpen,
+        subscription_plan: approvedPlan.label,
+        subscription_price_cents: priceCents
+      };
+      if (!hasPendingEdits) {
+        updatePayload.name = trimmedName;
+        updatePayload.address = trimmedAddress;
+        updatePayload.city = trimmedCity || null;
+        updatePayload.state = trimmedState || null;
+        updatePayload.postal_code = trimmedPostal || null;
+        updatePayload.category_key = formData.categoryKey;
+        updatePayload.category_label = getCategoryConfig(formData.categoryKey).display;
+        if (formData.addressCoords) {
+          updatePayload.latitude = formData.addressCoords.latitude;
+          updatePayload.longitude = formData.addressCoords.longitude;
+        }
+      }
+
+      const { data, error } = await supabase
+        .from("businesses")
+        .update(updatePayload)
+        .eq("id", ownerBusiness.id)
+        .select(
+          [
+            "id",
+            "owner_id",
+            "name",
+            "address",
+            "city",
+            "state",
+            "postal_code",
+            "phone",
+            "category_key",
+            "category_label",
+            "offer_highlight",
+            "hours",
+            "tags",
+            "latitude",
+            "longitude",
+            "subscription_plan",
+            "subscription_price_cents",
+            "qr_code",
+            "is_open",
+            "approval_status",
+            "status",
+            "created_at"
+          ].join(",")
+        )
+        .maybeSingle();
+      if (error || !data) {
+        setFormMessage({
+          type: "error",
+          text: error?.message || "Unable to save business updates."
+        });
+        return;
+      }
+      const mapped = mapSupabaseBusiness(data, 0);
+      const finalBusiness = {
+        ...mapped,
+        pendingEdits: hasPendingEdits ? pendingEdits : null,
+        pendingEditsAt: hasPendingEdits ? Date.now() : null,
+        pendingRequestId: hasPendingEdits ? pendingRequestId : null
+      };
+      setBusinesses((prev) =>
+        prev.map((business) =>
+          business.id === ownerBusiness.id ? finalBusiness : business
+        )
+      );
+      setFormMessage({
+        type: "success",
+        text: hasPendingEdits
+          ? "Changes sent for approval. You'll see updates once approved."
+          : "Changes saved."
+      });
+      setIsEditingBusiness(false);
+    } finally {
+      setBusinessSaveBusy(false);
+    }
   };
 
-  const handleApprove = (id) => {
+  const handleApprove = async (id) => {
+    const target = businesses.find((business) => business.id === id);
+    if (!target) return;
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || target.source !== "supabase") {
+      setBusinesses((prev) =>
+        prev.map((business) =>
+          business.id === id ? { ...business, approved: true } : business
+        )
+      );
+      return;
+    }
+    const { data, error } = await supabase
+      .from("businesses")
+      .update({ approval_status: "approved", status: "active" })
+      .eq("id", id)
+      .select(
+        [
+          "id",
+          "owner_id",
+          "name",
+          "address",
+          "city",
+          "state",
+          "postal_code",
+          "phone",
+          "category_key",
+          "category_label",
+          "offer_highlight",
+          "hours",
+          "tags",
+          "latitude",
+          "longitude",
+          "subscription_plan",
+          "subscription_price_cents",
+          "qr_code",
+          "is_open",
+          "approval_status",
+          "status",
+          "created_at"
+        ].join(",")
+      )
+      .maybeSingle();
+    if (error || !data) {
+      console.warn("Wello approve failed:", error?.message);
+      return;
+    }
+    const mapped = mapSupabaseBusiness(data, 0);
     setBusinesses((prev) =>
       prev.map((business) =>
-        business.id === id ? { ...business, approved: true } : business
+        business.id === id ? { ...mapped, pendingEdits: null } : business
       )
     );
   };
 
-  const handleApproveEdits = (id) => {
-    setBusinesses((prev) =>
-      prev.map((business) => {
-        if (business.id !== id || !business.pendingEdits) return business;
-        const pending = business.pendingEdits;
-        const nextCategoryKey = pending.categoryKey || business.categoryKey;
-        const categoryDisplay = getCategoryConfig(nextCategoryKey).display;
-        return {
-          ...business,
-          ...pending,
-          categoryKey: nextCategoryKey,
-          category: categoryDisplay,
-          pendingEdits: null,
-          pendingEditsAt: null
-        };
+  const handleApproveEdits = async (id) => {
+    const target = businesses.find((business) => business.id === id);
+    if (!target?.pendingEdits) return;
+    if (
+      !SUPABASE_URL ||
+      !SUPABASE_ANON_KEY ||
+      target.source !== "supabase" ||
+      !target.pendingRequestId
+    ) {
+      setBusinesses((prev) =>
+        prev.map((business) => {
+          if (business.id !== id || !business.pendingEdits) return business;
+          const pending = business.pendingEdits;
+          const nextCategoryKey = pending.categoryKey || business.categoryKey;
+          const categoryDisplay = getCategoryConfig(nextCategoryKey).display;
+          return {
+            ...business,
+            ...pending,
+            categoryKey: nextCategoryKey,
+            category: categoryDisplay,
+            pendingEdits: null,
+            pendingEditsAt: null
+          };
+        })
+      );
+      return;
+    }
+
+    const updates = {};
+    const pending = target.pendingEdits;
+    if (pending.name) updates.name = pending.name;
+    if (pending.address) updates.address = pending.address;
+    if (pending.city !== undefined) updates.city = pending.city || null;
+    if (pending.state !== undefined) updates.state = pending.state || null;
+    if (pending.postalCode !== undefined) {
+      updates.postal_code = pending.postalCode || null;
+    }
+    if (pending.categoryKey) {
+      updates.category_key = pending.categoryKey;
+      updates.category_label = getCategoryConfig(pending.categoryKey).display;
+    }
+    if (pending.coordinate) {
+      updates.latitude = pending.coordinate.latitude;
+      updates.longitude = pending.coordinate.longitude;
+    }
+
+    const { data, error } = await supabase
+      .from("businesses")
+      .update(updates)
+      .eq("id", id)
+      .select(
+        [
+          "id",
+          "owner_id",
+          "name",
+          "address",
+          "city",
+          "state",
+          "postal_code",
+          "phone",
+          "category_key",
+          "category_label",
+          "offer_highlight",
+          "hours",
+          "tags",
+          "latitude",
+          "longitude",
+          "subscription_plan",
+          "subscription_price_cents",
+          "qr_code",
+          "is_open",
+          "approval_status",
+          "status",
+          "created_at"
+        ].join(",")
+      )
+      .maybeSingle();
+    if (error || !data) {
+      console.warn("Wello approve edits failed:", error?.message);
+      return;
+    }
+    await supabase
+      .from("change_requests")
+      .update({
+        status: "approved",
+        reviewed_by: authUserId || null,
+        reviewed_at: new Date().toISOString()
       })
-    );
-  };
+      .eq("id", target.pendingRequestId);
 
-  const handleRejectEdits = (id) => {
+    const mapped = mapSupabaseBusiness(data, 0);
     setBusinesses((prev) =>
       prev.map((business) =>
         business.id === id
-          ? { ...business, pendingEdits: null, pendingEditsAt: null }
+          ? {
+              ...mapped,
+              pendingEdits: null,
+              pendingEditsAt: null,
+              pendingRequestId: null
+            }
           : business
+      )
+    );
+    setChangeRequests((prev) =>
+      prev.map((request) =>
+        request.id === target.pendingRequestId
+          ? { ...request, status: "approved" }
+          : request
       )
     );
   };
 
-  const handleReject = (id) => {
+  const handleRejectEdits = async (id) => {
+    const target = businesses.find((business) => business.id === id);
+    if (!target?.pendingEdits) return;
+    if (
+      !SUPABASE_URL ||
+      !SUPABASE_ANON_KEY ||
+      target.source !== "supabase" ||
+      !target.pendingRequestId
+    ) {
+      setBusinesses((prev) =>
+        prev.map((business) =>
+          business.id === id
+            ? { ...business, pendingEdits: null, pendingEditsAt: null }
+            : business
+        )
+      );
+      return;
+    }
+
+    await supabase
+      .from("change_requests")
+      .update({
+        status: "rejected",
+        reviewed_by: authUserId || null,
+        reviewed_at: new Date().toISOString()
+      })
+      .eq("id", target.pendingRequestId);
+
     setBusinesses((prev) =>
       prev.map((business) =>
-        business.id === id ? { ...business, rejected: true } : business
+        business.id === id
+          ? {
+              ...business,
+              pendingEdits: null,
+              pendingEditsAt: null,
+              pendingRequestId: null
+            }
+          : business
+      )
+    );
+    setChangeRequests((prev) =>
+      prev.map((request) =>
+        request.id === target.pendingRequestId
+          ? { ...request, status: "rejected" }
+          : request
+      )
+    );
+  };
+
+  const handleReject = async (id) => {
+    const target = businesses.find((business) => business.id === id);
+    if (!target) return;
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || target.source !== "supabase") {
+      setBusinesses((prev) =>
+        prev.map((business) =>
+          business.id === id ? { ...business, rejected: true } : business
+        )
+      );
+      return;
+    }
+    const { data, error } = await supabase
+      .from("businesses")
+      .update({ approval_status: "rejected", status: "inactive" })
+      .eq("id", id)
+      .select(
+        [
+          "id",
+          "owner_id",
+          "name",
+          "address",
+          "city",
+          "state",
+          "postal_code",
+          "phone",
+          "category_key",
+          "category_label",
+          "offer_highlight",
+          "hours",
+          "tags",
+          "latitude",
+          "longitude",
+          "subscription_plan",
+          "subscription_price_cents",
+          "qr_code",
+          "is_open",
+          "approval_status",
+          "status",
+          "created_at"
+        ].join(",")
+      )
+      .maybeSingle();
+    if (error || !data) {
+      console.warn("Wello reject failed:", error?.message);
+      return;
+    }
+    const mapped = mapSupabaseBusiness(data, 0);
+    setBusinesses((prev) =>
+      prev.map((business) =>
+        business.id === id ? { ...mapped, pendingEdits: null } : business
       )
     );
   };
@@ -1936,6 +3337,7 @@ export default function App() {
       .select(
         "id, code, role, used_at, created_at, used_by, used_by_name, used_by_business_name"
       )
+      .eq("role", "business_owner")
       .order("created_at", { ascending: false })
       .limit(8);
     if (error) {
@@ -1950,6 +3352,280 @@ export default function App() {
     setInviteStatus((prev) => ({ ...prev, error: null }));
   }, []);
 
+  const applyPendingEditsFromRequests = useCallback((requests) => {
+    if (!Array.isArray(requests)) return;
+    const pendingByBusiness = new Map();
+    requests
+      .filter(
+        (request) =>
+          request.status === "pending" && request.entity_type === "business"
+      )
+      .forEach((request) => {
+        if (!request.business_id) return;
+        const existing = pendingByBusiness.get(request.business_id);
+        const nextTime = request.created_at
+          ? new Date(request.created_at).getTime()
+          : 0;
+        const prevTime = existing?.created_at
+          ? new Date(existing.created_at).getTime()
+          : 0;
+        if (!existing || nextTime > prevTime) {
+          pendingByBusiness.set(request.business_id, request);
+        }
+      });
+
+    setBusinesses((prev) =>
+      prev.map((business) => {
+        if (business.source !== "supabase") return business;
+        const pending = pendingByBusiness.get(business.id);
+        if (!pending) {
+          if (!business.pendingEdits && !business.pendingRequestId) {
+            return business;
+          }
+          return {
+            ...business,
+            pendingEdits: null,
+            pendingEditsAt: null,
+            pendingRequestId: null
+          };
+        }
+        const pendingEdits = pending.payload || {};
+        const pendingEditsAt = pending.created_at
+          ? new Date(pending.created_at).getTime()
+          : Date.now();
+        return {
+          ...business,
+          pendingEdits,
+          pendingEditsAt,
+          pendingRequestId: pending.id
+        };
+      })
+    );
+  }, []);
+
+  const loadChangeRequests = useCallback(
+    async ({ businessId, status } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setChangeRequestStatus({
+          loading: false,
+          error: "Supabase is not configured for change requests yet."
+        });
+        return;
+      }
+      setChangeRequestStatus({ loading: true, error: null });
+      let query = supabase
+        .from("change_requests")
+        .select("id, entity_type, business_id, payload, status, created_at");
+      if (status) {
+        query = query.eq("status", status);
+      }
+      if (businessId) {
+        query = query.eq("business_id", businessId);
+      }
+      const { data, error } = await query.order("created_at", {
+        ascending: false
+      });
+      if (error) {
+        setChangeRequestStatus({
+          loading: false,
+          error: error.message || "Unable to load change requests."
+        });
+        return;
+      }
+      const list = Array.isArray(data) ? data : [];
+      setChangeRequests(list);
+      setChangeRequestStatus({ loading: false, error: null });
+      applyPendingEditsFromRequests(list);
+    },
+    [applyPendingEditsFromRequests]
+  );
+
+  const mergeOffers = useCallback((nextOffers) => {
+    setOffers((prev) => {
+      const map = new Map(prev.map((offer) => [offer.id, offer]));
+      nextOffers.forEach((offer) => {
+        map.set(offer.id, offer);
+      });
+      return Array.from(map.values()).sort(
+        (a, b) => (b.createdAt || 0) - (a.createdAt || 0)
+      );
+    });
+  }, []);
+
+  const loadRemoteOffers = useCallback(async ({ silent } = {}) => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setOfferStatus({
+        loading: false,
+        error: "Supabase is not configured for offers yet."
+      });
+      return;
+    }
+    if (!silent) {
+      setOfferStatus({ loading: true, error: null });
+    }
+    const { data, error } = await supabase
+      .from("offers")
+      .select(
+        [
+          "id",
+          "business_id",
+          "title",
+          "description",
+          "offer_type",
+          "image_url",
+          "active",
+          "approval_status",
+          "created_at",
+          "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, subscription_plan, subscription_price_cents, is_open, approval_status, status)"
+        ].join(",")
+      )
+      .eq("active", true)
+      .eq("approval_status", "approved")
+      .order("created_at", { ascending: false });
+    if (error) {
+      if (!silent) {
+        setOfferStatus({
+          loading: false,
+          error: error.message || "Unable to load offers."
+        });
+      }
+      return;
+    }
+    mergeOffers((data || []).map(mapSupabaseOffer));
+    if (!silent) {
+      setOfferStatus({ loading: false, error: null });
+    }
+  }, [mergeOffers]);
+
+  const loadOwnerOffers = useCallback(
+    async (businessId) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !businessId) return;
+      const { data, error } = await supabase
+        .from("offers")
+        .select(
+          [
+            "id",
+            "business_id",
+            "title",
+            "description",
+            "offer_type",
+            "image_url",
+            "active",
+            "approval_status",
+            "created_at"
+          ].join(",")
+        )
+        .eq("business_id", businessId)
+        .order("created_at", { ascending: false });
+      if (error) {
+        return;
+      }
+      mergeOffers((data || []).map(mapSupabaseOffer));
+    },
+    [mergeOffers]
+  );
+
+  const loadPendingOffers = useCallback(async () => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setPendingOfferStatus({
+        loading: false,
+        error: "Supabase is not configured for offers yet."
+      });
+      return;
+    }
+    setPendingOfferStatus({ loading: true, error: null });
+    const { data, error } = await supabase
+      .from("offers")
+      .select(
+        [
+          "id",
+          "business_id",
+          "title",
+          "description",
+          "offer_type",
+          "image_url",
+          "active",
+          "approval_status",
+          "created_at",
+          "business:businesses (id, name, category_key, category_label)"
+        ].join(",")
+      )
+      .eq("approval_status", "pending")
+      .order("created_at", { ascending: false });
+    if (error) {
+      setPendingOfferStatus({
+        loading: false,
+        error: error.message || "Unable to load offer reviews."
+      });
+      return;
+    }
+    setPendingOffers((data || []).map(mapSupabaseOffer));
+    setPendingOfferStatus({ loading: false, error: null });
+  }, []);
+
+  const handleApproveOffer = async (offerId) => {
+    if (!offerId) return;
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    const { data, error } = await supabase
+      .from("offers")
+      .update({ approval_status: "approved" })
+      .eq("id", offerId)
+      .select(
+        [
+          "id",
+          "business_id",
+          "title",
+          "description",
+          "offer_type",
+          "image_url",
+          "active",
+          "approval_status",
+          "created_at",
+          "business:businesses (id, name, category_key, category_label)"
+        ].join(",")
+      )
+      .maybeSingle();
+    if (error || !data) {
+      console.warn("Wello offer approve failed:", error?.message);
+      return;
+    }
+    const mapped = mapSupabaseOffer(data);
+    mergeOffers([mapped]);
+    setPendingOffers((prev) => prev.filter((offer) => offer.id !== offerId));
+    loadRemoteOffers();
+  };
+
+  const handleRejectOffer = async (offerId) => {
+    if (!offerId) return;
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    const { data, error } = await supabase
+      .from("offers")
+      .update({ approval_status: "rejected", active: false })
+      .eq("id", offerId)
+      .select(
+        [
+          "id",
+          "business_id",
+          "title",
+          "description",
+          "offer_type",
+          "image_url",
+          "active",
+          "approval_status",
+          "created_at",
+          "business:businesses (id, name, category_key, category_label)"
+        ].join(",")
+      )
+      .maybeSingle();
+    if (error || !data) {
+      console.warn("Wello offer reject failed:", error?.message);
+      return;
+    }
+    const mapped = mapSupabaseOffer(data);
+    mergeOffers([mapped]);
+    setPendingOffers((prev) => prev.filter((offer) => offer.id !== offerId));
+  };
+
   const handleGenerateInvite = async () => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setInviteStatus({
@@ -1960,10 +3636,11 @@ export default function App() {
       return;
     }
     setInviteStatus({ loading: true, error: null, code: null });
+    setInviteCopied(false);
     const code = generateInviteCode();
     const { error } = await supabase.from("invites").insert({
       code,
-      role: inviteRole,
+      role: "business_owner",
       generated_by: profileEmail || authEmail || null
     });
     if (error) {
@@ -1976,6 +3653,490 @@ export default function App() {
     }
     setInviteStatus({ loading: false, error: null, code });
     await loadInvites();
+  };
+
+  const handleCopyInvite = async () => {
+    if (!inviteStatus.code) return;
+    try {
+      await Clipboard.setStringAsync(inviteStatus.code);
+      setInviteCopied(true);
+      setTimeout(() => setInviteCopied(false), 1600);
+    } catch (error) {
+      setInviteCopied(false);
+    }
+  };
+
+  const handlePickOfferImage = async () => {
+    if (!ownerBusiness) {
+      setOfferError("Create your business profile first.");
+      return;
+    }
+    setOfferError(null);
+    setOfferImageStatus({ uploading: false, error: null });
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const hasPermission =
+      permission.granted || permission.status === "limited";
+    if (!hasPermission) {
+      setOfferImageStatus({
+        uploading: false,
+        error: "Photo access is required. Enable it in Settings."
+      });
+      return;
+    }
+    try {
+      const mediaTypes = ImagePicker.MediaType?.Images
+        ? [ImagePicker.MediaType.Images]
+        : ImagePicker.MediaTypeOptions?.Images;
+      if (!mediaTypes) {
+        setOfferImageStatus({
+          uploading: false,
+          error: "Image picker is not available in this Expo Go version."
+        });
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes,
+        allowsEditing: true,
+        aspect: [2, 1],
+        quality: 0.85,
+        base64: true
+      });
+      if (result.canceled) return;
+      const asset = result.assets?.[0];
+      if (!asset?.uri) return;
+      setOfferImage({
+        uri: asset.uri,
+        mimeType: asset.mimeType || "image/jpeg",
+        fileName: asset.fileName || null,
+        base64: asset.base64 || null
+      });
+    } catch (error) {
+      setOfferImageStatus({
+        uploading: false,
+        error: error?.message || "Unable to open photo library."
+      });
+    }
+  };
+
+  const handleCreateOffer = async () => {
+    if (!ownerBusiness) {
+      setOfferError("Create your business profile first.");
+      return;
+    }
+    if (!offerForm.title.trim()) {
+      setOfferError("Offer title is required.");
+      return;
+    }
+    const normalizedType = normalizeOfferType(offerForm.type);
+    if (!normalizedType) {
+      setOfferError("Offer type is required.");
+      return;
+    }
+    if (!ensureSupabaseReady(setOfferError)) return;
+    setOfferBusy(true);
+    setOfferError(null);
+    setOfferImageStatus((prev) => ({ ...prev, error: null }));
+
+    let imageUrl = null;
+    if (offerImage?.uri) {
+      setOfferImageStatus({ uploading: true, error: null });
+      const { url, error } = await uploadOfferImage(
+        offerImage,
+        ownerBusiness.id
+      );
+      console.log("Wello offer image upload", {
+        businessId: ownerBusiness.id,
+        ok: !error,
+        url,
+        error
+      });
+      setOfferImageStatus({ uploading: false, error });
+      if (error) {
+        setOfferError(error);
+        setOfferBusy(false);
+        return;
+      }
+      imageUrl = url;
+    }
+    const { data, error } = await supabase
+      .from("offers")
+      .insert({
+        business_id: ownerBusiness.id,
+        title: offerForm.title.trim(),
+        description: offerForm.description.trim() || null,
+        offer_type: normalizedType,
+        image_url: imageUrl,
+        active: true,
+        approval_status: "pending"
+      })
+      .select(
+        [
+          "id",
+          "business_id",
+          "title",
+          "description",
+          "offer_type",
+          "image_url",
+          "active",
+          "approval_status",
+          "created_at"
+        ].join(",")
+      )
+      .maybeSingle();
+    console.log("Wello offer insert", {
+      businessId: ownerBusiness.id,
+      offerId: data?.id || null,
+      error: error?.message || null
+    });
+    if (error || !data) {
+      setOfferError(error?.message || "Unable to create offer.");
+      setOfferBusy(false);
+      return;
+    }
+    mergeOffers([mapSupabaseOffer(data)]);
+    setOfferForm({ title: "", description: "", type: "" });
+    setOfferImage(null);
+    if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+      loadOwnerOffers(ownerBusiness.id);
+      loadRemoteOffers({ silent: true });
+    }
+    setOfferBusy(false);
+  };
+
+  const handleToggleOffer = async (offer) => {
+    if (!offer?.id) return;
+    if (!ensureSupabaseReady(setOfferError)) return;
+    setOfferBusy(true);
+    setOfferError(null);
+    const { data, error } = await supabase
+      .from("offers")
+      .update({ active: !offer.active })
+      .eq("id", offer.id)
+      .select(
+        [
+          "id",
+          "business_id",
+          "title",
+          "description",
+          "offer_type",
+          "image_url",
+          "active",
+          "approval_status",
+          "created_at"
+        ].join(",")
+      )
+      .maybeSingle();
+    if (error || !data) {
+      setOfferError(error?.message || "Unable to update offer.");
+      setOfferBusy(false);
+      return;
+    }
+    mergeOffers([mapSupabaseOffer(data)]);
+    setOfferBusy(false);
+  };
+
+  const handleDeleteOffer = async (offer) => {
+    if (!offer?.id) return;
+    if (!ensureSupabaseReady(setOfferError)) return;
+    setOfferBusy(true);
+    setOfferError(null);
+    const { error } = await supabase.from("offers").delete().eq("id", offer.id);
+    if (error) {
+      setOfferError(error.message || "Unable to delete offer.");
+      setOfferBusy(false);
+      return;
+    }
+    setOffers((prev) => prev.filter((item) => item.id !== offer.id));
+    setOfferBusy(false);
+  };
+
+  const loadProfiles = useCallback(async () => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setProfileStatus({
+        loading: false,
+        error: "Supabase is not configured for profiles yet."
+      });
+      return;
+    }
+    setProfileStatus({ loading: true, error: null });
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, full_name, email, role, phone, company, created_at")
+      .order("created_at", { ascending: false })
+      .limit(12);
+    if (error) {
+      setProfileStatus({
+        loading: false,
+        error: error.message || "Unable to load team members."
+      });
+      return;
+    }
+    setProfileList(Array.isArray(data) ? data : []);
+    setProfileStatus({ loading: false, error: null });
+  }, []);
+
+  const handlePromoteSupervisor = async (profile) => {
+    if (!profile?.id) return;
+    if (
+      !ensureSupabaseReady((message) =>
+        setSupervisorStatus({ loading: false, error: message, success: null })
+      )
+    ) {
+      return;
+    }
+    setSupervisorStatus({ loading: true, error: null, success: null });
+    const { data, error } = await supabase
+      .from("profiles")
+      .update({ role: "supervisor" })
+      .eq("id", profile.id)
+      .select("id, role")
+      .maybeSingle();
+    if (error || !data) {
+      setSupervisorStatus({
+        loading: false,
+        error: error?.message || "Unable to update that profile.",
+        success: null
+      });
+      return;
+    }
+    setProfileList((prev) =>
+      prev.map((item) =>
+        item.id === profile.id ? { ...item, role: "supervisor" } : item
+      )
+    );
+    setSupervisorStatus({
+      loading: false,
+      error: null,
+      success: "Supervisor access granted."
+    });
+  };
+
+  const handleCreateAddressChange = (value) => {
+    createAddressSelectionRef.current = false;
+    setCreateAddressError(null);
+    setCreateBusinessForm((prev) => ({
+      ...prev,
+      address: value,
+      addressCoords: null,
+      city: "",
+      state: "",
+      postalCode: ""
+    }));
+  };
+
+  const handleSelectCreateSuggestion = async (suggestion) => {
+    createAddressSelectionRef.current = true;
+    createAddressRequestRef.current += 1;
+    setCreateAddressResults([]);
+    setCreateAddressLoading(false);
+    setCreateAddressError(null);
+    setCreateBusinessForm((prev) => ({
+      ...prev,
+      address: suggestion.description
+    }));
+
+    if (!GOOGLE_PLACES_KEY) return;
+    try {
+      setCreateAddressLoading(true);
+      const response = await fetch(
+        `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(
+          suggestion.place_id
+        )}&fields=formatted_address,address_components,geometry&key=${GOOGLE_PLACES_KEY}`
+      );
+      const data = await response.json();
+      if (data.status && data.status !== "OK") {
+        throw new Error(data.error_message || "Unable to load place details.");
+      }
+      const parsed = parseAddressComponents(data.result?.address_components);
+      const location = data.result?.geometry?.location;
+      setCreateBusinessForm((prev) => ({
+        ...prev,
+        address: parsed.street || data.result?.formatted_address || prev.address,
+        city: parsed.city || prev.city,
+        state: parsed.state || prev.state,
+        postalCode: parsed.postalCode || prev.postalCode,
+        addressCoords: location
+          ? { latitude: location.lat, longitude: location.lng }
+          : prev.addressCoords
+      }));
+    } catch (error) {
+      setCreateAddressError(error.message || "Unable to load place details.");
+    } finally {
+      setCreateAddressLoading(false);
+    }
+  };
+
+  const handleCreateBusinessProfile = async () => {
+    if (!authUserId) {
+      setCreateBusinessError("Sign in to create your business profile.");
+      return;
+    }
+    if (!createBusinessForm.name.trim() || !createBusinessForm.address.trim()) {
+      setCreateBusinessError("Business name and address are required.");
+      return;
+    }
+    if (!createBusinessForm.phone.trim()) {
+      setCreateBusinessError("Phone number is required.");
+      return;
+    }
+    if (!createHoursStart || !createHoursEnd) {
+      setCreateBusinessError("Operating hours are required.");
+      return;
+    }
+    if (!ensureSupabaseReady(setCreateBusinessError)) return;
+    setCreateBusinessBusy(true);
+    setCreateBusinessError(null);
+    setPaymentMessage(null);
+    try {
+      const categoryConfig = getCategoryConfig(createBusinessForm.categoryKey);
+      const hoursValue = formatBusinessHours(
+        createHoursStart,
+        createHoursStartMeridiem,
+        createHoursEnd,
+        createHoursEndMeridiem
+      );
+      let createCoords = createBusinessForm.addressCoords;
+      if (!createCoords && createBusinessForm.address.trim()) {
+        createCoords = await geocodeAddress(createBusinessForm.address.trim());
+      }
+      const { data, error } = await supabase
+        .from("businesses")
+        .insert({
+          owner_id: authUserId,
+          name: createBusinessForm.name.trim(),
+          address: createBusinessForm.address.trim(),
+          city: createBusinessForm.city.trim() || null,
+          state: createBusinessForm.state.trim() || null,
+          postal_code: createBusinessForm.postalCode.trim() || null,
+          phone: createBusinessForm.phone.trim(),
+          category_key: createBusinessForm.categoryKey,
+          category_label: categoryConfig.display,
+          offer_highlight: null,
+          hours: hoursValue,
+          tags: createBusinessForm.tags
+            ? createBusinessForm.tags
+                .split(",")
+                .map((tag) => tag.trim())
+                .filter(Boolean)
+            : [],
+          subscription_plan: "Starter",
+          subscription_price_cents: 5000,
+          approval_status: "pending",
+          status: "active",
+          is_open: true,
+          latitude: createCoords?.latitude ?? null,
+          longitude: createCoords?.longitude ?? null
+        })
+        .select("*")
+        .maybeSingle();
+      if (error || !data) {
+        setCreateBusinessError(
+          error?.message || "Unable to create your business profile."
+        );
+        return;
+      }
+      const profileEmailValue = profileEmail || authEmail || null;
+      await supabase.from("profiles").upsert({
+        id: authUserId,
+        email: profileEmailValue,
+        full_name: profileName || null,
+        phone: createBusinessForm.phone.trim() || null,
+        company: createBusinessForm.name.trim() || null
+      });
+      const mapped = mapSupabaseBusiness(data, 0);
+      setBusinesses((prev) => [mapped, ...prev]);
+      setOwnerBusinessId(mapped.id);
+      setCreateBusinessForm({
+        name: "",
+        address: "",
+        addressCoords: null,
+        city: "",
+        state: "",
+        postalCode: "",
+        categoryKey: "restaurant",
+        offer: "",
+        phone: "",
+        tags: ""
+      });
+      setCreateHoursStart("");
+      setCreateHoursEnd("");
+      setCreateHoursStartMeridiem("AM");
+      setCreateHoursEndMeridiem("PM");
+    } finally {
+      setCreateBusinessBusy(false);
+    }
+  };
+
+  const handlePromoteBusinessOwner = async (profile) => {
+    if (!profile?.id) return;
+    if (
+      !ensureSupabaseReady((message) =>
+        setSupervisorStatus({ loading: false, error: message, success: null })
+      )
+    ) {
+      return;
+    }
+    setSupervisorStatus({ loading: true, error: null, success: null });
+    const { data, error } = await supabase
+      .from("profiles")
+      .update({ role: "business_owner" })
+      .eq("id", profile.id)
+      .select("id, role")
+      .maybeSingle();
+    if (error || !data) {
+      setSupervisorStatus({
+        loading: false,
+        error: error?.message || "Unable to update that profile.",
+        success: null
+      });
+      return;
+    }
+    setProfileList((prev) =>
+      prev.map((item) =>
+        item.id === profile.id ? { ...item, role: "business_owner" } : item
+      )
+    );
+    setSupervisorStatus({
+      loading: false,
+      error: null,
+      success: "Business access granted."
+    });
+  };
+
+  const handleRemoveSupervisor = async (profile) => {
+    if (!profile?.id) return;
+    if (
+      !ensureSupabaseReady((message) =>
+        setSupervisorStatus({ loading: false, error: message, success: null })
+      )
+    ) {
+      return;
+    }
+    setSupervisorStatus({ loading: true, error: null, success: null });
+    const { data, error } = await supabase
+      .from("profiles")
+      .update({ role: "consumer" })
+      .eq("id", profile.id)
+      .select("id, role")
+      .maybeSingle();
+    if (error || !data) {
+      setSupervisorStatus({
+        loading: false,
+        error: error?.message || "Unable to update that profile.",
+        success: null
+      });
+      return;
+    }
+    setProfileList((prev) =>
+      prev.map((item) =>
+        item.id === profile.id ? { ...item, role: "consumer" } : item
+      )
+    );
+    setSupervisorStatus({
+      loading: false,
+      error: null,
+      success: "Supervisor access removed."
+    });
   };
 
   const panResponder = useRef(
@@ -2043,19 +4204,26 @@ export default function App() {
               Platform.OS === "android" && useAndroidImages
                 ? { x: 0.5, y: 0.5 }
                 : { x: 0.5, y: 1 };
+            const markerCoordinate =
+              business.coordinate ||
+              (business.source === "supabase" ? null : business.fallbackCoordinate);
+            if (!markerCoordinate) return null;
             return (
               <React.Fragment key={business.id}>
-                {Platform.OS === "android" && useAndroidImages && isSelected && androidHalo && (
-                  <Marker
-                    coordinate={business.coordinate}
-                    anchor={{ x: 0.5, y: 0.5 }}
-                    image={androidHalo}
-                    zIndex={1}
-                    onPress={() => handleMarkerPress(business)}
-                  />
-                )}
+                {Platform.OS === "android" &&
+                  useAndroidImages &&
+                  isSelected &&
+                  androidHalo && (
+                    <Marker
+                      coordinate={markerCoordinate}
+                      anchor={{ x: 0.5, y: 0.5 }}
+                      image={androidHalo}
+                      zIndex={1}
+                      onPress={() => handleMarkerPress(business)}
+                    />
+                  )}
                 <Marker
-                  coordinate={business.coordinate}
+                  coordinate={markerCoordinate}
                   anchor={markerAnchor}
                   onPress={() => handleMarkerPress(business)}
                   image={useAndroidImages ? androidIcon : undefined}
@@ -2164,6 +4332,11 @@ export default function App() {
                   <Text style={styles.scannerSubtitle}>
                     {scannerBusiness?.name || "Wello business"}
                   </Text>
+                  {scannerOffer?.offerTitle && (
+                    <Text style={styles.scannerOfferTitle}>
+                      {scannerOffer.offerTitle}
+                    </Text>
+                  )}
                 </View>
                 <TouchableOpacity
                   style={styles.scannerClose}
@@ -2317,12 +4490,17 @@ export default function App() {
                 </View>
               )}
 
-              {(remoteStatus.loading || remoteStatus.error) && (
+              {(remoteStatus.loading ||
+                remoteStatus.error ||
+                offerStatus.loading ||
+                offerStatus.error) && (
                 <View style={styles.remoteNotice}>
                   <Text style={styles.remoteNoticeText}>
                     {remoteStatus.loading
                       ? "Loading businesses from Wello..."
-                      : remoteStatus.error}
+                      : offerStatus.loading
+                      ? "Loading offers from Wello..."
+                      : remoteStatus.error || offerStatus.error}
                   </Text>
                 </View>
               )}
@@ -2330,11 +4508,11 @@ export default function App() {
               <View style={styles.cardHeaderRow}>
                 <Text style={styles.sectionTitle}>Offer cards</Text>
                 <Text style={styles.sectionMeta}>
-                  {filteredBusinesses.length} nearby
+                  {filteredOfferCards.length} nearby
                 </Text>
               </View>
 
-              {filteredBusinesses.length === 0 ? (
+              {filteredOfferCards.length === 0 ? (
                 <View style={styles.emptyState}>
                   <Text style={styles.emptyTitle}>No listings match.</Text>
                   <Text style={styles.emptyCopy}>
@@ -2344,14 +4522,14 @@ export default function App() {
               ) : (
                 <FlatList
                   ref={cardListRef}
-                  data={filteredBusinesses}
+                  data={filteredOfferCards}
                   keyExtractor={(item) => item.id}
                   renderItem={({ item }) => (
                     <OfferCard
                       item={item}
                       onPress={() => handleCardPress(item)}
                       onRedeem={() => handleRedeemOffer(item)}
-                      selected={selectedId === item.id}
+                      selected={selectedId === item.businessId}
                     />
                   )}
                   horizontal
@@ -2369,20 +4547,27 @@ export default function App() {
             </>
           ) : (
             <KeyboardAvoidingView
-              behavior={Platform.OS === "ios" ? "padding" : undefined}
+              behavior={Platform.OS === "ios" ? "padding" : "height"}
+              keyboardVerticalOffset={SAFE_TOP + 20}
               style={styles.sheetScroll}
             >
               <ScrollView
+                ref={sheetScrollRef}
                 showsVerticalScrollIndicator={false}
-                contentContainerStyle={styles.sheetScrollContent}
+                contentContainerStyle={[
+                  styles.sheetScrollContent,
+                  { paddingBottom: 24 + keyboardInset }
+                ]}
                 keyboardShouldPersistTaps="handled"
               >
                 {activeTab === "business" && isOwner ? (
                   <>
                     <View style={styles.sectionBlock}>
-                      <Text style={styles.sectionTitleAlt}>
-                        Business dashboard
-                      </Text>
+                        <Text style={styles.sectionTitleAlt}>Dashboard</Text>
+                        <Text style={styles.sectionBody}>
+                          Manage your single business profile here. More tools
+                          are coming soon.
+                        </Text>
                       <Text style={styles.sectionBody}>
                         Track performance and keep your listing up to date.
                       </Text>
@@ -2568,6 +4753,58 @@ export default function App() {
                           </View>
                         )}
 
+                        <View style={styles.formRow}>
+                          <View style={styles.formField}>
+                            <Text style={styles.formLabel}>City</Text>
+                            <TextInput
+                              style={[
+                                styles.formInput,
+                                !canEditBusiness && styles.formInputDisabled
+                              ]}
+                              placeholder="City"
+                              placeholderTextColor={COLORS.muted}
+                              value={formData.city}
+                              editable={canEditBusiness}
+                              onChangeText={(value) =>
+                                handleFormChange("city", value)
+                              }
+                            />
+                          </View>
+                          <View style={styles.formField}>
+                            <Text style={styles.formLabel}>State</Text>
+                            <TextInput
+                              style={[
+                                styles.formInput,
+                                !canEditBusiness && styles.formInputDisabled
+                              ]}
+                              placeholder="State"
+                              placeholderTextColor={COLORS.muted}
+                              value={formData.state}
+                              editable={canEditBusiness}
+                              onChangeText={(value) =>
+                                handleFormChange("state", value)
+                              }
+                            />
+                          </View>
+                          <View style={styles.formField}>
+                            <Text style={styles.formLabel}>Zip code</Text>
+                            <TextInput
+                              style={[
+                                styles.formInput,
+                                !canEditBusiness && styles.formInputDisabled
+                              ]}
+                              placeholder="Zip"
+                              placeholderTextColor={COLORS.muted}
+                              value={formData.postalCode}
+                              editable={canEditBusiness}
+                              onChangeText={(value) =>
+                                handleFormChange("postalCode", value)
+                              }
+                              keyboardType="number-pad"
+                            />
+                          </View>
+                        </View>
+
                         <Text style={styles.formLabel}>Category</Text>
                         <View style={styles.categoryRow}>
                           {CATEGORY_OPTIONS.map((option) => {
@@ -2601,82 +4838,120 @@ export default function App() {
                           })}
                         </View>
 
-                        <Text style={styles.formLabel}>Offer highlight</Text>
-                        <TextInput
-                          style={[
-                            styles.formInput,
-                            !canEditBusiness && styles.formInputDisabled
-                          ]}
-                          placeholder="Example: 15% off first visit"
-                          placeholderTextColor={COLORS.muted}
-                          value={formData.offer}
-                          editable={canEditBusiness}
-                          onChangeText={(value) =>
-                            handleFormChange("offer", value)
-                          }
-                        />
-
                         <Text style={styles.formLabel}>Operating hours</Text>
-                        <TextInput
-                          style={[
-                            styles.formInput,
-                            !canEditBusiness && styles.formInputDisabled
-                          ]}
-                          placeholder="Example: 9:00 AM - 6:00 PM"
-                          placeholderTextColor={COLORS.muted}
-                          value={formData.hours}
-                          editable={canEditBusiness}
-                          onChangeText={(value) =>
-                            handleFormChange("hours", value)
-                          }
-                        />
-
-                        <Text style={styles.formLabel}>Subscription plan</Text>
-                        <View style={styles.planRow}>
-                          {PLAN_OPTIONS.filter((plan) => plan.enabled).map((plan) => {
-                            const isActive = formData.planKey === plan.key;
-                            const isLocked = !canEditBusiness;
-                            return (
+                        <View style={styles.timeRow}>
+                          <View style={styles.timeBlock}>
+                            <Text style={styles.timeLabel}>Start</Text>
+                            <View style={styles.timeInputRow}>
                               <TouchableOpacity
-                                key={plan.key}
                                 style={[
-                                  styles.planOption,
-                                  isActive && styles.planOptionActive,
-                                  isLocked && styles.planOptionDisabled
+                                  styles.timeSelect,
+                                  !canEditBusiness && styles.timeSelectDisabled
                                 ]}
-                                onPress={() => handleFormChange("planKey", plan.key)}
-                                disabled={isLocked}
+                                onPress={() => openTimePicker("editStart")}
+                                disabled={!canEditBusiness}
                               >
-                                <Text
-                                  style={[
-                                    styles.planOptionName,
-                                    isActive && styles.planOptionNameActive,
-                                    isLocked && styles.planOptionTextDisabled
-                                  ]}
-                                >
-                                  {plan.label}
+                                <Text style={styles.timeSelectText}>
+                                  {editHoursStart ||
+                                    (IS_COMPACT ? "Select" : "Select time")}
                                 </Text>
-                                <Text
-                                  style={[
-                                    styles.planOptionPrice,
-                                    isActive && styles.planOptionPriceActive,
-                                    isLocked && styles.planOptionTextDisabled
-                                  ]}
-                                >
-                                  {plan.price}
-                                </Text>
-                                <Text
-                                  style={[
-                                    styles.planOptionDesc,
-                                    isActive && styles.planOptionDescActive,
-                                    isLocked && styles.planOptionTextDisabled
-                                  ]}
-                                >
-                                  {plan.desc}
-                                </Text>
+                                <Ionicons
+                                  name="chevron-down"
+                                  size={16}
+                                  color={COLORS.muted}
+                                />
                               </TouchableOpacity>
-                            );
-                          })}
+                              <View style={styles.timeMeridiem}>
+                                {["AM", "PM"].map((label) => {
+                                  const isActive =
+                                    editHoursStartMeridiem === label;
+                                  return (
+                                    <TouchableOpacity
+                                      key={label}
+                                      style={[
+                                        styles.timeMeridiemPill,
+                                        isActive && styles.timeMeridiemPillActive,
+                                        !canEditBusiness &&
+                                          styles.timeMeridiemPillDisabled
+                                      ]}
+                                      onPress={() =>
+                                        setEditHoursStartMeridiem(label)
+                                      }
+                                      disabled={!canEditBusiness}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.timeMeridiemText,
+                                          isActive &&
+                                            styles.timeMeridiemTextActive,
+                                          !canEditBusiness &&
+                                            styles.timeMeridiemTextDisabled
+                                        ]}
+                                      >
+                                        {label}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+                            </View>
+                          </View>
+                          <View style={styles.timeBlock}>
+                            <Text style={styles.timeLabel}>End</Text>
+                            <View style={styles.timeInputRow}>
+                              <TouchableOpacity
+                                style={[
+                                  styles.timeSelect,
+                                  !canEditBusiness && styles.timeSelectDisabled
+                                ]}
+                                onPress={() => openTimePicker("editEnd")}
+                                disabled={!canEditBusiness}
+                              >
+                                <Text style={styles.timeSelectText}>
+                                  {editHoursEnd ||
+                                    (IS_COMPACT ? "Select" : "Select time")}
+                                </Text>
+                                <Ionicons
+                                  name="chevron-down"
+                                  size={16}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
+                              <View style={styles.timeMeridiem}>
+                                {["AM", "PM"].map((label) => {
+                                  const isActive =
+                                    editHoursEndMeridiem === label;
+                                  return (
+                                    <TouchableOpacity
+                                      key={label}
+                                      style={[
+                                        styles.timeMeridiemPill,
+                                        isActive && styles.timeMeridiemPillActive,
+                                        !canEditBusiness &&
+                                          styles.timeMeridiemPillDisabled
+                                      ]}
+                                      onPress={() =>
+                                        setEditHoursEndMeridiem(label)
+                                      }
+                                      disabled={!canEditBusiness}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.timeMeridiemText,
+                                          isActive &&
+                                            styles.timeMeridiemTextActive,
+                                          !canEditBusiness &&
+                                            styles.timeMeridiemTextDisabled
+                                        ]}
+                                      >
+                                        {label}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+                            </View>
+                          </View>
                         </View>
 
                         <Text style={styles.formLabel}>Tags</Text>
@@ -2694,20 +4969,18 @@ export default function App() {
                           }
                         />
 
-                        <Text style={styles.formHint}>
-                          {formData.addressCoords
-                            ? `Pinned location: ${formData.address || "Custom location"}`
-                            : "Add an address to update your map pin."}
-                        </Text>
-
                         {isEditingBusiness && (
                           <View style={styles.formActions}>
                             <TouchableOpacity
-                              style={styles.primaryButton}
+                              style={[
+                                styles.primaryButton,
+                                businessSaveBusy && styles.primaryButtonDisabled
+                              ]}
                               onPress={handleSaveBusiness}
+                              disabled={businessSaveBusy}
                             >
                               <Text style={styles.primaryButtonText}>
-                                Submit for review
+                                {businessSaveBusy ? "Submitting..." : "Submit for review"}
                               </Text>
                             </TouchableOpacity>
                             <TouchableOpacity
@@ -2728,13 +5001,331 @@ export default function App() {
                         )}
                       </View>
                     ) : (
-                      <View style={styles.emptyState}>
-                        <Text style={styles.emptyTitle}>
-                          No business profile yet.
+                      <View style={styles.formCard}>
+                        <Text style={styles.formHeaderTitle}>
+                          Create your business profile
                         </Text>
-                        <Text style={styles.emptyCopy}>
-                          Add a business listing to manage it here.
+                        <Text style={styles.formHeaderMeta}>
+                          Add your listing details. You can edit them later if
+                          needed.
                         </Text>
+
+                        <Text style={styles.formLabel}>Business name</Text>
+                        <TextInput
+                          style={styles.formInput}
+                          placeholder="Business name"
+                          placeholderTextColor={COLORS.muted}
+                          value={createBusinessForm.name}
+                          onChangeText={(value) =>
+                            setCreateBusinessForm((prev) => ({
+                              ...prev,
+                              name: value
+                            }))
+                          }
+                        />
+
+                        <Text style={styles.formLabel}>Business address</Text>
+                        <TextInput
+                          style={styles.formInput}
+                          placeholder="Street address"
+                          placeholderTextColor={COLORS.muted}
+                          value={createBusinessForm.address}
+                          onChangeText={handleCreateAddressChange}
+                        />
+                        {!GOOGLE_PLACES_KEY && (
+                          <Text style={styles.formHint}>
+                            Add your Google Places key in `.env` to enable
+                            address autocomplete.
+                          </Text>
+                        )}
+                        {createAddressLoading && (
+                          <Text style={styles.formHint}>
+                            Searching addresses...
+                          </Text>
+                        )}
+                        {createAddressError && (
+                          <Text style={styles.formError}>
+                            {createAddressError}
+                          </Text>
+                        )}
+                        {createAddressResults.length > 0 && (
+                          <View style={styles.suggestionList}>
+                            {createAddressResults.map((result) => (
+                              <TouchableOpacity
+                                key={result.place_id}
+                                style={styles.suggestionItem}
+                                onPress={() => handleSelectCreateSuggestion(result)}
+                              >
+                                <Text style={styles.suggestionTitle}>
+                                  {result.structured_formatting?.main_text ||
+                                    result.description}
+                                </Text>
+                                {result.structured_formatting?.secondary_text && (
+                                  <Text style={styles.suggestionSubtitle}>
+                                    {result.structured_formatting.secondary_text}
+                                  </Text>
+                                )}
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                        )}
+
+                        <View style={styles.formRow}>
+                          <View style={styles.formField}>
+                            <Text style={styles.formLabel}>City</Text>
+                            <TextInput
+                              style={styles.formInput}
+                              placeholder="City"
+                              placeholderTextColor={COLORS.muted}
+                              value={createBusinessForm.city}
+                              onChangeText={(value) =>
+                                setCreateBusinessForm((prev) => ({
+                                  ...prev,
+                                  city: value
+                                }))
+                              }
+                            />
+                          </View>
+                          <View style={styles.formField}>
+                            <Text style={styles.formLabel}>State</Text>
+                            <TextInput
+                              style={styles.formInput}
+                              placeholder="State"
+                              placeholderTextColor={COLORS.muted}
+                              value={createBusinessForm.state}
+                              onChangeText={(value) =>
+                                setCreateBusinessForm((prev) => ({
+                                  ...prev,
+                                  state: value
+                                }))
+                              }
+                            />
+                          </View>
+                          <View style={styles.formField}>
+                            <Text style={styles.formLabel}>Zip code</Text>
+                            <TextInput
+                              style={styles.formInput}
+                              placeholder="Zip"
+                              placeholderTextColor={COLORS.muted}
+                              value={createBusinessForm.postalCode}
+                              onChangeText={(value) =>
+                                setCreateBusinessForm((prev) => ({
+                                  ...prev,
+                                  postalCode: value
+                                }))
+                              }
+                              keyboardType="number-pad"
+                            />
+                          </View>
+                        </View>
+
+                        <Text style={styles.formLabel}>Category</Text>
+                        <View style={styles.categoryRow}>
+                          {CATEGORY_OPTIONS.map((option) => {
+                            const isActive =
+                              createBusinessForm.categoryKey === option.key;
+                            return (
+                              <TouchableOpacity
+                                key={option.key}
+                                style={[
+                                  styles.categoryChip,
+                                  isActive && styles.categoryChipActive
+                                ]}
+                                onPress={() =>
+                                  setCreateBusinessForm((prev) => ({
+                                    ...prev,
+                                    categoryKey: option.key
+                                  }))
+                                }
+                              >
+                                <Text
+                                  style={[
+                                    styles.categoryChipText,
+                                    isActive && styles.categoryChipTextActive
+                                  ]}
+                                >
+                                  {option.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+
+                        <Text style={styles.formLabel}>Phone</Text>
+                        <TextInput
+                          style={styles.formInput}
+                          placeholder="(555) 123-4567"
+                          placeholderTextColor={COLORS.muted}
+                          value={createBusinessForm.phone}
+                          onChangeText={(value) =>
+                            setCreateBusinessForm((prev) => ({
+                              ...prev,
+                              phone: value
+                            }))
+                          }
+                          keyboardType="phone-pad"
+                        />
+
+                        <Text style={styles.formLabel}>Operating hours</Text>
+                        <View style={styles.timeRow}>
+                          <View style={styles.timeBlock}>
+                            <Text style={styles.timeLabel}>Start</Text>
+                            <View style={styles.timeInputRow}>
+                              <TouchableOpacity
+                                style={styles.timeSelect}
+                                onPress={() => openTimePicker("createStart")}
+                              >
+                                <Text style={styles.timeSelectText}>
+                                  {createHoursStart ||
+                                    (IS_COMPACT ? "Select" : "Select time")}
+                                </Text>
+                                <Ionicons
+                                  name="chevron-down"
+                                  size={16}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
+                              <View style={styles.timeMeridiem}>
+                                {["AM", "PM"].map((label) => {
+                                  const isActive =
+                                    createHoursStartMeridiem === label;
+                                  return (
+                                    <TouchableOpacity
+                                      key={label}
+                                      style={[
+                                        styles.timeMeridiemPill,
+                                        isActive && styles.timeMeridiemPillActive
+                                      ]}
+                                      onPress={() =>
+                                        setCreateHoursStartMeridiem(label)
+                                      }
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.timeMeridiemText,
+                                          isActive &&
+                                            styles.timeMeridiemTextActive
+                                        ]}
+                                      >
+                                        {label}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+                            </View>
+                          </View>
+                          <View style={styles.timeBlock}>
+                            <Text style={styles.timeLabel}>End</Text>
+                            <View style={styles.timeInputRow}>
+                              <TouchableOpacity
+                                style={styles.timeSelect}
+                                onPress={() => openTimePicker("createEnd")}
+                              >
+                                <Text style={styles.timeSelectText}>
+                                  {createHoursEnd ||
+                                    (IS_COMPACT ? "Select" : "Select time")}
+                                </Text>
+                                <Ionicons
+                                  name="chevron-down"
+                                  size={16}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
+                              <View style={styles.timeMeridiem}>
+                                {["AM", "PM"].map((label) => {
+                                  const isActive =
+                                    createHoursEndMeridiem === label;
+                                  return (
+                                    <TouchableOpacity
+                                      key={label}
+                                      style={[
+                                        styles.timeMeridiemPill,
+                                        isActive && styles.timeMeridiemPillActive
+                                      ]}
+                                      onPress={() =>
+                                        setCreateHoursEndMeridiem(label)
+                                      }
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.timeMeridiemText,
+                                          isActive &&
+                                            styles.timeMeridiemTextActive
+                                        ]}
+                                      >
+                                        {label}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+                            </View>
+                          </View>
+                        </View>
+
+                        <Text style={styles.formLabel}>Tags</Text>
+                        <TextInput
+                          style={styles.formInput}
+                          placeholder="wifi, family, happy-hour"
+                          placeholderTextColor={COLORS.muted}
+                          value={createBusinessForm.tags}
+                          onChangeText={(value) =>
+                            setCreateBusinessForm((prev) => ({
+                              ...prev,
+                              tags: value
+                            }))
+                          }
+                        />
+
+                        {createBusinessError && (
+                          <Text style={styles.formError}>
+                            {createBusinessError}
+                          </Text>
+                        )}
+
+                        <View style={styles.formActions}>
+                          <TouchableOpacity
+                            style={[
+                              styles.primaryButton,
+                              createBusinessBusy &&
+                                styles.primaryButtonDisabled
+                            ]}
+                            onPress={handleCreateBusinessProfile}
+                            disabled={createBusinessBusy}
+                          >
+                            <Text style={styles.primaryButtonText}>
+                              {createBusinessBusy
+                                ? "Creating..."
+                                : "Create profile"}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.paymentCard}>
+                          <Text style={styles.paymentTitle}>Membership</Text>
+                          <Text style={styles.paymentBody}>
+                            A subscription is required to publish your listing
+                            once your profile is created.
+                          </Text>
+                          <TouchableOpacity
+                            style={[
+                              styles.primaryButton,
+                              !stripeEnabled && styles.primaryButtonDisabled
+                            ]}
+                            onPress={handleStartSubscription}
+                            disabled={!stripeEnabled}
+                          >
+                            <Text style={styles.primaryButtonText}>
+                              {stripeEnabled
+                                ? "Continue to payment"
+                                : "Stripe setup pending"}
+                            </Text>
+                          </TouchableOpacity>
+                          {paymentMessage && (
+                            <Text style={styles.formHint}>{paymentMessage}</Text>
+                          )}
+                        </View>
                       </View>
                     )}
 
@@ -2749,6 +5340,214 @@ export default function App() {
                       >
                         <Text style={styles.alertText}>{formMessage.text}</Text>
                       </View>
+                    )}
+
+                    {ownerBusiness && (
+                      <>
+                        <View style={styles.sectionBlock}>
+                          <Text style={styles.sectionTitleAlt}>Offers</Text>
+                          <Text style={styles.sectionBody}>
+                            Create and manage multiple offers for your business.
+                            New offers may require approval.
+                          </Text>
+                        </View>
+
+                        <View style={styles.formCard}>
+                          <Text style={styles.formHeaderTitle}>
+                            Create offer
+                          </Text>
+                          <Text style={styles.formHeaderMeta}>
+                            Add a title and description for customers.
+                          </Text>
+
+                          <Text style={styles.formLabel}>Offer title</Text>
+                          <TextInput
+                            style={styles.formInput}
+                            placeholder="Example: 20% off first visit"
+                            placeholderTextColor={COLORS.muted}
+                            value={offerForm.title}
+                            onChangeText={(value) => {
+                              setOfferForm((prev) => ({ ...prev, title: value }));
+                              if (offerError) setOfferError(null);
+                            }}
+                          />
+
+                          <Text style={styles.formLabel}>Description</Text>
+                          <TextInput
+                            style={[styles.formInput, styles.formTextarea]}
+                            placeholder="Add the details customers should know."
+                            placeholderTextColor={COLORS.muted}
+                            value={offerForm.description}
+                            onChangeText={(value) => {
+                              setOfferForm((prev) => ({
+                                ...prev,
+                                description: value
+                              }));
+                              if (offerError) setOfferError(null);
+                            }}
+                            multiline
+                            textAlignVertical="top"
+                          />
+
+                          <Text style={styles.formLabel}>Offer type</Text>
+                          <TextInput
+                            style={styles.formInput}
+                            placeholder="Discount, BOGO, Bundle..."
+                            placeholderTextColor={COLORS.muted}
+                            value={offerForm.type}
+                            onChangeText={(value) => {
+                              setOfferForm((prev) => ({
+                                ...prev,
+                                type: value
+                              }));
+                              if (offerError) setOfferError(null);
+                            }}
+                            autoCorrect
+                            autoCapitalize="words"
+                            onBlur={() => {
+                              const corrected = normalizeOfferType(offerForm.type);
+                              if (corrected && corrected !== offerForm.type) {
+                                setOfferForm((prev) => ({
+                                  ...prev,
+                                  type: corrected
+                                }));
+                              }
+                            }}
+                          />
+                          {showOfferTypeSuggestion && (
+                            <Text style={styles.formHint}>
+                              Suggested: {offerTypeSuggestion}
+                            </Text>
+                          )}
+
+                          <Text style={styles.formLabel}>Offer photo</Text>
+                          <View style={styles.offerUploadRow}>
+                            <TouchableOpacity
+                              style={styles.secondaryButton}
+                              onPress={handlePickOfferImage}
+                              disabled={offerImageStatus.uploading}
+                            >
+                              <Text style={styles.secondaryButtonText}>
+                                {offerImage ? "Replace photo" : "Upload photo"}
+                              </Text>
+                            </TouchableOpacity>
+                            {offerImage && (
+                              <TouchableOpacity
+                                style={styles.offerRemoveButton}
+                                onPress={() => setOfferImage(null)}
+                              >
+                                <Text style={styles.offerRemoveButtonText}>
+                                  Remove
+                                </Text>
+                              </TouchableOpacity>
+                            )}
+                          </View>
+                          {offerImageStatus.error && (
+                            <Text style={styles.formError}>
+                              {offerImageStatus.error}
+                            </Text>
+                          )}
+                          <View style={styles.offerUploadFrame}>
+                            {offerImage ? (
+                              <Image
+                                source={{ uri: offerImage.uri }}
+                                style={styles.offerUploadPreview}
+                                resizeMode="cover"
+                                onError={(event) => {
+                                  console.warn("Wello offer preview failed:", {
+                                    uri: offerImage.uri,
+                                    error: event.nativeEvent?.error
+                                  });
+                                }}
+                              />
+                            ) : (
+                              <View style={styles.offerUploadPlaceholder}>
+                                <Ionicons
+                                  name="image-outline"
+                                  size={18}
+                                  color={COLORS.muted}
+                                />
+                                <Text style={styles.offerUploadHint}>
+                                  Upload a photo to help customers spot the offer.
+                                </Text>
+                              </View>
+                            )}
+                          </View>
+
+                          {offerError && (
+                            <Text style={styles.formError}>{offerError}</Text>
+                          )}
+
+                          <View style={styles.formActions}>
+                            <TouchableOpacity
+                              style={[
+                                styles.primaryButton,
+                                offerBusy && styles.primaryButtonDisabled
+                              ]}
+                              onPress={handleCreateOffer}
+                              disabled={offerBusy}
+                            >
+                              <Text style={styles.primaryButtonText}>
+                                {offerBusy ? "Saving..." : "Create offer"}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+
+                        {ownerOffers.length === 0 ? (
+                          <View style={styles.emptyState}>
+                            <Text style={styles.emptyTitle}>
+                              No offers yet.
+                            </Text>
+                            <Text style={styles.emptyCopy}>
+                              Create your first offer to show on Discover.
+                            </Text>
+                          </View>
+                        ) : (
+                          <View style={styles.offerList}>
+                            {ownerOffers.map((offer) => (
+                              <View key={offer.id} style={styles.offerRow}>
+                                <View style={styles.offerMeta}>
+                                  <Text style={styles.offerTitle}>
+                                    {offer.title || "Untitled offer"}
+                                  </Text>
+                                  {offer.description ? (
+                                    <Text style={styles.offerDescription}>
+                                      {offer.description}
+                                    </Text>
+                                  ) : null}
+                                  <Text style={styles.offerStatus}>
+                                    {offer.active ? "Active" : "Paused"} -{" "}
+                                    {offer.approvalStatus === "pending"
+                                      ? "Pending review"
+                                      : offer.approvalStatus === "rejected"
+                                      ? "Rejected"
+                                      : "Approved"}
+                                  </Text>
+                                </View>
+                                <View style={styles.offerActions}>
+                                  <TouchableOpacity
+                                    style={styles.offerAction}
+                                    onPress={() => handleToggleOffer(offer)}
+                                  >
+                                    <Text style={styles.offerActionText}>
+                                      {offer.active ? "Pause" : "Activate"}
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={styles.offerActionGhost}
+                                    onPress={() => handleDeleteOffer(offer)}
+                                  >
+                                    <Text style={styles.offerActionTextGhost}>
+                                      Delete
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                      </>
                     )}
                   </>
                 ) : activeTab === "profile" ? (
@@ -2868,8 +5667,8 @@ export default function App() {
 
                             <Text style={styles.authTitle}>Create account</Text>
                             <Text style={styles.authSubtitle}>
-                              Create a member account. Admin invite codes work
-                              here.
+                              Create a member account to save your favorites
+                              and redeem offers.
                             </Text>
 
                             <Text style={styles.formLabel}>Email</Text>
@@ -2892,21 +5691,6 @@ export default function App() {
                               onChangeText={setSignUpPassword}
                               secureTextEntry
                             />
-
-                            <Text style={styles.formLabel}>Invite code</Text>
-                            <TextInput
-                              style={styles.authInput}
-                              placeholder="Optional"
-                              placeholderTextColor={COLORS.muted}
-                              value={signUpCode}
-                              onChangeText={(value) =>
-                                setSignUpCode(value.toUpperCase())
-                              }
-                              autoCapitalize="characters"
-                            />
-                            <Text style={styles.formHint}>
-                              Optional. Admin codes unlock admin access.
-                            </Text>
 
                             {signUpError && (
                               <Text style={styles.formError}>{signUpError}</Text>
@@ -3039,6 +5823,40 @@ export default function App() {
                                 ))}
                               </View>
                             )}
+
+                            <View style={styles.formRow}>
+                              <View style={styles.formField}>
+                                <Text style={styles.formLabel}>City</Text>
+                                <TextInput
+                                  style={styles.authInput}
+                                  placeholder="City"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={businessAddressCity}
+                                  onChangeText={setBusinessAddressCity}
+                                />
+                              </View>
+                              <View style={styles.formField}>
+                                <Text style={styles.formLabel}>State</Text>
+                                <TextInput
+                                  style={styles.authInput}
+                                  placeholder="State"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={businessAddressState}
+                                  onChangeText={setBusinessAddressState}
+                                />
+                              </View>
+                              <View style={styles.formField}>
+                                <Text style={styles.formLabel}>Zip code</Text>
+                                <TextInput
+                                  style={styles.authInput}
+                                  placeholder="Zip"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={businessAddressPostal}
+                                  onChangeText={setBusinessAddressPostal}
+                                  keyboardType="number-pad"
+                                />
+                              </View>
+                            </View>
 
                             <Text style={styles.formLabel}>Phone</Text>
                             <TextInput
@@ -3278,43 +6096,6 @@ export default function App() {
                             onChangeText={setProfileCompany}
                           />
 
-                          {isAdmin && (
-                            <View style={styles.roleRow}>
-                              <Text style={styles.formLabel}>Account role</Text>
-                              <View style={styles.rolePillRow}>
-                                {[
-                                  { key: "consumer", label: "Member" },
-                                  { key: "business_owner", label: "Business" },
-                                  { key: "admin", label: "Admin" }
-                                ].map((role) => {
-                                  const isActive = accountRole === role.key;
-                                  return (
-                                    <TouchableOpacity
-                                      key={role.key}
-                                      style={[
-                                        styles.rolePill,
-                                        isActive && styles.rolePillActive
-                                      ]}
-                                      onPress={() => {
-                                        setAccountRole(role.key);
-                                        setProfileMessage(null);
-                                      }}
-                                    >
-                                      <Text
-                                        style={[
-                                          styles.rolePillText,
-                                          isActive && styles.rolePillTextActive
-                                        ]}
-                                      >
-                                        {role.label}
-                                      </Text>
-                                    </TouchableOpacity>
-                                  );
-                                })}
-                              </View>
-                            </View>
-                          )}
-
                           <View style={styles.profileMetaRow}>
                             <View style={styles.profileMetaCard}>
                               <Text style={styles.profileMetaLabel}>Plan</Text>
@@ -3358,7 +6139,7 @@ export default function App() {
                       </>
                     )}
                   </>
-                ) : activeTab === "admin" && isAdmin ? (
+                ) : activeTab === "admin" && isStaff ? (
                   <>
                     <View style={styles.sectionBlock}>
                       <Text style={styles.sectionTitleAlt}>Admin review</Text>
@@ -3436,130 +6217,333 @@ export default function App() {
                     )}
 
                     <View style={styles.sectionBlock}>
-                      <Text style={styles.sectionTitleAlt}>Invite codes</Text>
+                      <Text style={styles.sectionTitleAlt}>Pending offers</Text>
                       <Text style={styles.sectionBody}>
-                        Generate one-time codes for business owners and admins.
+                        Review new offers before they appear on Discover.
                       </Text>
                     </View>
 
-                    <View style={styles.invitePanel}>
-                      <View style={styles.rolePillRow}>
-                        {[
-                          { key: "business_owner", label: "Business" },
-                          { key: "admin", label: "Admin" }
-                        ].map((role) => {
-                          const isActive = inviteRole === role.key;
-                          return (
-                            <TouchableOpacity
-                              key={role.key}
-                              style={[
-                                styles.rolePill,
-                                isActive && styles.rolePillActive
-                              ]}
-                              onPress={() => setInviteRole(role.key)}
-                            >
-                              <Text
-                                style={[
-                                  styles.rolePillText,
-                                  isActive && styles.rolePillTextActive
-                                ]}
-                              >
-                                {role.label}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
+                    {pendingOfferStatus.loading && (
+                      <Text style={styles.formHint}>
+                        Loading pending offers...
+                      </Text>
+                    )}
+                    {pendingOfferStatus.error && (
+                      <Text style={styles.formError}>
+                        {pendingOfferStatus.error}
+                      </Text>
+                    )}
 
-                      <TouchableOpacity
-                        style={[
-                          styles.primaryButton,
-                          inviteStatus.loading && styles.primaryButtonDisabled
-                        ]}
-                        onPress={handleGenerateInvite}
-                        disabled={inviteStatus.loading}
-                      >
-                        <Text style={styles.primaryButtonText}>
-                          {inviteStatus.loading
-                            ? "Generating..."
-                            : "Generate invite code"}
-                        </Text>
-                      </TouchableOpacity>
-
-                      {inviteStatus.code && (
-                        <View style={styles.inviteCodeBox}>
-                          <Text style={styles.inviteCodeLabel}>
-                            New invite code
-                          </Text>
-                          <Text style={styles.inviteCodeText}>
-                            {inviteStatus.code}
-                          </Text>
-                        </View>
-                      )}
-
-                      {inviteStatus.error && (
-                        <Text style={styles.formError}>{inviteStatus.error}</Text>
-                      )}
-                    </View>
-
-                    {inviteList.length === 0 ? (
+                    {pendingOffers.length === 0 ? (
                       <View style={styles.emptyState}>
-                        <Text style={styles.emptyTitle}>No invites yet.</Text>
+                        <Text style={styles.emptyTitle}>
+                          No pending offers.
+                        </Text>
                         <Text style={styles.emptyCopy}>
-                          Generate a code to invite a business or admin account.
+                          New offers will appear here for approval.
                         </Text>
                       </View>
                     ) : (
-                      <View style={styles.inviteList}>
-                        {inviteList.map((invite) => {
-                          const isUsed = Boolean(invite.used_at);
-                          const usedByLine = isUsed
-                            ? [
-                                invite.used_by_name,
-                                invite.used_by,
-                                invite.used_by_business_name
-                              ]
-                                .filter(Boolean)
-                                .join(" • ")
-                            : null;
-                          return (
-                            <View key={invite.id} style={styles.inviteRow}>
-                              <View>
-                                <Text style={styles.inviteRowCode}>
-                                  {invite.code}
-                                </Text>
-                                <Text style={styles.inviteRowMeta}>
-                                  {INVITE_ROLE_LABELS[invite.role] ||
-                                    "Invite"}{" "}
-                                  • {isUsed ? "Used" : "Unused"}
-                                </Text>
-                                {usedByLine && (
-                                  <Text style={styles.inviteRowMeta}>
-                                    {usedByLine}
-                                  </Text>
-                                )}
-                              </View>
-                              <View
+                      pendingOffers.map((offer) => (
+                        <View key={offer.id} style={styles.adminCard}>
+                          <View style={styles.adminHeader}>
+                            <Text style={styles.adminTitle}>
+                              {offer.title || "New offer"}
+                            </Text>
+                            <Text style={styles.adminMeta}>
+                              {offer.business?.name || "Business"}
+                            </Text>
+                          </View>
+                          {offer.description ? (
+                            <Text style={styles.adminOffer}>
+                              {offer.description}
+                            </Text>
+                          ) : null}
+                          <View style={styles.adminActions}>
+                            <TouchableOpacity
+                              style={styles.adminApprove}
+                              onPress={() => handleApproveOffer(offer.id)}
+                            >
+                              <Text style={styles.adminActionText}>
+                                Approve
+                              </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={styles.adminReject}
+                              onPress={() => handleRejectOffer(offer.id)}
+                            >
+                              <Text
                                 style={[
-                                  styles.inviteStatus,
-                                  isUsed
-                                    ? styles.inviteStatusUsed
-                                    : styles.inviteStatusActive
+                                  styles.adminActionText,
+                                  styles.adminActionTextDark
                                 ]}
                               >
-                                <Text
-                                  style={[
-                                    styles.inviteStatusText,
-                                    isUsed && styles.inviteStatusTextUsed
-                                  ]}
-                                >
-                                  {isUsed ? "Used" : "Active"}
+                                Reject
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      ))
+                    )}
+
+                    {isAdmin && (
+                      <>
+                        <View style={styles.sectionBlock}>
+                          <Text style={styles.sectionTitleAlt}>Invite codes</Text>
+                          <Text style={styles.sectionBody}>
+                            Generate one-time codes for business owners.
+                          </Text>
+                        </View>
+
+                        <View style={styles.invitePanel}>
+                          <TouchableOpacity
+                            style={[
+                              styles.primaryButton,
+                              inviteStatus.loading &&
+                                styles.primaryButtonDisabled
+                            ]}
+                            onPress={handleGenerateInvite}
+                            disabled={inviteStatus.loading}
+                          >
+                            <Text style={styles.primaryButtonText}>
+                              {inviteStatus.loading
+                                ? "Generating..."
+                                : "Generate invite code"}
+                            </Text>
+                          </TouchableOpacity>
+
+                          {inviteStatus.code && (
+                            <View style={styles.inviteCodeBox}>
+                              <Text style={styles.inviteCodeLabel}>
+                                New invite code
+                              </Text>
+                              <View style={styles.inviteCodeRow}>
+                                <Text style={styles.inviteCodeText}>
+                                  {inviteStatus.code}
                                 </Text>
+                                <TouchableOpacity
+                                  style={styles.inviteCopyButton}
+                                  onPress={handleCopyInvite}
+                                >
+                                  <Ionicons
+                                    name="copy-outline"
+                                    size={14}
+                                    color={COLORS.navy}
+                                  />
+                                  <Text style={styles.inviteCopyText}>
+                                    {inviteCopied ? "Copied" : "Copy"}
+                                  </Text>
+                                </TouchableOpacity>
                               </View>
                             </View>
-                          );
-                        })}
-                      </View>
+                          )}
+
+                          {inviteStatus.error && (
+                            <Text style={styles.formError}>
+                              {inviteStatus.error}
+                            </Text>
+                          )}
+                        </View>
+
+                        {inviteList.length === 0 ? (
+                          <View style={styles.emptyState}>
+                            <Text style={styles.emptyTitle}>No invites yet.</Text>
+                            <Text style={styles.emptyCopy}>
+                              Generate a code to invite a business account.
+                            </Text>
+                          </View>
+                        ) : (
+                          <View style={styles.inviteList}>
+                            {inviteList.map((invite) => {
+                              const isUsed = Boolean(invite.used_at);
+                              const usedByLine = isUsed
+                                ? [
+                                    invite.used_by_name,
+                                    invite.used_by,
+                                    invite.used_by_business_name
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" - ")
+                                : null;
+                              return (
+                                <View key={invite.id} style={styles.inviteRow}>
+                                  <View>
+                                    <Text style={styles.inviteRowCode}>
+                                      {invite.code}
+                                    </Text>
+                                    <Text style={styles.inviteRowMeta}>
+                                      {INVITE_ROLE_LABELS[invite.role] ||
+                                        "Invite"}{" "}
+                                      - {isUsed ? "Used" : "Unused"}
+                                    </Text>
+                                    {usedByLine && (
+                                      <Text style={styles.inviteRowMeta}>
+                                        {usedByLine}
+                                      </Text>
+                                    )}
+                                  </View>
+                                  <View
+                                    style={[
+                                      styles.inviteStatus,
+                                      isUsed
+                                        ? styles.inviteStatusUsed
+                                        : styles.inviteStatusActive
+                                    ]}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.inviteStatusText,
+                                        isUsed && styles.inviteStatusTextUsed
+                                      ]}
+                                    >
+                                      {isUsed ? "Used" : "Active"}
+                                    </Text>
+                                  </View>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        )}
+                      </>
+                    )}
+
+                    {isAdmin && (
+                      <>
+                        <View style={styles.sectionBlock}>
+                          <Text style={styles.sectionTitleAlt}>
+                            Supervisor access
+                          </Text>
+                          <Text style={styles.sectionBody}>
+                            Promote teammates to review listings without full
+                            admin access.
+                          </Text>
+                        </View>
+
+                        <View style={styles.invitePanel}>
+                          <TextInput
+                            style={styles.authInput}
+                            placeholder="Search by name, email, phone, or company"
+                            placeholderTextColor={COLORS.muted}
+                            value={supervisorSearch}
+                            onChangeText={setSupervisorSearch}
+                            autoCapitalize="none"
+                          />
+                          {profileStatus.loading && (
+                            <Text style={styles.formHint}>
+                              Loading team members...
+                            </Text>
+                          )}
+                          {profileStatus.error && (
+                            <Text style={styles.formError}>
+                              {profileStatus.error}
+                            </Text>
+                          )}
+                          {supervisorStatus.error && (
+                            <Text style={styles.formError}>
+                              {supervisorStatus.error}
+                            </Text>
+                          )}
+                          {supervisorStatus.success && (
+                            <Text style={styles.formSuccess}>
+                              {supervisorStatus.success}
+                            </Text>
+                          )}
+                          {filteredProfiles.length === 0 ? (
+                            <View style={styles.emptyState}>
+                              <Text style={styles.emptyTitle}>
+                                No team members yet.
+                              </Text>
+                              <Text style={styles.emptyCopy}>
+                                New signups will appear here.
+                              </Text>
+                            </View>
+                          ) : (
+                            <View style={styles.supervisorList}>
+                              {filteredProfiles.map((profile) => {
+                                const role = profile.role || "consumer";
+                                const displayName =
+                                  profile.full_name || profile.email || "Member";
+                                const metaLine = [
+                                  profile.email,
+                                  profile.phone,
+                                  profile.company
+                                ]
+                                  .filter(Boolean)
+                                  .join(" - ");
+                                const isProfileAdmin = role === "admin";
+                                const isProfileSupervisor = role === "supervisor";
+                                const isProfileBusiness = role === "business_owner";
+                                return (
+                                  <View
+                                    key={profile.id}
+                                    style={styles.supervisorRow}
+                                  >
+                                    <View style={styles.supervisorMeta}>
+                                      <Text style={styles.supervisorName}>
+                                        {displayName}
+                                      </Text>
+                                      {metaLine ? (
+                                        <Text style={styles.supervisorDetails}>
+                                          {metaLine}
+                                        </Text>
+                                      ) : null}
+                                      <Text style={styles.supervisorRole}>
+                                        {isProfileAdmin
+                                          ? "Admin"
+                                          : isProfileSupervisor
+                                          ? "Supervisor"
+                                          : "Member"}
+                                      </Text>
+                                    </View>
+                                    {isProfileAdmin ? (
+                                      <View style={styles.supervisorBadge}>
+                                        <Text style={styles.supervisorBadgeText}>
+                                          Admin
+                                        </Text>
+                                      </View>
+                                    ) : (
+                                      <View style={styles.supervisorActionsRow}>
+                                        {isProfileBusiness ? (
+                                          <View style={styles.supervisorBadgeAlt}>
+                                            <Text style={styles.supervisorBadgeText}>
+                                              Business
+                                            </Text>
+                                          </View>
+                                        ) : (
+                                          <TouchableOpacity
+                                            style={styles.supervisorActionAlt}
+                                            onPress={() =>
+                                              handlePromoteBusinessOwner(profile)
+                                            }
+                                          >
+                                            <Text style={styles.supervisorActionTextAlt}>
+                                              Make business
+                                            </Text>
+                                          </TouchableOpacity>
+                                        )}
+                                          <TouchableOpacity
+                                            style={styles.supervisorAction}
+                                            onPress={() =>
+                                              isProfileSupervisor
+                                              ? handleRemoveSupervisor(profile)
+                                              : handlePromoteSupervisor(profile)
+                                            }
+                                          >
+                                            <Text style={styles.supervisorActionText}>
+                                              {isProfileSupervisor
+                                              ? "Remove"
+                                              : "Make supervisor"}
+                                            </Text>
+                                          </TouchableOpacity>
+                                      </View>
+                                    )}
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          )}
+                        </View>
+                      </>
                     )}
 
                     <View style={styles.sectionBlock}>
@@ -3608,16 +6592,21 @@ export default function App() {
                             {isExpanded && (
                               <View style={styles.qrBody}>
                                 <View style={styles.qrCodeWrap}>
-                                  {BUSINESS_QR_IMAGES[business.id] ? (
+                                  {BUSINESS_QR_IMAGES[business.id] ||
+                                  qrImageMap[business.id] ? (
                                     <Image
-                                      source={BUSINESS_QR_IMAGES[business.id]}
+                                      source={
+                                        BUSINESS_QR_IMAGES[business.id] || {
+                                          uri: qrImageMap[business.id]
+                                        }
+                                      }
                                       style={styles.qrImage}
                                       resizeMode="contain"
                                     />
                                   ) : (
                                     <View style={styles.qrFallback}>
                                       <Text style={styles.qrFallbackText}>
-                                        QR pending
+                                        Generating QR
                                       </Text>
                                     </View>
                                   )}
@@ -3854,6 +6843,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     minHeight: 42
   },
+  timeSelectDisabled: {
+    opacity: 0.6
+  },
   timeSelectText: {
     fontSize: IS_COMPACT ? 12 : 13,
     color: COLORS.ink,
@@ -3878,6 +6870,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center"
   },
+  timeMeridiemPillDisabled: {
+    backgroundColor: COLORS.mint
+  },
   timeMeridiemPillActive: {
     backgroundColor: COLORS.pine
   },
@@ -3885,6 +6880,10 @@ const styles = StyleSheet.create({
     fontSize: IS_COMPACT ? 10 : 11,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM
+  },
+  timeMeridiemTextDisabled: {
+    color: COLORS.muted,
+    opacity: 0.7
   },
   timeMeridiemTextActive: {
     color: COLORS.white
@@ -3970,11 +6969,21 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 3
   },
+  redeemButtonDisabled: {
+    backgroundColor: "#E1E8F1",
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    shadowOpacity: 0,
+    elevation: 0
+  },
   redeemButtonText: {
     color: COLORS.white,
     fontSize: 12,
     fontFamily: FONT_SEMIBOLD,
     letterSpacing: 0.3
+  },
+  redeemButtonTextDisabled: {
+    color: COLORS.muted
   },
   map: {
     ...StyleSheet.absoluteFillObject
@@ -4071,6 +7080,12 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2
+  },
+  scannerOfferTitle: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    marginTop: 4
   },
   scannerClose: {
     width: 34,
@@ -4187,6 +7202,53 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     fontSize: 13
+  },
+  offerUploadRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 6,
+    marginBottom: 8
+  },
+  offerRemoveButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: "#F4F6FA"
+  },
+  offerRemoveButtonText: {
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+    fontSize: 12
+  },
+  offerUploadFrame: {
+    width: "100%",
+    aspectRatio: OFFER_IMAGE_ASPECT,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: "#EFF3F8",
+    overflow: "hidden",
+    justifyContent: "center",
+    alignItems: "center"
+  },
+  offerUploadPreview: {
+    width: "100%",
+    height: "100%"
+  },
+  offerUploadPlaceholder: {
+    alignItems: "center",
+    paddingHorizontal: 16
+  },
+  offerUploadHint: {
+    marginTop: 6,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    textAlign: "center",
+    lineHeight: 16
   },
   sheet: {
     position: "absolute",
@@ -4354,20 +7416,23 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     paddingRight: 8
   },
-  card: {
+  cardShell: {
     width: CARD_WIDTH,
-    backgroundColor: COLORS.white,
-    borderRadius: 16,
-    padding: IS_COMPACT ? 14 : 16,
     marginRight: CARD_GAP,
-    minHeight: IS_SHORT ? 240 : 270,
-    borderWidth: 1,
-    borderColor: COLORS.sand,
     shadowColor: COLORS.shadow,
     shadowOpacity: 0.6,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
     elevation: 2
+  },
+  card: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    padding: IS_COMPACT ? 14 : 16,
+    minHeight: IS_SHORT ? 220 : 250,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    overflow: "hidden"
   },
   cardSelected: {
     borderColor: COLORS.coral
@@ -4390,6 +7455,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand
   },
+  cardBadgeOpen: {
+    backgroundColor: "#E4F3E9",
+    borderColor: "#BFE1C9"
+  },
+  cardBadgeClosed: {
+    backgroundColor: "#F7ECEC",
+    borderColor: "#E5C0C0"
+  },
   cardBadgeText: {
     fontSize: 10,
     color: COLORS.pine,
@@ -4403,16 +7476,23 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     textTransform: "uppercase"
   },
-  cardOffer: {
+  cardOfferTitle: {
     fontSize: IS_COMPACT ? 14 : 15,
     color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    marginTop: 8
+  },
+  cardOffer: {
+    fontSize: IS_COMPACT ? 12 : 13,
+    color: COLORS.ink,
     fontFamily: FONT_TEXT,
-    marginTop: 8,
+    marginTop: 6,
     lineHeight: 20
   },
   cardMetaRow: {
     flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "center",
     marginTop: 12
   },
   cardMeta: {
@@ -4420,15 +7500,9 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT
   },
-  cardTags: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    marginTop: 10
-  },
   cardMedia: {
-    flexGrow: 1,
-    minHeight: IS_SHORT ? 90 : 110,
+    position: "relative",
+    height: CARD_MEDIA_HEIGHT,
     marginTop: 12,
     alignSelf: "stretch",
     borderRadius: 12,
@@ -4437,7 +7511,21 @@ const styles = StyleSheet.create({
     borderStyle: "dashed",
     backgroundColor: "#EFF3F8",
     alignItems: "center",
-    justifyContent: "center"
+    justifyContent: "center",
+    overflow: "hidden"
+  },
+  cardMediaOverlay: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    flexDirection: "row",
+    gap: 6,
+    zIndex: 2
+  },
+  cardMediaImage: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 12
   },
   cardMediaLabel: {
     marginTop: 6,
@@ -4453,10 +7541,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand
   },
+  tagPillOverlay: {
+    backgroundColor: "rgba(255, 255, 255, 0.9)"
+  },
   tagText: {
     fontSize: 10,
     color: COLORS.ink,
     fontFamily: FONT_TEXT
+  },
+  tagTextOverlay: {
+    color: COLORS.ink
   },
   emptyState: {
     backgroundColor: COLORS.white,
@@ -4501,6 +7595,27 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
     marginBottom: 12
   },
+  paymentCard: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.mint
+  },
+  paymentTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    marginBottom: 4
+  },
+  paymentBody: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+    marginBottom: 10
+  },
   formHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -4517,6 +7632,15 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2
+  },
+  formRow: {
+    flexDirection: "row",
+    gap: 10,
+    flexWrap: "wrap"
+  },
+  formField: {
+    flex: 1,
+    minWidth: 120
   },
   pendingNotice: {
     backgroundColor: "#FFF7E6",
@@ -4670,8 +7794,30 @@ const styles = StyleSheet.create({
   inviteCodeText: {
     fontSize: 16,
     color: COLORS.ink,
-    fontFamily: FONT_BOLD,
+    fontFamily: FONT_BOLD
+  },
+  inviteCodeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
     marginTop: 6
+  },
+  inviteCopyButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white
+  },
+  inviteCopyText: {
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM
   },
   inviteList: {
     backgroundColor: COLORS.white,
@@ -4721,6 +7867,97 @@ const styles = StyleSheet.create({
   inviteStatusTextUsed: {
     color: COLORS.muted
   },
+  formSuccess: {
+    fontSize: 12,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM
+  },
+  supervisorList: {
+    gap: 12
+  },
+  supervisorRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    paddingHorizontal: 12,
+    paddingVertical: 10
+  },
+  supervisorMeta: {
+    flex: 1,
+    paddingRight: 12
+  },
+  supervisorName: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM
+  },
+  supervisorDetails: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 4
+  },
+  supervisorRole: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 2
+  },
+  supervisorAction: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.pine,
+    backgroundColor: COLORS.pine
+  },
+  supervisorActionText: {
+    fontSize: 11,
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM
+  },
+  supervisorActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  supervisorActionAlt: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white
+  },
+  supervisorActionTextAlt: {
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM
+  },
+  supervisorBadgeAlt: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.mint
+  },
+  supervisorBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.mint
+  },
+  supervisorBadgeText: {
+    fontSize: 11,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM
+  },
   profileMetaRow: {
     flexDirection: "row",
     gap: 10,
@@ -4766,6 +8003,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     marginBottom: 12
+  },
+  formTextarea: {
+    minHeight: 88
   },
   formInputDisabled: {
     backgroundColor: "#EEF2F7",
@@ -4821,6 +8061,76 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
     textAlign: "center"
   },
+  offerList: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 12,
+    gap: 12,
+    marginBottom: 16
+  },
+  offerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 12
+  },
+  offerMeta: {
+    flex: 1
+  },
+  offerTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM
+  },
+  offerDescription: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 6,
+    lineHeight: 16
+  },
+  offerStatus: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 8
+  },
+  offerActions: {
+    alignItems: "flex-end",
+    gap: 8
+  },
+  offerAction: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.pine,
+    backgroundColor: COLORS.pine
+  },
+  offerActionText: {
+    fontSize: 11,
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM
+  },
+  offerActionGhost: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white
+  },
+  offerActionTextGhost: {
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM
+  },
   formError: {
     fontSize: 11,
     color: "#B42318",
@@ -4855,7 +8165,8 @@ const styles = StyleSheet.create({
   formActions: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10
+    gap: 10,
+    marginTop: 12
   },
   categoryRow: {
     flexDirection: "row",

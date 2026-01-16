@@ -11,19 +11,23 @@
     "ios": {
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Wello uses your location to show nearby businesses and offers.",
-        "NSCameraUsageDescription": "Wello uses the camera to scan QR codes for offer redemption."
+        "NSCameraUsageDescription": "Wello uses the camera to scan QR codes for offer redemption.",
+        "NSPhotoLibraryUsageDescription": "Wello needs photo access to upload offer images."
       }
     },
     "android": {
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
-        "CAMERA"
+        "CAMERA",
+        "READ_MEDIA_IMAGES",
+        "READ_EXTERNAL_STORAGE"
       ]
     },
     "plugins": [
       "expo-font",
-      "expo-camera"
+      "expo-camera",
+      "expo-image-picker"
     ]
   }
 }
