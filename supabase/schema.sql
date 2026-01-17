@@ -101,6 +101,17 @@ create table if not exists public.redemptions (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.reviews (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users on delete set null,
+  business_id uuid references public.businesses on delete set null,
+  offer_id uuid references public.offers on delete set null,
+  redemption_id uuid references public.redemptions on delete set null,
+  rating integer not null check (rating between 1 and 5),
+  review_text text,
+  created_at timestamptz not null default now()
+);
+
 create index if not exists businesses_owner_id_idx on public.businesses(owner_id);
 create index if not exists businesses_location_idx
   on public.businesses(latitude, longitude);
@@ -109,6 +120,11 @@ create index if not exists change_requests_entity_idx
   on public.change_requests(entity_type, entity_id);
 create index if not exists change_requests_business_idx
   on public.change_requests(business_id);
+create index if not exists reviews_business_id_idx on public.reviews(business_id);
+create index if not exists reviews_user_id_idx on public.reviews(user_id);
+create index if not exists reviews_redemption_id_idx on public.reviews(redemption_id);
+create unique index if not exists reviews_redemption_unique_idx
+  on public.reviews(redemption_id);
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -173,6 +189,7 @@ alter table public.businesses enable row level security;
 alter table public.offers enable row level security;
 alter table public.change_requests enable row level security;
 alter table public.redemptions enable row level security;
+alter table public.reviews enable row level security;
 
 -- Drop existing policies to keep this script idempotent.
 drop policy if exists "Invites are readable" on public.invites;
@@ -200,7 +217,11 @@ drop policy if exists "Owners can read their change requests" on public.change_r
 drop policy if exists "Staff can read change requests" on public.change_requests;
 drop policy if exists "Staff can update change requests" on public.change_requests;
 drop policy if exists "Owners can read redemptions" on public.redemptions;
+drop policy if exists "Users can read own redemptions" on public.redemptions;
 drop policy if exists "Users can create redemptions" on public.redemptions;
+drop policy if exists "Users can read own reviews" on public.reviews;
+drop policy if exists "Reviews are public read" on public.reviews;
+drop policy if exists "Users can create reviews" on public.reviews;
 
 create table if not exists public.invites (
   id uuid primary key default gen_random_uuid(),
@@ -348,9 +369,25 @@ using (
   )
 );
 
+create policy "Users can read own redemptions"
+on public.redemptions for select
+using (auth.uid() = scanned_by);
+
 create policy "Users can create redemptions"
 on public.redemptions for insert
 with check (auth.uid() is not null and scanned_by = auth.uid());
+
+create policy "Users can read own reviews"
+on public.reviews for select
+using (auth.uid() = user_id);
+
+create policy "Reviews are public read"
+on public.reviews for select
+using (true);
+
+create policy "Users can create reviews"
+on public.reviews for insert
+with check (auth.uid() is not null and user_id = auth.uid());
 
 -- Storage (offer images)
 insert into storage.buckets (id, name, public)

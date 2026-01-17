@@ -53,6 +53,8 @@ const QR_SIZE = Math.min(200, Math.max(130, Math.round(SCREEN_WIDTH * 0.42)));
 const SCANNER_FRAME = Math.min(300, Math.max(210, Math.round(SCREEN_HEIGHT * 0.32)));
 const SCANNER_CARD_WIDTH = Math.max(280, SCREEN_WIDTH - 40);
 const SCANNER_CARD_HEIGHT = SCANNER_FRAME + (IS_COMPACT ? 160 : 180);
+const REDEEM_RADIUS_METERS = 150;
+const REDEEM_BLOCKED_MESSAGE = "You need to be in store to redeem.";
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
 const GOOGLE_PLACES_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -482,6 +484,25 @@ const mapSupabaseOffer = (row) => ({
   business: row.business || null
 });
 
+const mapSupabaseRedemption = (row) => ({
+  id: String(row.id),
+  createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+  businessId: row.business_id || null,
+  offerId: row.offer_id || null,
+  offer: row.offer || null,
+  business: row.business || null
+});
+
+const mapSupabaseReview = (row) => ({
+  id: String(row.id),
+  businessId: row.business_id || null,
+  redemptionId: row.redemption_id || null,
+  offerId: row.offer_id || null,
+  rating: Number(row.rating) || 0,
+  reviewText: row.review_text || "",
+  createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now()
+});
+
 const INVITE_ROLE_LABELS = {
   business_owner: "Business"
 };
@@ -499,6 +520,17 @@ const formatDisplayName = (email) => {
     .split(" ")
     .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
     .join(" ");
+};
+
+const formatHistoryTimestamp = (value) => {
+  if (!value) return "Date unavailable";
+  const date = new Date(value);
+  const dateLabel = date.toLocaleDateString();
+  const timeLabel = date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit"
+  });
+  return `${dateLabel} · ${timeLabel}`;
 };
 
 const formatBusinessHours = (startTime, startMeridiem, endTime, endMeridiem) =>
@@ -1065,6 +1097,12 @@ export default function App() {
   const [scannerOffer, setScannerOffer] = useState(null);
   const [scannerStatus, setScannerStatus] = useState(null);
   const [scannerEnabled, setScannerEnabled] = useState(true);
+  const [redeemGate, setRedeemGate] = useState({
+    allowed: true,
+    reason: null,
+    distanceMeters: null
+  });
+  const [redeemGateBusy, setRedeemGateBusy] = useState(false);
   const redemptionLoggedRef = useRef(false);
   const [qrExpandedId, setQrExpandedId] = useState(null);
   const [qrImageMap, setQrImageMap] = useState({});
@@ -1102,6 +1140,30 @@ export default function App() {
     error: null
   });
   const [profileList, setProfileList] = useState([]);
+  const [redemptionStatus, setRedemptionStatus] = useState({
+    loading: false,
+    error: null
+  });
+  const [redemptionHistory, setRedemptionHistory] = useState([]);
+  const [expandedHistoryGroups, setExpandedHistoryGroups] = useState({});
+  const [reviewStatus, setReviewStatus] = useState({
+    loading: false,
+    error: null
+  });
+  const [userReviews, setUserReviews] = useState([]);
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [reviewTarget, setReviewTarget] = useState(null);
+  const [reviewRating, setReviewRating] = useState(0);
+  const [reviewText, setReviewText] = useState("");
+  const [reviewError, setReviewError] = useState(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [businessDetailOpen, setBusinessDetailOpen] = useState(false);
+  const [businessDetail, setBusinessDetail] = useState(null);
+  const [businessDetailStatus, setBusinessDetailStatus] = useState({
+    loading: false,
+    error: null
+  });
+  const [businessDetailReviews, setBusinessDetailReviews] = useState([]);
   const [supervisorSearch, setSupervisorSearch] = useState("");
   const [supervisorStatus, setSupervisorStatus] = useState({
     loading: false,
@@ -1339,18 +1401,20 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const handleKeyboardShow = (event) => {
-      const height = event?.endCoordinates?.height || 0;
-      setKeyboardInset(height);
-      const scrollView = sheetScrollRef.current;
-      if (!scrollView) return;
-      const focused = TextInput.State?.currentlyFocusedInput?.();
-      const scrollNode = findNodeHandle(scrollView);
-      const targetNode =
-        typeof focused === "number" ? focused : findNodeHandle(focused);
-      if (!scrollNode || !targetNode) return;
-      const scrollToFocused = (attempt = 0) => {
+  const scrollToKeyboardTarget = useCallback((targetNode) => {
+    if (!targetNode) return;
+    const scrollView = sheetScrollRef.current;
+    if (!scrollView) return;
+    const scrollNode = findNodeHandle(scrollView);
+    const responder = scrollView.getScrollResponder?.() || scrollView;
+    const attemptScroll = (attempt = 0) => {
+      if (responder?.scrollResponderScrollNativeHandleToKeyboard) {
+        responder.scrollResponderScrollNativeHandleToKeyboard(
+          targetNode,
+          24,
+          true
+        );
+      } else if (scrollNode) {
         UIManager.measureLayout(
           targetNode,
           scrollNode,
@@ -1360,11 +1424,31 @@ export default function App() {
             scrollView.scrollTo({ y: targetOffset, animated: true });
           }
         );
-        if (attempt < 2) {
-          setTimeout(() => scrollToFocused(attempt + 1), 120);
-        }
-      };
-      setTimeout(() => scrollToFocused(0), Platform.OS === "ios" ? 140 : 0);
+      }
+      if (attempt < 2) {
+        setTimeout(() => attemptScroll(attempt + 1), 160);
+      }
+    };
+    setTimeout(() => attemptScroll(0), Platform.OS === "ios" ? 180 : 0);
+  }, []);
+
+  const handleSheetInputFocus = useCallback(
+    (event) => {
+      const targetNode = event?.nativeEvent?.target ?? event?.target;
+      if (!targetNode) return;
+      scrollToKeyboardTarget(targetNode);
+    },
+    [scrollToKeyboardTarget]
+  );
+
+  useEffect(() => {
+    const handleKeyboardShow = (event) => {
+      const height = event?.endCoordinates?.height || 0;
+      setKeyboardInset(height);
+      const focused = TextInput.State?.currentlyFocusedInput?.();
+      const targetNode =
+        typeof focused === "number" ? focused : findNodeHandle(focused);
+      scrollToKeyboardTarget(targetNode);
     };
     const handleKeyboardHide = () => {
       setKeyboardInset(0);
@@ -1385,7 +1469,22 @@ export default function App() {
       showSubscription.remove();
       hideSubscription.remove();
     };
-  }, []);
+  }, [scrollToKeyboardTarget]);
+
+  const AutoFocusInput = useMemo(() => {
+    const Component = React.forwardRef((props, ref) => (
+      <TextInput
+        ref={ref}
+        {...props}
+        onFocus={(event) => {
+          props.onFocus?.(event);
+          handleSheetInputFocus(event);
+        }}
+      />
+    ));
+    Component.displayName = "AutoFocusInput";
+    return Component;
+  }, [handleSheetInputFocus]);
 
   useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
@@ -1779,6 +1878,7 @@ export default function App() {
   const isSupervisor = accountRole === "supervisor";
   const isOwner = accountRole === "business_owner";
   const isStaff = isAdmin || isSupervisor;
+  const showHistoryTab = !isOwner && !isStaff;
   const roleLabel = isAdmin
     ? "Admin"
     : isSupervisor
@@ -1789,11 +1889,12 @@ export default function App() {
   const visibleTabs = useMemo(
     () => [
       { key: "discover", label: "Discover", show: true },
+      { key: "history", label: "History", show: showHistoryTab },
       { key: "business", label: "Dashboard", show: isOwner },
       { key: "admin", label: "Admin", show: isStaff },
       { key: "profile", label: "Profile", show: true }
     ].filter((tab) => tab.show),
-    [isOwner, isStaff]
+    [isOwner, isStaff, showHistoryTab]
   );
   const navContainerWidth = useMemo(() => {
     const count = visibleTabs.length || 1;
@@ -1841,6 +1942,71 @@ export default function App() {
       return haystack.includes(trimmed);
     });
   }, [profileList, supervisorSearch]);
+
+  const reviewedBusinessIds = useMemo(() => {
+    const ids = new Set();
+    userReviews.forEach((review) => {
+      if (review.businessId) {
+        ids.add(String(review.businessId));
+      }
+    });
+    return ids;
+  }, [userReviews]);
+
+  const latestRedemptionByBusiness = useMemo(() => {
+    const map = new Map();
+    redemptionHistory.forEach((entry) => {
+      if (!entry.businessId) return;
+      const existing = map.get(entry.businessId);
+      if (!existing || (entry.createdAt || 0) > (existing.createdAt || 0)) {
+        map.set(entry.businessId, entry);
+      }
+    });
+    return map;
+  }, [redemptionHistory]);
+
+  const historyGroups = useMemo(() => {
+    const grouped = new Map();
+    redemptionHistory.forEach((entry) => {
+      const businessName = entry.business?.name || "Wello business";
+      const key = entry.businessId || businessName;
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          key,
+          businessId: entry.businessId || null,
+          businessName,
+          entries: [],
+          lastRedeemed: 0
+        });
+      }
+      const group = grouped.get(key);
+      group.entries.push(entry);
+      const createdAt = entry.createdAt || 0;
+      if (createdAt > group.lastRedeemed) {
+        group.lastRedeemed = createdAt;
+      }
+    });
+    const list = Array.from(grouped.values());
+    list.forEach((group) => {
+      group.entries.sort(
+        (a, b) => (b.createdAt || 0) - (a.createdAt || 0)
+      );
+      const businessKey = group.businessId || group.key;
+      const hasReview = reviewedBusinessIds.has(String(businessKey));
+      group.pendingEntries = hasReview ? [] : group.entries.slice(0, 1);
+      group.pendingCount = hasReview ? 0 : group.pendingEntries.length;
+    });
+    return list.sort((a, b) => (b.lastRedeemed || 0) - (a.lastRedeemed || 0));
+  }, [redemptionHistory, reviewedBusinessIds]);
+
+  const pendingReviewCount = useMemo(
+    () =>
+      historyGroups.reduce(
+        (total, group) => total + (group.pendingCount ? 1 : 0),
+        0
+      ),
+    [historyGroups]
+  );
 
   useEffect(() => {
     if (!businesses.length) return;
@@ -1923,6 +2089,9 @@ export default function App() {
       setActiveTab("discover");
     }
     if (activeTab === "business" && !isOwner) {
+      setActiveTab("discover");
+    }
+    if (activeTab === "history" && (isOwner || isStaff)) {
       setActiveTab("discover");
     }
   }, [activeTab, isOwner, isStaff]);
@@ -2468,17 +2637,119 @@ export default function App() {
     setOfferImage(null);
     setOfferError(null);
     setOfferBusy(false);
+    setRedemptionHistory([]);
+    setRedemptionStatus({ loading: false, error: null });
+    setUserReviews([]);
+    setReviewStatus({ loading: false, error: null });
+    setReviewModalOpen(false);
+    setReviewTarget(null);
+    setReviewRating(0);
+    setReviewText("");
+    setReviewError(null);
+    setReviewBusy(false);
+    setBusinessDetailOpen(false);
+    setBusinessDetail(null);
+    setBusinessDetailStatus({ loading: false, error: null });
+    setBusinessDetailReviews([]);
   };
 
-  const handleRedeemOffer = (card) => {
+  const runRedeemGate = async (business) => {
+    if (!business) return false;
+    setRedeemGateBusy(true);
+    setScannerEnabled(false);
+    setScannerStatus("checking");
+    setRedeemGate({
+      allowed: false,
+      reason: "Checking your location...",
+      distanceMeters: null
+    });
+    try {
+      let businessCoords = getBusinessCoordinate(business);
+      if (!businessCoords && business.address) {
+        const geocoded = await geocodeAddress(business.address);
+        if (geocoded) businessCoords = geocoded;
+      }
+      if (!businessCoords) {
+        setRedeemGate({
+          allowed: false,
+          reason: REDEEM_BLOCKED_MESSAGE,
+          distanceMeters: null
+        });
+        setScannerStatus("blocked");
+        return false;
+      }
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        setRedeemGate({
+          allowed: false,
+          reason: REDEEM_BLOCKED_MESSAGE,
+          distanceMeters: null
+        });
+        setScannerStatus("blocked");
+        return false;
+      }
+      let position = null;
+      try {
+        position = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced
+        });
+      } catch (error) {
+        setRedeemGate({
+          allowed: false,
+          reason: REDEEM_BLOCKED_MESSAGE,
+          distanceMeters: null
+        });
+        setScannerStatus("blocked");
+        return false;
+      }
+      const distance = distanceBetweenMeters(
+        {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude
+        },
+        businessCoords
+      );
+      if (!Number.isFinite(distance)) {
+        setRedeemGate({
+          allowed: false,
+          reason: REDEEM_BLOCKED_MESSAGE,
+          distanceMeters: null
+        });
+        setScannerStatus("blocked");
+        return false;
+      }
+      if (distance <= REDEEM_RADIUS_METERS) {
+        setRedeemGate({
+          allowed: true,
+          reason: null,
+          distanceMeters: distance
+        });
+        setScannerStatus(null);
+        setScannerEnabled(true);
+        return true;
+      }
+      setRedeemGate({
+        allowed: false,
+        reason: REDEEM_BLOCKED_MESSAGE,
+        distanceMeters: distance
+      });
+      setScannerStatus("blocked");
+      return false;
+    } finally {
+      setRedeemGateBusy(false);
+    }
+  };
+
+  const handleRedeemOffer = async (card) => {
     const business = resolveBusinessFromCard(card);
     if (!business) return;
     setScannerBusiness(business);
     setScannerOffer(card);
-    setScannerStatus(null);
-    setScannerEnabled(true);
+    setScannerStatus("checking");
+    setScannerEnabled(false);
     redemptionLoggedRef.current = false;
     setScannerVisible(true);
+    await runRedeemGate(business);
   };
 
   const handleCloseScanner = () => {
@@ -2486,10 +2757,102 @@ export default function App() {
     setScannerStatus(null);
     setScannerEnabled(true);
     setScannerOffer(null);
+    setRedeemGate({
+      allowed: true,
+      reason: null,
+      distanceMeters: null
+    });
     redemptionLoggedRef.current = false;
   };
 
-  const handleScanCode = ({ data }) => {
+  const openReviewForEntry = (entry, businessName) => {
+    if (!entry) return;
+    setReviewTarget({
+      entry,
+      businessName: businessName || "Wello business"
+    });
+    setReviewRating(0);
+    setReviewText("");
+    setReviewError(null);
+    setReviewModalOpen(true);
+  };
+
+  const handleOpenReview = (group) => {
+    if (!group) return;
+    const targetEntry =
+      group.pendingEntries?.[0] ||
+      group.entries?.find((entry) => entry && entry.id) ||
+      null;
+    if (!targetEntry) return;
+    openReviewForEntry(targetEntry, group.businessName);
+  };
+
+  const closeReviewModal = () => {
+    setReviewModalOpen(false);
+    setReviewTarget(null);
+    setReviewRating(0);
+    setReviewText("");
+    setReviewError(null);
+    setReviewBusy(false);
+  };
+
+  const openBusinessDetail = (business) => {
+    if (!business) return;
+    setBusinessDetail(business);
+    setBusinessDetailOpen(true);
+  };
+
+  const closeBusinessDetail = () => {
+    setBusinessDetailOpen(false);
+    setBusinessDetail(null);
+    setBusinessDetailStatus({ loading: false, error: null });
+    setBusinessDetailReviews([]);
+  };
+
+  const handleSubmitReview = async () => {
+    if (!reviewTarget?.entry) return;
+    if (!reviewRating) {
+      setReviewError("Select a star rating to submit your review.");
+      return;
+    }
+    if (!ensureSupabaseReady(setReviewError)) return;
+    if (!authUserId) {
+      setReviewError("Sign in to submit a review.");
+      return;
+    }
+    setReviewBusy(true);
+    setReviewError(null);
+    const entry = reviewTarget.entry;
+    const payload = {
+      business_id: entry.businessId || null,
+      redemption_id: entry.id,
+      offer_id: entry.offerId || null,
+      user_id: authUserId,
+      rating: reviewRating,
+      review_text: reviewText.trim() ? reviewText.trim() : null
+    };
+    const { error, data } = await supabase
+      .from("reviews")
+      .insert(payload)
+      .select(
+        "id, business_id, redemption_id, offer_id, rating, review_text, created_at"
+      )
+      .maybeSingle();
+    if (error || !data) {
+      setReviewError(error?.message || "Unable to submit your review.");
+      setReviewBusy(false);
+      return;
+    }
+    setUserReviews((prev) => [mapSupabaseReview(data), ...prev]);
+    setReviewBusy(false);
+    closeReviewModal();
+    loadUserReviews({ silent: true });
+    if (businessDetail?.id) {
+      loadBusinessReviews(businessDetail.id, { silent: true });
+    }
+  };
+
+  const handleScanCode = async ({ data }) => {
     if (!scannerEnabled || !scannerBusiness) return;
     setScannerEnabled(false);
     const expected = getBusinessQrCode(scannerBusiness);
@@ -2498,12 +2861,20 @@ export default function App() {
       if (!redemptionLoggedRef.current) {
         redemptionLoggedRef.current = true;
         if (SUPABASE_URL && SUPABASE_ANON_KEY && authUserId) {
-          supabase.from("redemptions").insert({
+          const { error } = await supabase.from("redemptions").insert({
             business_id: scannerBusiness.id,
             offer_id: scannerOffer?.offerId || scannerOffer?.id || null,
             qr_payload: data,
             scanned_by: authUserId
           });
+          if (error) {
+            console.warn(
+              "Wello redemption insert failed:",
+              error.message || error
+            );
+          } else {
+            loadRedemptions({ silent: true });
+          }
         }
       }
     } else {
@@ -2606,6 +2977,32 @@ export default function App() {
     return { latitude, longitude };
   };
 
+  const toRadians = (value) => (value * Math.PI) / 180;
+
+  const distanceBetweenMeters = (from, to) => {
+    if (!from || !to) return null;
+    const lat1 = toRadians(from.latitude);
+    const lat2 = toRadians(to.latitude);
+    const deltaLat = toRadians(to.latitude - from.latitude);
+    const deltaLng = toRadians(to.longitude - from.longitude);
+    const a =
+      Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+      Math.cos(lat1) *
+        Math.cos(lat2) *
+        Math.sin(deltaLng / 2) *
+        Math.sin(deltaLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return 6371000 * c;
+  };
+
+  const formatDistanceMeters = (meters) => {
+    if (!Number.isFinite(meters)) return "--";
+    const miles = meters / 1609.34;
+    if (miles >= 0.1) return `${miles.toFixed(1)} mi`;
+    if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
+    return `${Math.round(meters)} m`;
+  };
+
   const geocodeAddress = useCallback(async (address) => {
     if (!GOOGLE_PLACES_KEY || !address) return null;
     try {
@@ -2673,6 +3070,7 @@ export default function App() {
     const business = resolveBusinessFromCard(card);
     if (!business) return;
     openSheetForBusiness(business);
+    openBusinessDetail(business);
     let coordinate = getBusinessCoordinate(business);
     if (!coordinate && business.address) {
       const cached = geocodeCacheRef.current.get(business.id);
@@ -3875,6 +4273,162 @@ export default function App() {
     setProfileStatus({ loading: false, error: null });
   }, []);
 
+  const loadRedemptions = useCallback(
+    async ({ silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setRedemptionStatus({
+          loading: false,
+          error: "Supabase is not configured for history yet."
+        });
+        return;
+      }
+      if (!authUserId) {
+        setRedemptionHistory([]);
+        setRedemptionStatus({ loading: false, error: null });
+        return;
+      }
+      if (!silent) {
+        setRedemptionStatus({ loading: true, error: null });
+      }
+      const { data, error } = await supabase
+        .from("redemptions")
+        .select(
+          [
+            "id",
+            "business_id",
+            "offer_id",
+            "created_at",
+            "offer:offers (id, title, description, offer_type, image_url)",
+            "business:businesses (id, name, category_key, category_label)"
+          ].join(",")
+        )
+        .eq("scanned_by", authUserId)
+        .order("created_at", { ascending: false });
+      if (error) {
+        if (!silent) {
+          setRedemptionStatus({
+            loading: false,
+            error: error.message || "Unable to load history."
+          });
+        }
+        return;
+      }
+      setRedemptionHistory((data || []).map(mapSupabaseRedemption));
+      if (!silent) {
+        setRedemptionStatus({ loading: false, error: null });
+      }
+    },
+    [authUserId]
+  );
+
+  const loadUserReviews = useCallback(
+    async ({ silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setReviewStatus({
+          loading: false,
+          error: "Supabase is not configured for reviews yet."
+        });
+        return;
+      }
+      if (!authUserId) {
+        setUserReviews([]);
+        setReviewStatus({ loading: false, error: null });
+        return;
+      }
+      if (!silent) {
+        setReviewStatus({ loading: true, error: null });
+      }
+      const { data, error } = await supabase
+        .from("reviews")
+        .select("id, business_id, redemption_id, offer_id, rating, review_text, created_at")
+        .eq("user_id", authUserId)
+        .order("created_at", { ascending: false });
+      if (error) {
+        if (!silent) {
+          setReviewStatus({
+            loading: false,
+            error: error.message || "Unable to load reviews."
+          });
+        }
+        return;
+      }
+      setUserReviews((data || []).map(mapSupabaseReview));
+      if (!silent) {
+        setReviewStatus({ loading: false, error: null });
+      }
+    },
+    [authUserId]
+  );
+
+  const loadBusinessReviews = useCallback(
+    async (businessId, { silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setBusinessDetailStatus({
+          loading: false,
+          error: "Supabase is not configured for reviews yet."
+        });
+        return;
+      }
+      if (!businessId) {
+        setBusinessDetailReviews([]);
+        setBusinessDetailStatus({ loading: false, error: null });
+        return;
+      }
+      if (!silent) {
+        setBusinessDetailStatus({ loading: true, error: null });
+      }
+      const { data, error } = await supabase
+        .from("reviews")
+        .select("id, business_id, redemption_id, offer_id, rating, review_text, created_at")
+        .eq("business_id", businessId)
+        .order("created_at", { ascending: false });
+      if (error) {
+        if (!silent) {
+          setBusinessDetailStatus({
+            loading: false,
+            error: error.message || "Unable to load reviews."
+          });
+        }
+        return;
+      }
+      setBusinessDetailReviews((data || []).map(mapSupabaseReview));
+      if (!silent) {
+        setBusinessDetailStatus({ loading: false, error: null });
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (activeTab !== "history") return;
+    if (!isSignedIn || !showHistoryTab) return;
+    loadRedemptions();
+    loadUserReviews();
+  }, [activeTab, isSignedIn, showHistoryTab, loadRedemptions, loadUserReviews]);
+
+  useEffect(() => {
+    if (!isSignedIn || !showHistoryTab) {
+      setUserReviews([]);
+      setReviewStatus({ loading: false, error: null });
+      return;
+    }
+    loadUserReviews({ silent: true });
+  }, [isSignedIn, showHistoryTab, loadUserReviews]);
+
+  useEffect(() => {
+    if (!isSignedIn || !showHistoryTab) {
+      setRedemptionHistory([]);
+      setRedemptionStatus({ loading: false, error: null });
+      return;
+    }
+    loadRedemptions({ silent: true });
+  }, [isSignedIn, showHistoryTab, loadRedemptions]);
+
+  useEffect(() => {
+    if (!businessDetailOpen || !businessDetail?.id) return;
+    loadBusinessReviews(businessDetail.id);
+  }, [businessDetailOpen, businessDetail?.id, loadBusinessReviews]);
+
   const handlePromoteSupervisor = async (profile) => {
     if (!profile?.id) return;
     if (
@@ -4298,6 +4852,13 @@ export default function App() {
                     >
                       {tab.label}
                     </Text>
+                    {tab.key === "history" && pendingReviewCount > 0 && (
+                      <View style={styles.navPillBadge}>
+                        <Text style={styles.navPillBadgeText}>
+                          {pendingReviewCount > 9 ? "9+" : pendingReviewCount}
+                        </Text>
+                      </View>
+                    )}
                   </TouchableOpacity>
                 );
               })}
@@ -4353,6 +4914,14 @@ export default function App() {
                       Camera permission is required.
                     </Text>
                   </View>
+                ) : scannerStatus === "blocked" || scannerStatus === "checking" ? (
+                  <View style={styles.scannerBlocked}>
+                    <Text style={styles.scannerBlockedText}>
+                      {scannerStatus === "checking"
+                        ? "Checking your location..."
+                        : REDEEM_BLOCKED_MESSAGE}
+                    </Text>
+                  </View>
                 ) : (
                   <CameraView
                     onBarcodeScanned={scannerEnabled ? handleScanCode : undefined}
@@ -4369,6 +4938,10 @@ export default function App() {
                     ? "Offer redeemed. Show this confirmation to the staff."
                     : scannerStatus === "invalid"
                     ? "That code does not match this offer. Try again."
+                    : scannerStatus === "checking"
+                    ? "Checking your location..."
+                    : scannerStatus === "blocked"
+                    ? REDEEM_BLOCKED_MESSAGE
                     : "Scan the business QR code to redeem this offer."}
                 </Text>
               </View>
@@ -4380,6 +4953,23 @@ export default function App() {
                     onPress={handleCloseScanner}
                   >
                     <Text style={styles.primaryButtonText}>Done</Text>
+                  </TouchableOpacity>
+                ) : scannerStatus === "blocked" || scannerStatus === "checking" ? (
+                  <TouchableOpacity
+                    style={[
+                      styles.secondaryButton,
+                      redeemGateBusy && styles.secondaryButtonDisabled
+                    ]}
+                    onPress={() => {
+                      if (!redeemGateBusy) {
+                        runRedeemGate(scannerBusiness);
+                      }
+                    }}
+                    disabled={redeemGateBusy}
+                  >
+                    <Text style={styles.secondaryButtonText}>
+                      {redeemGateBusy ? "Checking..." : "Check again"}
+                    </Text>
                   </TouchableOpacity>
                 ) : (
                   <TouchableOpacity
@@ -4400,6 +4990,220 @@ export default function App() {
                   height={SCANNER_CARD_HEIGHT}
                 />
               )}
+            </View>
+          </View>
+        </Modal>
+
+        <Modal transparent visible={reviewModalOpen} animationType="fade">
+          <View style={styles.reviewOverlay}>
+            <View style={styles.reviewCard}>
+              <View style={styles.reviewHeader}>
+                <View>
+                  <Text style={styles.reviewTitle}>Leave a review</Text>
+                  <Text style={styles.reviewSubtitle}>
+                    {reviewTarget?.businessName || "Wello business"}
+                  </Text>
+                  {reviewTarget?.entry?.offer?.title && (
+                    <Text style={styles.reviewOffer}>
+                      {reviewTarget.entry.offer.title}
+                    </Text>
+                  )}
+                </View>
+                <TouchableOpacity
+                  style={styles.reviewClose}
+                  onPress={closeReviewModal}
+                >
+                  <Ionicons name="close" size={18} color={COLORS.ink} />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.formLabel}>Star rating</Text>
+              <View style={styles.reviewStars}>
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <TouchableOpacity
+                    key={star}
+                    style={styles.reviewStarButton}
+                    onPress={() => setReviewRating(star)}
+                  >
+                    <Ionicons
+                      name={reviewRating >= star ? "star" : "star-outline"}
+                      size={24}
+                      color={reviewRating >= star ? COLORS.sun : COLORS.muted}
+                    />
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.formLabel}>Review (optional)</Text>
+              <AutoFocusInput
+                style={[styles.formInput, styles.reviewInput]}
+                placeholder="Share details for other Wello members."
+                placeholderTextColor={COLORS.muted}
+                value={reviewText}
+                onChangeText={setReviewText}
+                multiline
+                textAlignVertical="top"
+              />
+
+              {reviewError && (
+                <Text style={styles.formError}>{reviewError}</Text>
+              )}
+
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  reviewBusy && styles.primaryButtonDisabled
+                ]}
+                onPress={handleSubmitReview}
+                disabled={reviewBusy}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {reviewBusy ? "Submitting..." : "Submit review"}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={closeReviewModal}
+              >
+                <Text style={styles.secondaryButtonText}>Not now</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal transparent visible={businessDetailOpen} animationType="slide">
+          <View style={styles.detailOverlay}>
+            <View style={styles.detailCard}>
+              <View style={styles.detailHeader}>
+                <View>
+                  <Text style={styles.detailTitle}>
+                    {businessDetail?.name || "Business"}
+                  </Text>
+                  <Text style={styles.detailSubtitle}>
+                    {businessDetail?.category || "Local business"}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.detailClose}
+                  onPress={closeBusinessDetail}
+                >
+                  <Ionicons name="close" size={18} color={COLORS.ink} />
+                </TouchableOpacity>
+              </View>
+
+              {businessDetail?.address ? (
+                <Text style={styles.detailAddress}>
+                  {businessDetail.address}
+                </Text>
+              ) : null}
+              {businessDetail?.hours ? (
+                <Text style={styles.detailHours}>
+                  {businessDetail.hours}
+                </Text>
+              ) : null}
+
+              <View style={styles.detailRatingRow}>
+                {(() => {
+                  const total = businessDetailReviews.length;
+                  const avg =
+                    total === 0
+                      ? null
+                      : businessDetailReviews.reduce(
+                          (sum, review) => sum + (review.rating || 0),
+                          0
+                        ) / total;
+                  return (
+                    <>
+                      <Ionicons
+                        name="star"
+                        size={16}
+                        color={COLORS.sun}
+                      />
+                      <Text style={styles.detailRatingText}>
+                        {avg ? avg.toFixed(1) : "New"}
+                      </Text>
+                      <Text style={styles.detailRatingCount}>
+                        {total ? `${total} reviews` : "No reviews yet"}
+                      </Text>
+                    </>
+                  );
+                })()}
+              </View>
+
+              {isSignedIn &&
+                businessDetail?.id &&
+                latestRedemptionByBusiness.has(businessDetail.id) &&
+                !reviewedBusinessIds.has(String(businessDetail.id)) && (
+                  <TouchableOpacity
+                    style={styles.detailReviewButton}
+                    onPress={() => {
+                      const entry = latestRedemptionByBusiness.get(
+                        businessDetail.id
+                      );
+                      openReviewForEntry(entry, businessDetail.name);
+                    }}
+                  >
+                    <Text style={styles.detailReviewButtonText}>
+                      Write a review
+                    </Text>
+                    <Ionicons name="star" size={16} color={COLORS.white} />
+                  </TouchableOpacity>
+                )}
+
+              <View style={styles.detailReviewList}>
+                {businessDetailStatus.error && (
+                  <Text style={styles.formError}>
+                    {businessDetailStatus.error}
+                  </Text>
+                )}
+                {businessDetailStatus.loading ? (
+                  <View style={styles.remoteNotice}>
+                    <Text style={styles.remoteNoticeText}>
+                      Loading reviews...
+                    </Text>
+                  </View>
+                ) : businessDetailReviews.length === 0 ? (
+                  <View style={styles.emptyState}>
+                    <Text style={styles.emptyTitle}>No reviews yet.</Text>
+                    <Text style={styles.emptyCopy}>
+                      Redeem an offer to leave the first review.
+                    </Text>
+                  </View>
+                ) : (
+                  businessDetailReviews.map((review) => (
+                    <View key={review.id} style={styles.detailReviewCard}>
+                      <View style={styles.detailReviewHeader}>
+                        <Text style={styles.detailReviewUser}>
+                          Wello member
+                        </Text>
+                        <Text style={styles.detailReviewTime}>
+                          {formatHistoryTimestamp(review.createdAt)}
+                        </Text>
+                      </View>
+                      <View style={styles.detailReviewStars}>
+                        {[1, 2, 3, 4, 5].map((star) => (
+                          <Ionicons
+                            key={star}
+                            name={
+                              review.rating >= star ? "star" : "star-outline"
+                            }
+                            size={14}
+                            color={
+                              review.rating >= star ? COLORS.sun : COLORS.muted
+                            }
+                          />
+                        ))}
+                      </View>
+                      {review.reviewText ? (
+                        <Text style={styles.detailReviewText}>
+                          {review.reviewText}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ))
+                )}
+              </View>
             </View>
           </View>
         </Modal>
@@ -4446,7 +5250,7 @@ export default function App() {
               <View
                 style={[styles.searchRow, IS_COMPACT && styles.searchRowCompact]}
               >
-                <TextInput
+                <AutoFocusInput
                   placeholder="Search businesses, offers, or categories"
                   placeholderTextColor={COLORS.muted}
                   style={styles.searchInput}
@@ -4691,7 +5495,7 @@ export default function App() {
                         )}
 
                         <Text style={styles.formLabel}>Business name</Text>
-                        <TextInput
+                        <AutoFocusInput
                           style={[
                             styles.formInput,
                             !canEditBusiness && styles.formInputDisabled
@@ -4706,7 +5510,7 @@ export default function App() {
                         />
 
                         <Text style={styles.formLabel}>Business address</Text>
-                        <TextInput
+                        <AutoFocusInput
                           style={[
                             styles.formInput,
                             !canEditBusiness && styles.formInputDisabled
@@ -4756,7 +5560,7 @@ export default function App() {
                         <View style={styles.formRow}>
                           <View style={styles.formField}>
                             <Text style={styles.formLabel}>City</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={[
                                 styles.formInput,
                                 !canEditBusiness && styles.formInputDisabled
@@ -4772,7 +5576,7 @@ export default function App() {
                           </View>
                           <View style={styles.formField}>
                             <Text style={styles.formLabel}>State</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={[
                                 styles.formInput,
                                 !canEditBusiness && styles.formInputDisabled
@@ -4788,7 +5592,7 @@ export default function App() {
                           </View>
                           <View style={styles.formField}>
                             <Text style={styles.formLabel}>Zip code</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={[
                                 styles.formInput,
                                 !canEditBusiness && styles.formInputDisabled
@@ -4955,7 +5759,7 @@ export default function App() {
                         </View>
 
                         <Text style={styles.formLabel}>Tags</Text>
-                        <TextInput
+                        <AutoFocusInput
                           style={[
                             styles.formInput,
                             !canEditBusiness && styles.formInputDisabled
@@ -5011,7 +5815,7 @@ export default function App() {
                         </Text>
 
                         <Text style={styles.formLabel}>Business name</Text>
-                        <TextInput
+                        <AutoFocusInput
                           style={styles.formInput}
                           placeholder="Business name"
                           placeholderTextColor={COLORS.muted}
@@ -5025,7 +5829,7 @@ export default function App() {
                         />
 
                         <Text style={styles.formLabel}>Business address</Text>
-                        <TextInput
+                        <AutoFocusInput
                           style={styles.formInput}
                           placeholder="Street address"
                           placeholderTextColor={COLORS.muted}
@@ -5073,7 +5877,7 @@ export default function App() {
                         <View style={styles.formRow}>
                           <View style={styles.formField}>
                             <Text style={styles.formLabel}>City</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.formInput}
                               placeholder="City"
                               placeholderTextColor={COLORS.muted}
@@ -5088,7 +5892,7 @@ export default function App() {
                           </View>
                           <View style={styles.formField}>
                             <Text style={styles.formLabel}>State</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.formInput}
                               placeholder="State"
                               placeholderTextColor={COLORS.muted}
@@ -5103,7 +5907,7 @@ export default function App() {
                           </View>
                           <View style={styles.formField}>
                             <Text style={styles.formLabel}>Zip code</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.formInput}
                               placeholder="Zip"
                               placeholderTextColor={COLORS.muted}
@@ -5152,7 +5956,7 @@ export default function App() {
                         </View>
 
                         <Text style={styles.formLabel}>Phone</Text>
-                        <TextInput
+                        <AutoFocusInput
                           style={styles.formInput}
                           placeholder="(555) 123-4567"
                           placeholderTextColor={COLORS.muted}
@@ -5265,7 +6069,7 @@ export default function App() {
                         </View>
 
                         <Text style={styles.formLabel}>Tags</Text>
-                        <TextInput
+                        <AutoFocusInput
                           style={styles.formInput}
                           placeholder="wifi, family, happy-hour"
                           placeholderTextColor={COLORS.muted}
@@ -5361,7 +6165,7 @@ export default function App() {
                           </Text>
 
                           <Text style={styles.formLabel}>Offer title</Text>
-                          <TextInput
+                          <AutoFocusInput
                             style={styles.formInput}
                             placeholder="Example: 20% off first visit"
                             placeholderTextColor={COLORS.muted}
@@ -5373,7 +6177,7 @@ export default function App() {
                           />
 
                           <Text style={styles.formLabel}>Description</Text>
-                          <TextInput
+                          <AutoFocusInput
                             style={[styles.formInput, styles.formTextarea]}
                             placeholder="Add the details customers should know."
                             placeholderTextColor={COLORS.muted}
@@ -5390,7 +6194,7 @@ export default function App() {
                           />
 
                           <Text style={styles.formLabel}>Offer type</Text>
-                          <TextInput
+                          <AutoFocusInput
                             style={styles.formInput}
                             placeholder="Discount, BOGO, Bundle..."
                             placeholderTextColor={COLORS.muted}
@@ -5550,6 +6354,187 @@ export default function App() {
                       </>
                     )}
                   </>
+                ) : activeTab === "history" ? (
+                  <>
+                    {!isSignedIn ? (
+                      <View style={styles.authCard}>
+                        <Text style={styles.authTitle}>History</Text>
+                        <Text style={styles.authSubtitle}>
+                          Sign in to see the offers you have redeemed.
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.authPrimaryButton}
+                          onPress={() => {
+                            setAuthView("signin");
+                            setActiveTab("profile");
+                          }}
+                        >
+                          <Text style={styles.authButtonText}>Sign in</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <>
+                        <View style={styles.sectionBlock}>
+                          <Text style={styles.sectionTitleAlt}>History</Text>
+                          <Text style={styles.sectionBody}>
+                            Your redeemed offers are grouped by business so you can
+                            leave a review.
+                          </Text>
+                        </View>
+
+                        {redemptionStatus.error && (
+                          <Text style={styles.formError}>
+                            {redemptionStatus.error}
+                          </Text>
+                        )}
+
+                        {redemptionStatus.loading ? (
+                          <View style={styles.remoteNotice}>
+                            <Text style={styles.remoteNoticeText}>
+                              Loading your history...
+                            </Text>
+                          </View>
+                        ) : redemptionHistory.length === 0 ? (
+                          <View style={styles.emptyState}>
+                            <Text style={styles.emptyTitle}>
+                              No redemptions yet.
+                            </Text>
+                            <Text style={styles.emptyCopy}>
+                              Redeem an offer to see it here.
+                            </Text>
+                          </View>
+                        ) : (
+                          <View style={styles.historyList}>
+                            {historyGroups.map((group) => {
+                              const isExpanded = Boolean(
+                                expandedHistoryGroups[group.key]
+                              );
+                              const hasReview = reviewedBusinessIds.has(
+                                String(group.businessId || group.key)
+                              );
+                              return (
+                                <View
+                                  key={group.key}
+                                  style={styles.historyGroupCard}
+                                >
+                                  <TouchableOpacity
+                                    style={styles.historyGroupHeader}
+                                    onPress={() =>
+                                      setExpandedHistoryGroups((prev) => ({
+                                        ...prev,
+                                        [group.key]: !prev[group.key]
+                                      }))
+                                    }
+                                  >
+                                    <View style={styles.historyGroupMeta}>
+                                      <Text
+                                        style={styles.historyGroupTitle}
+                                        numberOfLines={1}
+                                      >
+                                        {group.businessName}
+                                      </Text>
+                                      <Text style={styles.historyGroupSub}>
+                                        {group.entries.length} redeemed · Last{" "}
+                                        {formatHistoryTimestamp(
+                                          group.lastRedeemed
+                                        )}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.historyGroupActions}>
+                                      {group.pendingCount > 0 && (
+                                        <View style={styles.historyReviewBadge}>
+                                          <Text
+                                            style={styles.historyReviewBadgeText}
+                                          >
+                                            {group.pendingCount}
+                                          </Text>
+                                        </View>
+                                      )}
+                                      <Ionicons
+                                        name={
+                                          isExpanded
+                                            ? "chevron-up"
+                                            : "chevron-down"
+                                        }
+                                        size={18}
+                                        color={COLORS.muted}
+                                      />
+                                    </View>
+                                  </TouchableOpacity>
+                                  {isExpanded && (
+                                    <View style={styles.historyEntries}>
+                                      {group.pendingCount > 0 && (
+                                        <TouchableOpacity
+                                          style={styles.historyReviewButton}
+                                          onPress={() => handleOpenReview(group)}
+                                        >
+                                          <Text style={styles.historyReviewText}>
+                                            Leave a review
+                                          </Text>
+                                          <Ionicons
+                                            name="star"
+                                            size={16}
+                                            color={COLORS.sun}
+                                          />
+                                        </TouchableOpacity>
+                                      )}
+                                      {group.entries.map((entry) => {
+                                        const offerTitle =
+                                          entry.offer?.title || "Redeemed offer";
+                                        const offerDescription =
+                                          entry.offer?.description || "";
+                                        return (
+                                          <View
+                                            key={entry.id}
+                                            style={styles.historyEntry}
+                                          >
+                                            <View style={styles.historyEntryRow}>
+                                              <Text
+                                                style={styles.historyEntryTitle}
+                                                numberOfLines={1}
+                                              >
+                                                {offerTitle}
+                                              </Text>
+                                              <Text
+                                                style={styles.historyEntryTime}
+                                              >
+                                                {formatHistoryTimestamp(
+                                                  entry.createdAt
+                                                )}
+                                              </Text>
+                                            </View>
+                                            {!hasReview &&
+                                              entry.id ===
+                                                group.entries[0]?.id && (
+                                              <Text
+                                                style={styles.historyEntryPending}
+                                              >
+                                                Review needed
+                                              </Text>
+                                            )}
+                                            {offerDescription ? (
+                                              <Text
+                                                style={
+                                                  styles.historyEntryDescription
+                                                }
+                                                numberOfLines={2}
+                                              >
+                                                {offerDescription}
+                                              </Text>
+                                            ) : null}
+                                          </View>
+                                        );
+                                      })}
+                                    </View>
+                                  )}
+                                </View>
+                              );
+                            })}
+                          </View>
+                        )}
+                      </>
+                    )}
+                  </>
                 ) : activeTab === "profile" ? (
                   <>
                     {!isSignedIn ? (
@@ -5612,7 +6597,7 @@ export default function App() {
                             </Text>
 
                             <Text style={styles.formLabel}>Email</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.authInput}
                               placeholder="name@business.com"
                               placeholderTextColor={COLORS.muted}
@@ -5623,7 +6608,7 @@ export default function App() {
                             />
 
                             <Text style={styles.formLabel}>Password</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.authInput}
                               placeholder="--------"
                               placeholderTextColor={COLORS.muted}
@@ -5672,7 +6657,7 @@ export default function App() {
                             </Text>
 
                             <Text style={styles.formLabel}>Email</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.authInput}
                               placeholder="name@business.com"
                               placeholderTextColor={COLORS.muted}
@@ -5683,7 +6668,7 @@ export default function App() {
                             />
 
                             <Text style={styles.formLabel}>Password</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.authInput}
                               placeholder="--------"
                               placeholderTextColor={COLORS.muted}
@@ -5734,7 +6719,7 @@ export default function App() {
                             </Text>
 
                             <Text style={styles.formLabel}>Business name</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.authInput}
                               placeholder="Business name"
                               placeholderTextColor={COLORS.muted}
@@ -5773,7 +6758,7 @@ export default function App() {
                             </View>
 
                             <Text style={styles.formLabel}>Business address</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.authInput}
                               placeholder="Street address"
                               placeholderTextColor={COLORS.muted}
@@ -5827,7 +6812,7 @@ export default function App() {
                             <View style={styles.formRow}>
                               <View style={styles.formField}>
                                 <Text style={styles.formLabel}>City</Text>
-                                <TextInput
+                                <AutoFocusInput
                                   style={styles.authInput}
                                   placeholder="City"
                                   placeholderTextColor={COLORS.muted}
@@ -5837,7 +6822,7 @@ export default function App() {
                               </View>
                               <View style={styles.formField}>
                                 <Text style={styles.formLabel}>State</Text>
-                                <TextInput
+                                <AutoFocusInput
                                   style={styles.authInput}
                                   placeholder="State"
                                   placeholderTextColor={COLORS.muted}
@@ -5847,7 +6832,7 @@ export default function App() {
                               </View>
                               <View style={styles.formField}>
                                 <Text style={styles.formLabel}>Zip code</Text>
-                                <TextInput
+                                <AutoFocusInput
                                   style={styles.authInput}
                                   placeholder="Zip"
                                   placeholderTextColor={COLORS.muted}
@@ -5859,7 +6844,7 @@ export default function App() {
                             </View>
 
                             <Text style={styles.formLabel}>Phone</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.authInput}
                               placeholder="(555) 123-4567"
                               placeholderTextColor={COLORS.muted}
@@ -5969,7 +6954,7 @@ export default function App() {
                             </View>
 
                             <Text style={styles.formLabel}>Email</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.authInput}
                               placeholder="owner@business.com"
                               placeholderTextColor={COLORS.muted}
@@ -5980,7 +6965,7 @@ export default function App() {
                             />
 
                             <Text style={styles.formLabel}>Password</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.authInput}
                               placeholder="--------"
                               placeholderTextColor={COLORS.muted}
@@ -5990,7 +6975,7 @@ export default function App() {
                             />
 
                             <Text style={styles.formLabel}>Invite code</Text>
-                            <TextInput
+                            <AutoFocusInput
                               style={styles.authInput}
                               placeholder="Required"
                               placeholderTextColor={COLORS.muted}
@@ -6058,7 +7043,7 @@ export default function App() {
 
                         <View style={styles.formCard}>
                           <Text style={styles.formLabel}>Full name</Text>
-                          <TextInput
+                          <AutoFocusInput
                             style={styles.formInput}
                             placeholder="Your name"
                             placeholderTextColor={COLORS.muted}
@@ -6067,7 +7052,7 @@ export default function App() {
                           />
 
                           <Text style={styles.formLabel}>Email</Text>
-                          <TextInput
+                          <AutoFocusInput
                             style={styles.formInput}
                             placeholder="name@business.com"
                             placeholderTextColor={COLORS.muted}
@@ -6078,7 +7063,7 @@ export default function App() {
                           />
 
                           <Text style={styles.formLabel}>Phone</Text>
-                          <TextInput
+                          <AutoFocusInput
                             style={styles.formInput}
                             placeholder="(555) 123-4567"
                             placeholderTextColor={COLORS.muted}
@@ -6088,7 +7073,7 @@ export default function App() {
                           />
 
                           <Text style={styles.formLabel}>Company</Text>
-                          <TextInput
+                          <AutoFocusInput
                             style={styles.formInput}
                             placeholder="Business name"
                             placeholderTextColor={COLORS.muted}
@@ -6420,7 +7405,7 @@ export default function App() {
                         </View>
 
                         <View style={styles.invitePanel}>
-                          <TextInput
+                          <AutoFocusInput
                             style={styles.authInput}
                             placeholder="Search by name, email, phone, or company"
                             placeholderTextColor={COLORS.muted}
@@ -7001,7 +7986,9 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     backgroundColor: "rgba(255, 255, 255, 0.92)",
     borderRadius: IS_COMPACT ? 16 : 18,
-    padding: NAV_PADDING,
+    paddingHorizontal: NAV_PADDING,
+    paddingBottom: NAV_PADDING,
+    paddingTop: NAV_PADDING + 6,
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.08)",
     shadowColor: COLORS.shadow,
@@ -7013,7 +8000,9 @@ const styles = StyleSheet.create({
   navScroll: {
     flexDirection: "row",
     gap: NAV_GAP,
-    paddingHorizontal: 2
+    paddingHorizontal: 2,
+    paddingTop: 6,
+    paddingBottom: 2
   },
   locateRow: {
     alignItems: "flex-end",
@@ -7142,6 +8131,187 @@ const styles = StyleSheet.create({
   scannerActions: {
     marginTop: 12
   },
+  reviewOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    justifyContent: "center",
+    padding: 20
+  },
+  reviewCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    gap: 12
+  },
+  reviewHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12
+  },
+  reviewTitle: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY
+  },
+  reviewSubtitle: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 2
+  },
+  reviewOffer: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    marginTop: 4
+  },
+  reviewClose: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: COLORS.mint,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: COLORS.sand
+  },
+  reviewStars: {
+    flexDirection: "row",
+    gap: 8
+  },
+  reviewStarButton: {
+    padding: 4
+  },
+  reviewInput: {
+    minHeight: 90
+  },
+  detailOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    justifyContent: "center",
+    padding: 20
+  },
+  detailCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    maxHeight: SCREEN_HEIGHT * 0.82
+  },
+  detailHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 6
+  },
+  detailTitle: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY
+  },
+  detailSubtitle: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 2
+  },
+  detailClose: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: COLORS.mint,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: COLORS.sand
+  },
+  detailAddress: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    marginTop: 4
+  },
+  detailHours: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 2
+  },
+  detailRatingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 10
+  },
+  detailRatingText: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM
+  },
+  detailRatingCount: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT
+  },
+  detailReviewButton: {
+    marginTop: 12,
+    backgroundColor: COLORS.pine,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between"
+  },
+  detailReviewButtonText: {
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM,
+    fontSize: 12
+  },
+  detailReviewList: {
+    marginTop: 12,
+    gap: 10
+  },
+  detailReviewCard: {
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: COLORS.mint
+  },
+  detailReviewHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8
+  },
+  detailReviewUser: {
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM
+  },
+  detailReviewTime: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT
+  },
+  detailReviewStars: {
+    flexDirection: "row",
+    gap: 4,
+    marginTop: 6
+  },
+  detailReviewText: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 6,
+    lineHeight: 16
+  },
   confettiOverlay: {
     ...StyleSheet.absoluteFillObject,
     borderRadius: 20,
@@ -7162,7 +8332,8 @@ const styles = StyleSheet.create({
     paddingVertical: IS_COMPACT ? 6 : 8,
     paddingHorizontal: IS_COMPACT ? 12 : 16,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
+    position: "relative"
   },
   navPillActive: {
     backgroundColor: COLORS.pine,
@@ -7175,6 +8346,25 @@ const styles = StyleSheet.create({
   },
   navPillTextActive: {
     color: COLORS.white
+  },
+  navPillBadge: {
+    position: "absolute",
+    top: -2,
+    right: -2,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#D62246",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    borderWidth: 1,
+    borderColor: COLORS.white
+  },
+  navPillBadgeText: {
+    fontSize: 10,
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM
   },
   primaryButton: {
     backgroundColor: COLORS.pine,
@@ -7197,6 +8387,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderRadius: 12
+  },
+  secondaryButtonDisabled: {
+    opacity: 0.6
   },
   secondaryButtonText: {
     color: COLORS.ink,
@@ -8069,6 +9262,114 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 12,
     marginBottom: 16
+  },
+  historyList: {
+    gap: 12,
+    marginBottom: 12
+  },
+  historyGroupCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 12,
+    gap: 6
+  },
+  historyGroupHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10
+  },
+  historyGroupMeta: {
+    flex: 1
+  },
+  historyGroupTitle: {
+    flex: 1,
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM
+  },
+  historyGroupSub: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 4
+  },
+  historyGroupActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  historyReviewBadge: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#D62246",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4
+  },
+  historyReviewBadgeText: {
+    fontSize: 10,
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM
+  },
+  historyEntries: {
+    marginTop: 10,
+    gap: 10
+  },
+  historyReviewButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: "#FFF7E6"
+  },
+  historyReviewText: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM
+  },
+  historyEntry: {
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.mint
+  },
+  historyEntryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10
+  },
+  historyEntryTitle: {
+    flex: 1,
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM
+  },
+  historyEntryTime: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT
+  },
+  historyEntryPending: {
+    fontSize: 10,
+    color: "#B42318",
+    fontFamily: FONT_MEDIUM,
+    marginTop: 4
+  },
+  historyEntryDescription: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 6,
+    lineHeight: 16
   },
   offerRow: {
     flexDirection: "row",
