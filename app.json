@@ -9,6 +9,7 @@
       "**/*"
     ],
     "ios": {
+      "bundleIdentifier": "com.aihamh1.wello",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Wello uses your location to show nearby businesses and offers.",
         "NSCameraUsageDescription": "Wello uses the camera to scan QR codes for offer redemption.",
@@ -17,12 +18,14 @@
     },
     "android": {
       "permissions": [
-        "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION",
-        "CAMERA",
-        "READ_MEDIA_IMAGES",
-        "READ_EXTERNAL_STORAGE"
-      ]
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.aihamh1.wello"
     },
     "plugins": [
       "expo-font",
