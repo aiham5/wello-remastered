@@ -222,6 +222,16 @@ drop policy if exists "Users can create redemptions" on public.redemptions;
 drop policy if exists "Users can read own reviews" on public.reviews;
 drop policy if exists "Reviews are public read" on public.reviews;
 drop policy if exists "Users can create reviews" on public.reviews;
+drop policy if exists "Users can manage notification tokens"
+  on public.notification_tokens;
+drop policy if exists "Staff can read notification tokens"
+  on public.notification_tokens;
+drop policy if exists "Users can manage notification preferences"
+  on public.notification_preferences;
+drop policy if exists "Users can manage user locations"
+  on public.user_locations;
+drop policy if exists "Staff can read user locations"
+  on public.user_locations;
 
 create table if not exists public.invites (
   id uuid primary key default gen_random_uuid(),
@@ -307,6 +317,10 @@ on public.businesses for update
 using (public.is_staff())
 with check (public.is_staff());
 
+create policy "Staff can delete businesses"
+on public.businesses for delete
+using (public.is_staff());
+
 -- Offers
 create policy "Offers are public read"
 on public.offers for select
@@ -341,6 +355,10 @@ create policy "Staff can update offers"
 on public.offers for update
 using (public.is_staff())
 with check (public.is_staff());
+
+create policy "Staff can delete offers"
+on public.offers for delete
+using (public.is_staff());
 
 -- Change requests
 create policy "Owners can create change requests"
@@ -407,4 +425,11 @@ on storage.objects for insert
 with check (
   bucket_id = 'offer-images'
   and auth.uid() is not null
+);
+
+create policy "Staff can delete offer images"
+on storage.objects for delete
+using (
+  bucket_id = 'offer-images'
+  and public.is_staff()
 );

@@ -12,12 +12,11 @@ import {
   ScrollView,
   StatusBar,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
-  UIManager,
-  View,
-  findNodeHandle
+  View
 } from "react-native";
 import MapView, { Marker } from "react-native-maps";
 import { LinearGradient } from "expo-linear-gradient";
@@ -30,10 +29,19 @@ import { toByteArray } from "base64-js";
 import * as Location from "expo-location";
 import QRCode from "qrcode";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import * as Device from "expo-device";
+import * as Notifications from "expo-notifications";
 import * as Clipboard from "expo-clipboard";
 import { supabase } from "./lib/supabase";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: false,
+    shouldSetBadge: false
+  })
+});
 const IS_COMPACT = SCREEN_WIDTH < 360;
 const IS_NARROW = SCREEN_WIDTH < 420;
 const IS_SHORT = SCREEN_HEIGHT < 700;
@@ -64,6 +72,11 @@ const STRIPE_PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY;
 const ANDROID_MARKER_SIZE = 34;
 const ANDROID_MARKER_SELECTED_SIZE = 44;
 const CONFETTI_PIECES = 20;
+const NOTIFICATION_DEFAULTS = {
+  new_offer: true,
+  expiring_offer: true,
+  nearby_offer: true
+};
 const NAV_PILL_MIN = IS_COMPACT ? 78 : 90;
 const NAV_GAP = IS_COMPACT ? 6 : 8;
 const NAV_PADDING = IS_COMPACT ? 8 : 10;
@@ -893,6 +906,24 @@ const uploadOfferImage = async (image, businessId) => {
   }
 };
 
+const getOfferImagePath = (url) => {
+  if (!url) return null;
+  const token = `/storage/v1/object/public/${OFFER_IMAGE_BUCKET}/`;
+  const index = url.indexOf(token);
+  if (index === -1) return null;
+  return url.slice(index + token.length).split("?")[0];
+};
+
+const removeOfferImageByUrl = async (url) => {
+  if (!url || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  const path = getOfferImagePath(url);
+  if (!path) return null;
+  const { error } = await supabase.storage
+    .from(OFFER_IMAGE_BUCKET)
+    .remove([path]);
+  return error?.message || null;
+};
+
 function getPendingEditLabel(field) {
   switch (field) {
     case "name":
@@ -1106,7 +1137,18 @@ export default function App() {
   const redemptionLoggedRef = useRef(false);
   const [qrExpandedId, setQrExpandedId] = useState(null);
   const [qrImageMap, setQrImageMap] = useState({});
+  const [notificationPreferences, setNotificationPreferences] =
+    useState(NOTIFICATION_DEFAULTS);
+  const [preferencesStatus, setPreferencesStatus] = useState({
+    loading: false,
+    error: null
+  });
+  const [notificationPermissionStatus, setNotificationPermissionStatus] =
+    useState("undetermined");
+  const [expoPushToken, setExpoPushToken] = useState(null);
+  const [tokenError, setTokenError] = useState(null);
   const geocodeCacheRef = useRef(new Map());
+  const lastLocationHashRef = useRef("");
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [isEditingBusiness, setIsEditingBusiness] = useState(false);
   const [businessSaveBusy, setBusinessSaveBusy] = useState(false);
@@ -1166,6 +1208,11 @@ export default function App() {
   const [businessDetailReviews, setBusinessDetailReviews] = useState([]);
   const [supervisorSearch, setSupervisorSearch] = useState("");
   const [supervisorStatus, setSupervisorStatus] = useState({
+    loading: false,
+    error: null,
+    success: null
+  });
+  const [adminActionStatus, setAdminActionStatus] = useState({
     loading: false,
     error: null,
     success: null
@@ -1401,54 +1448,10 @@ export default function App() {
     };
   }, []);
 
-  const scrollToKeyboardTarget = useCallback((targetNode) => {
-    if (!targetNode) return;
-    const scrollView = sheetScrollRef.current;
-    if (!scrollView) return;
-    const scrollNode = findNodeHandle(scrollView);
-    const responder = scrollView.getScrollResponder?.() || scrollView;
-    const attemptScroll = (attempt = 0) => {
-      if (responder?.scrollResponderScrollNativeHandleToKeyboard) {
-        responder.scrollResponderScrollNativeHandleToKeyboard(
-          targetNode,
-          24,
-          true
-        );
-      } else if (scrollNode) {
-        UIManager.measureLayout(
-          targetNode,
-          scrollNode,
-          () => {},
-          (_x, y, _width, height) => {
-            const targetOffset = Math.max(0, y - 20 + height);
-            scrollView.scrollTo({ y: targetOffset, animated: true });
-          }
-        );
-      }
-      if (attempt < 2) {
-        setTimeout(() => attemptScroll(attempt + 1), 160);
-      }
-    };
-    setTimeout(() => attemptScroll(0), Platform.OS === "ios" ? 180 : 0);
-  }, []);
-
-  const handleSheetInputFocus = useCallback(
-    (event) => {
-      const targetNode = event?.nativeEvent?.target ?? event?.target;
-      if (!targetNode) return;
-      scrollToKeyboardTarget(targetNode);
-    },
-    [scrollToKeyboardTarget]
-  );
-
   useEffect(() => {
     const handleKeyboardShow = (event) => {
       const height = event?.endCoordinates?.height || 0;
       setKeyboardInset(height);
-      const focused = TextInput.State?.currentlyFocusedInput?.();
-      const targetNode =
-        typeof focused === "number" ? focused : findNodeHandle(focused);
-      scrollToKeyboardTarget(targetNode);
     };
     const handleKeyboardHide = () => {
       setKeyboardInset(0);
@@ -1469,22 +1472,15 @@ export default function App() {
       showSubscription.remove();
       hideSubscription.remove();
     };
-  }, [scrollToKeyboardTarget]);
+  }, []);
 
   const AutoFocusInput = useMemo(() => {
     const Component = React.forwardRef((props, ref) => (
-      <TextInput
-        ref={ref}
-        {...props}
-        onFocus={(event) => {
-          props.onFocus?.(event);
-          handleSheetInputFocus(event);
-        }}
-      />
+      <TextInput ref={ref} {...props} />
     ));
     Component.displayName = "AutoFocusInput";
     return Component;
-  }, [handleSheetInputFocus]);
+  }, []);
 
   useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
@@ -1918,6 +1914,23 @@ export default function App() {
     () => businesses.filter((business) => !business.approved && !business.rejected),
     [businesses]
   );
+  const adminBusinesses = useMemo(
+    () =>
+      businesses
+        .filter((business) => business.source === "supabase")
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
+    [businesses]
+  );
+  const adminOffers = useMemo(
+    () =>
+      offers
+        .filter(
+          (offer) =>
+            offer.businessId && !String(offer.id || "").startsWith("seed-")
+        )
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
+    [offers]
+  );
   const averageRating = useMemo(() => {
     const rated = approvedBusinesses.filter(
       (business) => business.rating && Number.isFinite(business.rating)
@@ -2238,6 +2251,25 @@ export default function App() {
     return () => clearTimeout(timeout);
   }, [createBusinessForm.address]);
 
+  useEffect(() => {
+    registerForPushNotificationsAsync();
+  }, [registerForPushNotificationsAsync]);
+
+  useEffect(() => {
+    loadNotificationPreferences();
+  }, [loadNotificationPreferences]);
+
+  useEffect(() => {
+    if (!mapRegion?.latitude || !mapRegion?.longitude) return;
+    const hash = `${mapRegion.latitude.toFixed(4)}:${mapRegion.longitude.toFixed(4)}`;
+    if (lastLocationHashRef.current === hash) return;
+    lastLocationHashRef.current = hash;
+    upsertUserLocation({
+      latitude: mapRegion.latitude,
+      longitude: mapRegion.longitude
+    });
+  }, [mapRegion, upsertUserLocation]);
+
   const ensureSupabaseReady = (setError) => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setError("Supabase is not configured yet.");
@@ -2245,6 +2277,135 @@ export default function App() {
     }
     return true;
   };
+
+  const upsertNotificationToken = useCallback(
+    async (token) => {
+      if (!authUserId || !token) return;
+      if (!ensureSupabaseReady(() => null)) return;
+      await supabase.from("notification_tokens").upsert({
+        user_id: authUserId,
+        expo_push_token: token,
+        platform: Platform.OS,
+        device_info:
+          Device.modelName ||
+          Device.deviceName ||
+          Device.osName ||
+          Platform.OS,
+        last_seen_at: new Date().toISOString()
+      });
+    },
+    [authUserId]
+  );
+
+  const registerForPushNotificationsAsync = useCallback(async () => {
+    if (!authUserId) return;
+    if (!Device.isDevice) {
+      setNotificationPermissionStatus("unsupported");
+      return;
+    }
+    try {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (existingStatus !== "granted") {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      if (finalStatus !== "granted") {
+        setNotificationPermissionStatus("denied");
+        return;
+      }
+      setNotificationPermissionStatus("granted");
+      const tokenData = await Notifications.getExpoPushTokenAsync();
+      const token = tokenData.data;
+      setExpoPushToken(token);
+      await upsertNotificationToken(token);
+    } catch (error) {
+      setNotificationPermissionStatus("denied");
+      setTokenError(error?.message || "Unable to register for notifications.");
+    }
+  }, [authUserId, upsertNotificationToken]);
+
+  const loadNotificationPreferences = useCallback(async () => {
+    if (!authUserId) return;
+    if (!ensureSupabaseReady(() => null)) return;
+    setPreferencesStatus({ loading: true, error: null });
+    const { data, error } = await supabase
+      .from("notification_preferences")
+      .select("new_offer, expiring_offer, nearby_offer")
+      .eq("user_id", authUserId)
+      .maybeSingle();
+    if (!error && data) {
+      setNotificationPreferences({
+        new_offer: data.new_offer ?? NOTIFICATION_DEFAULTS.new_offer,
+        expiring_offer:
+          data.expiring_offer ?? NOTIFICATION_DEFAULTS.expiring_offer,
+        nearby_offer: data.nearby_offer ?? NOTIFICATION_DEFAULTS.nearby_offer
+      });
+    }
+    setPreferencesStatus({
+      loading: false,
+      error: error?.message || null
+    });
+  }, [authUserId]);
+
+  const saveNotificationPreferences = useCallback(
+    async (nextPreferences) => {
+      if (!authUserId) return;
+      if (!ensureSupabaseReady(() => null)) return;
+      setPreferencesStatus({ loading: true, error: null });
+      const { error } = await supabase.from("notification_preferences").upsert({
+        user_id: authUserId,
+        new_offer:
+          typeof nextPreferences.new_offer === "boolean"
+            ? nextPreferences.new_offer
+            : NOTIFICATION_DEFAULTS.new_offer,
+        expiring_offer:
+          typeof nextPreferences.expiring_offer === "boolean"
+            ? nextPreferences.expiring_offer
+            : NOTIFICATION_DEFAULTS.expiring_offer,
+        nearby_offer:
+          typeof nextPreferences.nearby_offer === "boolean"
+            ? nextPreferences.nearby_offer
+            : NOTIFICATION_DEFAULTS.nearby_offer,
+        updated_at: new Date().toISOString()
+      });
+      setPreferencesStatus({
+        loading: false,
+        error: error?.message || null
+      });
+    },
+    [authUserId]
+  );
+
+  const upsertUserLocation = useCallback(
+    async (coords) => {
+      if (
+        !coords ||
+        !coords.latitude ||
+        !coords.longitude ||
+        !authUserId ||
+        !ensureSupabaseReady(() => null)
+      ) {
+        return;
+      }
+      await supabase.from("user_locations").upsert({
+        user_id: authUserId,
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        recorded_at: new Date().toISOString()
+      });
+    },
+    [authUserId]
+  );
+
+  const handlePreferenceToggle = useCallback(
+    (key, value) => {
+      const nextPreferences = { ...notificationPreferences, [key]: value };
+      setNotificationPreferences(nextPreferences);
+      saveNotificationPreferences(nextPreferences);
+    },
+    [notificationPreferences, saveNotificationPreferences]
+  );
 
   const stripeEnabled = Boolean(STRIPE_PUBLISHABLE_KEY);
 
@@ -2901,15 +3062,15 @@ export default function App() {
       const position = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced
       });
-      mapRef.current?.animateToRegion(
-        {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          latitudeDelta: MAP_REGION.latitudeDelta,
-          longitudeDelta: MAP_REGION.longitudeDelta
-        },
-        700
-      );
+      const nextRegion = {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        latitudeDelta: MAP_REGION.latitudeDelta,
+        longitudeDelta: MAP_REGION.longitudeDelta
+      };
+      setMapRegion(nextRegion);
+      upsertUserLocation(position.coords);
+      mapRef.current?.animateToRegion(nextRegion, 700);
     } catch (error) {
       setLocationError("Unable to find your location.");
     } finally {
@@ -4024,6 +4185,130 @@ export default function App() {
     setPendingOffers((prev) => prev.filter((offer) => offer.id !== offerId));
   };
 
+  const handleAdminDeleteOffer = async (offer) => {
+    if (!offer?.id) return;
+    if (
+      !ensureSupabaseReady((message) =>
+        setAdminActionStatus({ loading: false, error: message, success: null })
+      )
+    ) {
+      return;
+    }
+    setAdminActionStatus({ loading: true, error: null, success: null });
+    const imageError = await removeOfferImageByUrl(offer.imageUrl);
+    const { error } = await supabase.from("offers").delete().eq("id", offer.id);
+    if (error) {
+      setAdminActionStatus({
+        loading: false,
+        error: error.message || "Unable to delete offer.",
+        success: null
+      });
+      return;
+    }
+    setOffers((prev) => prev.filter((item) => item.id !== offer.id));
+    setPendingOffers((prev) => prev.filter((item) => item.id !== offer.id));
+    setAdminActionStatus({
+      loading: false,
+      error: null,
+      success: imageError
+        ? "Offer deleted. Image cleanup failed."
+        : "Offer deleted."
+    });
+  };
+
+  const handleAdminDeleteBusiness = async (business) => {
+    if (!business?.id) return;
+    if (business.source !== "supabase") {
+      setBusinesses((prev) => prev.filter((item) => item.id !== business.id));
+      setOffers((prev) =>
+        prev.filter((offer) => offer.businessId !== business.id)
+      );
+      setPendingOffers((prev) =>
+        prev.filter((offer) => offer.businessId !== business.id)
+      );
+      setAdminActionStatus({
+        loading: false,
+        error: null,
+        success: "Business removed locally."
+      });
+      return;
+    }
+    if (
+      !ensureSupabaseReady((message) =>
+        setAdminActionStatus({ loading: false, error: message, success: null })
+      )
+    ) {
+      return;
+    }
+    setAdminActionStatus({ loading: true, error: null, success: null });
+    let imageCleanupError = null;
+    const { data: offerRows, error: offerError } = await supabase
+      .from("offers")
+      .select("id, image_url")
+      .eq("business_id", business.id);
+    if (offerError) {
+      imageCleanupError = offerError.message || "Unable to load offer images.";
+    }
+    const imagePaths = Array.from(
+      new Set(
+        (offerRows || [])
+          .map((row) => getOfferImagePath(row.image_url))
+          .filter(Boolean)
+      )
+    );
+    if (imagePaths.length) {
+      const { error: storageError } = await supabase.storage
+        .from(OFFER_IMAGE_BUCKET)
+        .remove(imagePaths);
+      if (storageError) {
+        imageCleanupError =
+          storageError.message || "Unable to remove offer images.";
+      }
+    }
+    const { error } = await supabase
+      .from("businesses")
+      .delete()
+      .eq("id", business.id);
+    if (error) {
+      setAdminActionStatus({
+        loading: false,
+        error: error.message || "Unable to delete business.",
+        success: null
+      });
+      return;
+    }
+    setBusinesses((prev) => prev.filter((item) => item.id !== business.id));
+    setOffers((prev) =>
+      prev.filter((offer) => offer.businessId !== business.id)
+    );
+    setPendingOffers((prev) =>
+      prev.filter((offer) => offer.businessId !== business.id)
+    );
+    if (qrExpandedId === business.id) {
+      setQrExpandedId(null);
+    }
+    setQrImageMap((prev) => {
+      if (!prev[business.id]) return prev;
+      const next = { ...prev };
+      delete next[business.id];
+      return next;
+    });
+    if (ownerBusinessId === business.id) {
+      setOwnerBusinessId(null);
+    }
+    if (businessDetail?.id === business.id) {
+      setBusinessDetail(null);
+      setBusinessDetailOpen(false);
+    }
+    setAdminActionStatus({
+      loading: false,
+      error: null,
+      success: imageCleanupError
+        ? "Business deleted. Image cleanup failed."
+        : "Business deleted."
+    });
+  };
+
   const handleGenerateInvite = async () => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setInviteStatus({
@@ -4238,6 +4523,7 @@ export default function App() {
     if (!ensureSupabaseReady(setOfferError)) return;
     setOfferBusy(true);
     setOfferError(null);
+    const imageError = await removeOfferImageByUrl(offer.imageUrl);
     const { error } = await supabase.from("offers").delete().eq("id", offer.id);
     if (error) {
       setOfferError(error.message || "Unable to delete offer.");
@@ -4245,6 +4531,10 @@ export default function App() {
       return;
     }
     setOffers((prev) => prev.filter((item) => item.id !== offer.id));
+    setPendingOffers((prev) => prev.filter((item) => item.id !== offer.id));
+    if (imageError) {
+      console.warn("Wello offer image delete failed:", imageError);
+    }
     setOfferBusy(false);
   };
 
@@ -5238,9 +5528,7 @@ export default function App() {
           </View>
         </Modal>
 
-        <Animated.View
-          style={[styles.sheet, { transform: [{ translateY }] }]}
-        >
+        <Animated.View style={[styles.sheet, { transform: [{ translateY }] }]}>
           <View style={styles.sheetHandle} {...panResponder.panHandlers}>
             <View style={styles.handleBar} />
             <Text style={styles.sheetHint}>Swipe up to explore offers</Text>
@@ -7041,6 +7329,72 @@ export default function App() {
                           </View>
                         </View>
 
+                        <View style={styles.notificationPanel}>
+                          <Text style={styles.sectionTitleAlt}>
+                            Notifications
+                          </Text>
+                          <Text style={styles.sectionBody}>
+                            Stay informed about new or nearby offers. Toggle the
+                            categories you care about.
+                          </Text>
+                          {preferencesStatus.loading && (
+                            <Text style={styles.formHint}>
+                              Saving preferences...
+                            </Text>
+                          )}
+                          {preferencesStatus.error && (
+                            <Text style={styles.formError}>
+                              {preferencesStatus.error}
+                            </Text>
+                          )}
+                          <View style={styles.notificationRow}>
+                            <Text style={styles.notificationLabel}>
+                              New offers
+                            </Text>
+                            <Switch
+                              value={notificationPreferences.new_offer}
+                              onValueChange={(value) =>
+                                handlePreferenceToggle("new_offer", value)
+                              }
+                            />
+                          </View>
+                          <View style={styles.notificationRow}>
+                            <Text style={styles.notificationLabel}>
+                              Offers expiring soon
+                            </Text>
+                            <Switch
+                              value={notificationPreferences.expiring_offer}
+                              onValueChange={(value) =>
+                                handlePreferenceToggle("expiring_offer", value)
+                              }
+                            />
+                          </View>
+                          <View style={styles.notificationRow}>
+                            <Text style={styles.notificationLabel}>
+                              Offers nearby
+                            </Text>
+                            <Switch
+                              value={notificationPreferences.nearby_offer}
+                              onValueChange={(value) =>
+                                handlePreferenceToggle("nearby_offer", value)
+                              }
+                            />
+                          </View>
+                          <Text style={styles.notificationHelp}>
+                            Push permission:{" "}
+                            {notificationPermissionStatus === "granted"
+                              ? "Enabled"
+                              : notificationPermissionStatus === "denied"
+                              ? "Denied"
+                              : notificationPermissionStatus === "unsupported"
+                              ? "Device unsupported"
+                              : "Pending"}
+                          </Text>
+                          {tokenError && (
+                            <Text style={styles.formError}>{tokenError}</Text>
+                          )}
+                        </View>
+
                         <View style={styles.formCard}>
                           <Text style={styles.formLabel}>Full name</Text>
                           <AutoFocusInput
@@ -7132,6 +7486,17 @@ export default function App() {
                         Approve new listings before they go live.
                       </Text>
                     </View>
+                    {adminActionStatus.loading && (
+                      <Text style={styles.formHint}>Processing admin action...</Text>
+                    )}
+                    {adminActionStatus.error && (
+                      <Text style={styles.formError}>{adminActionStatus.error}</Text>
+                    )}
+                    {adminActionStatus.success && (
+                      <Text style={styles.formSuccess}>
+                        {adminActionStatus.success}
+                      </Text>
+                    )}
 
                     <View style={styles.sectionBlock}>
                       <Text style={styles.sectionTitleAlt}>Pending edits</Text>
@@ -7264,6 +7629,68 @@ export default function App() {
                                 ]}
                               >
                                 Reject
+                              </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={styles.adminDelete}
+                              onPress={() => handleAdminDeleteOffer(offer)}
+                            >
+                              <Text
+                                style={[
+                                  styles.adminActionText,
+                                  styles.adminActionTextDark
+                                ]}
+                              >
+                                Delete
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      ))
+                    )}
+
+                    <View style={styles.sectionBlock}>
+                      <Text style={styles.sectionTitleAlt}>Offer management</Text>
+                      <Text style={styles.sectionBody}>
+                        Remove offers and clean up their images.
+                      </Text>
+                    </View>
+
+                    {adminOffers.length === 0 ? (
+                      <View style={styles.emptyState}>
+                        <Text style={styles.emptyTitle}>No offers yet.</Text>
+                        <Text style={styles.emptyCopy}>
+                          Offers will appear once businesses are active.
+                        </Text>
+                      </View>
+                    ) : (
+                      adminOffers.map((offer) => (
+                        <View key={offer.id} style={styles.adminCard}>
+                          <View style={styles.adminHeader}>
+                            <Text style={styles.adminTitle}>
+                              {offer.title || "Offer"}
+                            </Text>
+                            <Text style={styles.adminMeta}>
+                              {offer.business?.name || "Business"}
+                            </Text>
+                          </View>
+                          {offer.description ? (
+                            <Text style={styles.adminOffer}>
+                              {offer.description}
+                            </Text>
+                          ) : null}
+                          <View style={styles.adminActions}>
+                            <TouchableOpacity
+                              style={styles.adminDelete}
+                              onPress={() => handleAdminDeleteOffer(offer)}
+                            >
+                              <Text
+                                style={[
+                                  styles.adminActionText,
+                                  styles.adminActionTextDark
+                                ]}
+                              >
+                                Delete
                               </Text>
                             </TouchableOpacity>
                           </View>
@@ -7532,6 +7959,51 @@ export default function App() {
                     )}
 
                     <View style={styles.sectionBlock}>
+                      <Text style={styles.sectionTitleAlt}>Business management</Text>
+                      <Text style={styles.sectionBody}>
+                        Delete businesses and their offers when needed.
+                      </Text>
+                    </View>
+
+                    {adminBusinesses.length === 0 ? (
+                      <View style={styles.emptyState}>
+                        <Text style={styles.emptyTitle}>No businesses yet.</Text>
+                        <Text style={styles.emptyCopy}>
+                          Approved listings will appear here.
+                        </Text>
+                      </View>
+                    ) : (
+                      adminBusinesses.map((business) => (
+                        <View key={business.id} style={styles.adminCard}>
+                          <View style={styles.adminHeader}>
+                            <Text style={styles.adminTitle}>
+                              {business.name}
+                            </Text>
+                            <Text style={styles.adminMeta}>
+                              {getCategoryConfig(business.categoryKey).display}
+                            </Text>
+                          </View>
+                          <Text style={styles.adminOffer}>{business.offer}</Text>
+                          <View style={styles.adminActions}>
+                            <TouchableOpacity
+                              style={styles.adminDelete}
+                              onPress={() => handleAdminDeleteBusiness(business)}
+                            >
+                              <Text
+                                style={[
+                                  styles.adminActionText,
+                                  styles.adminActionTextDark
+                                ]}
+                              >
+                                Delete
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      ))
+                    )}
+
+                    <View style={styles.sectionBlock}>
                       <Text style={styles.sectionTitleAlt}>Business QR codes</Text>
                       <Text style={styles.sectionBody}>
                         Expand a business to show its unique QR code for in-store
@@ -7664,6 +8136,19 @@ export default function App() {
                                 ]}
                               >
                                 Reject
+                              </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={styles.adminDelete}
+                              onPress={() => handleAdminDeleteBusiness(business)}
+                            >
+                              <Text
+                                style={[
+                                  styles.adminActionText,
+                                  styles.adminActionTextDark
+                                ]}
+                              >
+                                Delete
                               </Text>
                             </TouchableOpacity>
                           </View>
@@ -8458,7 +8943,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.9,
     shadowRadius: 18,
     shadowOffset: { width: 0, height: -8 },
-    elevation: 10
+    elevation: 10,
+    renderToHardwareTextureAndroid: true,
+    shouldRasterizeIOS: true
   },
   sheetScroll: {
     flex: 1
@@ -9239,6 +9726,31 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     marginBottom: 12
   },
+  notificationPanel: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 14,
+    gap: 8,
+    marginBottom: 16
+  },
+  notificationRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between"
+  },
+  notificationLabel: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM
+  },
+  notificationHelp: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 8
+  },
   remoteNotice: {
     backgroundColor: COLORS.mint,
     borderRadius: 12,
@@ -9748,6 +10260,15 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
+    alignItems: "center"
+  },
+  adminDelete: {
+    flex: 1,
+    backgroundColor: "#FFECEC",
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#F5B3B3",
     alignItems: "center"
   },
   adminActionText: {
