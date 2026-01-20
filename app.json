@@ -31,6 +31,12 @@
       "expo-font",
       "expo-camera",
       "expo-image-picker"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "0359ea52-8164-4fc8-bbc3-7b1ee9d1e5bb"
+      }
+    },
+    "owner": "aihamh1"
   }
 }
