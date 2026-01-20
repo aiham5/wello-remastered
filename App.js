@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Animated,
   Dimensions,
@@ -16,7 +22,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 import MapView, { Marker } from "react-native-maps";
 import { LinearGradient } from "expo-linear-gradient";
@@ -31,7 +37,6 @@ import QRCode from "qrcode";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
-import * as Clipboard from "expo-clipboard";
 import { supabase } from "./lib/supabase";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
@@ -39,8 +44,8 @@ Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
     shouldPlaySound: false,
-    shouldSetBadge: false
-  })
+    shouldSetBadge: false,
+  }),
 });
 const IS_COMPACT = SCREEN_WIDTH < 360;
 const IS_NARROW = SCREEN_WIDTH < 420;
@@ -48,17 +53,23 @@ const IS_SHORT = SCREEN_HEIGHT < 700;
 const SHEET_MIN = IS_SHORT ? 140 : 160;
 const SHEET_MAX = Math.min(SCREEN_HEIGHT * 0.72, IS_SHORT ? 560 : 620);
 const COLLAPSED_Y = SHEET_MAX - SHEET_MIN;
-const SAFE_TOP = Platform.OS === "android"
-  ? (StatusBar.currentHeight || 0) + (IS_COMPACT ? 8 : 12)
-  : IS_COMPACT ? 8 : 12;
+const SAFE_TOP =
+  Platform.OS === "android"
+    ? (StatusBar.currentHeight || 0) + (IS_COMPACT ? 8 : 12)
+    : IS_COMPACT
+      ? 8
+      : 12;
 const CARD_WIDTH = Math.min(280, Math.max(210, Math.round(SCREEN_WIDTH * 0.7)));
 const CARD_GAP = Math.round(Math.max(10, SCREEN_WIDTH * 0.03));
 const OFFER_IMAGE_ASPECT = 2 / 1;
 const CARD_MEDIA_HEIGHT = Math.round(
-  (CARD_WIDTH - (IS_COMPACT ? 28 : 32)) / OFFER_IMAGE_ASPECT
+  (CARD_WIDTH - (IS_COMPACT ? 28 : 32)) / OFFER_IMAGE_ASPECT,
 );
 const QR_SIZE = Math.min(200, Math.max(130, Math.round(SCREEN_WIDTH * 0.42)));
-const SCANNER_FRAME = Math.min(300, Math.max(210, Math.round(SCREEN_HEIGHT * 0.32)));
+const SCANNER_FRAME = Math.min(
+  300,
+  Math.max(210, Math.round(SCREEN_HEIGHT * 0.32)),
+);
 const SCANNER_CARD_WIDTH = Math.max(280, SCREEN_WIDTH - 40);
 const SCANNER_CARD_HEIGHT = SCANNER_FRAME + (IS_COMPACT ? 160 : 180);
 const REDEEM_RADIUS_METERS = 150;
@@ -75,7 +86,7 @@ const CONFETTI_PIECES = 20;
 const NOTIFICATION_DEFAULTS = {
   new_offer: true,
   expiring_offer: true,
-  nearby_offer: true
+  nearby_offer: true,
 };
 const NAV_PILL_MIN = IS_COMPACT ? 78 : 90;
 const NAV_GAP = IS_COMPACT ? 6 : 8;
@@ -108,7 +119,7 @@ const TIME_OPTIONS = [
   "10:00",
   "10:30",
   "11:00",
-  "11:30"
+  "11:30",
 ];
 const CONFETTI_COLORS = [
   "#F8C27A",
@@ -118,7 +129,7 @@ const CONFETTI_COLORS = [
   "#F6A6C9",
   "#F2D36B",
   "#7FB7E8",
-  "#C0E8B4"
+  "#C0E8B4",
 ];
 
 const FONT_REGULAR = "Rubik-Regular";
@@ -138,7 +149,7 @@ const COLORS = {
   pine: "#12283A",
   white: "#FFFFFF",
   shadow: "rgba(15, 23, 42, 0.12)",
-  muted: "#5C6B7A"
+  muted: "#5C6B7A",
 };
 
 const daysAgo = (days) => Date.now() - days * 24 * 60 * 60 * 1000;
@@ -155,13 +166,13 @@ function ConfettiDrizzle({ active, width, height }) {
           color: CONFETTI_COLORS[index % CONFETTI_COLORS.length],
           x: Math.round(((index + 0.4) / CONFETTI_PIECES) * spread),
           delay: (index % 6) * 160,
-          duration: 2400 + (index % 5) * 420
+          duration: 2400 + (index % 5) * 420,
         };
       }),
-    [width]
+    [width],
   );
   const fallValues = useRef(
-    pieces.map((_, index) => new Animated.Value(-20 - (index % 4) * 12))
+    pieces.map((_, index) => new Animated.Value(-20 - (index % 4) * 12)),
   ).current;
 
   useEffect(() => {
@@ -185,9 +196,9 @@ function ConfettiDrizzle({ active, width, height }) {
           Animated.timing(value, {
             toValue: height + 24,
             duration: piece.duration,
-            useNativeDriver: true
+            useNativeDriver: true,
           }),
-          { resetBeforeIteration: true }
+          { resetBeforeIteration: true },
         );
         loop.start();
         loops[index] = loop;
@@ -220,8 +231,8 @@ function ConfettiDrizzle({ active, width, height }) {
               width: piece.size,
               height: piece.size * 1.4,
               left: piece.x,
-              transform: [{ translateY: fallValues[index] }]
-            }
+              transform: [{ translateY: fallValues[index] }],
+            },
           ]}
         />
       ))}
@@ -247,51 +258,51 @@ const BUSINESSES = [
     coordinate: { latitude: 40.7138, longitude: -74.0065 },
     approved: true,
     rejected: false,
-    source: "seed"
+    source: "seed",
   },
   {
     id: "2",
     name: "Harbor Fitness",
-    category: "Fitness Studio",
-    categoryKey: "fitness",
+    category: "Activities & Entertainment",
+    categoryKey: "activity",
     offer: "First month 30% off",
     qrCode: "WELLO-2-L4M8Z0T7",
     distance: "1.1 mi",
     subscription: "Starter $50/mo",
     rating: 4.9,
-    tags: ["classes", "trainers", "family"],
+    tags: ["classes", "movement", "community"],
     isOpen: true,
     hours: "5:30 AM - 9:00 PM",
     createdAt: daysAgo(8),
     coordinate: { latitude: 40.7119, longitude: -74.0018 },
     approved: true,
     rejected: false,
-    source: "seed"
+    source: "seed",
   },
   {
     id: "3",
-    name: "Cedar Market",
-    category: "Grocery",
-    categoryKey: "grocery",
-    offer: "Weekly produce box $24",
+    name: "Cedar Auto Spa",
+    category: "Carwash / Auto Cosmetic",
+    categoryKey: "auto",
+    offer: "Deluxe wash w/ ceramic coat",
     qrCode: "WELLO-3-7P2X5N9C",
     distance: "0.9 mi",
     subscription: "Starter $50/mo",
     rating: 4.6,
-    tags: ["organic", "family"],
+    tags: ["ceramic", "detail", "shine"],
     isOpen: true,
     hours: "8:00 AM - 8:00 PM",
     createdAt: daysAgo(14),
     coordinate: { latitude: 40.7152, longitude: -74.0083 },
     approved: true,
     rejected: false,
-    source: "seed"
+    source: "seed",
   },
   {
     id: "4",
     name: "Luna Nail Studio",
-    category: "Nail Salon",
-    categoryKey: "nail",
+    category: "Barbershop / Salon",
+    categoryKey: "barbersalon",
     offer: "Free gloss with any set",
     qrCode: "WELLO-4-K3T8Q1B6",
     distance: "1.4 mi",
@@ -304,45 +315,45 @@ const BUSINESSES = [
     coordinate: { latitude: 40.7096, longitude: -74.0105 },
     approved: true,
     rejected: false,
-    source: "seed"
+    source: "seed",
   },
   {
     id: "5",
-    name: "Rivertown Books",
-    category: "Bookshop",
-    categoryKey: "books",
-    offer: "2nd book 50% off",
+    name: "Rivertown Cafe & Bar",
+    category: "Drink places",
+    categoryKey: "drink",
+    offer: "Evening cocktail flight $18",
     qrCode: "WELLO-5-M9R2V7D4",
     distance: "0.5 mi",
     subscription: "Starter $50/mo",
     rating: 4.9,
-    tags: ["events", "cozy", "open"],
+    tags: ["cocktails", "cozy", "live"],
     isOpen: true,
-    hours: "9:00 AM - 7:00 PM",
+    hours: "3:00 PM - 11:00 PM",
     createdAt: daysAgo(6),
     coordinate: { latitude: 40.7145, longitude: -74.0034 },
     approved: true,
     rejected: false,
-    source: "seed"
+    source: "seed",
   },
   {
     id: "6",
-    name: "Steel & Stone",
-    category: "Retail Home Goods",
-    categoryKey: "retail",
-    offer: "Bundle any 2 candles",
+    name: "Steel & Stone Auto Detail",
+    category: "Carwash / Auto Cosmetic",
+    categoryKey: "auto",
+    offer: "Bundle any 2 services",
     qrCode: "WELLO-6-J5C1Y8W3",
     distance: "1.8 mi",
     subscription: "Starter $50/mo",
     rating: 4.5,
-    tags: ["decor", "gifts"],
+    tags: ["detail", "finish"],
     isOpen: true,
     hours: "10:00 AM - 8:00 PM",
     createdAt: daysAgo(20),
     coordinate: { latitude: 40.7121, longitude: -74.0121 },
     approved: true,
     rejected: false,
-    source: "seed"
+    source: "seed",
   },
   {
     id: "7",
@@ -361,7 +372,7 @@ const BUSINESSES = [
     coordinate: { latitude: 40.7107, longitude: -74.0042 },
     approved: true,
     rejected: false,
-    source: "seed"
+    source: "seed",
   },
   {
     id: "8",
@@ -380,8 +391,8 @@ const BUSINESSES = [
     coordinate: { latitude: 40.7161, longitude: -74.005 },
     approved: true,
     rejected: false,
-    source: "seed"
-  }
+    source: "seed",
+  },
 ];
 
 const OFFER_SEEDS = BUSINESSES.flatMap((business, index) => [
@@ -395,37 +406,37 @@ const OFFER_SEEDS = BUSINESSES.flatMap((business, index) => [
     active: true,
     approvalStatus: "approved",
     createdAt: daysAgo(index + 1),
-    business
-  }
+    business,
+  },
 ]);
 
 const BUSINESS_ANALYTICS = {
-  "1": { views: 1840, saves: 312, redemptions: 86, reach: "6.2k" },
-  "2": { views: 1620, saves: 276, redemptions: 63, reach: "5.4k" },
-  "3": { views: 1180, saves: 198, redemptions: 41, reach: "4.1k" },
-  "4": { views: 980, saves: 146, redemptions: 38, reach: "3.2k" },
-  "5": { views: 1540, saves: 284, redemptions: 59, reach: "5.8k" },
-  "6": { views: 1320, saves: 224, redemptions: 47, reach: "4.6k" },
-  "7": { views: 1410, saves: 246, redemptions: 52, reach: "5.1k" },
-  "8": { views: 1760, saves: 298, redemptions: 74, reach: "6.0k" }
+  1: { views: 1840, saves: 312, redemptions: 86, reach: "6.2k" },
+  2: { views: 1620, saves: 276, redemptions: 63, reach: "5.4k" },
+  3: { views: 1180, saves: 198, redemptions: 41, reach: "4.1k" },
+  4: { views: 980, saves: 146, redemptions: 38, reach: "3.2k" },
+  5: { views: 1540, saves: 284, redemptions: 59, reach: "5.8k" },
+  6: { views: 1320, saves: 224, redemptions: 47, reach: "4.6k" },
+  7: { views: 1410, saves: 246, redemptions: 52, reach: "5.1k" },
+  8: { views: 1760, saves: 298, redemptions: 74, reach: "6.0k" },
 };
 const DEFAULT_ANALYTICS = { views: 0, saves: 0, redemptions: 0, reach: "0" };
 const BUSINESS_QR_IMAGES = {
-  "1": require("./assets/qr/wello-1.png"),
-  "2": require("./assets/qr/wello-2.png"),
-  "3": require("./assets/qr/wello-3.png"),
-  "4": require("./assets/qr/wello-4.png"),
-  "5": require("./assets/qr/wello-5.png"),
-  "6": require("./assets/qr/wello-6.png"),
-  "7": require("./assets/qr/wello-7.png"),
-  "8": require("./assets/qr/wello-8.png")
+  1: require("./assets/qr/wello-1.png"),
+  2: require("./assets/qr/wello-2.png"),
+  3: require("./assets/qr/wello-3.png"),
+  4: require("./assets/qr/wello-4.png"),
+  5: require("./assets/qr/wello-5.png"),
+  6: require("./assets/qr/wello-6.png"),
+  7: require("./assets/qr/wello-7.png"),
+  8: require("./assets/qr/wello-8.png"),
 };
 
 const MAP_REGION = {
   latitude: 40.7128,
   longitude: -74.006,
   latitudeDelta: 0.055,
-  longitudeDelta: 0.045
+  longitudeDelta: 0.045,
 };
 
 const formatSubscription = (plan, priceCents) => {
@@ -449,11 +460,12 @@ const mapSupabaseBusiness = (row, index) => {
   const categoryConfig = getCategoryConfig(categoryKey);
   const latitude = row.latitude !== null ? Number(row.latitude) : null;
   const longitude = row.longitude !== null ? Number(row.longitude) : null;
-  const hasCoordinates = Number.isFinite(latitude) && Number.isFinite(longitude);
+  const hasCoordinates =
+    Number.isFinite(latitude) && Number.isFinite(longitude);
   const safeIndex = Number.isFinite(index) ? index : 0;
   const fallbackCoordinate = {
     latitude: MAP_REGION.latitude + safeIndex * 0.002,
-    longitude: MAP_REGION.longitude - safeIndex * 0.002
+    longitude: MAP_REGION.longitude - safeIndex * 0.002,
   };
   return {
     id: String(row.id || index + 1),
@@ -464,7 +476,10 @@ const mapSupabaseBusiness = (row, index) => {
     categoryKey,
     offer: row.offer_highlight || "New offer available",
     distance: "--",
-    subscription: formatSubscription(row.subscription_plan, row.subscription_price_cents),
+    subscription: formatSubscription(
+      row.subscription_plan,
+      row.subscription_price_cents,
+    ),
     rating: 4.7,
     tags: Array.isArray(row.tags) && row.tags.length ? row.tags : ["local"],
     isOpen: row.is_open ?? true,
@@ -480,7 +495,7 @@ const mapSupabaseBusiness = (row, index) => {
     approved: row.approval_status === "approved",
     rejected: row.approval_status === "rejected",
     qrCode: row.qr_code || "",
-    source: "supabase"
+    source: "supabase",
   };
 };
 
@@ -494,7 +509,7 @@ const mapSupabaseOffer = (row) => ({
   active: row.active ?? true,
   approvalStatus: row.approval_status || "approved",
   createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
-  business: row.business || null
+  business: row.business || null,
 });
 
 const mapSupabaseRedemption = (row) => ({
@@ -503,7 +518,7 @@ const mapSupabaseRedemption = (row) => ({
   businessId: row.business_id || null,
   offerId: row.offer_id || null,
   offer: row.offer || null,
-  business: row.business || null
+  business: row.business || null,
 });
 
 const mapSupabaseReview = (row) => ({
@@ -513,17 +528,8 @@ const mapSupabaseReview = (row) => ({
   offerId: row.offer_id || null,
   rating: Number(row.rating) || 0,
   reviewText: row.review_text || "",
-  createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now()
+  createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
 });
-
-const INVITE_ROLE_LABELS = {
-  business_owner: "Business"
-};
-
-const generateInviteCode = () => {
-  const segment = () => Math.random().toString(36).slice(2, 6).toUpperCase();
-  return `WELLO-${segment()}-${segment()}`;
-};
 
 const formatDisplayName = (email) => {
   if (!email) return "Wello Member";
@@ -541,9 +547,15 @@ const formatHistoryTimestamp = (value) => {
   const dateLabel = date.toLocaleDateString();
   const timeLabel = date.toLocaleTimeString([], {
     hour: "numeric",
-    minute: "2-digit"
+    minute: "2-digit",
   });
   return `${dateLabel} · ${timeLabel}`;
+};
+
+const formatOfferDate = (value) => {
+  if (!value) return "Date unavailable";
+  const date = new Date(value);
+  return date.toLocaleDateString();
 };
 
 const formatBusinessHours = (startTime, startMeridiem, endTime, endMeridiem) =>
@@ -558,7 +570,7 @@ const parseBusinessHours = (value) => {
     if (!time) return null;
     return {
       time,
-      meridiem: meridiem || "AM"
+      meridiem: meridiem || "AM",
     };
   };
   const start = parsePart(parts[0]);
@@ -568,7 +580,7 @@ const parseBusinessHours = (value) => {
     startTime: start.time,
     startMeridiem: start.meridiem,
     endTime: end.time,
-    endMeridiem: end.meridiem
+    endMeridiem: end.meridiem,
   };
 };
 
@@ -578,7 +590,7 @@ const levenshteinDistance = (value, target) => {
   if (!a.length) return b.length;
   if (!b.length) return a.length;
   const rows = Array.from({ length: a.length + 1 }, () =>
-    Array(b.length + 1).fill(0)
+    Array(b.length + 1).fill(0),
   );
   for (let i = 0; i <= a.length; i += 1) rows[i][0] = i;
   for (let j = 0; j <= b.length; j += 1) rows[0][j] = j;
@@ -588,7 +600,7 @@ const levenshteinDistance = (value, target) => {
       rows[i][j] = Math.min(
         rows[i - 1][j] + 1,
         rows[i][j - 1] + 1,
-        rows[i - 1][j - 1] + cost
+        rows[i - 1][j - 1] + cost,
       );
     }
   }
@@ -600,7 +612,7 @@ const OFFER_TYPE_LABELS = {
   discount: "Discount",
   bundle: "Bundle",
   freebie: "Freebie",
-  event: "Event"
+  event: "Event",
 };
 
 const normalizeOfferType = (input) => {
@@ -609,8 +621,8 @@ const normalizeOfferType = (input) => {
   const lower = raw.toLowerCase();
   const aliases = {
     "buy one get one": "bogo",
-    "buy1get1": "bogo",
-    "b1g1": "bogo",
+    buy1get1: "bogo",
+    b1g1: "bogo",
     "2 for 1": "bogo",
     "2for1": "bogo",
     "two for one": "bogo",
@@ -623,7 +635,7 @@ const normalizeOfferType = (input) => {
     bundle: "bundle",
     free: "freebie",
     freebie: "freebie",
-    event: "event"
+    event: "event",
   };
   if (aliases[lower]) return OFFER_TYPE_LABELS[aliases[lower]];
   const entries = Object.entries(OFFER_TYPE_LABELS);
@@ -639,7 +651,7 @@ const normalizeOfferType = (input) => {
     const labelLower = label.toLowerCase();
     const score = Math.min(
       levenshteinDistance(lower, key),
-      levenshteinDistance(lower, labelLower)
+      levenshteinDistance(lower, labelLower),
     );
     if (score < bestScore) {
       bestScore = score;
@@ -687,7 +699,7 @@ const parseAddressComponents = (components = []) => {
     street,
     city: get("locality"),
     state: get("administrative_area_level_1"),
-    postalCode: get("postal_code")
+    postalCode: get("postal_code"),
   };
 };
 
@@ -695,56 +707,54 @@ const MAP_STYLE = [
   {
     featureType: "all",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#4B5563" }]
+    stylers: [{ color: "#4B5563" }],
   },
   {
     featureType: "administrative",
     elementType: "geometry",
-    stylers: [{ color: "#E2E8F0" }]
+    stylers: [{ color: "#E2E8F0" }],
   },
   {
     featureType: "poi",
     elementType: "geometry.fill",
-    stylers: [{ color: "#EEF2F7" }]
+    stylers: [{ color: "#EEF2F7" }],
   },
   {
     featureType: "poi.park",
     elementType: "geometry.fill",
-    stylers: [{ color: "#D7E6DD" }]
+    stylers: [{ color: "#D7E6DD" }],
   },
   {
     featureType: "road",
     elementType: "geometry",
-    stylers: [{ color: "#F5F7FB" }]
+    stylers: [{ color: "#F5F7FB" }],
   },
   {
     featureType: "road",
     elementType: "geometry.stroke",
-    stylers: [{ color: "#D7DEE8" }]
+    stylers: [{ color: "#D7DEE8" }],
   },
   {
     featureType: "water",
     elementType: "geometry.fill",
-    stylers: [{ color: "#CFE3F1" }]
-  }
+    stylers: [{ color: "#CFE3F1" }],
+  },
 ];
 
 const FILTERS = [
   { key: "open", label: "Open now" },
   { key: "top", label: "Top rated" },
   { key: "new", label: "New offers" },
-  { key: "family", label: "Family friendly" }
+  { key: "family", label: "Family friendly" },
 ];
 
 const CATEGORY_OPTIONS = [
-  { key: "restaurant", label: "Restaurant" },
-  { key: "retail", label: "Retail" },
-  { key: "nail", label: "Nail salon" },
-  { key: "barber", label: "Barbershop" },
-  { key: "cafe", label: "Cafe" },
-  { key: "fitness", label: "Fitness" },
-  { key: "grocery", label: "Grocery" },
-  { key: "books", label: "Bookshop" }
+  { key: "cafe", label: "Cafes" },
+  { key: "drink", label: "Drinks" },
+  { key: "restaurant", label: "Restaurants/Food" },
+  { key: "barbersalon", label: "Barbershops/Salons" },
+  { key: "activity", label: "Activities/Entertainment" },
+  { key: "auto", label: "Carwash/Auto Cosmetic" },
 ];
 
 const PLAN_OPTIONS = [
@@ -753,80 +763,67 @@ const PLAN_OPTIONS = [
     label: "Starter",
     price: "$50/mo",
     desc: "Map listing and offers",
-    enabled: true
+    enabled: true,
   },
   {
     key: "growth",
     label: "Growth",
     price: "$75/mo",
     desc: "Priority placement + insights",
-    enabled: false
+    enabled: false,
   },
   {
     key: "premium",
     label: "Premium",
     price: "$99/mo",
     desc: "Featured badge + campaigns",
-    enabled: false
-  }
+    enabled: false,
+  },
 ];
 
-
 const CATEGORY_CONFIG = {
-  restaurant: {
-    label: "R",
-    color: "#C45B3C",
-    display: "Restaurant",
-    icon: "restaurant"
-  },
-  retail: {
-    label: "S",
-    color: "#2E4C66",
-    display: "Retail",
-    icon: "storefront"
-  },
-  nail: {
-    label: "N",
-    color: "#B07A3C",
-    display: "Nail Salon",
-    icon: "color-palette"
-  },
-  barber: {
-    label: "B",
-    color: "#2F6B62",
-    display: "Barbershop",
-    icon: "cut"
-  },
   cafe: {
-    label: "C",
-    color: "#6E5142",
+    label: "CA",
+    color: "#C45B3C",
     display: "Cafe",
-    icon: "cafe"
+    icon: "cafe",
   },
-  fitness: {
-    label: "F",
-    color: "#3D5E7A",
-    display: "Fitness",
-    icon: "fitness"
+  drink: {
+    label: "DR",
+    color: "#3F6DF6",
+    display: "Refreshment Studio",
+    icon: "cup",
   },
-  grocery: {
-    label: "G",
-    color: "#4E6B3F",
-    display: "Grocery",
-    icon: "basket"
+  restaurant: {
+    label: "FO",
+    color: "#B33E2A",
+    display: "Restaurant / Food",
+    icon: "restaurant",
   },
-  books: {
-    label: "K",
-    color: "#4F5D6A",
-    display: "Bookshop",
-    icon: "book"
+  barbersalon: {
+    label: "BA",
+    color: "#0F172A",
+    display: "Barbershop / Salon",
+    icon: "scissors",
+  },
+  activity: {
+    label: "AC",
+    color: "#9A4FFF",
+    display: "Activities / Entertainment",
+    icon: "play-circle",
+  },
+  auto: {
+    label: "AU",
+    color: "#196A55",
+    display: "Carwash / Auto Cosmetic",
+    icon: "car-wash",
   },
   default: {
-    label: "L",
+    label: "LO",
     color: COLORS.coral,
     display: "Local",
-    icon: "pin"
-  }
+    icon: "pin",
+  },
 };
 
 function getCategoryConfig(categoryKey) {
@@ -860,7 +857,10 @@ const OFFER_IMAGE_BUCKET = "offer-images";
 
 const uploadOfferImage = async (image, businessId) => {
   if (!image?.uri && !image?.base64) return { url: null, error: null };
-  const safeBusinessId = String(businessId || "business").replace(/[^a-zA-Z0-9-]/g, "");
+  const safeBusinessId = String(businessId || "business").replace(
+    /[^a-zA-Z0-9-]/g,
+    "",
+  );
   const uri = image.uri || "";
   const rawName = image.fileName || uri.split("/").pop() || "offer.jpg";
   const cleanedName = rawName.split("?")[0];
@@ -878,7 +878,7 @@ const uploadOfferImage = async (image, businessId) => {
       image.base64 ||
       (uri
         ? await FileSystem.readAsStringAsync(uri, {
-            encoding: FileSystem.EncodingType.Base64
+            encoding: FileSystem.EncodingType.Base64,
           })
         : "");
     if (!base64) {
@@ -892,7 +892,7 @@ const uploadOfferImage = async (image, businessId) => {
       .from(OFFER_IMAGE_BUCKET)
       .upload(filePath, data, {
         contentType,
-        upsert: false
+        upsert: false,
       });
     if (error) {
       return { url: null, error: error.message || "Upload failed." };
@@ -957,7 +957,7 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
   const openFromHours = isBusinessOpenNow(hoursValue);
   const isOpen =
     openFromHours === null
-      ? item.isOpen ?? item.business?.isOpen ?? true
+      ? (item.isOpen ?? item.business?.isOpen ?? true)
       : openFromHours;
   const tags = Array.isArray(item.tags) ? item.tags : [];
   const visibleTags = tags.slice(0, 2);
@@ -969,16 +969,16 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
         onPress={onPress}
         activeOpacity={0.85}
       >
-      <View style={styles.cardHeader}>
-        <Text style={styles.cardName} numberOfLines={1}>
-          {item.name}
-        </Text>
-        {isOpen && (
-          <View style={[styles.cardBadge, styles.cardBadgeOpen]}>
-            <Text style={styles.cardBadgeText}>Open</Text>
-          </View>
-        )}
-      </View>
+        <View style={styles.cardHeader}>
+          <Text style={styles.cardName} numberOfLines={1}>
+            {item.name}
+          </Text>
+          {isOpen && (
+            <View style={[styles.cardBadge, styles.cardBadgeOpen]}>
+              <Text style={styles.cardBadgeText}>Open</Text>
+            </View>
+          )}
+        </View>
         <Text style={styles.cardCategory}>{category.display}</Text>
         {offerTitle ? (
           <Text style={styles.cardOfferTitle} numberOfLines={1}>
@@ -990,53 +990,53 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
             {offerDescription}
           </Text>
         ) : null}
-      <TouchableOpacity
-        style={[styles.redeemButton, !isOpen && styles.redeemButtonDisabled]}
-        onPress={onRedeem}
-        activeOpacity={0.85}
-        disabled={!isOpen}
-      >
-        <Text
-          style={[
-            styles.redeemButtonText,
-            !isOpen && styles.redeemButtonTextDisabled
-          ]}
+        <TouchableOpacity
+          style={[styles.redeemButton, !isOpen && styles.redeemButtonDisabled]}
+          onPress={onRedeem}
+          activeOpacity={0.85}
+          disabled={!isOpen}
         >
-          {isOpen ? "Redeem offer" : "Closed now"}
-        </Text>
-      </TouchableOpacity>
-      <View style={styles.cardMetaRow}>
-        <Text style={styles.cardMeta}>{item.distance || "--"}</Text>
-        <Text style={styles.cardMeta}>Rating {ratingLabel}</Text>
-      </View>
-      <View style={styles.cardMedia}>
-        {tags.length > 0 && (
-          <View style={styles.cardMediaOverlay}>
-            {visibleTags.map((tag) => (
-              <View key={tag} style={[styles.tagPill, styles.tagPillOverlay]}>
-                <Text style={[styles.tagText, styles.tagTextOverlay]}>
-                  {tag}
-                </Text>
-              </View>
-            ))}
-            {extraTagCount > 0 && (
-              <View style={[styles.tagPill, styles.tagPillOverlay]}>
-                <Text style={[styles.tagText, styles.tagTextOverlay]}>
-                  +{extraTagCount}
-                </Text>
-              </View>
-            )}
-          </View>
-        )}
-        {item.imageUrl ? (
-          <Image
-            source={{ uri: item.imageUrl }}
-            style={styles.cardMediaImage}
-            resizeMode="cover"
+          <Text
+            style={[
+              styles.redeemButtonText,
+              !isOpen && styles.redeemButtonTextDisabled,
+            ]}
+          >
+            {isOpen ? "Redeem offer" : "Closed now"}
+          </Text>
+        </TouchableOpacity>
+        <View style={styles.cardMetaRow}>
+          <Text style={styles.cardMeta}>{item.distance || "--"}</Text>
+          <Text style={styles.cardMeta}>Rating {ratingLabel}</Text>
+        </View>
+        <View style={styles.cardMedia}>
+          {tags.length > 0 && (
+            <View style={styles.cardMediaOverlay}>
+              {visibleTags.map((tag) => (
+                <View key={tag} style={[styles.tagPill, styles.tagPillOverlay]}>
+                  <Text style={[styles.tagText, styles.tagTextOverlay]}>
+                    {tag}
+                  </Text>
+                </View>
+              ))}
+              {extraTagCount > 0 && (
+                <View style={[styles.tagPill, styles.tagPillOverlay]}>
+                  <Text style={[styles.tagText, styles.tagTextOverlay]}>
+                    +{extraTagCount}
+                  </Text>
+                </View>
+              )}
+            </View>
+          )}
+          {item.imageUrl ? (
+            <Image
+              source={{ uri: item.imageUrl }}
+              style={styles.cardMediaImage}
+              resizeMode="cover"
               onError={(event) => {
                 console.warn("Wello offer image load failed:", {
                   uri: item.imageUrl,
-                  error: event.nativeEvent?.error
+                  error: event.nativeEvent?.error,
                 });
               }}
             />
@@ -1065,8 +1065,7 @@ export default function App() {
   const [showFilters, setShowFilters] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [mapRegion, setMapRegion] = useState(MAP_REGION);
-  const initialBusinesses =
-    SUPABASE_URL && SUPABASE_ANON_KEY ? [] : BUSINESSES;
+  const initialBusinesses = SUPABASE_URL && SUPABASE_ANON_KEY ? [] : BUSINESSES;
   const initialOffers = SUPABASE_URL && SUPABASE_ANON_KEY ? [] : OFFER_SEEDS;
   const [businesses, setBusinesses] = useState(initialBusinesses);
   const [offers, setOffers] = useState(initialOffers);
@@ -1089,7 +1088,6 @@ export default function App() {
   const [signUpError, setSignUpError] = useState(null);
   const [businessEmail, setBusinessEmail] = useState("");
   const [businessPassword, setBusinessPassword] = useState("");
-  const [businessInviteCode, setBusinessInviteCode] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [businessCategoryKey, setBusinessCategoryKey] = useState("restaurant");
   const [businessAddress, setBusinessAddress] = useState("");
@@ -1131,17 +1129,18 @@ export default function App() {
   const [redeemGate, setRedeemGate] = useState({
     allowed: true,
     reason: null,
-    distanceMeters: null
+    distanceMeters: null,
   });
   const [redeemGateBusy, setRedeemGateBusy] = useState(false);
   const redemptionLoggedRef = useRef(false);
   const [qrExpandedId, setQrExpandedId] = useState(null);
   const [qrImageMap, setQrImageMap] = useState({});
-  const [notificationPreferences, setNotificationPreferences] =
-    useState(NOTIFICATION_DEFAULTS);
+  const [notificationPreferences, setNotificationPreferences] = useState(
+    NOTIFICATION_DEFAULTS,
+  );
   const [preferencesStatus, setPreferencesStatus] = useState({
     loading: false,
-    error: null
+    error: null,
   });
   const [notificationPermissionStatus, setNotificationPermissionStatus] =
     useState("undetermined");
@@ -1154,43 +1153,36 @@ export default function App() {
   const [businessSaveBusy, setBusinessSaveBusy] = useState(false);
   const [remoteStatus, setRemoteStatus] = useState({
     loading: false,
-    error: null
+    error: null,
   });
   const [offerStatus, setOfferStatus] = useState({
     loading: false,
-    error: null
+    error: null,
   });
   const [pendingOfferStatus, setPendingOfferStatus] = useState({
     loading: false,
-    error: null
+    error: null,
   });
   const [pendingOffers, setPendingOffers] = useState([]);
   const [changeRequestStatus, setChangeRequestStatus] = useState({
     loading: false,
-    error: null
+    error: null,
   });
   const [changeRequests, setChangeRequests] = useState([]);
-  const [inviteStatus, setInviteStatus] = useState({
-    loading: false,
-    error: null,
-    code: null
-  });
-  const [inviteCopied, setInviteCopied] = useState(false);
-  const [inviteList, setInviteList] = useState([]);
   const [profileStatus, setProfileStatus] = useState({
     loading: false,
-    error: null
+    error: null,
   });
   const [profileList, setProfileList] = useState([]);
   const [redemptionStatus, setRedemptionStatus] = useState({
     loading: false,
-    error: null
+    error: null,
   });
   const [redemptionHistory, setRedemptionHistory] = useState([]);
   const [expandedHistoryGroups, setExpandedHistoryGroups] = useState({});
   const [reviewStatus, setReviewStatus] = useState({
     loading: false,
-    error: null
+    error: null,
   });
   const [userReviews, setUserReviews] = useState([]);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
@@ -1203,19 +1195,24 @@ export default function App() {
   const [businessDetail, setBusinessDetail] = useState(null);
   const [businessDetailStatus, setBusinessDetailStatus] = useState({
     loading: false,
-    error: null
+    error: null,
   });
   const [businessDetailReviews, setBusinessDetailReviews] = useState([]);
+  const [businessDetailOffers, setBusinessDetailOffers] = useState([]);
+  const [businessDetailOffersStatus, setBusinessDetailOffersStatus] = useState({
+    loading: false,
+    error: null,
+  });
   const [supervisorSearch, setSupervisorSearch] = useState("");
   const [supervisorStatus, setSupervisorStatus] = useState({
     loading: false,
     error: null,
-    success: null
+    success: null,
   });
   const [adminActionStatus, setAdminActionStatus] = useState({
     loading: false,
     error: null,
-    success: null
+    success: null,
   });
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [ownerBusinessId, setOwnerBusinessId] = useState(defaultOwnerId);
@@ -1233,7 +1230,7 @@ export default function App() {
     hours: "",
     planKey: "starter",
     tags: "",
-    isOpen: true
+    isOpen: true,
   });
   const [createBusinessForm, setCreateBusinessForm] = useState({
     name: "",
@@ -1245,7 +1242,7 @@ export default function App() {
     categoryKey: "restaurant",
     offer: "",
     phone: "",
-    tags: ""
+    tags: "",
   });
   const [createBusinessBusy, setCreateBusinessBusy] = useState(false);
   const [createBusinessError, setCreateBusinessError] = useState(null);
@@ -1267,12 +1264,12 @@ export default function App() {
   const [offerForm, setOfferForm] = useState({
     title: "",
     description: "",
-    type: ""
+    type: "",
   });
   const [offerImage, setOfferImage] = useState(null);
   const [offerImageStatus, setOfferImageStatus] = useState({
     uploading: false,
-    error: null
+    error: null,
   });
   const [offerBusy, setOfferBusy] = useState(false);
   const [offerError, setOfferError] = useState(null);
@@ -1325,7 +1322,7 @@ export default function App() {
         full_name: fullName,
         role: nextRole,
         phone: profilePhoneValue || null,
-        company: profileCompanyValue || null
+        company: profileCompanyValue || null,
       });
       if (upsertError && !data) {
         console.warn("Wello profile upsert failed:", upsertError.message);
@@ -1342,7 +1339,7 @@ export default function App() {
     console.log("Wello role hydrate:", {
       email: profileEmailValue,
       role: nextRole,
-      profileFound: Boolean(data)
+      profileFound: Boolean(data),
     });
     return nextRole;
   }, []);
@@ -1353,7 +1350,7 @@ export default function App() {
       "Rubik-Regular": require("./assets/rubik/static/Rubik-Regular.ttf"),
       "Rubik-Medium": require("./assets/rubik/static/Rubik-Medium.ttf"),
       "Rubik-SemiBold": require("./assets/rubik/static/Rubik-SemiBold.ttf"),
-      "Rubik-Bold": require("./assets/rubik/static/Rubik-Bold.ttf")
+      "Rubik-Bold": require("./assets/rubik/static/Rubik-Bold.ttf"),
     })
       .then(() => {
         if (isMounted) {
@@ -1405,7 +1402,7 @@ export default function App() {
           setIsSignedIn(false);
           setAccountRole("consumer");
         }
-      }
+      },
     );
     return () => {
       isMounted = false;
@@ -1420,14 +1417,14 @@ export default function App() {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== "granted") return;
         const position = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced
+          accuracy: Location.Accuracy.Balanced,
         });
         if (!isMounted) return;
         const nextRegion = {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
           latitudeDelta: MAP_REGION.latitudeDelta,
-          longitudeDelta: MAP_REGION.longitudeDelta
+          longitudeDelta: MAP_REGION.longitudeDelta,
         };
         setMapRegion(nextRegion);
         mapRef.current?.animateToRegion(nextRegion, 700);
@@ -1462,11 +1459,11 @@ export default function App() {
       Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
     const showSubscription = Keyboard.addListener(
       showEvent,
-      handleKeyboardShow
+      handleKeyboardShow,
     );
     const hideSubscription = Keyboard.addListener(
       hideEvent,
-      handleKeyboardHide
+      handleKeyboardHide,
     );
     return () => {
       showSubscription.remove();
@@ -1512,8 +1509,8 @@ export default function App() {
             "is_open",
             "approval_status",
             "status",
-            "created_at"
-          ].join(",")
+            "created_at",
+          ].join(","),
         )
         .order("created_at", { ascending: false });
 
@@ -1521,7 +1518,7 @@ export default function App() {
       if (error) {
         setRemoteStatus({
           loading: false,
-          error: error.message || "Unable to load businesses."
+          error: error.message || "Unable to load businesses.",
         });
         return;
       }
@@ -1576,17 +1573,17 @@ export default function App() {
               Ionicons.getImageSource(
                 config.icon,
                 ANDROID_MARKER_SIZE,
-                config.color
+                config.color,
               ),
               Ionicons.getImageSource(
                 config.icon,
                 ANDROID_MARKER_SELECTED_SIZE,
-                COLORS.white
-              )
+                COLORS.white,
+              ),
             ]);
             if (normalSource) normal[key] = normalSource;
             if (haloSource) halo[key] = haloSource;
-          })
+          }),
         );
         if (isMounted) {
           setAndroidMarkerIcons({ normal, halo });
@@ -1633,14 +1630,20 @@ export default function App() {
     const timeout = setTimeout(() => {
       fetch(
         `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
-          query
-        )}&types=address&key=${GOOGLE_PLACES_KEY}`
+          query,
+        )}&types=address&key=${GOOGLE_PLACES_KEY}`,
       )
         .then((response) => response.json())
         .then((data) => {
           if (addressRequestRef.current !== requestId) return;
-          if (data.status && data.status !== "OK" && data.status !== "ZERO_RESULTS") {
-            setAddressError(data.error_message || "Unable to load suggestions.");
+          if (
+            data.status &&
+            data.status !== "OK" &&
+            data.status !== "ZERO_RESULTS"
+          ) {
+            setAddressError(
+              data.error_message || "Unable to load suggestions.",
+            );
             setAddressResults([]);
           } else {
             setAddressError(null);
@@ -1682,15 +1685,19 @@ export default function App() {
     const timeout = setTimeout(() => {
       fetch(
         `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
-          query
-        )}&types=address&key=${GOOGLE_PLACES_KEY}`
+          query,
+        )}&types=address&key=${GOOGLE_PLACES_KEY}`,
       )
         .then((response) => response.json())
         .then((data) => {
           if (businessAddressRequestRef.current !== requestId) return;
-          if (data.status && data.status !== "OK" && data.status !== "ZERO_RESULTS") {
+          if (
+            data.status &&
+            data.status !== "OK" &&
+            data.status !== "ZERO_RESULTS"
+          ) {
             setBusinessAddressError(
-              data.error_message || "Unable to load suggestions."
+              data.error_message || "Unable to load suggestions.",
             );
             setBusinessAddressResults([]);
           } else {
@@ -1715,23 +1722,23 @@ export default function App() {
       open: (business) => business.isOpen,
       top: (business) => business.rating && business.rating >= 4.7,
       new: (business) =>
-        business.createdAt &&
-        Date.now() - business.createdAt <= NEW_WINDOW_MS,
-      family: (business) => business.tags.includes("family")
+        business.createdAt && Date.now() - business.createdAt <= NEW_WINDOW_MS,
+      family: (business) => business.tags.includes("family"),
     }),
-    []
+    [],
   );
 
   const approvedBusinesses = useMemo(
-    () => businesses.filter((business) => business.approved && !business.rejected),
-    [businesses]
+    () =>
+      businesses.filter((business) => business.approved && !business.rejected),
+    [businesses],
   );
   const publicOffers = useMemo(
     () =>
       offers.filter(
-        (offer) => offer.active && offer.approvalStatus === "approved"
+        (offer) => offer.active && offer.approvalStatus === "approved",
       ),
-    [offers]
+    [offers],
   );
   const offersByBusiness = useMemo(() => {
     const map = new Map();
@@ -1750,8 +1757,8 @@ export default function App() {
       activeFilters.every((filterKey) =>
         filterPredicates[filterKey]
           ? filterPredicates[filterKey](business)
-          : true
-      )
+          : true,
+      ),
     );
     if (!trimmed) return baseList;
     return baseList.filter((business) => {
@@ -1764,17 +1771,23 @@ export default function App() {
         business.category,
         business.offer,
         business.subscription,
-        business.tags.join(" ")
+        business.tags.join(" "),
       ]
         .join(" ")
         .toLowerCase();
       return haystack.includes(trimmed) || offerText.includes(trimmed);
     });
-  }, [query, approvedBusinesses, activeFilters, filterPredicates, offersByBusiness]);
+  }, [
+    query,
+    approvedBusinesses,
+    activeFilters,
+    filterPredicates,
+    offersByBusiness,
+  ]);
 
   const offerCards = useMemo(() => {
     const businessMap = new Map(
-      businesses.map((business) => [business.id, business])
+      businesses.map((business) => [business.id, business]),
     );
     return publicOffers
       .map((offer) => {
@@ -1795,7 +1808,7 @@ export default function App() {
           offerTitle,
           offerDescription,
           offerType,
-          business.tags?.join(" ") || ""
+          business.tags?.join(" ") || "",
         ]
           .join(" ")
           .toLowerCase();
@@ -1815,13 +1828,13 @@ export default function App() {
             business.subscription ||
             formatSubscription(
               business.subscription_plan,
-              business.subscription_price_cents
+              business.subscription_price_cents,
             ) ||
             "Starter $50/mo",
           rating: business.rating || 4.7,
           tags: business.tags || [],
           imageUrl: offer.imageUrl,
-          searchText
+          searchText,
         };
       })
       .filter(Boolean);
@@ -1830,7 +1843,7 @@ export default function App() {
   const filteredOfferCards = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
     const visibleBusinessIds = new Set(
-      filteredBusinesses.map((business) => business.id)
+      filteredBusinesses.map((business) => business.id),
     );
     return offerCards.filter((card) => {
       if (!visibleBusinessIds.has(card.businessId)) return false;
@@ -1856,9 +1869,12 @@ export default function App() {
       );
     }
     if (!ownerBusinessId) return null;
-    return businesses.find((business) => business.id === ownerBusinessId) || null;
+    return (
+      businesses.find((business) => business.id === ownerBusinessId) || null
+    );
   }, [businesses, ownerBusinessId, authUserId]);
-  const canRequestEdits = Boolean(ownerBusiness) && !ownerBusiness?.pendingEdits;
+  const canRequestEdits =
+    Boolean(ownerBusiness) && !ownerBusiness?.pendingEdits;
   const canEditBusiness = isEditingBusiness && !ownerBusiness?.pendingEdits;
 
   const ownerMetrics = useMemo(() => {
@@ -1868,7 +1884,7 @@ export default function App() {
 
   const pendingEditBusinesses = useMemo(
     () => businesses.filter((business) => business.pendingEdits),
-    [businesses]
+    [businesses],
   );
   const isAdmin = accountRole === "admin";
   const isSupervisor = accountRole === "supervisor";
@@ -1878,19 +1894,20 @@ export default function App() {
   const roleLabel = isAdmin
     ? "Admin"
     : isSupervisor
-    ? "Supervisor"
-    : isOwner
-    ? "Owner"
-    : "Member";
+      ? "Supervisor"
+      : isOwner
+        ? "Owner"
+        : "Member";
   const visibleTabs = useMemo(
-    () => [
-      { key: "discover", label: "Discover", show: true },
-      { key: "history", label: "History", show: showHistoryTab },
-      { key: "business", label: "Dashboard", show: isOwner },
-      { key: "admin", label: "Admin", show: isStaff },
-      { key: "profile", label: "Profile", show: true }
-    ].filter((tab) => tab.show),
-    [isOwner, isStaff, showHistoryTab]
+    () =>
+      [
+        { key: "discover", label: "Discover", show: true },
+        { key: "history", label: "History", show: showHistoryTab },
+        { key: "business", label: "Dashboard", show: isOwner },
+        { key: "admin", label: "Admin", show: isStaff },
+        { key: "profile", label: "Profile", show: true },
+      ].filter((tab) => tab.show),
+    [isOwner, isStaff, showHistoryTab],
   );
   const navContainerWidth = useMemo(() => {
     const count = visibleTabs.length || 1;
@@ -1911,29 +1928,30 @@ export default function App() {
   }, [profileName, profileEmail]);
 
   const pendingBusinesses = useMemo(
-    () => businesses.filter((business) => !business.approved && !business.rejected),
-    [businesses]
+    () =>
+      businesses.filter((business) => !business.approved && !business.rejected),
+    [businesses],
   );
   const adminBusinesses = useMemo(
     () =>
       businesses
         .filter((business) => business.source === "supabase")
         .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
-    [businesses]
+    [businesses],
   );
   const adminOffers = useMemo(
     () =>
       offers
         .filter(
           (offer) =>
-            offer.businessId && !String(offer.id || "").startsWith("seed-")
+            offer.businessId && !String(offer.id || "").startsWith("seed-"),
         )
         .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
-    [offers]
+    [offers],
   );
   const averageRating = useMemo(() => {
     const rated = approvedBusinesses.filter(
-      (business) => business.rating && Number.isFinite(business.rating)
+      (business) => business.rating && Number.isFinite(business.rating),
     );
     if (!rated.length) return "--";
     const sum = rated.reduce((acc, business) => acc + business.rating, 0);
@@ -1947,7 +1965,7 @@ export default function App() {
         profile.full_name,
         profile.email,
         profile.phone,
-        profile.company
+        profile.company,
       ]
         .filter(Boolean)
         .join(" ")
@@ -1989,7 +2007,7 @@ export default function App() {
           businessId: entry.businessId || null,
           businessName,
           entries: [],
-          lastRedeemed: 0
+          lastRedeemed: 0,
         });
       }
       const group = grouped.get(key);
@@ -2001,9 +2019,7 @@ export default function App() {
     });
     const list = Array.from(grouped.values());
     list.forEach((group) => {
-      group.entries.sort(
-        (a, b) => (b.createdAt || 0) - (a.createdAt || 0)
-      );
+      group.entries.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
       const businessKey = group.businessId || group.key;
       const hasReview = reviewedBusinessIds.has(String(businessKey));
       group.pendingEntries = hasReview ? [] : group.entries.slice(0, 1);
@@ -2016,9 +2032,9 @@ export default function App() {
     () =>
       historyGroups.reduce(
         (total, group) => total + (group.pendingCount ? 1 : 0),
-        0
+        0,
       ),
-    [historyGroups]
+    [historyGroups],
   );
 
   useEffect(() => {
@@ -2033,10 +2049,9 @@ export default function App() {
 
   useEffect(() => {
     if (activeTab === "admin" && isAdmin) {
-      loadInvites();
       loadProfiles();
     }
-  }, [activeTab, isAdmin, loadInvites, loadProfiles]);
+  }, [activeTab, isAdmin, loadProfiles]);
 
   useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
@@ -2050,7 +2065,7 @@ export default function App() {
     loadChangeRequests,
     loadPendingOffers,
     SUPABASE_URL,
-    SUPABASE_ANON_KEY
+    SUPABASE_ANON_KEY,
   ]);
 
   useEffect(() => {
@@ -2064,13 +2079,13 @@ export default function App() {
     ownerBusiness?.id,
     loadChangeRequests,
     SUPABASE_URL,
-    SUPABASE_ANON_KEY
+    SUPABASE_ANON_KEY,
   ]);
 
   useEffect(() => {
     if (!qrExpandedId) return;
     const business = approvedBusinesses.find(
-      (item) => String(item.id) === String(qrExpandedId)
+      (item) => String(item.id) === String(qrExpandedId),
     );
     if (!business) return;
     if (BUSINESS_QR_IMAGES[business.id] || qrImageMap[business.id]) return;
@@ -2079,7 +2094,7 @@ export default function App() {
     QRCode.toDataURL(payload, {
       errorCorrectionLevel: "M",
       margin: 2,
-      width: 240
+      width: 240,
     })
       .then((dataUrl) => {
         if (!isMounted) return;
@@ -2088,7 +2103,7 @@ export default function App() {
       .catch(() => {
         if (!isMounted) return;
         const fallbackUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(
-          payload
+          payload,
         )}`;
         setQrImageMap((prev) => ({ ...prev, [business.id]: fallbackUrl }));
       });
@@ -2122,7 +2137,7 @@ export default function App() {
     hours: business?.hours || "",
     planKey: getPlanKeyFromSubscription(business?.subscription || ""),
     tags: business?.tags?.join(", ") || "",
-    isOpen: business?.isOpen ?? true
+    isOpen: business?.isOpen ?? true,
   });
 
   useEffect(() => {
@@ -2147,9 +2162,16 @@ export default function App() {
     setCreateBusinessForm((prev) => ({
       ...prev,
       name: prev.name || profileCompany || profileName,
-      phone: prev.phone || profilePhone
+      phone: prev.phone || profilePhone,
     }));
-  }, [activeTab, ownerBusiness, isOwner, profileCompany, profileName, profilePhone]);
+  }, [
+    activeTab,
+    ownerBusiness,
+    isOwner,
+    profileCompany,
+    profileName,
+    profilePhone,
+  ]);
 
   useEffect(() => {
     if (activeTab !== "business" || ownerBusiness || !isOwner) return;
@@ -2158,13 +2180,14 @@ export default function App() {
       ...prev,
       name: prev.name || authBusinessDraft.name || "",
       address: prev.address || authBusinessDraft.address || "",
-      addressCoords: prev.addressCoords || authBusinessDraft.addressCoords || null,
+      addressCoords:
+        prev.addressCoords || authBusinessDraft.addressCoords || null,
       city: prev.city || authBusinessDraft.city || "",
       state: prev.state || authBusinessDraft.state || "",
       postalCode: prev.postalCode || authBusinessDraft.postalCode || "",
       categoryKey:
         prev.categoryKey || authBusinessDraft.categoryKey || "restaurant",
-      phone: prev.phone || authBusinessDraft.phone || ""
+      phone: prev.phone || authBusinessDraft.phone || "",
     }));
     if (!createHoursStart && authBusinessDraft.hours) {
       const parts = authBusinessDraft.hours.split(" - ");
@@ -2189,15 +2212,15 @@ export default function App() {
         editHoursStart,
         editHoursStartMeridiem,
         editHoursEnd,
-        editHoursEndMeridiem
-      )
+        editHoursEndMeridiem,
+      ),
     }));
   }, [
     isEditingBusiness,
     editHoursStart,
     editHoursStartMeridiem,
     editHoursEnd,
-    editHoursEndMeridiem
+    editHoursEndMeridiem,
   ]);
 
   useEffect(() => {
@@ -2223,15 +2246,19 @@ export default function App() {
     const timeout = setTimeout(() => {
       fetch(
         `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
-          query
-        )}&types=address&key=${GOOGLE_PLACES_KEY}`
+          query,
+        )}&types=address&key=${GOOGLE_PLACES_KEY}`,
       )
         .then((response) => response.json())
         .then((data) => {
           if (createAddressRequestRef.current !== requestId) return;
-          if (data.status && data.status !== "OK" && data.status !== "ZERO_RESULTS") {
+          if (
+            data.status &&
+            data.status !== "OK" &&
+            data.status !== "ZERO_RESULTS"
+          ) {
             setCreateAddressError(
-              data.error_message || "Unable to load suggestions."
+              data.error_message || "Unable to load suggestions.",
             );
             setCreateAddressResults([]);
           } else {
@@ -2266,7 +2293,7 @@ export default function App() {
     lastLocationHashRef.current = hash;
     upsertUserLocation({
       latitude: mapRegion.latitude,
-      longitude: mapRegion.longitude
+      longitude: mapRegion.longitude,
     });
   }, [mapRegion, upsertUserLocation]);
 
@@ -2287,14 +2314,11 @@ export default function App() {
         expo_push_token: token,
         platform: Platform.OS,
         device_info:
-          Device.modelName ||
-          Device.deviceName ||
-          Device.osName ||
-          Platform.OS,
-        last_seen_at: new Date().toISOString()
+          Device.modelName || Device.deviceName || Device.osName || Platform.OS,
+        last_seen_at: new Date().toISOString(),
       });
     },
-    [authUserId]
+    [authUserId],
   );
 
   const registerForPushNotificationsAsync = useCallback(async () => {
@@ -2304,7 +2328,8 @@ export default function App() {
       return;
     }
     try {
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      const { status: existingStatus } =
+        await Notifications.getPermissionsAsync();
       let finalStatus = existingStatus;
       if (existingStatus !== "granted") {
         const { status } = await Notifications.requestPermissionsAsync();
@@ -2339,12 +2364,12 @@ export default function App() {
         new_offer: data.new_offer ?? NOTIFICATION_DEFAULTS.new_offer,
         expiring_offer:
           data.expiring_offer ?? NOTIFICATION_DEFAULTS.expiring_offer,
-        nearby_offer: data.nearby_offer ?? NOTIFICATION_DEFAULTS.nearby_offer
+        nearby_offer: data.nearby_offer ?? NOTIFICATION_DEFAULTS.nearby_offer,
       });
     }
     setPreferencesStatus({
       loading: false,
-      error: error?.message || null
+      error: error?.message || null,
     });
   }, [authUserId]);
 
@@ -2367,14 +2392,14 @@ export default function App() {
           typeof nextPreferences.nearby_offer === "boolean"
             ? nextPreferences.nearby_offer
             : NOTIFICATION_DEFAULTS.nearby_offer,
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       });
       setPreferencesStatus({
         loading: false,
-        error: error?.message || null
+        error: error?.message || null,
       });
     },
-    [authUserId]
+    [authUserId],
   );
 
   const upsertUserLocation = useCallback(
@@ -2392,10 +2417,10 @@ export default function App() {
         user_id: authUserId,
         latitude: coords.latitude,
         longitude: coords.longitude,
-        recorded_at: new Date().toISOString()
+        recorded_at: new Date().toISOString(),
       });
     },
-    [authUserId]
+    [authUserId],
   );
 
   const handlePreferenceToggle = useCallback(
@@ -2404,7 +2429,7 @@ export default function App() {
       setNotificationPreferences(nextPreferences);
       saveNotificationPreferences(nextPreferences);
     },
-    [notificationPreferences, saveNotificationPreferences]
+    [notificationPreferences, saveNotificationPreferences],
   );
 
   const stripeEnabled = Boolean(STRIPE_PUBLISHABLE_KEY);
@@ -2412,13 +2437,11 @@ export default function App() {
   const handleStartSubscription = () => {
     if (!stripeEnabled) {
       setPaymentMessage(
-        "Stripe is not connected yet. Add your publishable key to enable payments."
+        "Stripe is not connected yet. Add your publishable key to enable payments.",
       );
       return;
     }
-    setPaymentMessage(
-      "Stripe checkout will be wired here before launch."
-    );
+    setPaymentMessage("Stripe checkout will be wired here before launch.");
   };
 
   const handleSignIn = async () => {
@@ -2433,7 +2456,7 @@ export default function App() {
       const email = signInEmail.trim().toLowerCase();
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
-        password: signInPassword
+        password: signInPassword,
       });
       if (error) {
         setSignInError(error.message || "Unable to sign in.");
@@ -2463,7 +2486,7 @@ export default function App() {
       const email = signUpEmail.trim().toLowerCase();
       const { data, error } = await supabase.auth.signUp({
         email,
-        password: signUpPassword
+        password: signUpPassword,
       });
       if (error) {
         setSignUpError(error.message || "Unable to create account.");
@@ -2486,10 +2509,6 @@ export default function App() {
       setBusinessSignUpError("Email and password are required.");
       return;
     }
-    if (!businessInviteCode.trim()) {
-      setBusinessSignUpError("A business invite code is required.");
-      return;
-    }
     if (!businessName.trim() || !businessAddress.trim()) {
       setBusinessSignUpError("Business name and address are required.");
       return;
@@ -2507,28 +2526,11 @@ export default function App() {
     setBusinessSignUpError(null);
     try {
       const email = businessEmail.trim().toLowerCase();
-      const normalizedCode = businessInviteCode.trim().toUpperCase();
-      const { data: invite, error } = await supabase
-        .from("invites")
-        .select("id, role, used_at")
-        .eq("code", normalizedCode)
-        .limit(1)
-        .maybeSingle();
-
-      if (error || !invite || invite.used_at) {
-        setBusinessSignUpError("That invite code is not valid.");
-        return;
-      }
-      if (invite.role !== "business_owner") {
-        setBusinessSignUpError("This invite is not for business accounts.");
-        return;
-      }
-
       const hoursValue = formatBusinessHours(
         businessHoursStart,
         businessHoursStartMeridiem,
         businessHoursEnd,
-        businessHoursEndMeridiem
+        businessHoursEndMeridiem,
       );
       let signupCoords = businessAddressCoords;
       if (!signupCoords && businessAddress.trim()) {
@@ -2546,7 +2548,7 @@ export default function App() {
         city: businessAddressCity.trim(),
         state: businessAddressState.trim(),
         postalCode: businessAddressPostal.trim(),
-        addressCoords: signupCoords
+        addressCoords: signupCoords,
       };
       const { data, error: signUpError } = await supabase.auth.signUp({
         email,
@@ -2557,12 +2559,14 @@ export default function App() {
             full_name: businessName.trim(),
             phone: businessPhone.trim(),
             company: businessName.trim(),
-            business_draft: businessDraft
-          }
-        }
+            business_draft: businessDraft,
+          },
+        },
       });
       if (signUpError) {
-        setBusinessSignUpError(signUpError.message || "Unable to create account.");
+        setBusinessSignUpError(
+          signUpError.message || "Unable to create account.",
+        );
         return;
       }
       if (!data.user) {
@@ -2579,35 +2583,21 @@ export default function App() {
             full_name: businessName.trim(),
             phone: businessPhone.trim() || null,
             company: businessName.trim(),
-            role: "business_owner"
+            role: "business_owner",
           });
         if (profileUpsertError) {
-          console.warn("Wello profile upsert failed:", profileUpsertError.message);
+          console.warn(
+            "Wello profile upsert failed:",
+            profileUpsertError.message,
+          );
         }
-      }
-
-      const { data: claimedInvite, error: updateError } = await supabase
-        .from("invites")
-        .update({
-          used_at: new Date().toISOString(),
-          used_by: email,
-          used_by_name: formatDisplayName(email),
-          used_by_business_name: businessName.trim(),
-          used_by_user_id: data.user.id
-        })
-        .eq("id", invite.id)
-        .is("used_at", null)
-        .select("id");
-      if (updateError || !claimedInvite?.length) {
-        setBusinessSignUpError("Unable to claim invite code. Try again.");
-        return;
       }
 
       if (data.session) {
         await hydrateProfile(data.user, "business_owner");
       } else {
         setBusinessSignUpError(
-          "Check your email to confirm, then sign in to finish your profile."
+          "Check your email to confirm, then sign in to finish your profile.",
         );
         return;
       }
@@ -2632,7 +2622,7 @@ export default function App() {
           status: "active",
           is_open: true,
           latitude: signupCoords?.latitude ?? null,
-          longitude: signupCoords?.longitude ?? null
+          longitude: signupCoords?.longitude ?? null,
         })
         .select(
           [
@@ -2657,14 +2647,14 @@ export default function App() {
             "is_open",
             "approval_status",
             "status",
-            "created_at"
-          ].join(",")
+            "created_at",
+          ].join(","),
         )
         .limit(1);
 
       if (businessError) {
         setBusinessSignUpError(
-          "Account created, but business profile needs review."
+          "Account created, but business profile needs review.",
         );
       } else if (businessRows?.[0]) {
         const mapped = mapSupabaseBusiness(businessRows[0], 0);
@@ -2674,14 +2664,13 @@ export default function App() {
 
       setIsSignedIn(true);
       setBusinessPassword("");
-      setBusinessInviteCode("");
-    setBusinessName("");
-    setBusinessAddress("");
-    setBusinessAddressCoords(null);
-    setBusinessAddressCity("");
-    setBusinessAddressState("");
-    setBusinessAddressPostal("");
-    setBusinessPhone("");
+      setBusinessName("");
+      setBusinessAddress("");
+      setBusinessAddressCoords(null);
+      setBusinessAddressCity("");
+      setBusinessAddressState("");
+      setBusinessAddressPostal("");
+      setBusinessPhone("");
       setBusinessHoursStart("");
       setBusinessHoursEnd("");
       setBusinessHoursStartMeridiem("AM");
@@ -2726,7 +2715,7 @@ export default function App() {
         full_name: profileName.trim() || null,
         email: profileEmail.trim().toLowerCase() || null,
         phone: profilePhone.trim() || null,
-        company: profileCompany.trim() || null
+        company: profileCompany.trim() || null,
       };
       const { error } = await supabase.from("profiles").upsert(payload);
       if (error) {
@@ -2735,8 +2724,8 @@ export default function App() {
       }
       setProfileList((prev) =>
         prev.map((profile) =>
-          profile.id === authUserId ? { ...profile, ...payload } : profile
-        )
+          profile.id === authUserId ? { ...profile, ...payload } : profile,
+        ),
       );
       setProfileMessage("Profile updated.");
     } catch (error) {
@@ -2760,7 +2749,6 @@ export default function App() {
     setSignInEmail("");
     setSignUpEmail("");
     setBusinessEmail("");
-    setBusinessInviteCode("");
     setBusinessName("");
     setBusinessAddress("");
     setBusinessAddressCoords(null);
@@ -2782,7 +2770,7 @@ export default function App() {
       categoryKey: "restaurant",
       offer: "",
       phone: "",
-      tags: ""
+      tags: "",
     });
     setCreateBusinessError(null);
     setPaymentMessage(null);
@@ -2822,7 +2810,7 @@ export default function App() {
     setRedeemGate({
       allowed: false,
       reason: "Checking your location...",
-      distanceMeters: null
+      distanceMeters: null,
     });
     try {
       let businessCoords = getBusinessCoordinate(business);
@@ -2834,7 +2822,7 @@ export default function App() {
         setRedeemGate({
           allowed: false,
           reason: REDEEM_BLOCKED_MESSAGE,
-          distanceMeters: null
+          distanceMeters: null,
         });
         setScannerStatus("blocked");
         return false;
@@ -2844,7 +2832,7 @@ export default function App() {
         setRedeemGate({
           allowed: false,
           reason: REDEEM_BLOCKED_MESSAGE,
-          distanceMeters: null
+          distanceMeters: null,
         });
         setScannerStatus("blocked");
         return false;
@@ -2852,13 +2840,13 @@ export default function App() {
       let position = null;
       try {
         position = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced
+          accuracy: Location.Accuracy.Balanced,
         });
       } catch (error) {
         setRedeemGate({
           allowed: false,
           reason: REDEEM_BLOCKED_MESSAGE,
-          distanceMeters: null
+          distanceMeters: null,
         });
         setScannerStatus("blocked");
         return false;
@@ -2866,15 +2854,15 @@ export default function App() {
       const distance = distanceBetweenMeters(
         {
           latitude: position.coords.latitude,
-          longitude: position.coords.longitude
+          longitude: position.coords.longitude,
         },
-        businessCoords
+        businessCoords,
       );
       if (!Number.isFinite(distance)) {
         setRedeemGate({
           allowed: false,
           reason: REDEEM_BLOCKED_MESSAGE,
-          distanceMeters: null
+          distanceMeters: null,
         });
         setScannerStatus("blocked");
         return false;
@@ -2883,7 +2871,7 @@ export default function App() {
         setRedeemGate({
           allowed: true,
           reason: null,
-          distanceMeters: distance
+          distanceMeters: distance,
         });
         setScannerStatus(null);
         setScannerEnabled(true);
@@ -2892,7 +2880,7 @@ export default function App() {
       setRedeemGate({
         allowed: false,
         reason: REDEEM_BLOCKED_MESSAGE,
-        distanceMeters: distance
+        distanceMeters: distance,
       });
       setScannerStatus("blocked");
       return false;
@@ -2921,7 +2909,7 @@ export default function App() {
     setRedeemGate({
       allowed: true,
       reason: null,
-      distanceMeters: null
+      distanceMeters: null,
     });
     redemptionLoggedRef.current = false;
   };
@@ -2930,7 +2918,7 @@ export default function App() {
     if (!entry) return;
     setReviewTarget({
       entry,
-      businessName: businessName || "Wello business"
+      businessName: businessName || "Wello business",
     });
     setReviewRating(0);
     setReviewText("");
@@ -2968,6 +2956,8 @@ export default function App() {
     setBusinessDetail(null);
     setBusinessDetailStatus({ loading: false, error: null });
     setBusinessDetailReviews([]);
+    setBusinessDetailOffers([]);
+    setBusinessDetailOffersStatus({ loading: false, error: null });
   };
 
   const handleSubmitReview = async () => {
@@ -2990,13 +2980,13 @@ export default function App() {
       offer_id: entry.offerId || null,
       user_id: authUserId,
       rating: reviewRating,
-      review_text: reviewText.trim() ? reviewText.trim() : null
+      review_text: reviewText.trim() ? reviewText.trim() : null,
     };
     const { error, data } = await supabase
       .from("reviews")
       .insert(payload)
       .select(
-        "id, business_id, redemption_id, offer_id, rating, review_text, created_at"
+        "id, business_id, redemption_id, offer_id, rating, review_text, created_at",
       )
       .maybeSingle();
     if (error || !data) {
@@ -3026,12 +3016,12 @@ export default function App() {
             business_id: scannerBusiness.id,
             offer_id: scannerOffer?.offerId || scannerOffer?.id || null,
             qr_payload: data,
-            scanned_by: authUserId
+            scanned_by: authUserId,
           });
           if (error) {
             console.warn(
               "Wello redemption insert failed:",
-              error.message || error
+              error.message || error,
             );
           } else {
             loadRedemptions({ silent: true });
@@ -3060,13 +3050,13 @@ export default function App() {
         return;
       }
       const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced
+        accuracy: Location.Accuracy.Balanced,
       });
       const nextRegion = {
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
         latitudeDelta: MAP_REGION.latitudeDelta,
-        longitudeDelta: MAP_REGION.longitudeDelta
+        longitudeDelta: MAP_REGION.longitudeDelta,
       };
       setMapRegion(nextRegion);
       upsertUserLocation(position.coords);
@@ -3084,13 +3074,13 @@ export default function App() {
       toValue: 0,
       useNativeDriver: false,
       tension: 90,
-      friction: 12
+      friction: 12,
     }).start();
   };
 
   const scrollToBusiness = (business) => {
     const index = filteredOfferCards.findIndex(
-      (item) => item.businessId === business.id
+      (item) => item.businessId === business.id,
     );
     if (index >= 0 && cardListRef.current) {
       cardListRef.current.scrollToIndex({ index, animated: true });
@@ -3112,19 +3102,21 @@ export default function App() {
     if (!business) return null;
     if (business.hasCoordinates === false) return null;
     const latitude = Number(
-      business.coordinate?.latitude ?? business.latitude ?? business.lat
+      business.coordinate?.latitude ?? business.latitude ?? business.lat,
     );
     const longitude = Number(
-      business.coordinate?.longitude ?? business.longitude ?? business.lng
+      business.coordinate?.longitude ?? business.longitude ?? business.lng,
     );
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
       return null;
     }
     if (latitude === 0 && longitude === 0) return null;
     if (business.fallbackCoordinate) {
-      const deltaLat = Math.abs(latitude - business.fallbackCoordinate.latitude);
+      const deltaLat = Math.abs(
+        latitude - business.fallbackCoordinate.latitude,
+      );
       const deltaLng = Math.abs(
-        longitude - business.fallbackCoordinate.longitude
+        longitude - business.fallbackCoordinate.longitude,
       );
       if (deltaLat < 0.0001 && deltaLng < 0.0001) return null;
     }
@@ -3169,8 +3161,8 @@ export default function App() {
     try {
       const response = await fetch(
         `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
-          address
-        )}&key=${GOOGLE_PLACES_KEY}`
+          address,
+        )}&key=${GOOGLE_PLACES_KEY}`,
       );
       const data = await response.json();
       const location = data.results?.[0]?.geometry?.location;
@@ -3191,7 +3183,7 @@ export default function App() {
         (business) =>
           business.source === "supabase" &&
           !business.hasCoordinates &&
-          business.address
+          business.address,
       );
       if (missing.length === 0) return;
       const batch = missing.slice(0, 8);
@@ -3206,8 +3198,8 @@ export default function App() {
             prev.map((item) =>
               item.id === business.id
                 ? { ...item, coordinate: coords, hasCoordinates: true }
-                : item
-            )
+                : item,
+            ),
           );
         }
         if (SUPABASE_URL && SUPABASE_ANON_KEY) {
@@ -3215,7 +3207,7 @@ export default function App() {
             .from("businesses")
             .update({
               latitude: coords.latitude,
-              longitude: coords.longitude
+              longitude: coords.longitude,
             })
             .eq("id", business.id);
           if (error) {
@@ -3224,7 +3216,7 @@ export default function App() {
         }
       }
     },
-    [geocodeAddress]
+    [geocodeAddress],
   );
 
   const handleCardPress = async (card) => {
@@ -3242,8 +3234,8 @@ export default function App() {
           prev.map((item) =>
             item.id === business.id
               ? { ...item, coordinate, hasCoordinates: true }
-              : item
-          )
+              : item,
+          ),
         );
       }
     }
@@ -3251,7 +3243,7 @@ export default function App() {
     const nextRegion = {
       ...coordinate,
       latitudeDelta: MAP_REGION.latitudeDelta,
-      longitudeDelta: MAP_REGION.longitudeDelta
+      longitudeDelta: MAP_REGION.longitudeDelta,
     };
     setMapRegion(nextRegion);
     mapRef.current?.animateToRegion(nextRegion, 500);
@@ -3271,7 +3263,7 @@ export default function App() {
     setActiveFilters((prev) =>
       prev.includes(filterKey)
         ? prev.filter((key) => key !== filterKey)
-        : [...prev, filterKey]
+        : [...prev, filterKey],
     );
   };
 
@@ -3289,7 +3281,7 @@ export default function App() {
       addressCoords: null,
       city: "",
       state: "",
-      postalCode: ""
+      postalCode: "",
     }));
   };
 
@@ -3316,8 +3308,8 @@ export default function App() {
       setBusinessAddressLoading(true);
       const response = await fetch(
         `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(
-          suggestion.place_id
-        )}&fields=formatted_address,address_components,geometry&key=${GOOGLE_PLACES_KEY}`
+          suggestion.place_id,
+        )}&fields=formatted_address,address_components,geometry&key=${GOOGLE_PLACES_KEY}`,
       );
       const data = await response.json();
       if (data.status && data.status !== "OK") {
@@ -3334,7 +3326,7 @@ export default function App() {
       if (location) {
         setBusinessAddressCoords({
           latitude: location.lat,
-          longitude: location.lng
+          longitude: location.lng,
         });
       }
     } catch (error) {
@@ -3353,7 +3345,7 @@ export default function App() {
     setFormData((prev) => ({
       ...prev,
       address: suggestion.description,
-      addressPlaceId: suggestion.place_id
+      addressPlaceId: suggestion.place_id,
     }));
 
     if (!GOOGLE_PLACES_KEY) return;
@@ -3361,8 +3353,8 @@ export default function App() {
       setAddressLoading(true);
       const response = await fetch(
         `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(
-          suggestion.place_id
-        )}&fields=geometry,formatted_address,address_components&key=${GOOGLE_PLACES_KEY}`
+          suggestion.place_id,
+        )}&fields=geometry,formatted_address,address_components&key=${GOOGLE_PLACES_KEY}`,
       );
       const data = await response.json();
       if (data.status && data.status !== "OK") {
@@ -3377,16 +3369,16 @@ export default function App() {
           addressCoords: { latitude: location.lat, longitude: location.lng },
           city: parsed.city || prev.city,
           state: parsed.state || prev.state,
-          postalCode: parsed.postalCode || prev.postalCode
+          postalCode: parsed.postalCode || prev.postalCode,
         }));
         mapRef.current?.animateToRegion(
           {
             latitude: location.lat,
             longitude: location.lng,
             latitudeDelta: MAP_REGION.latitudeDelta,
-            longitudeDelta: MAP_REGION.longitudeDelta
+            longitudeDelta: MAP_REGION.longitudeDelta,
           },
-          600
+          600,
         );
       }
     } catch (error) {
@@ -3401,7 +3393,7 @@ export default function App() {
     if (!formData.name.trim()) {
       setFormMessage({
         type: "error",
-        text: "Business name is required."
+        text: "Business name is required.",
       });
       return;
     }
@@ -3468,20 +3460,24 @@ export default function App() {
         ? ownerBusiness.coordinate
         : formData.addressCoords || ownerBusiness.coordinate,
       pendingEdits: hasPendingEdits ? pendingEdits : null,
-      pendingEditsAt: hasPendingEdits ? Date.now() : null
+      pendingEditsAt: hasPendingEdits ? Date.now() : null,
     };
 
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || ownerBusiness.source !== "supabase") {
+    if (
+      !SUPABASE_URL ||
+      !SUPABASE_ANON_KEY ||
+      ownerBusiness.source !== "supabase"
+    ) {
       setBusinesses((prev) =>
         prev.map((business) =>
-          business.id === ownerBusiness.id ? updatedBusiness : business
-        )
+          business.id === ownerBusiness.id ? updatedBusiness : business,
+        ),
       );
       setFormMessage({
         type: "success",
         text: hasPendingEdits
           ? "Changes sent for approval. You'll see updates once approved."
-          : "Changes saved."
+          : "Changes saved.",
       });
       setIsEditingBusiness(false);
       return;
@@ -3499,21 +3495,21 @@ export default function App() {
             business_id: ownerBusiness.id,
             submitted_by: authUserId,
             payload: pendingEdits,
-            status: "pending"
+            status: "pending",
           })
           .select("id, entity_type, business_id, payload, status, created_at")
           .maybeSingle();
         if (requestError || !request) {
           setFormMessage({
             type: "error",
-            text: requestError?.message || "Unable to submit changes."
+            text: requestError?.message || "Unable to submit changes.",
           });
           return;
         }
         pendingRequestId = request.id;
         const nextRequests = [
           request,
-          ...changeRequests.filter((item) => item.id !== request.id)
+          ...changeRequests.filter((item) => item.id !== request.id),
         ];
         setChangeRequests(nextRequests);
         applyPendingEditsFromRequests(nextRequests);
@@ -3522,7 +3518,7 @@ export default function App() {
       const priceValue = Number(
         String(approvedPlan.price || "")
           .replace(/[^0-9]/g, "")
-          .trim()
+          .trim(),
       );
       const priceCents = Number.isFinite(priceValue) ? priceValue * 100 : 5000;
       const updatePayload = {
@@ -3530,7 +3526,7 @@ export default function App() {
         hours: formData.hours.trim() || ownerBusiness.hours || null,
         is_open: formData.isOpen,
         subscription_plan: approvedPlan.label,
-        subscription_price_cents: priceCents
+        subscription_price_cents: priceCents,
       };
       if (!hasPendingEdits) {
         updatePayload.name = trimmedName;
@@ -3539,7 +3535,9 @@ export default function App() {
         updatePayload.state = trimmedState || null;
         updatePayload.postal_code = trimmedPostal || null;
         updatePayload.category_key = formData.categoryKey;
-        updatePayload.category_label = getCategoryConfig(formData.categoryKey).display;
+        updatePayload.category_label = getCategoryConfig(
+          formData.categoryKey,
+        ).display;
         if (formData.addressCoords) {
           updatePayload.latitude = formData.addressCoords.latitude;
           updatePayload.longitude = formData.addressCoords.longitude;
@@ -3573,14 +3571,14 @@ export default function App() {
             "is_open",
             "approval_status",
             "status",
-            "created_at"
-          ].join(",")
+            "created_at",
+          ].join(","),
         )
         .maybeSingle();
       if (error || !data) {
         setFormMessage({
           type: "error",
-          text: error?.message || "Unable to save business updates."
+          text: error?.message || "Unable to save business updates.",
         });
         return;
       }
@@ -3589,18 +3587,18 @@ export default function App() {
         ...mapped,
         pendingEdits: hasPendingEdits ? pendingEdits : null,
         pendingEditsAt: hasPendingEdits ? Date.now() : null,
-        pendingRequestId: hasPendingEdits ? pendingRequestId : null
+        pendingRequestId: hasPendingEdits ? pendingRequestId : null,
       };
       setBusinesses((prev) =>
         prev.map((business) =>
-          business.id === ownerBusiness.id ? finalBusiness : business
-        )
+          business.id === ownerBusiness.id ? finalBusiness : business,
+        ),
       );
       setFormMessage({
         type: "success",
         text: hasPendingEdits
           ? "Changes sent for approval. You'll see updates once approved."
-          : "Changes saved."
+          : "Changes saved.",
       });
       setIsEditingBusiness(false);
     } finally {
@@ -3614,8 +3612,8 @@ export default function App() {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY || target.source !== "supabase") {
       setBusinesses((prev) =>
         prev.map((business) =>
-          business.id === id ? { ...business, approved: true } : business
-        )
+          business.id === id ? { ...business, approved: true } : business,
+        ),
       );
       return;
     }
@@ -3646,8 +3644,8 @@ export default function App() {
           "is_open",
           "approval_status",
           "status",
-          "created_at"
-        ].join(",")
+          "created_at",
+        ].join(","),
       )
       .maybeSingle();
     if (error || !data) {
@@ -3657,8 +3655,8 @@ export default function App() {
     const mapped = mapSupabaseBusiness(data, 0);
     setBusinesses((prev) =>
       prev.map((business) =>
-        business.id === id ? { ...mapped, pendingEdits: null } : business
-      )
+        business.id === id ? { ...mapped, pendingEdits: null } : business,
+      ),
     );
   };
 
@@ -3683,9 +3681,9 @@ export default function App() {
             categoryKey: nextCategoryKey,
             category: categoryDisplay,
             pendingEdits: null,
-            pendingEditsAt: null
+            pendingEditsAt: null,
           };
-        })
+        }),
       );
       return;
     }
@@ -3735,8 +3733,8 @@ export default function App() {
           "is_open",
           "approval_status",
           "status",
-          "created_at"
-        ].join(",")
+          "created_at",
+        ].join(","),
       )
       .maybeSingle();
     if (error || !data) {
@@ -3748,7 +3746,7 @@ export default function App() {
       .update({
         status: "approved",
         reviewed_by: authUserId || null,
-        reviewed_at: new Date().toISOString()
+        reviewed_at: new Date().toISOString(),
       })
       .eq("id", target.pendingRequestId);
 
@@ -3760,17 +3758,17 @@ export default function App() {
               ...mapped,
               pendingEdits: null,
               pendingEditsAt: null,
-              pendingRequestId: null
+              pendingRequestId: null,
             }
-          : business
-      )
+          : business,
+      ),
     );
     setChangeRequests((prev) =>
       prev.map((request) =>
         request.id === target.pendingRequestId
           ? { ...request, status: "approved" }
-          : request
-      )
+          : request,
+      ),
     );
   };
 
@@ -3787,8 +3785,8 @@ export default function App() {
         prev.map((business) =>
           business.id === id
             ? { ...business, pendingEdits: null, pendingEditsAt: null }
-            : business
-        )
+            : business,
+        ),
       );
       return;
     }
@@ -3798,7 +3796,7 @@ export default function App() {
       .update({
         status: "rejected",
         reviewed_by: authUserId || null,
-        reviewed_at: new Date().toISOString()
+        reviewed_at: new Date().toISOString(),
       })
       .eq("id", target.pendingRequestId);
 
@@ -3809,17 +3807,17 @@ export default function App() {
               ...business,
               pendingEdits: null,
               pendingEditsAt: null,
-              pendingRequestId: null
+              pendingRequestId: null,
             }
-          : business
-      )
+          : business,
+      ),
     );
     setChangeRequests((prev) =>
       prev.map((request) =>
         request.id === target.pendingRequestId
           ? { ...request, status: "rejected" }
-          : request
-      )
+          : request,
+      ),
     );
   };
 
@@ -3829,8 +3827,8 @@ export default function App() {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY || target.source !== "supabase") {
       setBusinesses((prev) =>
         prev.map((business) =>
-          business.id === id ? { ...business, rejected: true } : business
-        )
+          business.id === id ? { ...business, rejected: true } : business,
+        ),
       );
       return;
     }
@@ -3861,8 +3859,8 @@ export default function App() {
           "is_open",
           "approval_status",
           "status",
-          "created_at"
-        ].join(",")
+          "created_at",
+        ].join(","),
       )
       .maybeSingle();
     if (error || !data) {
@@ -3872,8 +3870,8 @@ export default function App() {
     const mapped = mapSupabaseBusiness(data, 0);
     setBusinesses((prev) =>
       prev.map((business) =>
-        business.id === id ? { ...mapped, pendingEdits: null } : business
-      )
+        business.id === id ? { ...mapped, pendingEdits: null } : business,
+      ),
     );
   };
 
@@ -3882,42 +3880,13 @@ export default function App() {
     cardListRef.current?.scrollToIndex({ index: target, animated: true });
   };
 
-  const loadInvites = useCallback(async () => {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-      setInviteStatus({
-        loading: false,
-        error: "Supabase is not configured for invites yet.",
-        code: null
-      });
-      return;
-    }
-    const { data, error } = await supabase
-      .from("invites")
-      .select(
-        "id, code, role, used_at, created_at, used_by, used_by_name, used_by_business_name"
-      )
-      .eq("role", "business_owner")
-      .order("created_at", { ascending: false })
-      .limit(8);
-    if (error) {
-      setInviteStatus({
-        loading: false,
-        error: error.message || "Unable to load invite codes.",
-        code: null
-      });
-      return;
-    }
-    setInviteList(Array.isArray(data) ? data : []);
-    setInviteStatus((prev) => ({ ...prev, error: null }));
-  }, []);
-
   const applyPendingEditsFromRequests = useCallback((requests) => {
     if (!Array.isArray(requests)) return;
     const pendingByBusiness = new Map();
     requests
       .filter(
         (request) =>
-          request.status === "pending" && request.entity_type === "business"
+          request.status === "pending" && request.entity_type === "business",
       )
       .forEach((request) => {
         if (!request.business_id) return;
@@ -3945,7 +3914,7 @@ export default function App() {
             ...business,
             pendingEdits: null,
             pendingEditsAt: null,
-            pendingRequestId: null
+            pendingRequestId: null,
           };
         }
         const pendingEdits = pending.payload || {};
@@ -3956,9 +3925,9 @@ export default function App() {
           ...business,
           pendingEdits,
           pendingEditsAt,
-          pendingRequestId: pending.id
+          pendingRequestId: pending.id,
         };
-      })
+      }),
     );
   }, []);
 
@@ -3967,7 +3936,7 @@ export default function App() {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         setChangeRequestStatus({
           loading: false,
-          error: "Supabase is not configured for change requests yet."
+          error: "Supabase is not configured for change requests yet.",
         });
         return;
       }
@@ -3982,12 +3951,12 @@ export default function App() {
         query = query.eq("business_id", businessId);
       }
       const { data, error } = await query.order("created_at", {
-        ascending: false
+        ascending: false,
       });
       if (error) {
         setChangeRequestStatus({
           loading: false,
-          error: error.message || "Unable to load change requests."
+          error: error.message || "Unable to load change requests.",
         });
         return;
       }
@@ -3996,7 +3965,7 @@ export default function App() {
       setChangeRequestStatus({ loading: false, error: null });
       applyPendingEditsFromRequests(list);
     },
-    [applyPendingEditsFromRequests]
+    [applyPendingEditsFromRequests],
   );
 
   const mergeOffers = useCallback((nextOffers) => {
@@ -4006,55 +3975,58 @@ export default function App() {
         map.set(offer.id, offer);
       });
       return Array.from(map.values()).sort(
-        (a, b) => (b.createdAt || 0) - (a.createdAt || 0)
+        (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
       );
     });
   }, []);
 
-  const loadRemoteOffers = useCallback(async ({ silent } = {}) => {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-      setOfferStatus({
-        loading: false,
-        error: "Supabase is not configured for offers yet."
-      });
-      return;
-    }
-    if (!silent) {
-      setOfferStatus({ loading: true, error: null });
-    }
-    const { data, error } = await supabase
-      .from("offers")
-      .select(
-        [
-          "id",
-          "business_id",
-          "title",
-          "description",
-          "offer_type",
-          "image_url",
-          "active",
-          "approval_status",
-          "created_at",
-          "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, subscription_plan, subscription_price_cents, is_open, approval_status, status)"
-        ].join(",")
-      )
-      .eq("active", true)
-      .eq("approval_status", "approved")
-      .order("created_at", { ascending: false });
-    if (error) {
-      if (!silent) {
+  const loadRemoteOffers = useCallback(
+    async ({ silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         setOfferStatus({
           loading: false,
-          error: error.message || "Unable to load offers."
+          error: "Supabase is not configured for offers yet.",
         });
+        return;
       }
-      return;
-    }
-    mergeOffers((data || []).map(mapSupabaseOffer));
-    if (!silent) {
-      setOfferStatus({ loading: false, error: null });
-    }
-  }, [mergeOffers]);
+      if (!silent) {
+        setOfferStatus({ loading: true, error: null });
+      }
+      const { data, error } = await supabase
+        .from("offers")
+        .select(
+          [
+            "id",
+            "business_id",
+            "title",
+            "description",
+            "offer_type",
+            "image_url",
+            "active",
+            "approval_status",
+            "created_at",
+            "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, subscription_plan, subscription_price_cents, is_open, approval_status, status)",
+          ].join(","),
+        )
+        .eq("active", true)
+        .eq("approval_status", "approved")
+        .order("created_at", { ascending: false });
+      if (error) {
+        if (!silent) {
+          setOfferStatus({
+            loading: false,
+            error: error.message || "Unable to load offers.",
+          });
+        }
+        return;
+      }
+      mergeOffers((data || []).map(mapSupabaseOffer));
+      if (!silent) {
+        setOfferStatus({ loading: false, error: null });
+      }
+    },
+    [mergeOffers],
+  );
 
   const loadOwnerOffers = useCallback(
     async (businessId) => {
@@ -4071,8 +4043,8 @@ export default function App() {
             "image_url",
             "active",
             "approval_status",
-            "created_at"
-          ].join(",")
+            "created_at",
+          ].join(","),
         )
         .eq("business_id", businessId)
         .order("created_at", { ascending: false });
@@ -4081,14 +4053,14 @@ export default function App() {
       }
       mergeOffers((data || []).map(mapSupabaseOffer));
     },
-    [mergeOffers]
+    [mergeOffers],
   );
 
   const loadPendingOffers = useCallback(async () => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setPendingOfferStatus({
         loading: false,
-        error: "Supabase is not configured for offers yet."
+        error: "Supabase is not configured for offers yet.",
       });
       return;
     }
@@ -4106,15 +4078,15 @@ export default function App() {
           "active",
           "approval_status",
           "created_at",
-          "business:businesses (id, name, category_key, category_label)"
-        ].join(",")
+          "business:businesses (id, name, category_key, category_label)",
+        ].join(","),
       )
       .eq("approval_status", "pending")
       .order("created_at", { ascending: false });
     if (error) {
       setPendingOfferStatus({
         loading: false,
-        error: error.message || "Unable to load offer reviews."
+        error: error.message || "Unable to load offer reviews.",
       });
       return;
     }
@@ -4140,8 +4112,8 @@ export default function App() {
           "active",
           "approval_status",
           "created_at",
-          "business:businesses (id, name, category_key, category_label)"
-        ].join(",")
+          "business:businesses (id, name, category_key, category_label)",
+        ].join(","),
       )
       .maybeSingle();
     if (error || !data) {
@@ -4172,8 +4144,8 @@ export default function App() {
           "active",
           "approval_status",
           "created_at",
-          "business:businesses (id, name, category_key, category_label)"
-        ].join(",")
+          "business:businesses (id, name, category_key, category_label)",
+        ].join(","),
       )
       .maybeSingle();
     if (error || !data) {
@@ -4189,7 +4161,7 @@ export default function App() {
     if (!offer?.id) return;
     if (
       !ensureSupabaseReady((message) =>
-        setAdminActionStatus({ loading: false, error: message, success: null })
+        setAdminActionStatus({ loading: false, error: message, success: null }),
       )
     ) {
       return;
@@ -4201,7 +4173,7 @@ export default function App() {
       setAdminActionStatus({
         loading: false,
         error: error.message || "Unable to delete offer.",
-        success: null
+        success: null,
       });
       return;
     }
@@ -4212,7 +4184,7 @@ export default function App() {
       error: null,
       success: imageError
         ? "Offer deleted. Image cleanup failed."
-        : "Offer deleted."
+        : "Offer deleted.",
     });
   };
 
@@ -4221,21 +4193,21 @@ export default function App() {
     if (business.source !== "supabase") {
       setBusinesses((prev) => prev.filter((item) => item.id !== business.id));
       setOffers((prev) =>
-        prev.filter((offer) => offer.businessId !== business.id)
+        prev.filter((offer) => offer.businessId !== business.id),
       );
       setPendingOffers((prev) =>
-        prev.filter((offer) => offer.businessId !== business.id)
+        prev.filter((offer) => offer.businessId !== business.id),
       );
       setAdminActionStatus({
         loading: false,
         error: null,
-        success: "Business removed locally."
+        success: "Business removed locally.",
       });
       return;
     }
     if (
       !ensureSupabaseReady((message) =>
-        setAdminActionStatus({ loading: false, error: message, success: null })
+        setAdminActionStatus({ loading: false, error: message, success: null }),
       )
     ) {
       return;
@@ -4253,8 +4225,8 @@ export default function App() {
       new Set(
         (offerRows || [])
           .map((row) => getOfferImagePath(row.image_url))
-          .filter(Boolean)
-      )
+          .filter(Boolean),
+      ),
     );
     if (imagePaths.length) {
       const { error: storageError } = await supabase.storage
@@ -4273,16 +4245,16 @@ export default function App() {
       setAdminActionStatus({
         loading: false,
         error: error.message || "Unable to delete business.",
-        success: null
+        success: null,
       });
       return;
     }
     setBusinesses((prev) => prev.filter((item) => item.id !== business.id));
     setOffers((prev) =>
-      prev.filter((offer) => offer.businessId !== business.id)
+      prev.filter((offer) => offer.businessId !== business.id),
     );
     setPendingOffers((prev) =>
-      prev.filter((offer) => offer.businessId !== business.id)
+      prev.filter((offer) => offer.businessId !== business.id),
     );
     if (qrExpandedId === business.id) {
       setQrExpandedId(null);
@@ -4305,48 +4277,8 @@ export default function App() {
       error: null,
       success: imageCleanupError
         ? "Business deleted. Image cleanup failed."
-        : "Business deleted."
+        : "Business deleted.",
     });
-  };
-
-  const handleGenerateInvite = async () => {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-      setInviteStatus({
-        loading: false,
-        error: "Supabase is not configured for invites yet.",
-        code: null
-      });
-      return;
-    }
-    setInviteStatus({ loading: true, error: null, code: null });
-    setInviteCopied(false);
-    const code = generateInviteCode();
-    const { error } = await supabase.from("invites").insert({
-      code,
-      role: "business_owner",
-      generated_by: profileEmail || authEmail || null
-    });
-    if (error) {
-      setInviteStatus({
-        loading: false,
-        error: error.message || "Unable to create invite code.",
-        code: null
-      });
-      return;
-    }
-    setInviteStatus({ loading: false, error: null, code });
-    await loadInvites();
-  };
-
-  const handleCopyInvite = async () => {
-    if (!inviteStatus.code) return;
-    try {
-      await Clipboard.setStringAsync(inviteStatus.code);
-      setInviteCopied(true);
-      setTimeout(() => setInviteCopied(false), 1600);
-    } catch (error) {
-      setInviteCopied(false);
-    }
   };
 
   const handlePickOfferImage = async () => {
@@ -4357,12 +4289,11 @@ export default function App() {
     setOfferError(null);
     setOfferImageStatus({ uploading: false, error: null });
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    const hasPermission =
-      permission.granted || permission.status === "limited";
+    const hasPermission = permission.granted || permission.status === "limited";
     if (!hasPermission) {
       setOfferImageStatus({
         uploading: false,
-        error: "Photo access is required. Enable it in Settings."
+        error: "Photo access is required. Enable it in Settings.",
       });
       return;
     }
@@ -4373,7 +4304,7 @@ export default function App() {
       if (!mediaTypes) {
         setOfferImageStatus({
           uploading: false,
-          error: "Image picker is not available in this Expo Go version."
+          error: "Image picker is not available in this Expo Go version.",
         });
         return;
       }
@@ -4382,7 +4313,7 @@ export default function App() {
         allowsEditing: true,
         aspect: [2, 1],
         quality: 0.85,
-        base64: true
+        base64: true,
       });
       if (result.canceled) return;
       const asset = result.assets?.[0];
@@ -4391,12 +4322,12 @@ export default function App() {
         uri: asset.uri,
         mimeType: asset.mimeType || "image/jpeg",
         fileName: asset.fileName || null,
-        base64: asset.base64 || null
+        base64: asset.base64 || null,
       });
     } catch (error) {
       setOfferImageStatus({
         uploading: false,
-        error: error?.message || "Unable to open photo library."
+        error: error?.message || "Unable to open photo library.",
       });
     }
   };
@@ -4425,13 +4356,13 @@ export default function App() {
       setOfferImageStatus({ uploading: true, error: null });
       const { url, error } = await uploadOfferImage(
         offerImage,
-        ownerBusiness.id
+        ownerBusiness.id,
       );
       console.log("Wello offer image upload", {
         businessId: ownerBusiness.id,
         ok: !error,
         url,
-        error
+        error,
       });
       setOfferImageStatus({ uploading: false, error });
       if (error) {
@@ -4450,7 +4381,7 @@ export default function App() {
         offer_type: normalizedType,
         image_url: imageUrl,
         active: true,
-        approval_status: "pending"
+        approval_status: "pending",
       })
       .select(
         [
@@ -4462,14 +4393,14 @@ export default function App() {
           "image_url",
           "active",
           "approval_status",
-          "created_at"
-        ].join(",")
+          "created_at",
+        ].join(","),
       )
       .maybeSingle();
     console.log("Wello offer insert", {
       businessId: ownerBusiness.id,
       offerId: data?.id || null,
-      error: error?.message || null
+      error: error?.message || null,
     });
     if (error || !data) {
       setOfferError(error?.message || "Unable to create offer.");
@@ -4505,8 +4436,8 @@ export default function App() {
           "image_url",
           "active",
           "approval_status",
-          "created_at"
-        ].join(",")
+          "created_at",
+        ].join(","),
       )
       .maybeSingle();
     if (error || !data) {
@@ -4542,7 +4473,7 @@ export default function App() {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setProfileStatus({
         loading: false,
-        error: "Supabase is not configured for profiles yet."
+        error: "Supabase is not configured for profiles yet.",
       });
       return;
     }
@@ -4555,7 +4486,7 @@ export default function App() {
     if (error) {
       setProfileStatus({
         loading: false,
-        error: error.message || "Unable to load team members."
+        error: error.message || "Unable to load team members.",
       });
       return;
     }
@@ -4568,7 +4499,7 @@ export default function App() {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         setRedemptionStatus({
           loading: false,
-          error: "Supabase is not configured for history yet."
+          error: "Supabase is not configured for history yet.",
         });
         return;
       }
@@ -4589,8 +4520,8 @@ export default function App() {
             "offer_id",
             "created_at",
             "offer:offers (id, title, description, offer_type, image_url)",
-            "business:businesses (id, name, category_key, category_label)"
-          ].join(",")
+            "business:businesses (id, name, category_key, category_label)",
+          ].join(","),
         )
         .eq("scanned_by", authUserId)
         .order("created_at", { ascending: false });
@@ -4598,7 +4529,7 @@ export default function App() {
         if (!silent) {
           setRedemptionStatus({
             loading: false,
-            error: error.message || "Unable to load history."
+            error: error.message || "Unable to load history.",
           });
         }
         return;
@@ -4608,7 +4539,7 @@ export default function App() {
         setRedemptionStatus({ loading: false, error: null });
       }
     },
-    [authUserId]
+    [authUserId],
   );
 
   const loadUserReviews = useCallback(
@@ -4616,7 +4547,7 @@ export default function App() {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         setReviewStatus({
           loading: false,
-          error: "Supabase is not configured for reviews yet."
+          error: "Supabase is not configured for reviews yet.",
         });
         return;
       }
@@ -4630,14 +4561,16 @@ export default function App() {
       }
       const { data, error } = await supabase
         .from("reviews")
-        .select("id, business_id, redemption_id, offer_id, rating, review_text, created_at")
+        .select(
+          "id, business_id, redemption_id, offer_id, rating, review_text, created_at",
+        )
         .eq("user_id", authUserId)
         .order("created_at", { ascending: false });
       if (error) {
         if (!silent) {
           setReviewStatus({
             loading: false,
-            error: error.message || "Unable to load reviews."
+            error: error.message || "Unable to load reviews.",
           });
         }
         return;
@@ -4647,7 +4580,7 @@ export default function App() {
         setReviewStatus({ loading: false, error: null });
       }
     },
-    [authUserId]
+    [authUserId],
   );
 
   const loadBusinessReviews = useCallback(
@@ -4655,7 +4588,7 @@ export default function App() {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         setBusinessDetailStatus({
           loading: false,
-          error: "Supabase is not configured for reviews yet."
+          error: "Supabase is not configured for reviews yet.",
         });
         return;
       }
@@ -4669,14 +4602,16 @@ export default function App() {
       }
       const { data, error } = await supabase
         .from("reviews")
-        .select("id, business_id, redemption_id, offer_id, rating, review_text, created_at")
+        .select(
+          "id, business_id, redemption_id, offer_id, rating, review_text, created_at",
+        )
         .eq("business_id", businessId)
         .order("created_at", { ascending: false });
       if (error) {
         if (!silent) {
           setBusinessDetailStatus({
             loading: false,
-            error: error.message || "Unable to load reviews."
+            error: error.message || "Unable to load reviews.",
           });
         }
         return;
@@ -4686,7 +4621,61 @@ export default function App() {
         setBusinessDetailStatus({ loading: false, error: null });
       }
     },
-    []
+    [],
+  );
+
+  const loadBusinessOffers = useCallback(
+    async (businessId, { silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setBusinessDetailOffers([]);
+        setBusinessDetailOffersStatus({
+          loading: false,
+          error: "Supabase is not configured for offers yet.",
+        });
+        return;
+      }
+      if (!businessId) {
+        setBusinessDetailOffers([]);
+        setBusinessDetailOffersStatus({ loading: false, error: null });
+        return;
+      }
+      if (!silent) {
+        setBusinessDetailOffersStatus({ loading: true, error: null });
+      }
+      const { data, error } = await supabase
+        .from("offers")
+        .select(
+          [
+            "id",
+            "business_id",
+            "title",
+            "description",
+            "offer_type",
+            "image_url",
+            "active",
+            "approval_status",
+            "created_at",
+          ].join(","),
+        )
+        .eq("business_id", businessId)
+        .eq("active", true)
+        .eq("approval_status", "approved")
+        .order("created_at", { ascending: false });
+      if (error) {
+        if (!silent) {
+          setBusinessDetailOffersStatus({
+            loading: false,
+            error: error.message || "Unable to load offers.",
+          });
+        }
+        return;
+      }
+      setBusinessDetailOffers((data || []).map(mapSupabaseOffer));
+      if (!silent) {
+        setBusinessDetailOffersStatus({ loading: false, error: null });
+      }
+    },
+    [],
   );
 
   useEffect(() => {
@@ -4717,13 +4706,19 @@ export default function App() {
   useEffect(() => {
     if (!businessDetailOpen || !businessDetail?.id) return;
     loadBusinessReviews(businessDetail.id);
-  }, [businessDetailOpen, businessDetail?.id, loadBusinessReviews]);
+    loadBusinessOffers(businessDetail.id);
+  }, [
+    businessDetailOpen,
+    businessDetail?.id,
+    loadBusinessReviews,
+    loadBusinessOffers,
+  ]);
 
   const handlePromoteSupervisor = async (profile) => {
     if (!profile?.id) return;
     if (
       !ensureSupabaseReady((message) =>
-        setSupervisorStatus({ loading: false, error: message, success: null })
+        setSupervisorStatus({ loading: false, error: message, success: null }),
       )
     ) {
       return;
@@ -4739,19 +4734,19 @@ export default function App() {
       setSupervisorStatus({
         loading: false,
         error: error?.message || "Unable to update that profile.",
-        success: null
+        success: null,
       });
       return;
     }
     setProfileList((prev) =>
       prev.map((item) =>
-        item.id === profile.id ? { ...item, role: "supervisor" } : item
-      )
+        item.id === profile.id ? { ...item, role: "supervisor" } : item,
+      ),
     );
     setSupervisorStatus({
       loading: false,
       error: null,
-      success: "Supervisor access granted."
+      success: "Supervisor access granted.",
     });
   };
 
@@ -4764,7 +4759,7 @@ export default function App() {
       addressCoords: null,
       city: "",
       state: "",
-      postalCode: ""
+      postalCode: "",
     }));
   };
 
@@ -4776,7 +4771,7 @@ export default function App() {
     setCreateAddressError(null);
     setCreateBusinessForm((prev) => ({
       ...prev,
-      address: suggestion.description
+      address: suggestion.description,
     }));
 
     if (!GOOGLE_PLACES_KEY) return;
@@ -4784,8 +4779,8 @@ export default function App() {
       setCreateAddressLoading(true);
       const response = await fetch(
         `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(
-          suggestion.place_id
-        )}&fields=formatted_address,address_components,geometry&key=${GOOGLE_PLACES_KEY}`
+          suggestion.place_id,
+        )}&fields=formatted_address,address_components,geometry&key=${GOOGLE_PLACES_KEY}`,
       );
       const data = await response.json();
       if (data.status && data.status !== "OK") {
@@ -4795,13 +4790,14 @@ export default function App() {
       const location = data.result?.geometry?.location;
       setCreateBusinessForm((prev) => ({
         ...prev,
-        address: parsed.street || data.result?.formatted_address || prev.address,
+        address:
+          parsed.street || data.result?.formatted_address || prev.address,
         city: parsed.city || prev.city,
         state: parsed.state || prev.state,
         postalCode: parsed.postalCode || prev.postalCode,
         addressCoords: location
           ? { latitude: location.lat, longitude: location.lng }
-          : prev.addressCoords
+          : prev.addressCoords,
       }));
     } catch (error) {
       setCreateAddressError(error.message || "Unable to load place details.");
@@ -4837,7 +4833,7 @@ export default function App() {
         createHoursStart,
         createHoursStartMeridiem,
         createHoursEnd,
-        createHoursEndMeridiem
+        createHoursEndMeridiem,
       );
       let createCoords = createBusinessForm.addressCoords;
       if (!createCoords && createBusinessForm.address.trim()) {
@@ -4869,13 +4865,13 @@ export default function App() {
           status: "active",
           is_open: true,
           latitude: createCoords?.latitude ?? null,
-          longitude: createCoords?.longitude ?? null
+          longitude: createCoords?.longitude ?? null,
         })
         .select("*")
         .maybeSingle();
       if (error || !data) {
         setCreateBusinessError(
-          error?.message || "Unable to create your business profile."
+          error?.message || "Unable to create your business profile.",
         );
         return;
       }
@@ -4885,7 +4881,7 @@ export default function App() {
         email: profileEmailValue,
         full_name: profileName || null,
         phone: createBusinessForm.phone.trim() || null,
-        company: createBusinessForm.name.trim() || null
+        company: createBusinessForm.name.trim() || null,
       });
       const mapped = mapSupabaseBusiness(data, 0);
       setBusinesses((prev) => [mapped, ...prev]);
@@ -4900,7 +4896,7 @@ export default function App() {
         categoryKey: "restaurant",
         offer: "",
         phone: "",
-        tags: ""
+        tags: "",
       });
       setCreateHoursStart("");
       setCreateHoursEnd("");
@@ -4915,7 +4911,7 @@ export default function App() {
     if (!profile?.id) return;
     if (
       !ensureSupabaseReady((message) =>
-        setSupervisorStatus({ loading: false, error: message, success: null })
+        setSupervisorStatus({ loading: false, error: message, success: null }),
       )
     ) {
       return;
@@ -4931,19 +4927,19 @@ export default function App() {
       setSupervisorStatus({
         loading: false,
         error: error?.message || "Unable to update that profile.",
-        success: null
+        success: null,
       });
       return;
     }
     setProfileList((prev) =>
       prev.map((item) =>
-        item.id === profile.id ? { ...item, role: "business_owner" } : item
-      )
+        item.id === profile.id ? { ...item, role: "business_owner" } : item,
+      ),
     );
     setSupervisorStatus({
       loading: false,
       error: null,
-      success: "Business access granted."
+      success: "Business access granted.",
     });
   };
 
@@ -4951,7 +4947,7 @@ export default function App() {
     if (!profile?.id) return;
     if (
       !ensureSupabaseReady((message) =>
-        setSupervisorStatus({ loading: false, error: message, success: null })
+        setSupervisorStatus({ loading: false, error: message, success: null }),
       )
     ) {
       return;
@@ -4967,19 +4963,19 @@ export default function App() {
       setSupervisorStatus({
         loading: false,
         error: error?.message || "Unable to update that profile.",
-        success: null
+        success: null,
       });
       return;
     }
     setProfileList((prev) =>
       prev.map((item) =>
-        item.id === profile.id ? { ...item, role: "consumer" } : item
-      )
+        item.id === profile.id ? { ...item, role: "consumer" } : item,
+      ),
     );
     setSupervisorStatus({
       loading: false,
       error: null,
-      success: "Supervisor access removed."
+      success: "Supervisor access removed.",
     });
   };
 
@@ -4993,7 +4989,7 @@ export default function App() {
       onPanResponderMove: (_, gesture) => {
         const nextValue = Math.min(
           Math.max(0, dragStart.current + gesture.dy),
-          COLLAPSED_Y
+          COLLAPSED_Y,
         );
         translateY.setValue(nextValue);
       },
@@ -5004,10 +5000,10 @@ export default function App() {
           toValue: shouldExpand ? 0 : COLLAPSED_Y,
           useNativeDriver: false,
           tension: 90,
-          friction: 12
+          friction: 12,
         }).start();
-      }
-    })
+      },
+    }),
   ).current;
 
   if ((!fontsLoaded && !fontError) || !sessionReady) {
@@ -5017,726 +5013,2707 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.screen}>
-      <StatusBar
-        barStyle="dark-content"
-        translucent
-        backgroundColor="transparent"
-      />
-      <View style={styles.container}>
-        <MapView
-          ref={mapRef}
-          style={styles.map}
-          region={mapRegion}
-          onRegionChangeComplete={setMapRegion}
-          customMapStyle={MAP_STYLE}
-          showsUserLocation
-          showsMyLocationButton={false}
-          showsCompass={false}
-          showsScale={false}
-          showsPointsOfInterest={false}
-        >
-          {filteredBusinesses.map((business) => {
-            const category = getCategoryConfig(business.categoryKey);
-            const isSelected = selectedId === business.id;
-            const markerKey = CATEGORY_CONFIG[business.categoryKey]
-              ? business.categoryKey
-              : "default";
-            const androidIcon = androidMarkerIcons?.normal?.[markerKey];
-            const androidHalo = androidMarkerIcons?.halo?.[markerKey];
-            const useAndroidImages = Platform.OS === "android" && androidIcon;
-            const markerAnchor =
-              Platform.OS === "android" && useAndroidImages
-                ? { x: 0.5, y: 0.5 }
-                : { x: 0.5, y: 1 };
-            const markerCoordinate =
-              business.coordinate ||
-              (business.source === "supabase" ? null : business.fallbackCoordinate);
-            if (!markerCoordinate) return null;
-            return (
-              <React.Fragment key={business.id}>
-                {Platform.OS === "android" &&
-                  useAndroidImages &&
-                  isSelected &&
-                  androidHalo && (
-                    <Marker
-                      coordinate={markerCoordinate}
-                      anchor={{ x: 0.5, y: 0.5 }}
-                      image={androidHalo}
-                      zIndex={1}
-                      onPress={() => handleMarkerPress(business)}
-                    />
-                  )}
-                <Marker
-                  coordinate={markerCoordinate}
-                  anchor={markerAnchor}
-                  onPress={() => handleMarkerPress(business)}
-                  image={useAndroidImages ? androidIcon : undefined}
-                  pinColor={
-                    Platform.OS === "android" && !useAndroidImages
-                      ? category.color
-                      : undefined
-                  }
-                  zIndex={Platform.OS === "android" && isSelected ? 2 : 0}
-                >
-                  {Platform.OS !== "android" && (
-                    <View
-                      style={styles.markerWrap}
-                      pointerEvents="none"
-                      collapsable={false}
-                    >
+        <StatusBar
+          barStyle="dark-content"
+          translucent
+          backgroundColor="transparent"
+        />
+        <View style={styles.container}>
+          <MapView
+            ref={mapRef}
+            style={styles.map}
+            region={mapRegion}
+            onRegionChangeComplete={setMapRegion}
+            customMapStyle={MAP_STYLE}
+            showsUserLocation
+            showsMyLocationButton={false}
+            showsCompass={false}
+            showsScale={false}
+            showsPointsOfInterest={false}
+          >
+            {filteredBusinesses.map((business) => {
+              const category = getCategoryConfig(business.categoryKey);
+              const isSelected = selectedId === business.id;
+              const markerKey = CATEGORY_CONFIG[business.categoryKey]
+                ? business.categoryKey
+                : "default";
+              const androidIcon = androidMarkerIcons?.normal?.[markerKey];
+              const androidHalo = androidMarkerIcons?.halo?.[markerKey];
+              const useAndroidImages = Platform.OS === "android" && androidIcon;
+              const markerAnchor =
+                Platform.OS === "android" && useAndroidImages
+                  ? { x: 0.5, y: 0.5 }
+                  : { x: 0.5, y: 1 };
+              const markerCoordinate =
+                business.coordinate ||
+                (business.source === "supabase"
+                  ? null
+                  : business.fallbackCoordinate);
+              if (!markerCoordinate) return null;
+              return (
+                <React.Fragment key={business.id}>
+                  {Platform.OS === "android" &&
+                    useAndroidImages &&
+                    isSelected &&
+                    androidHalo && (
+                      <Marker
+                        coordinate={markerCoordinate}
+                        anchor={{ x: 0.5, y: 0.5 }}
+                        image={androidHalo}
+                        zIndex={1}
+                        onPress={() => handleMarkerPress(business)}
+                      />
+                    )}
+                  <Marker
+                    coordinate={markerCoordinate}
+                    anchor={markerAnchor}
+                    onPress={() => handleMarkerPress(business)}
+                    image={useAndroidImages ? androidIcon : undefined}
+                    pinColor={
+                      Platform.OS === "android" && !useAndroidImages
+                        ? category.color
+                        : undefined
+                    }
+                    zIndex={Platform.OS === "android" && isSelected ? 2 : 0}
+                  >
+                    {Platform.OS !== "android" && (
                       <View
-                        style={[
-                          styles.markerIcon,
-                          { backgroundColor: category.color },
-                          isSelected && styles.markerIconSelected
-                        ]}
+                        style={styles.markerWrap}
+                        pointerEvents="none"
+                        collapsable={false}
                       >
-                        <Ionicons
-                          name={category.icon}
-                          size={20}
-                          color={COLORS.white}
-                        />
-                      </View>
-                      <View style={styles.markerPointerWrap}>
                         <View
                           style={[
-                            styles.markerPointer,
-                            { backgroundColor: category.color }
+                            styles.markerIcon,
+                            { backgroundColor: category.color },
+                            isSelected && styles.markerIconSelected,
                           ]}
-                        />
-                      </View>
-                    </View>
-                  )}
-                </Marker>
-              </React.Fragment>
-            );
-          })}
-        </MapView>
-
-        <LinearGradient
-          pointerEvents="none"
-          colors={["rgba(244, 246, 249, 0.0)", "rgba(244, 246, 249, 0.45)"]}
-          style={styles.mapShade}
-        />
-
-        <View style={styles.topMeta} pointerEvents="box-none">
-          <View style={[styles.navContainer, { width: navContainerWidth }]}>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.navScroll}
-            >
-              {visibleTabs.map((tab) => {
-                const isActive = activeTab === tab.key;
-                return (
-                  <TouchableOpacity
-                    key={tab.key}
-                    style={[styles.navPill, isActive && styles.navPillActive]}
-                    onPress={() => openSheet(tab.key)}
-                  >
-                    <Text
-                      style={[
-                        styles.navPillText,
-                        isActive && styles.navPillTextActive
-                      ]}
-                    >
-                      {tab.label}
-                    </Text>
-                    {tab.key === "history" && pendingReviewCount > 0 && (
-                      <View style={styles.navPillBadge}>
-                        <Text style={styles.navPillBadgeText}>
-                          {pendingReviewCount > 9 ? "9+" : pendingReviewCount}
-                        </Text>
+                        >
+                          <Ionicons
+                            name={category.icon}
+                            size={20}
+                            color={COLORS.white}
+                          />
+                        </View>
+                        <View style={styles.markerPointerWrap}>
+                          <View
+                            style={[
+                              styles.markerPointer,
+                              { backgroundColor: category.color },
+                            ]}
+                          />
+                        </View>
                       </View>
                     )}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
-          <View style={styles.locateRow} pointerEvents="box-none">
-            <TouchableOpacity
-              style={styles.locateButton}
-              onPress={handleLocateMe}
-              disabled={locating}
-            >
-              <Ionicons
-                name={locating ? "locate" : "locate-outline"}
-                size={18}
-                color={COLORS.pine}
-              />
-            </TouchableOpacity>
-            {locationError && (
-              <View style={styles.locateError}>
-                <Text style={styles.locateErrorText}>{locationError}</Text>
-              </View>
-            )}
-          </View>
-        </View>
+                  </Marker>
+                </React.Fragment>
+              );
+            })}
+          </MapView>
 
-        <Modal transparent visible={scannerVisible} animationType="slide">
-          <View style={styles.scannerOverlay}>
-            <View style={styles.scannerCard}>
-              <View style={styles.scannerHeader}>
-                <View>
-                  <Text style={styles.scannerTitle}>Redeem offer</Text>
-                  <Text style={styles.scannerSubtitle}>
-                    {scannerBusiness?.name || "Wello business"}
-                  </Text>
-                  {scannerOffer?.offerTitle && (
-                    <Text style={styles.scannerOfferTitle}>
-                      {scannerOffer.offerTitle}
-                    </Text>
-                  )}
+          <LinearGradient
+            pointerEvents="none"
+            colors={["rgba(244, 246, 249, 0.0)", "rgba(244, 246, 249, 0.45)"]}
+            style={styles.mapShade}
+          />
+
+          <View style={styles.topMeta} pointerEvents="box-none">
+            <View style={[styles.navContainer, { width: navContainerWidth }]}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.navScroll}
+              >
+                {visibleTabs.map((tab) => {
+                  const isActive = activeTab === tab.key;
+                  return (
+                    <TouchableOpacity
+                      key={tab.key}
+                      style={[styles.navPill, isActive && styles.navPillActive]}
+                      onPress={() => openSheet(tab.key)}
+                    >
+                      <Text
+                        style={[
+                          styles.navPillText,
+                          isActive && styles.navPillTextActive,
+                        ]}
+                      >
+                        {tab.label}
+                      </Text>
+                      {tab.key === "history" && pendingReviewCount > 0 && (
+                        <View style={styles.navPillBadge}>
+                          <Text style={styles.navPillBadgeText}>
+                            {pendingReviewCount > 9 ? "9+" : pendingReviewCount}
+                          </Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </View>
+            <View style={styles.locateRow} pointerEvents="box-none">
+              <TouchableOpacity
+                style={styles.locateButton}
+                onPress={handleLocateMe}
+                disabled={locating}
+              >
+                <Ionicons
+                  name={locating ? "locate" : "locate-outline"}
+                  size={18}
+                  color={COLORS.pine}
+                />
+              </TouchableOpacity>
+              {locationError && (
+                <View style={styles.locateError}>
+                  <Text style={styles.locateErrorText}>{locationError}</Text>
                 </View>
-                <TouchableOpacity
-                  style={styles.scannerClose}
-                  onPress={handleCloseScanner}
-                >
-                  <Ionicons name="close" size={18} color={COLORS.ink} />
-                </TouchableOpacity>
-              </View>
+              )}
+            </View>
+          </View>
 
-              <View style={styles.scannerFrame}>
-                {cameraPermission?.status === "denied" ? (
-                  <View style={styles.scannerBlocked}>
-                    <Text style={styles.scannerBlockedText}>
-                      Camera permission is required.
+          <Modal transparent visible={scannerVisible} animationType="slide">
+            <View style={styles.scannerOverlay}>
+              <View style={styles.scannerCard}>
+                <View style={styles.scannerHeader}>
+                  <View>
+                    <Text style={styles.scannerTitle}>Redeem offer</Text>
+                    <Text style={styles.scannerSubtitle}>
+                      {scannerBusiness?.name || "Wello business"}
                     </Text>
+                    {scannerOffer?.offerTitle && (
+                      <Text style={styles.scannerOfferTitle}>
+                        {scannerOffer.offerTitle}
+                      </Text>
+                    )}
                   </View>
-                ) : scannerStatus === "blocked" || scannerStatus === "checking" ? (
-                  <View style={styles.scannerBlocked}>
-                    <Text style={styles.scannerBlockedText}>
-                      {scannerStatus === "checking"
-                        ? "Checking your location..."
-                        : REDEEM_BLOCKED_MESSAGE}
-                    </Text>
-                  </View>
-                ) : (
-                  <CameraView
-                    onBarcodeScanned={scannerEnabled ? handleScanCode : undefined}
-                    barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-                    style={styles.scanner}
-                  />
-                )}
-                <View style={styles.scannerFrameOutline} pointerEvents="none" />
-              </View>
-
-              <View style={styles.scannerStatus}>
-                <Text style={styles.scannerStatusText}>
-                  {scannerStatus === "success"
-                    ? "Offer redeemed. Show this confirmation to the staff."
-                    : scannerStatus === "invalid"
-                    ? "That code does not match this offer. Try again."
-                    : scannerStatus === "checking"
-                    ? "Checking your location..."
-                    : scannerStatus === "blocked"
-                    ? REDEEM_BLOCKED_MESSAGE
-                    : "Scan the business QR code to redeem this offer."}
-                </Text>
-              </View>
-
-              <View style={styles.scannerActions}>
-                {scannerStatus === "success" ? (
                   <TouchableOpacity
-                    style={styles.primaryButton}
+                    style={styles.scannerClose}
                     onPress={handleCloseScanner}
                   >
-                    <Text style={styles.primaryButtonText}>Done</Text>
+                    <Ionicons name="close" size={18} color={COLORS.ink} />
                   </TouchableOpacity>
-                ) : scannerStatus === "blocked" || scannerStatus === "checking" ? (
-                  <TouchableOpacity
-                    style={[
-                      styles.secondaryButton,
-                      redeemGateBusy && styles.secondaryButtonDisabled
-                    ]}
-                    onPress={() => {
-                      if (!redeemGateBusy) {
-                        runRedeemGate(scannerBusiness);
-                      }
-                    }}
-                    disabled={redeemGateBusy}
-                  >
-                    <Text style={styles.secondaryButtonText}>
-                      {redeemGateBusy ? "Checking..." : "Check again"}
-                    </Text>
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity
-                    style={styles.secondaryButton}
-                    onPress={() => {
-                      setScannerStatus(null);
-                      setScannerEnabled(true);
-                    }}
-                  >
-                    <Text style={styles.secondaryButtonText}>Scan again</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-              {scannerStatus === "success" && (
-                <ConfettiDrizzle
-                  active
-                  width={SCANNER_CARD_WIDTH}
-                  height={SCANNER_CARD_HEIGHT}
-                />
-              )}
-            </View>
-          </View>
-        </Modal>
+                </View>
 
-        <Modal transparent visible={reviewModalOpen} animationType="fade">
-          <View style={styles.reviewOverlay}>
-            <View style={styles.reviewCard}>
-              <View style={styles.reviewHeader}>
-                <View>
-                  <Text style={styles.reviewTitle}>Leave a review</Text>
-                  <Text style={styles.reviewSubtitle}>
-                    {reviewTarget?.businessName || "Wello business"}
+                <View style={styles.scannerFrame}>
+                  {cameraPermission?.status === "denied" ? (
+                    <View style={styles.scannerBlocked}>
+                      <Text style={styles.scannerBlockedText}>
+                        Camera permission is required.
+                      </Text>
+                    </View>
+                  ) : scannerStatus === "blocked" ||
+                    scannerStatus === "checking" ? (
+                    <View style={styles.scannerBlocked}>
+                      <Text style={styles.scannerBlockedText}>
+                        {scannerStatus === "checking"
+                          ? "Checking your location..."
+                          : REDEEM_BLOCKED_MESSAGE}
+                      </Text>
+                    </View>
+                  ) : (
+                    <CameraView
+                      onBarcodeScanned={
+                        scannerEnabled ? handleScanCode : undefined
+                      }
+                      barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+                      style={styles.scanner}
+                    />
+                  )}
+                  <View
+                    style={styles.scannerFrameOutline}
+                    pointerEvents="none"
+                  />
+                </View>
+
+                <View style={styles.scannerStatus}>
+                  <Text style={styles.scannerStatusText}>
+                    {scannerStatus === "success"
+                      ? "Offer redeemed. Show this confirmation to the staff."
+                      : scannerStatus === "invalid"
+                        ? "That code does not match this offer. Try again."
+                        : scannerStatus === "checking"
+                          ? "Checking your location..."
+                          : scannerStatus === "blocked"
+                            ? REDEEM_BLOCKED_MESSAGE
+                            : "Scan the business QR code to redeem this offer."}
                   </Text>
-                  {reviewTarget?.entry?.offer?.title && (
-                    <Text style={styles.reviewOffer}>
-                      {reviewTarget.entry.offer.title}
-                    </Text>
+                </View>
+
+                <View style={styles.scannerActions}>
+                  {scannerStatus === "success" ? (
+                    <TouchableOpacity
+                      style={styles.primaryButton}
+                      onPress={handleCloseScanner}
+                    >
+                      <Text style={styles.primaryButtonText}>Done</Text>
+                    </TouchableOpacity>
+                  ) : scannerStatus === "blocked" ||
+                    scannerStatus === "checking" ? (
+                    <TouchableOpacity
+                      style={[
+                        styles.secondaryButton,
+                        redeemGateBusy && styles.secondaryButtonDisabled,
+                      ]}
+                      onPress={() => {
+                        if (!redeemGateBusy) {
+                          runRedeemGate(scannerBusiness);
+                        }
+                      }}
+                      disabled={redeemGateBusy}
+                    >
+                      <Text style={styles.secondaryButtonText}>
+                        {redeemGateBusy ? "Checking..." : "Check again"}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.secondaryButton}
+                      onPress={() => {
+                        setScannerStatus(null);
+                        setScannerEnabled(true);
+                      }}
+                    >
+                      <Text style={styles.secondaryButtonText}>Scan again</Text>
+                    </TouchableOpacity>
                   )}
                 </View>
+                {scannerStatus === "success" && (
+                  <ConfettiDrizzle
+                    active
+                    width={SCANNER_CARD_WIDTH}
+                    height={SCANNER_CARD_HEIGHT}
+                  />
+                )}
+              </View>
+            </View>
+          </Modal>
+
+          <Modal transparent visible={reviewModalOpen} animationType="fade">
+            <View style={styles.reviewOverlay}>
+              <View style={styles.reviewCard}>
+                <View style={styles.reviewHeader}>
+                  <View>
+                    <Text style={styles.reviewTitle}>Leave a review</Text>
+                    <Text style={styles.reviewSubtitle}>
+                      {reviewTarget?.businessName || "Wello business"}
+                    </Text>
+                    {reviewTarget?.entry?.offer?.title && (
+                      <Text style={styles.reviewOffer}>
+                        {reviewTarget.entry.offer.title}
+                      </Text>
+                    )}
+                  </View>
+                  <TouchableOpacity
+                    style={styles.reviewClose}
+                    onPress={closeReviewModal}
+                  >
+                    <Ionicons name="close" size={18} color={COLORS.ink} />
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={styles.formLabel}>Star rating</Text>
+                <View style={styles.reviewStars}>
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <TouchableOpacity
+                      key={star}
+                      style={styles.reviewStarButton}
+                      onPress={() => setReviewRating(star)}
+                    >
+                      <Ionicons
+                        name={reviewRating >= star ? "star" : "star-outline"}
+                        size={24}
+                        color={reviewRating >= star ? COLORS.sun : COLORS.muted}
+                      />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={styles.formLabel}>Review (optional)</Text>
+                <AutoFocusInput
+                  style={[styles.formInput, styles.reviewInput]}
+                  placeholder="Share details for other Wello members."
+                  placeholderTextColor={COLORS.muted}
+                  value={reviewText}
+                  onChangeText={setReviewText}
+                  multiline
+                  textAlignVertical="top"
+                />
+
+                {reviewError && (
+                  <Text style={styles.formError}>{reviewError}</Text>
+                )}
+
                 <TouchableOpacity
-                  style={styles.reviewClose}
+                  style={[
+                    styles.primaryButton,
+                    reviewBusy && styles.primaryButtonDisabled,
+                  ]}
+                  onPress={handleSubmitReview}
+                  disabled={reviewBusy}
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {reviewBusy ? "Submitting..." : "Submit review"}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.secondaryButton}
                   onPress={closeReviewModal}
                 >
-                  <Ionicons name="close" size={18} color={COLORS.ink} />
+                  <Text style={styles.secondaryButtonText}>Not now</Text>
                 </TouchableOpacity>
               </View>
-
-              <Text style={styles.formLabel}>Star rating</Text>
-              <View style={styles.reviewStars}>
-                {[1, 2, 3, 4, 5].map((star) => (
-                  <TouchableOpacity
-                    key={star}
-                    style={styles.reviewStarButton}
-                    onPress={() => setReviewRating(star)}
-                  >
-                    <Ionicons
-                      name={reviewRating >= star ? "star" : "star-outline"}
-                      size={24}
-                      color={reviewRating >= star ? COLORS.sun : COLORS.muted}
-                    />
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.formLabel}>Review (optional)</Text>
-              <AutoFocusInput
-                style={[styles.formInput, styles.reviewInput]}
-                placeholder="Share details for other Wello members."
-                placeholderTextColor={COLORS.muted}
-                value={reviewText}
-                onChangeText={setReviewText}
-                multiline
-                textAlignVertical="top"
-              />
-
-              {reviewError && (
-                <Text style={styles.formError}>{reviewError}</Text>
-              )}
-
-              <TouchableOpacity
-                style={[
-                  styles.primaryButton,
-                  reviewBusy && styles.primaryButtonDisabled
-                ]}
-                onPress={handleSubmitReview}
-                disabled={reviewBusy}
-              >
-                <Text style={styles.primaryButtonText}>
-                  {reviewBusy ? "Submitting..." : "Submit review"}
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={closeReviewModal}
-              >
-                <Text style={styles.secondaryButtonText}>Not now</Text>
-              </TouchableOpacity>
             </View>
-          </View>
-        </Modal>
+          </Modal>
 
-        <Modal transparent visible={businessDetailOpen} animationType="slide">
-          <View style={styles.detailOverlay}>
-            <View style={styles.detailCard}>
-              <View style={styles.detailHeader}>
-                <View>
-                  <Text style={styles.detailTitle}>
-                    {businessDetail?.name || "Business"}
-                  </Text>
-                  <Text style={styles.detailSubtitle}>
-                    {businessDetail?.category || "Local business"}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.detailClose}
-                  onPress={closeBusinessDetail}
-                >
-                  <Ionicons name="close" size={18} color={COLORS.ink} />
-                </TouchableOpacity>
-              </View>
-
-              {businessDetail?.address ? (
-                <Text style={styles.detailAddress}>
-                  {businessDetail.address}
-                </Text>
-              ) : null}
-              {businessDetail?.hours ? (
-                <Text style={styles.detailHours}>
-                  {businessDetail.hours}
-                </Text>
-              ) : null}
-
-              <View style={styles.detailRatingRow}>
-                {(() => {
-                  const total = businessDetailReviews.length;
-                  const avg =
-                    total === 0
-                      ? null
-                      : businessDetailReviews.reduce(
-                          (sum, review) => sum + (review.rating || 0),
-                          0
-                        ) / total;
-                  return (
-                    <>
-                      <Ionicons
-                        name="star"
-                        size={16}
-                        color={COLORS.sun}
-                      />
-                      <Text style={styles.detailRatingText}>
-                        {avg ? avg.toFixed(1) : "New"}
-                      </Text>
-                      <Text style={styles.detailRatingCount}>
-                        {total ? `${total} reviews` : "No reviews yet"}
-                      </Text>
-                    </>
-                  );
-                })()}
-              </View>
-
-              {isSignedIn &&
-                businessDetail?.id &&
-                latestRedemptionByBusiness.has(businessDetail.id) &&
-                !reviewedBusinessIds.has(String(businessDetail.id)) && (
+          <Modal transparent visible={businessDetailOpen} animationType="slide">
+            <View style={styles.detailOverlay}>
+              <View style={styles.detailCard}>
+                <View style={styles.detailHeader}>
+                  <View>
+                    <Text style={styles.detailTitle}>
+                      {businessDetail?.name || "Business"}
+                    </Text>
+                    <Text style={styles.detailSubtitle}>
+                      {businessDetail?.category || "Local business"}
+                    </Text>
+                  </View>
                   <TouchableOpacity
-                    style={styles.detailReviewButton}
-                    onPress={() => {
-                      const entry = latestRedemptionByBusiness.get(
-                        businessDetail.id
-                      );
-                      openReviewForEntry(entry, businessDetail.name);
-                    }}
+                    style={styles.detailClose}
+                    onPress={closeBusinessDetail}
                   >
-                    <Text style={styles.detailReviewButtonText}>
-                      Write a review
-                    </Text>
-                    <Ionicons name="star" size={16} color={COLORS.white} />
+                    <Ionicons name="close" size={18} color={COLORS.ink} />
                   </TouchableOpacity>
-                )}
+                </View>
 
-              <View style={styles.detailReviewList}>
-                {businessDetailStatus.error && (
-                  <Text style={styles.formError}>
-                    {businessDetailStatus.error}
+                {businessDetail?.address ? (
+                  <Text style={styles.detailAddress}>
+                    {businessDetail.address}
                   </Text>
-                )}
-                {businessDetailStatus.loading ? (
-                  <View style={styles.remoteNotice}>
-                    <Text style={styles.remoteNoticeText}>
-                      Loading reviews...
+                ) : null}
+                {businessDetail?.hours ? (
+                  <Text style={styles.detailHours}>{businessDetail.hours}</Text>
+                ) : null}
+
+                <ScrollView
+                  style={styles.detailBody}
+                  contentContainerStyle={styles.detailBodyContent}
+                  showsVerticalScrollIndicator={false}
+                >
+                  <View style={styles.detailRatingRow}>
+                  {(() => {
+                    const total = businessDetailReviews.length;
+                    const avg =
+                      total === 0
+                        ? null
+                        : businessDetailReviews.reduce(
+                            (sum, review) => sum + (review.rating || 0),
+                            0,
+                          ) / total;
+                    return (
+                      <>
+                        <Ionicons name="star" size={16} color={COLORS.sun} />
+                        <Text style={styles.detailRatingText}>
+                          {avg ? avg.toFixed(1) : "New"}
+                        </Text>
+                        <Text style={styles.detailRatingCount}>
+                          {total ? `${total} reviews` : "No reviews yet"}
+                        </Text>
+                      </>
+                    );
+                  })()}
+                </View>
+
+                {isSignedIn &&
+                  businessDetail?.id &&
+                  latestRedemptionByBusiness.has(businessDetail.id) &&
+                  !reviewedBusinessIds.has(String(businessDetail.id)) && (
+                    <TouchableOpacity
+                      style={styles.detailReviewButton}
+                      onPress={() => {
+                        const entry = latestRedemptionByBusiness.get(
+                          businessDetail.id,
+                        );
+                        openReviewForEntry(entry, businessDetail.name);
+                      }}
+                    >
+                      <Text style={styles.detailReviewButtonText}>
+                        Write a review
+                      </Text>
+                      <Ionicons name="star" size={16} color={COLORS.white} />
+                    </TouchableOpacity>
+                  )}
+
+                  <View style={styles.detailOffersSection}>
+                    <Text style={styles.detailSectionTitle}>Offers</Text>
+                  {businessDetailOffersStatus.error && (
+                    <Text style={styles.formError}>
+                      {businessDetailOffersStatus.error}
                     </Text>
-                  </View>
-                ) : businessDetailReviews.length === 0 ? (
-                  <View style={styles.emptyState}>
-                    <Text style={styles.emptyTitle}>No reviews yet.</Text>
-                    <Text style={styles.emptyCopy}>
-                      Redeem an offer to leave the first review.
-                    </Text>
-                  </View>
+                  )}
+                  {businessDetailOffersStatus.loading ? (
+                    <View style={styles.remoteNotice}>
+                      <Text style={styles.remoteNoticeText}>
+                        Loading offers...
+                      </Text>
+                    </View>
+                  ) : businessDetailOffers.length === 0 ? (
+                    <View style={styles.emptyState}>
+                      <Text style={styles.emptyTitle}>No offers yet.</Text>
+                      <Text style={styles.emptyCopy}>
+                        Offers will appear after you approve the business.
+                      </Text>
+                    </View>
                 ) : (
-                  businessDetailReviews.map((review) => (
-                    <View key={review.id} style={styles.detailReviewCard}>
-                      <View style={styles.detailReviewHeader}>
-                        <Text style={styles.detailReviewUser}>
-                          Wello member
-                        </Text>
-                        <Text style={styles.detailReviewTime}>
-                          {formatHistoryTimestamp(review.createdAt)}
-                        </Text>
-                      </View>
-                      <View style={styles.detailReviewStars}>
-                        {[1, 2, 3, 4, 5].map((star) => (
-                          <Ionicons
-                            key={star}
-                            name={
-                              review.rating >= star ? "star" : "star-outline"
-                            }
-                            size={14}
-                            color={
-                              review.rating >= star ? COLORS.sun : COLORS.muted
-                            }
-                          />
+                  businessDetailOffers.map((offer) => (
+                    <View key={offer.id} style={styles.detailOfferCard}>
+                      {offer.imageUrl ? (
+                        <Image
+                          source={{ uri: offer.imageUrl }}
+                          style={styles.detailOfferImage}
+                        />
+                      ) : null}
+                      <Text style={styles.detailOfferTitle}>
+                        {offer.title || "Local offer"}
+                      </Text>
+                      <View style={styles.detailOfferTagRow}>
+                        {(businessDetail.tags || []).map((tag) => (
+                          <View key={tag} style={styles.detailOfferTag}>
+                            <Text style={styles.detailOfferTagText}>{tag}</Text>
+                          </View>
                         ))}
                       </View>
-                      {review.reviewText ? (
-                        <Text style={styles.detailReviewText}>
-                          {review.reviewText}
+                      {offer.description ? (
+                        <Text style={styles.detailOfferText}>
+                          {offer.description}
                         </Text>
                       ) : null}
+                      <View style={styles.detailOfferMetaRow}>
+                          <Text style={styles.detailOfferMeta}>
+                            {offer.offerType
+                              ? normalizeOfferType(offer.offerType)
+                              : "Offer"}
+                          </Text>
+                        <Text style={styles.detailOfferMeta}>
+                          {formatOfferDate(offer.createdAt)}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.detailOfferRedemption}
+                        onPress={() =>
+                          handleRedeemOffer({
+                            id: offer.id,
+                            businessId: businessDetail.id,
+                            business: businessDetail,
+                            offerTitle: offer.title || offer.offer || businessDetail.offer,
+                            offerType: offer.offerType || offer.offer_type,
+                            tags: businessDetail.tags,
+                          })
+                        }
+                        disabled={redeemGateBusy}
+                      >
+                        <Text style={styles.detailOfferRedemptionText}>
+                          Redeem this offer
+                        </Text>
+                      </TouchableOpacity>
                     </View>
                   ))
                 )}
-              </View>
-            </View>
-          </View>
-        </Modal>
+                  </View>
 
-        <Modal transparent visible={timePickerVisible} animationType="fade">
-          <View style={styles.timePickerOverlay}>
-            <View style={styles.timePickerCard}>
-              <View style={styles.timePickerHeader}>
-                <Text style={styles.timePickerTitle}>Select time</Text>
-                <TouchableOpacity
-                  style={styles.timePickerClose}
-                  onPress={() => setTimePickerVisible(false)}
-                >
-                  <Ionicons name="close" size={16} color={COLORS.ink} />
-                </TouchableOpacity>
-              </View>
-              <ScrollView
-                contentContainerStyle={styles.timePickerList}
-                showsVerticalScrollIndicator={false}
-              >
-                {TIME_OPTIONS.map((time) => (
-                  <TouchableOpacity
-                    key={time}
-                    style={styles.timePickerItem}
-                    onPress={() => handleSelectTime(time)}
-                  >
-                    <Text style={styles.timePickerText}>{time}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-          </View>
-        </Modal>
-
-        <Animated.View style={[styles.sheet, { transform: [{ translateY }] }]}>
-          <View style={styles.sheetHandle} {...panResponder.panHandlers}>
-            <View style={styles.handleBar} />
-            <Text style={styles.sheetHint}>Swipe up to explore offers</Text>
-          </View>
-          {activeTab === "discover" ? (
-            <>
-              <View
-                style={[styles.searchRow, IS_COMPACT && styles.searchRowCompact]}
-              >
-                <AutoFocusInput
-                  placeholder="Search businesses, offers, or categories"
-                  placeholderTextColor={COLORS.muted}
-                  style={styles.searchInput}
-                  value={query}
-                  onChangeText={setQuery}
-                />
-                <TouchableOpacity
-                  style={styles.filterButton}
-                  onPress={() => setShowFilters((prev) => !prev)}
-                >
-                  <Text style={styles.filterButtonText}>
-                    {showFilters ? "Hide" : "Filters"}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              {showFilters && (
-                <View style={styles.filterRow}>
-                  {FILTERS.map((filter) => {
-                    const isActive = activeFilters.includes(filter.key);
-                    return (
-                      <TouchableOpacity
-                        key={filter.key}
-                        style={[
-                          styles.filterPill,
-                          isActive && styles.filterPillActive
-                        ]}
-                        onPress={() => toggleFilter(filter.key)}
-                      >
-                        <Text
-                          style={[
-                            styles.filterText,
-                            isActive && styles.filterTextActive
-                          ]}
-                        >
-                          {filter.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              )}
-
-              {(remoteStatus.loading ||
-                remoteStatus.error ||
-                offerStatus.loading ||
-                offerStatus.error) && (
-                <View style={styles.remoteNotice}>
-                  <Text style={styles.remoteNoticeText}>
-                    {remoteStatus.loading
-                      ? "Loading businesses from Wello..."
-                      : offerStatus.loading
-                      ? "Loading offers from Wello..."
-                      : remoteStatus.error || offerStatus.error}
-                  </Text>
-                </View>
-              )}
-
-              <View style={styles.cardHeaderRow}>
-                <Text style={styles.sectionTitle}>Offer cards</Text>
-                <Text style={styles.sectionMeta}>
-                  {filteredOfferCards.length} nearby
-                </Text>
-              </View>
-
-              {filteredOfferCards.length === 0 ? (
-                <View style={styles.emptyState}>
-                  <Text style={styles.emptyTitle}>No listings match.</Text>
-                  <Text style={styles.emptyCopy}>
-                    Try a different search or reset filters.
-                  </Text>
-                </View>
-              ) : (
-                <FlatList
-                  ref={cardListRef}
-                  data={filteredOfferCards}
-                  keyExtractor={(item) => item.id}
-                  renderItem={({ item }) => (
-                    <OfferCard
-                      item={item}
-                      onPress={() => handleCardPress(item)}
-                      onRedeem={() => handleRedeemOffer(item)}
-                      selected={selectedId === item.businessId}
-                    />
+                  <View style={styles.detailReviewList}>
+                  {businessDetailStatus.error && (
+                    <Text style={styles.formError}>
+                      {businessDetailStatus.error}
+                    </Text>
                   )}
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.cardList}
-                  getItemLayout={(_, index) => ({
-                    length: CARD_WIDTH + CARD_GAP,
-                    offset: (CARD_WIDTH + CARD_GAP) * index,
-                    index
-                  })}
-                  onScrollToIndexFailed={handleScrollToIndexFailed}
-                />
-              )}
+                  {businessDetailStatus.loading ? (
+                    <View style={styles.remoteNotice}>
+                      <Text style={styles.remoteNoticeText}>
+                        Loading reviews...
+                      </Text>
+                    </View>
+                  ) : businessDetailReviews.length === 0 ? (
+                    <View style={styles.emptyState}>
+                      <Text style={styles.emptyTitle}>No reviews yet.</Text>
+                      <Text style={styles.emptyCopy}>
+                        Redeem an offer to leave the first review.
+                      </Text>
+                    </View>
+                  ) : (
+                    businessDetailReviews.map((review) => (
+                      <View key={review.id} style={styles.detailReviewCard}>
+                        <View style={styles.detailReviewHeader}>
+                          <Text style={styles.detailReviewUser}>
+                            Wello member
+                          </Text>
+                          <Text style={styles.detailReviewTime}>
+                            {formatHistoryTimestamp(review.createdAt)}
+                          </Text>
+                        </View>
+                        <View style={styles.detailReviewStars}>
+                          {[1, 2, 3, 4, 5].map((star) => (
+                            <Ionicons
+                              key={star}
+                              name={
+                                review.rating >= star ? "star" : "star-outline"
+                              }
+                              size={14}
+                              color={
+                                review.rating >= star
+                                  ? COLORS.sun
+                                  : COLORS.muted
+                              }
+                            />
+                          ))}
+                        </View>
+                        {review.reviewText ? (
+                          <Text style={styles.detailReviewText}>
+                            {review.reviewText}
+                          </Text>
+                        ) : null}
+                      </View>
+                    ))
+                  )}
+                  </View>
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
 
-            </>
-          ) : (
-            <KeyboardAvoidingView
-              behavior={Platform.OS === "ios" ? "padding" : "height"}
-              keyboardVerticalOffset={SAFE_TOP + 20}
-              style={styles.sheetScroll}
-            >
-              <ScrollView
-                ref={sheetScrollRef}
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={[
-                  styles.sheetScrollContent,
-                  { paddingBottom: 24 + keyboardInset }
-                ]}
-                keyboardShouldPersistTaps="handled"
+          <Modal transparent visible={timePickerVisible} animationType="fade">
+            <View style={styles.timePickerOverlay}>
+              <View style={styles.timePickerCard}>
+                <View style={styles.timePickerHeader}>
+                  <Text style={styles.timePickerTitle}>Select time</Text>
+                  <TouchableOpacity
+                    style={styles.timePickerClose}
+                    onPress={() => setTimePickerVisible(false)}
+                  >
+                    <Ionicons name="close" size={16} color={COLORS.ink} />
+                  </TouchableOpacity>
+                </View>
+                <ScrollView
+                  contentContainerStyle={styles.timePickerList}
+                  showsVerticalScrollIndicator={false}
+                >
+                  {TIME_OPTIONS.map((time) => (
+                    <TouchableOpacity
+                      key={time}
+                      style={styles.timePickerItem}
+                      onPress={() => handleSelectTime(time)}
+                    >
+                      <Text style={styles.timePickerText}>{time}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
+
+          <Animated.View
+            style={[styles.sheet, { transform: [{ translateY }] }]}
+          >
+            <View style={styles.sheetHandle} {...panResponder.panHandlers}>
+              <View style={styles.handleBar} />
+              <Text style={styles.sheetHint}>Swipe up to explore offers</Text>
+            </View>
+            {activeTab === "discover" ? (
+              <>
+                <View
+                  style={[
+                    styles.searchRow,
+                    IS_COMPACT && styles.searchRowCompact,
+                  ]}
+                >
+                  <AutoFocusInput
+                    placeholder="Search businesses, offers, or categories"
+                    placeholderTextColor={COLORS.muted}
+                    style={styles.searchInput}
+                    value={query}
+                    onChangeText={setQuery}
+                  />
+                  <TouchableOpacity
+                    style={styles.filterButton}
+                    onPress={() => setShowFilters((prev) => !prev)}
+                  >
+                    <Text style={styles.filterButtonText}>
+                      {showFilters ? "Hide" : "Filters"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {showFilters && (
+                  <View style={styles.filterRow}>
+                    {FILTERS.map((filter) => {
+                      const isActive = activeFilters.includes(filter.key);
+                      return (
+                        <TouchableOpacity
+                          key={filter.key}
+                          style={[
+                            styles.filterPill,
+                            isActive && styles.filterPillActive,
+                          ]}
+                          onPress={() => toggleFilter(filter.key)}
+                        >
+                          <Text
+                            style={[
+                              styles.filterText,
+                              isActive && styles.filterTextActive,
+                            ]}
+                          >
+                            {filter.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
+
+                {(remoteStatus.loading ||
+                  remoteStatus.error ||
+                  offerStatus.loading ||
+                  offerStatus.error) && (
+                  <View style={styles.remoteNotice}>
+                    <Text style={styles.remoteNoticeText}>
+                      {remoteStatus.loading
+                        ? "Loading businesses from Wello..."
+                        : offerStatus.loading
+                          ? "Loading offers from Wello..."
+                          : remoteStatus.error || offerStatus.error}
+                    </Text>
+                  </View>
+                )}
+
+                <View style={styles.cardHeaderRow}>
+                  <Text style={styles.sectionTitle}>Offer cards</Text>
+                  <Text style={styles.sectionMeta}>
+                    {filteredOfferCards.length} nearby
+                  </Text>
+                </View>
+
+                {filteredOfferCards.length === 0 ? (
+                  <View style={styles.emptyState}>
+                    <Text style={styles.emptyTitle}>No listings match.</Text>
+                    <Text style={styles.emptyCopy}>
+                      Try a different search or reset filters.
+                    </Text>
+                  </View>
+                ) : (
+                  <FlatList
+                    ref={cardListRef}
+                    data={filteredOfferCards}
+                    keyExtractor={(item) => item.id}
+                    renderItem={({ item }) => (
+                      <OfferCard
+                        item={item}
+                        onPress={() => handleCardPress(item)}
+                        onRedeem={() => handleRedeemOffer(item)}
+                        selected={selectedId === item.businessId}
+                      />
+                    )}
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.cardList}
+                    getItemLayout={(_, index) => ({
+                      length: CARD_WIDTH + CARD_GAP,
+                      offset: (CARD_WIDTH + CARD_GAP) * index,
+                      index,
+                    })}
+                    onScrollToIndexFailed={handleScrollToIndexFailed}
+                  />
+                )}
+              </>
+            ) : (
+              <KeyboardAvoidingView
+                behavior={Platform.OS === "ios" ? "padding" : "height"}
+                keyboardVerticalOffset={SAFE_TOP + 20}
+                style={styles.sheetScroll}
               >
-                {activeTab === "business" && isOwner ? (
-                  <>
-                    <View style={styles.sectionBlock}>
+                <ScrollView
+                  ref={sheetScrollRef}
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={[
+                    styles.sheetScrollContent,
+                    { paddingBottom: 24 + keyboardInset },
+                  ]}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {activeTab === "business" && isOwner ? (
+                    <>
+                      <View style={styles.sectionBlock}>
                         <Text style={styles.sectionTitleAlt}>Dashboard</Text>
                         <Text style={styles.sectionBody}>
                           Manage your single business profile here. More tools
                           are coming soon.
                         </Text>
-                      <Text style={styles.sectionBody}>
-                        Track performance and keep your listing up to date.
-                      </Text>
-                    </View>
+                        <Text style={styles.sectionBody}>
+                          Track performance and keep your listing up to date.
+                        </Text>
+                      </View>
 
-                    <View style={styles.analyticsGrid}>
-                      <View style={styles.analyticsCard}>
-                        <Text style={styles.analyticsValue}>
-                          {ownerMetrics.views.toLocaleString()}
-                        </Text>
-                        <Text style={styles.analyticsLabel}>Views</Text>
+                      <View style={styles.analyticsGrid}>
+                        <View style={styles.analyticsCard}>
+                          <Text style={styles.analyticsValue}>
+                            {ownerMetrics.views.toLocaleString()}
+                          </Text>
+                          <Text style={styles.analyticsLabel}>Views</Text>
+                        </View>
+                        <View style={styles.analyticsCard}>
+                          <Text style={styles.analyticsValue}>
+                            {ownerMetrics.saves.toLocaleString()}
+                          </Text>
+                          <Text style={styles.analyticsLabel}>Saves</Text>
+                        </View>
+                        <View style={styles.analyticsCard}>
+                          <Text style={styles.analyticsValue}>
+                            {ownerMetrics.redemptions.toLocaleString()}
+                          </Text>
+                          <Text style={styles.analyticsLabel}>Redemptions</Text>
+                        </View>
+                        <View style={styles.analyticsCard}>
+                          <Text style={styles.analyticsValue}>
+                            {ownerMetrics.reach}
+                          </Text>
+                          <Text style={styles.analyticsLabel}>Reach</Text>
+                        </View>
                       </View>
-                      <View style={styles.analyticsCard}>
-                        <Text style={styles.analyticsValue}>
-                          {ownerMetrics.saves.toLocaleString()}
-                        </Text>
-                        <Text style={styles.analyticsLabel}>Saves</Text>
-                      </View>
-                      <View style={styles.analyticsCard}>
-                        <Text style={styles.analyticsValue}>
-                          {ownerMetrics.redemptions.toLocaleString()}
-                        </Text>
-                        <Text style={styles.analyticsLabel}>Redemptions</Text>
-                      </View>
-                      <View style={styles.analyticsCard}>
-                        <Text style={styles.analyticsValue}>
-                          {ownerMetrics.reach}
-                        </Text>
-                        <Text style={styles.analyticsLabel}>Reach</Text>
-                      </View>
-                    </View>
 
-                    <View style={styles.sectionBlock}>
-                      <Text style={styles.sectionTitleAlt}>Business info</Text>
-                      <Text style={styles.sectionBody}>
-                        Update what customers see on your listing. Changes to name,
-                        address, category, and offers require approval.
-                      </Text>
-                    </View>
+                      <View style={styles.sectionBlock}>
+                        <Text style={styles.sectionTitleAlt}>
+                          Business info
+                        </Text>
+                        <Text style={styles.sectionBody}>
+                          Update what customers see on your listing. Changes to
+                          name, address, category, and offers require approval.
+                        </Text>
+                      </View>
 
-                    {ownerBusiness ? (
-                      <View style={styles.formCard}>
-                        <View style={styles.formHeaderRow}>
-                          <View>
-                            <Text style={styles.formHeaderTitle}>
-                              {ownerBusiness.name}
-                            </Text>
-                            <Text style={styles.formHeaderMeta}>
-                              {getCategoryConfig(ownerBusiness.categoryKey).display}{" "}
-                              - {ownerBusiness.subscription}
-                            </Text>
+                      {ownerBusiness ? (
+                        <View style={styles.formCard}>
+                          <View style={styles.formHeaderRow}>
+                            <View>
+                              <Text style={styles.formHeaderTitle}>
+                                {ownerBusiness.name}
+                              </Text>
+                              <Text style={styles.formHeaderMeta}>
+                                {
+                                  getCategoryConfig(ownerBusiness.categoryKey)
+                                    .display
+                                }{" "}
+                                - {ownerBusiness.subscription}
+                              </Text>
+                            </View>
+                            <View
+                              style={[
+                                styles.statusPill,
+                                ownerBusiness.isOpen
+                                  ? styles.statusApproved
+                                  : styles.statusRejected,
+                              ]}
+                            >
+                              <Text style={styles.statusText}>
+                                {ownerBusiness.isOpen ? "Open" : "Closed"}
+                              </Text>
+                            </View>
                           </View>
-                          <View
+
+                          {ownerBusiness.pendingEdits && (
+                            <View style={styles.pendingNotice}>
+                              <Text style={styles.pendingNoticeTitle}>
+                                Changes pending approval
+                              </Text>
+                              <Text style={styles.pendingNoticeBody}>
+                                Updates to your name, address, category, or
+                                offer are reviewed before they go live.
+                              </Text>
+                              <View style={styles.pendingList}>
+                                {Object.keys(ownerBusiness.pendingEdits)
+                                  .filter((field) => field !== "coordinate")
+                                  .map((field) => (
+                                    <View
+                                      key={field}
+                                      style={styles.pendingPill}
+                                    >
+                                      <Text style={styles.pendingPillText}>
+                                        {getPendingEditLabel(field)}
+                                      </Text>
+                                    </View>
+                                  ))}
+                              </View>
+                            </View>
+                          )}
+
+                          {!isEditingBusiness && (
+                            <View style={styles.editGate}>
+                              <Text style={styles.editGateText}>
+                                Request an edit to unlock your business info.
+                                Name, address, category, and offer changes are
+                                reviewed before they go live.
+                              </Text>
+                              <TouchableOpacity
+                                style={[
+                                  styles.primaryButton,
+                                  !canRequestEdits &&
+                                    styles.primaryButtonDisabled,
+                                ]}
+                                onPress={() => {
+                                  if (!canRequestEdits) return;
+                                  setIsEditingBusiness(true);
+                                  setFormMessage(null);
+                                }}
+                                disabled={!canRequestEdits}
+                              >
+                                <Text style={styles.primaryButtonText}>
+                                  Request edit
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                          {isEditingBusiness && (
+                            <View style={styles.editGateActive}>
+                              <Text style={styles.editGateActiveText}>
+                                You're in edit mode. Submit changes for review.
+                              </Text>
+                            </View>
+                          )}
+
+                          <Text style={styles.formLabel}>Business name</Text>
+                          <AutoFocusInput
                             style={[
-                              styles.statusPill,
-                              ownerBusiness.isOpen
-                                ? styles.statusApproved
-                                : styles.statusRejected
+                              styles.formInput,
+                              !canEditBusiness && styles.formInputDisabled,
                             ]}
-                          >
-                            <Text style={styles.statusText}>
-                              {ownerBusiness.isOpen ? "Open" : "Closed"}
+                            placeholder="Business name"
+                            placeholderTextColor={COLORS.muted}
+                            value={formData.name}
+                            editable={canEditBusiness}
+                            onChangeText={(value) =>
+                              handleFormChange("name", value)
+                            }
+                          />
+
+                          <Text style={styles.formLabel}>Business address</Text>
+                          <AutoFocusInput
+                            style={[
+                              styles.formInput,
+                              !canEditBusiness && styles.formInputDisabled,
+                            ]}
+                            placeholder="Start typing an address"
+                            placeholderTextColor={COLORS.muted}
+                            value={formData.address}
+                            editable={canEditBusiness}
+                            onChangeText={handleAddressChange}
+                          />
+                          {!GOOGLE_PLACES_KEY && canEditBusiness && (
+                            <Text style={styles.formHint}>
+                              Add your Google Places key in `.env` to enable
+                              address autocomplete.
                             </Text>
+                          )}
+                          {addressLoading && canEditBusiness && (
+                            <Text style={styles.formHint}>
+                              Searching addresses...
+                            </Text>
+                          )}
+                          {addressError && canEditBusiness && (
+                            <Text style={styles.formError}>{addressError}</Text>
+                          )}
+                          {canEditBusiness && addressResults.length > 0 && (
+                            <View style={styles.suggestionList}>
+                              {addressResults.map((result) => (
+                                <TouchableOpacity
+                                  key={result.place_id}
+                                  style={styles.suggestionItem}
+                                  onPress={() => handleSelectSuggestion(result)}
+                                >
+                                  <Text style={styles.suggestionTitle}>
+                                    {result.structured_formatting?.main_text ||
+                                      result.description}
+                                  </Text>
+                                  {result.structured_formatting
+                                    ?.secondary_text && (
+                                    <Text style={styles.suggestionSubtitle}>
+                                      {
+                                        result.structured_formatting
+                                          .secondary_text
+                                      }
+                                    </Text>
+                                  )}
+                                </TouchableOpacity>
+                              ))}
+                            </View>
+                          )}
+
+                          <View style={styles.formRow}>
+                            <View style={styles.formField}>
+                              <Text style={styles.formLabel}>City</Text>
+                              <AutoFocusInput
+                                style={[
+                                  styles.formInput,
+                                  !canEditBusiness && styles.formInputDisabled,
+                                ]}
+                                placeholder="City"
+                                placeholderTextColor={COLORS.muted}
+                                value={formData.city}
+                                editable={canEditBusiness}
+                                onChangeText={(value) =>
+                                  handleFormChange("city", value)
+                                }
+                              />
+                            </View>
+                            <View style={styles.formField}>
+                              <Text style={styles.formLabel}>State</Text>
+                              <AutoFocusInput
+                                style={[
+                                  styles.formInput,
+                                  !canEditBusiness && styles.formInputDisabled,
+                                ]}
+                                placeholder="State"
+                                placeholderTextColor={COLORS.muted}
+                                value={formData.state}
+                                editable={canEditBusiness}
+                                onChangeText={(value) =>
+                                  handleFormChange("state", value)
+                                }
+                              />
+                            </View>
+                            <View style={styles.formField}>
+                              <Text style={styles.formLabel}>Zip code</Text>
+                              <AutoFocusInput
+                                style={[
+                                  styles.formInput,
+                                  !canEditBusiness && styles.formInputDisabled,
+                                ]}
+                                placeholder="Zip"
+                                placeholderTextColor={COLORS.muted}
+                                value={formData.postalCode}
+                                editable={canEditBusiness}
+                                onChangeText={(value) =>
+                                  handleFormChange("postalCode", value)
+                                }
+                                keyboardType="number-pad"
+                              />
+                            </View>
+                          </View>
+
+                          <Text style={styles.formLabel}>Category</Text>
+                          <View style={styles.categoryRow}>
+                            {CATEGORY_OPTIONS.map((option) => {
+                              const isActive =
+                                formData.categoryKey === option.key;
+                              return (
+                                <TouchableOpacity
+                                  key={option.key}
+                                  style={[
+                                    styles.categoryChip,
+                                    isActive && styles.categoryChipActive,
+                                    !canEditBusiness &&
+                                      styles.categoryChipDisabled,
+                                  ]}
+                                  disabled={!canEditBusiness}
+                                  onPress={() =>
+                                    handleFormChange("categoryKey", option.key)
+                                  }
+                                >
+                                  <Text
+                                    style={[
+                                      styles.categoryChipText,
+                                      isActive && styles.categoryChipTextActive,
+                                      !canEditBusiness &&
+                                        styles.categoryChipTextDisabled,
+                                    ]}
+                                  >
+                                    {option.label}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+
+                          <Text style={styles.formLabel}>Operating hours</Text>
+                          <View style={styles.timeRow}>
+                            <View style={styles.timeBlock}>
+                              <Text style={styles.timeLabel}>Start</Text>
+                              <View style={styles.timeInputRow}>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.timeSelect,
+                                    !canEditBusiness &&
+                                      styles.timeSelectDisabled,
+                                  ]}
+                                  onPress={() => openTimePicker("editStart")}
+                                  disabled={!canEditBusiness}
+                                >
+                                  <Text style={styles.timeSelectText}>
+                                    {editHoursStart ||
+                                      (IS_COMPACT ? "Select" : "Select time")}
+                                  </Text>
+                                  <Ionicons
+                                    name="chevron-down"
+                                    size={16}
+                                    color={COLORS.muted}
+                                  />
+                                </TouchableOpacity>
+                                <View style={styles.timeMeridiem}>
+                                  {["AM", "PM"].map((label) => {
+                                    const isActive =
+                                      editHoursStartMeridiem === label;
+                                    return (
+                                      <TouchableOpacity
+                                        key={label}
+                                        style={[
+                                          styles.timeMeridiemPill,
+                                          isActive &&
+                                            styles.timeMeridiemPillActive,
+                                          !canEditBusiness &&
+                                            styles.timeMeridiemPillDisabled,
+                                        ]}
+                                        onPress={() =>
+                                          setEditHoursStartMeridiem(label)
+                                        }
+                                        disabled={!canEditBusiness}
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.timeMeridiemText,
+                                            isActive &&
+                                              styles.timeMeridiemTextActive,
+                                            !canEditBusiness &&
+                                              styles.timeMeridiemTextDisabled,
+                                          ]}
+                                        >
+                                          {label}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    );
+                                  })}
+                                </View>
+                              </View>
+                            </View>
+                            <View style={styles.timeBlock}>
+                              <Text style={styles.timeLabel}>End</Text>
+                              <View style={styles.timeInputRow}>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.timeSelect,
+                                    !canEditBusiness &&
+                                      styles.timeSelectDisabled,
+                                  ]}
+                                  onPress={() => openTimePicker("editEnd")}
+                                  disabled={!canEditBusiness}
+                                >
+                                  <Text style={styles.timeSelectText}>
+                                    {editHoursEnd ||
+                                      (IS_COMPACT ? "Select" : "Select time")}
+                                  </Text>
+                                  <Ionicons
+                                    name="chevron-down"
+                                    size={16}
+                                    color={COLORS.muted}
+                                  />
+                                </TouchableOpacity>
+                                <View style={styles.timeMeridiem}>
+                                  {["AM", "PM"].map((label) => {
+                                    const isActive =
+                                      editHoursEndMeridiem === label;
+                                    return (
+                                      <TouchableOpacity
+                                        key={label}
+                                        style={[
+                                          styles.timeMeridiemPill,
+                                          isActive &&
+                                            styles.timeMeridiemPillActive,
+                                          !canEditBusiness &&
+                                            styles.timeMeridiemPillDisabled,
+                                        ]}
+                                        onPress={() =>
+                                          setEditHoursEndMeridiem(label)
+                                        }
+                                        disabled={!canEditBusiness}
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.timeMeridiemText,
+                                            isActive &&
+                                              styles.timeMeridiemTextActive,
+                                            !canEditBusiness &&
+                                              styles.timeMeridiemTextDisabled,
+                                          ]}
+                                        >
+                                          {label}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    );
+                                  })}
+                                </View>
+                              </View>
+                            </View>
+                          </View>
+
+                          <Text style={styles.formLabel}>Tags</Text>
+                          <AutoFocusInput
+                            style={[
+                              styles.formInput,
+                              !canEditBusiness && styles.formInputDisabled,
+                            ]}
+                            placeholder="wifi, family, happy-hour"
+                            placeholderTextColor={COLORS.muted}
+                            value={formData.tags}
+                            editable={canEditBusiness}
+                            onChangeText={(value) =>
+                              handleFormChange("tags", value)
+                            }
+                          />
+
+                          {isEditingBusiness && (
+                            <View style={styles.formActions}>
+                              <TouchableOpacity
+                                style={[
+                                  styles.primaryButton,
+                                  businessSaveBusy &&
+                                    styles.primaryButtonDisabled,
+                                ]}
+                                onPress={handleSaveBusiness}
+                                disabled={businessSaveBusy}
+                              >
+                                <Text style={styles.primaryButtonText}>
+                                  {businessSaveBusy
+                                    ? "Submitting..."
+                                    : "Submit for review"}
+                                </Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.secondaryButton}
+                                onPress={() => {
+                                  if (ownerBusiness) {
+                                    setFormData(
+                                      buildFormFromBusiness(ownerBusiness),
+                                    );
+                                  }
+                                  setFormMessage(null);
+                                  setIsEditingBusiness(false);
+                                }}
+                              >
+                                <Text style={styles.secondaryButtonText}>
+                                  Cancel
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        </View>
+                      ) : (
+                        <View style={styles.formCard}>
+                          <Text style={styles.formHeaderTitle}>
+                            Create your business profile
+                          </Text>
+                          <Text style={styles.formHeaderMeta}>
+                            Add your listing details. You can edit them later if
+                            needed.
+                          </Text>
+
+                          <Text style={styles.formLabel}>Business name</Text>
+                          <AutoFocusInput
+                            style={styles.formInput}
+                            placeholder="Business name"
+                            placeholderTextColor={COLORS.muted}
+                            value={createBusinessForm.name}
+                            onChangeText={(value) =>
+                              setCreateBusinessForm((prev) => ({
+                                ...prev,
+                                name: value,
+                              }))
+                            }
+                          />
+
+                          <Text style={styles.formLabel}>Business address</Text>
+                          <AutoFocusInput
+                            style={styles.formInput}
+                            placeholder="Street address"
+                            placeholderTextColor={COLORS.muted}
+                            value={createBusinessForm.address}
+                            onChangeText={handleCreateAddressChange}
+                          />
+                          {!GOOGLE_PLACES_KEY && (
+                            <Text style={styles.formHint}>
+                              Add your Google Places key in `.env` to enable
+                              address autocomplete.
+                            </Text>
+                          )}
+                          {createAddressLoading && (
+                            <Text style={styles.formHint}>
+                              Searching addresses...
+                            </Text>
+                          )}
+                          {createAddressError && (
+                            <Text style={styles.formError}>
+                              {createAddressError}
+                            </Text>
+                          )}
+                          {createAddressResults.length > 0 && (
+                            <View style={styles.suggestionList}>
+                              {createAddressResults.map((result) => (
+                                <TouchableOpacity
+                                  key={result.place_id}
+                                  style={styles.suggestionItem}
+                                  onPress={() =>
+                                    handleSelectCreateSuggestion(result)
+                                  }
+                                >
+                                  <Text style={styles.suggestionTitle}>
+                                    {result.structured_formatting?.main_text ||
+                                      result.description}
+                                  </Text>
+                                  {result.structured_formatting
+                                    ?.secondary_text && (
+                                    <Text style={styles.suggestionSubtitle}>
+                                      {
+                                        result.structured_formatting
+                                          .secondary_text
+                                      }
+                                    </Text>
+                                  )}
+                                </TouchableOpacity>
+                              ))}
+                            </View>
+                          )}
+
+                          <View style={styles.formRow}>
+                            <View style={styles.formField}>
+                              <Text style={styles.formLabel}>City</Text>
+                              <AutoFocusInput
+                                style={styles.formInput}
+                                placeholder="City"
+                                placeholderTextColor={COLORS.muted}
+                                value={createBusinessForm.city}
+                                onChangeText={(value) =>
+                                  setCreateBusinessForm((prev) => ({
+                                    ...prev,
+                                    city: value,
+                                  }))
+                                }
+                              />
+                            </View>
+                            <View style={styles.formField}>
+                              <Text style={styles.formLabel}>State</Text>
+                              <AutoFocusInput
+                                style={styles.formInput}
+                                placeholder="State"
+                                placeholderTextColor={COLORS.muted}
+                                value={createBusinessForm.state}
+                                onChangeText={(value) =>
+                                  setCreateBusinessForm((prev) => ({
+                                    ...prev,
+                                    state: value,
+                                  }))
+                                }
+                              />
+                            </View>
+                            <View style={styles.formField}>
+                              <Text style={styles.formLabel}>Zip code</Text>
+                              <AutoFocusInput
+                                style={styles.formInput}
+                                placeholder="Zip"
+                                placeholderTextColor={COLORS.muted}
+                                value={createBusinessForm.postalCode}
+                                onChangeText={(value) =>
+                                  setCreateBusinessForm((prev) => ({
+                                    ...prev,
+                                    postalCode: value,
+                                  }))
+                                }
+                                keyboardType="number-pad"
+                              />
+                            </View>
+                          </View>
+
+                          <Text style={styles.formLabel}>Category</Text>
+                          <View style={styles.categoryRow}>
+                            {CATEGORY_OPTIONS.map((option) => {
+                              const isActive =
+                                createBusinessForm.categoryKey === option.key;
+                              return (
+                                <TouchableOpacity
+                                  key={option.key}
+                                  style={[
+                                    styles.categoryChip,
+                                    isActive && styles.categoryChipActive,
+                                  ]}
+                                  onPress={() =>
+                                    setCreateBusinessForm((prev) => ({
+                                      ...prev,
+                                      categoryKey: option.key,
+                                    }))
+                                  }
+                                >
+                                  <Text
+                                    style={[
+                                      styles.categoryChipText,
+                                      isActive && styles.categoryChipTextActive,
+                                    ]}
+                                  >
+                                    {option.label}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+
+                          <Text style={styles.formLabel}>Phone</Text>
+                          <AutoFocusInput
+                            style={styles.formInput}
+                            placeholder="(555) 123-4567"
+                            placeholderTextColor={COLORS.muted}
+                            value={createBusinessForm.phone}
+                            onChangeText={(value) =>
+                              setCreateBusinessForm((prev) => ({
+                                ...prev,
+                                phone: value,
+                              }))
+                            }
+                            keyboardType="phone-pad"
+                          />
+
+                          <Text style={styles.formLabel}>Operating hours</Text>
+                          <View style={styles.timeRow}>
+                            <View style={styles.timeBlock}>
+                              <Text style={styles.timeLabel}>Start</Text>
+                              <View style={styles.timeInputRow}>
+                                <TouchableOpacity
+                                  style={styles.timeSelect}
+                                  onPress={() => openTimePicker("createStart")}
+                                >
+                                  <Text style={styles.timeSelectText}>
+                                    {createHoursStart ||
+                                      (IS_COMPACT ? "Select" : "Select time")}
+                                  </Text>
+                                  <Ionicons
+                                    name="chevron-down"
+                                    size={16}
+                                    color={COLORS.muted}
+                                  />
+                                </TouchableOpacity>
+                                <View style={styles.timeMeridiem}>
+                                  {["AM", "PM"].map((label) => {
+                                    const isActive =
+                                      createHoursStartMeridiem === label;
+                                    return (
+                                      <TouchableOpacity
+                                        key={label}
+                                        style={[
+                                          styles.timeMeridiemPill,
+                                          isActive &&
+                                            styles.timeMeridiemPillActive,
+                                        ]}
+                                        onPress={() =>
+                                          setCreateHoursStartMeridiem(label)
+                                        }
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.timeMeridiemText,
+                                            isActive &&
+                                              styles.timeMeridiemTextActive,
+                                          ]}
+                                        >
+                                          {label}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    );
+                                  })}
+                                </View>
+                              </View>
+                            </View>
+                            <View style={styles.timeBlock}>
+                              <Text style={styles.timeLabel}>End</Text>
+                              <View style={styles.timeInputRow}>
+                                <TouchableOpacity
+                                  style={styles.timeSelect}
+                                  onPress={() => openTimePicker("createEnd")}
+                                >
+                                  <Text style={styles.timeSelectText}>
+                                    {createHoursEnd ||
+                                      (IS_COMPACT ? "Select" : "Select time")}
+                                  </Text>
+                                  <Ionicons
+                                    name="chevron-down"
+                                    size={16}
+                                    color={COLORS.muted}
+                                  />
+                                </TouchableOpacity>
+                                <View style={styles.timeMeridiem}>
+                                  {["AM", "PM"].map((label) => {
+                                    const isActive =
+                                      createHoursEndMeridiem === label;
+                                    return (
+                                      <TouchableOpacity
+                                        key={label}
+                                        style={[
+                                          styles.timeMeridiemPill,
+                                          isActive &&
+                                            styles.timeMeridiemPillActive,
+                                        ]}
+                                        onPress={() =>
+                                          setCreateHoursEndMeridiem(label)
+                                        }
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.timeMeridiemText,
+                                            isActive &&
+                                              styles.timeMeridiemTextActive,
+                                          ]}
+                                        >
+                                          {label}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    );
+                                  })}
+                                </View>
+                              </View>
+                            </View>
+                          </View>
+
+                          <Text style={styles.formLabel}>Tags</Text>
+                          <AutoFocusInput
+                            style={styles.formInput}
+                            placeholder="wifi, family, happy-hour"
+                            placeholderTextColor={COLORS.muted}
+                            value={createBusinessForm.tags}
+                            onChangeText={(value) =>
+                              setCreateBusinessForm((prev) => ({
+                                ...prev,
+                                tags: value,
+                              }))
+                            }
+                          />
+
+                          {createBusinessError && (
+                            <Text style={styles.formError}>
+                              {createBusinessError}
+                            </Text>
+                          )}
+
+                          <View style={styles.formActions}>
+                            <TouchableOpacity
+                              style={[
+                                styles.primaryButton,
+                                createBusinessBusy &&
+                                  styles.primaryButtonDisabled,
+                              ]}
+                              onPress={handleCreateBusinessProfile}
+                              disabled={createBusinessBusy}
+                            >
+                              <Text style={styles.primaryButtonText}>
+                                {createBusinessBusy
+                                  ? "Creating..."
+                                  : "Create profile"}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+
+                          <View style={styles.paymentCard}>
+                            <Text style={styles.paymentTitle}>Membership</Text>
+                            <Text style={styles.paymentBody}>
+                              A subscription is required to publish your listing
+                              once your profile is created.
+                            </Text>
+                            <TouchableOpacity
+                              style={[
+                                styles.primaryButton,
+                                !stripeEnabled && styles.primaryButtonDisabled,
+                              ]}
+                              onPress={handleStartSubscription}
+                              disabled={!stripeEnabled}
+                            >
+                              <Text style={styles.primaryButtonText}>
+                                {stripeEnabled
+                                  ? "Continue to payment"
+                                  : "Stripe setup pending"}
+                              </Text>
+                            </TouchableOpacity>
+                            {paymentMessage && (
+                              <Text style={styles.formHint}>
+                                {paymentMessage}
+                              </Text>
+                            )}
                           </View>
                         </View>
+                      )}
 
-                        {ownerBusiness.pendingEdits && (
-                          <View style={styles.pendingNotice}>
-                            <Text style={styles.pendingNoticeTitle}>
-                              Changes pending approval
+                      {formMessage && (
+                        <View
+                          style={[
+                            styles.alertBox,
+                            formMessage.type === "error"
+                              ? styles.alertError
+                              : styles.alertSuccess,
+                          ]}
+                        >
+                          <Text style={styles.alertText}>
+                            {formMessage.text}
+                          </Text>
+                        </View>
+                      )}
+
+                      {ownerBusiness && (
+                        <>
+                          <View style={styles.sectionBlock}>
+                            <Text style={styles.sectionTitleAlt}>Offers</Text>
+                            <Text style={styles.sectionBody}>
+                              Create and manage multiple offers for your
+                              business. New offers may require approval.
                             </Text>
-                            <Text style={styles.pendingNoticeBody}>
-                              Updates to your name, address, category, or offer
-                              are reviewed before they go live.
+                          </View>
+
+                          <View style={styles.formCard}>
+                            <Text style={styles.formHeaderTitle}>
+                              Create offer
+                            </Text>
+                            <Text style={styles.formHeaderMeta}>
+                              Add a title and description for customers.
+                            </Text>
+
+                            <Text style={styles.formLabel}>Offer title</Text>
+                            <AutoFocusInput
+                              style={styles.formInput}
+                              placeholder="Example: 20% off first visit"
+                              placeholderTextColor={COLORS.muted}
+                              value={offerForm.title}
+                              onChangeText={(value) => {
+                                setOfferForm((prev) => ({
+                                  ...prev,
+                                  title: value,
+                                }));
+                                if (offerError) setOfferError(null);
+                              }}
+                            />
+
+                            <Text style={styles.formLabel}>Description</Text>
+                            <AutoFocusInput
+                              style={[styles.formInput, styles.formTextarea]}
+                              placeholder="Add the details customers should know."
+                              placeholderTextColor={COLORS.muted}
+                              value={offerForm.description}
+                              onChangeText={(value) => {
+                                setOfferForm((prev) => ({
+                                  ...prev,
+                                  description: value,
+                                }));
+                                if (offerError) setOfferError(null);
+                              }}
+                              multiline
+                              textAlignVertical="top"
+                            />
+
+                            <Text style={styles.formLabel}>Offer type</Text>
+                            <AutoFocusInput
+                              style={styles.formInput}
+                              placeholder="Discount, BOGO, Bundle..."
+                              placeholderTextColor={COLORS.muted}
+                              value={offerForm.type}
+                              onChangeText={(value) => {
+                                setOfferForm((prev) => ({
+                                  ...prev,
+                                  type: value,
+                                }));
+                                if (offerError) setOfferError(null);
+                              }}
+                              autoCorrect
+                              autoCapitalize="words"
+                              onBlur={() => {
+                                const corrected = normalizeOfferType(
+                                  offerForm.type,
+                                );
+                                if (corrected && corrected !== offerForm.type) {
+                                  setOfferForm((prev) => ({
+                                    ...prev,
+                                    type: corrected,
+                                  }));
+                                }
+                              }}
+                            />
+                            {showOfferTypeSuggestion && (
+                              <Text style={styles.formHint}>
+                                Suggested: {offerTypeSuggestion}
+                              </Text>
+                            )}
+
+                            <Text style={styles.formLabel}>Offer photo</Text>
+                            <View style={styles.offerUploadRow}>
+                              <TouchableOpacity
+                                style={styles.secondaryButton}
+                                onPress={handlePickOfferImage}
+                                disabled={offerImageStatus.uploading}
+                              >
+                                <Text style={styles.secondaryButtonText}>
+                                  {offerImage
+                                    ? "Replace photo"
+                                    : "Upload photo"}
+                                </Text>
+                              </TouchableOpacity>
+                              {offerImage && (
+                                <TouchableOpacity
+                                  style={styles.offerRemoveButton}
+                                  onPress={() => setOfferImage(null)}
+                                >
+                                  <Text style={styles.offerRemoveButtonText}>
+                                    Remove
+                                  </Text>
+                                </TouchableOpacity>
+                              )}
+                            </View>
+                            {offerImageStatus.error && (
+                              <Text style={styles.formError}>
+                                {offerImageStatus.error}
+                              </Text>
+                            )}
+                            <View style={styles.offerUploadFrame}>
+                              {offerImage ? (
+                                <Image
+                                  source={{ uri: offerImage.uri }}
+                                  style={styles.offerUploadPreview}
+                                  resizeMode="cover"
+                                  onError={(event) => {
+                                    console.warn(
+                                      "Wello offer preview failed:",
+                                      {
+                                        uri: offerImage.uri,
+                                        error: event.nativeEvent?.error,
+                                      },
+                                    );
+                                  }}
+                                />
+                              ) : (
+                                <View style={styles.offerUploadPlaceholder}>
+                                  <Ionicons
+                                    name="image-outline"
+                                    size={18}
+                                    color={COLORS.muted}
+                                  />
+                                  <Text style={styles.offerUploadHint}>
+                                    Upload a photo to help customers spot the
+                                    offer.
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+
+                            {offerError && (
+                              <Text style={styles.formError}>{offerError}</Text>
+                            )}
+
+                            <View style={styles.formActions}>
+                              <TouchableOpacity
+                                style={[
+                                  styles.primaryButton,
+                                  offerBusy && styles.primaryButtonDisabled,
+                                ]}
+                                onPress={handleCreateOffer}
+                                disabled={offerBusy}
+                              >
+                                <Text style={styles.primaryButtonText}>
+                                  {offerBusy ? "Saving..." : "Create offer"}
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+
+                          {ownerOffers.length === 0 ? (
+                            <View style={styles.emptyState}>
+                              <Text style={styles.emptyTitle}>
+                                No offers yet.
+                              </Text>
+                              <Text style={styles.emptyCopy}>
+                                Create your first offer to show on Discover.
+                              </Text>
+                            </View>
+                          ) : (
+                            <View style={styles.offerList}>
+                              {ownerOffers.map((offer) => (
+                                <View key={offer.id} style={styles.offerRow}>
+                                  <View style={styles.offerMeta}>
+                                    <Text style={styles.offerTitle}>
+                                      {offer.title || "Untitled offer"}
+                                    </Text>
+                                    {offer.description ? (
+                                      <Text style={styles.offerDescription}>
+                                        {offer.description}
+                                      </Text>
+                                    ) : null}
+                                    <Text style={styles.offerStatus}>
+                                      {offer.active ? "Active" : "Paused"} -{" "}
+                                      {offer.approvalStatus === "pending"
+                                        ? "Pending review"
+                                        : offer.approvalStatus === "rejected"
+                                          ? "Rejected"
+                                          : "Approved"}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.offerActions}>
+                                    <TouchableOpacity
+                                      style={styles.offerAction}
+                                      onPress={() => handleToggleOffer(offer)}
+                                    >
+                                      <Text style={styles.offerActionText}>
+                                        {offer.active ? "Pause" : "Activate"}
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      style={styles.offerActionGhost}
+                                      onPress={() => handleDeleteOffer(offer)}
+                                    >
+                                      <Text style={styles.offerActionTextGhost}>
+                                        Delete
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
+                              ))}
+                            </View>
+                          )}
+                        </>
+                      )}
+                    </>
+                  ) : activeTab === "history" ? (
+                    <>
+                      {!isSignedIn ? (
+                        <View style={styles.authCard}>
+                          <Text style={styles.authTitle}>History</Text>
+                          <Text style={styles.authSubtitle}>
+                            Sign in to see the offers you have redeemed.
+                          </Text>
+                          <TouchableOpacity
+                            style={styles.authPrimaryButton}
+                            onPress={() => {
+                              setAuthView("signin");
+                              setActiveTab("profile");
+                            }}
+                          >
+                            <Text style={styles.authButtonText}>Sign in</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : (
+                        <>
+                          <View style={styles.sectionBlock}>
+                            <Text style={styles.sectionTitleAlt}>History</Text>
+                            <Text style={styles.sectionBody}>
+                              Your redeemed offers are grouped by business so
+                              you can leave a review.
+                            </Text>
+                          </View>
+
+                          {redemptionStatus.error && (
+                            <Text style={styles.formError}>
+                              {redemptionStatus.error}
+                            </Text>
+                          )}
+
+                          {redemptionStatus.loading ? (
+                            <View style={styles.remoteNotice}>
+                              <Text style={styles.remoteNoticeText}>
+                                Loading your history...
+                              </Text>
+                            </View>
+                          ) : redemptionHistory.length === 0 ? (
+                            <View style={styles.emptyState}>
+                              <Text style={styles.emptyTitle}>
+                                No redemptions yet.
+                              </Text>
+                              <Text style={styles.emptyCopy}>
+                                Redeem an offer to see it here.
+                              </Text>
+                            </View>
+                          ) : (
+                            <View style={styles.historyList}>
+                              {historyGroups.map((group) => {
+                                const isExpanded = Boolean(
+                                  expandedHistoryGroups[group.key],
+                                );
+                                const hasReview = reviewedBusinessIds.has(
+                                  String(group.businessId || group.key),
+                                );
+                                return (
+                                  <View
+                                    key={group.key}
+                                    style={styles.historyGroupCard}
+                                  >
+                                    <TouchableOpacity
+                                      style={styles.historyGroupHeader}
+                                      onPress={() =>
+                                        setExpandedHistoryGroups((prev) => ({
+                                          ...prev,
+                                          [group.key]: !prev[group.key],
+                                        }))
+                                      }
+                                    >
+                                      <View style={styles.historyGroupMeta}>
+                                        <Text
+                                          style={styles.historyGroupTitle}
+                                          numberOfLines={1}
+                                        >
+                                          {group.businessName}
+                                        </Text>
+                                        <Text style={styles.historyGroupSub}>
+                                          {group.entries.length} redeemed · Last{" "}
+                                          {formatHistoryTimestamp(
+                                            group.lastRedeemed,
+                                          )}
+                                        </Text>
+                                      </View>
+                                      <View style={styles.historyGroupActions}>
+                                        {group.pendingCount > 0 && (
+                                          <View
+                                            style={styles.historyReviewBadge}
+                                          >
+                                            <Text
+                                              style={
+                                                styles.historyReviewBadgeText
+                                              }
+                                            >
+                                              {group.pendingCount}
+                                            </Text>
+                                          </View>
+                                        )}
+                                        <Ionicons
+                                          name={
+                                            isExpanded
+                                              ? "chevron-up"
+                                              : "chevron-down"
+                                          }
+                                          size={18}
+                                          color={COLORS.muted}
+                                        />
+                                      </View>
+                                    </TouchableOpacity>
+                                    {isExpanded && (
+                                      <View style={styles.historyEntries}>
+                                        {group.pendingCount > 0 && (
+                                          <TouchableOpacity
+                                            style={styles.historyReviewButton}
+                                            onPress={() =>
+                                              handleOpenReview(group)
+                                            }
+                                          >
+                                            <Text
+                                              style={styles.historyReviewText}
+                                            >
+                                              Leave a review
+                                            </Text>
+                                            <Ionicons
+                                              name="star"
+                                              size={16}
+                                              color={COLORS.sun}
+                                            />
+                                          </TouchableOpacity>
+                                        )}
+                                        {group.entries.map((entry) => {
+                                          const offerTitle =
+                                            entry.offer?.title ||
+                                            "Redeemed offer";
+                                          const offerDescription =
+                                            entry.offer?.description || "";
+                                          return (
+                                            <View
+                                              key={entry.id}
+                                              style={styles.historyEntry}
+                                            >
+                                              <View
+                                                style={styles.historyEntryRow}
+                                              >
+                                                <Text
+                                                  style={
+                                                    styles.historyEntryTitle
+                                                  }
+                                                  numberOfLines={1}
+                                                >
+                                                  {offerTitle}
+                                                </Text>
+                                                <Text
+                                                  style={
+                                                    styles.historyEntryTime
+                                                  }
+                                                >
+                                                  {formatHistoryTimestamp(
+                                                    entry.createdAt,
+                                                  )}
+                                                </Text>
+                                              </View>
+                                              {!hasReview &&
+                                                entry.id ===
+                                                  group.entries[0]?.id && (
+                                                  <Text
+                                                    style={
+                                                      styles.historyEntryPending
+                                                    }
+                                                  >
+                                                    Review needed
+                                                  </Text>
+                                                )}
+                                              {offerDescription ? (
+                                                <Text
+                                                  style={
+                                                    styles.historyEntryDescription
+                                                  }
+                                                  numberOfLines={2}
+                                                >
+                                                  {offerDescription}
+                                                </Text>
+                                              ) : null}
+                                            </View>
+                                          );
+                                        })}
+                                      </View>
+                                    )}
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          )}
+                        </>
+                      )}
+                    </>
+                  ) : activeTab === "profile" ? (
+                    <>
+                      {!isSignedIn ? (
+                        <View style={styles.authStack}>
+                          {authView === "menu" && (
+                            <View style={styles.authCard}>
+                              <Text style={styles.authBrand}>Wello</Text>
+                              <Text style={styles.authTitle}>
+                                You're not signed in
+                              </Text>
+                              <Text style={styles.authSubtitle}>
+                                Sign in to manage your account or create a new
+                                one to get started.
+                              </Text>
+
+                              <TouchableOpacity
+                                style={styles.authPrimaryButton}
+                                onPress={() => setAuthView("signin")}
+                              >
+                                <Text style={styles.authButtonText}>
+                                  Sign in
+                                </Text>
+                              </TouchableOpacity>
+
+                              <TouchableOpacity
+                                style={styles.authSecondaryButton}
+                                onPress={() => setAuthView("signup")}
+                              >
+                                <Text style={styles.secondaryButtonText}>
+                                  Create new account
+                                </Text>
+                              </TouchableOpacity>
+
+                              <TouchableOpacity
+                                style={styles.authSecondaryButton}
+                                onPress={() => setAuthView("business")}
+                              >
+                                <Text style={styles.secondaryButtonText}>
+                                  Create business account
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+
+                          {authView === "signin" && (
+                            <View style={styles.authCard}>
+                              <TouchableOpacity
+                                style={styles.authBack}
+                                onPress={() => setAuthView("menu")}
+                              >
+                                <Ionicons
+                                  name="arrow-back"
+                                  size={16}
+                                  color={COLORS.muted}
+                                />
+                                <Text style={styles.authBackText}>Back</Text>
+                              </TouchableOpacity>
+
+                              <Text style={styles.authTitle}>Sign in</Text>
+                              <Text style={styles.authSubtitle}>
+                                Access your account to manage listings and
+                                offers.
+                              </Text>
+
+                              <Text style={styles.formLabel}>Email</Text>
+                              <AutoFocusInput
+                                style={styles.authInput}
+                                placeholder="name@business.com"
+                                placeholderTextColor={COLORS.muted}
+                                value={signInEmail}
+                                onChangeText={setSignInEmail}
+                                keyboardType="email-address"
+                                autoCapitalize="none"
+                              />
+
+                              <Text style={styles.formLabel}>Password</Text>
+                              <AutoFocusInput
+                                style={styles.authInput}
+                                placeholder="--------"
+                                placeholderTextColor={COLORS.muted}
+                                value={signInPassword}
+                                onChangeText={setSignInPassword}
+                                secureTextEntry
+                              />
+
+                              {signInError && (
+                                <Text style={styles.formError}>
+                                  {signInError}
+                                </Text>
+                              )}
+
+                              <TouchableOpacity
+                                style={[
+                                  styles.authButton,
+                                  authBusy && styles.authButtonDisabled,
+                                ]}
+                                onPress={handleSignIn}
+                                disabled={authBusy}
+                              >
+                                <Text style={styles.authButtonText}>
+                                  {authBusy ? "Please wait..." : "Sign in"}
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+
+                          {authView === "signup" && (
+                            <View style={styles.authCard}>
+                              <TouchableOpacity
+                                style={styles.authBack}
+                                onPress={() => setAuthView("menu")}
+                              >
+                                <Ionicons
+                                  name="arrow-back"
+                                  size={16}
+                                  color={COLORS.muted}
+                                />
+                                <Text style={styles.authBackText}>Back</Text>
+                              </TouchableOpacity>
+
+                              <Text style={styles.authTitle}>
+                                Create account
+                              </Text>
+                              <Text style={styles.authSubtitle}>
+                                Create a member account to save your favorites
+                                and redeem offers.
+                              </Text>
+
+                              <Text style={styles.formLabel}>Email</Text>
+                              <AutoFocusInput
+                                style={styles.authInput}
+                                placeholder="name@business.com"
+                                placeholderTextColor={COLORS.muted}
+                                value={signUpEmail}
+                                onChangeText={setSignUpEmail}
+                                keyboardType="email-address"
+                                autoCapitalize="none"
+                              />
+
+                              <Text style={styles.formLabel}>Password</Text>
+                              <AutoFocusInput
+                                style={styles.authInput}
+                                placeholder="--------"
+                                placeholderTextColor={COLORS.muted}
+                                value={signUpPassword}
+                                onChangeText={setSignUpPassword}
+                                secureTextEntry
+                              />
+
+                              {signUpError && (
+                                <Text style={styles.formError}>
+                                  {signUpError}
+                                </Text>
+                              )}
+
+                              <TouchableOpacity
+                                style={[
+                                  styles.authButton,
+                                  authBusy && styles.authButtonDisabled,
+                                ]}
+                                onPress={handleCreateAccount}
+                                disabled={authBusy}
+                              >
+                                <Text style={styles.authButtonText}>
+                                  {authBusy
+                                    ? "Please wait..."
+                                    : "Create account"}
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+
+                          {authView === "business" && (
+                            <View style={styles.authCard}>
+                              <TouchableOpacity
+                                style={styles.authBack}
+                                onPress={() => setAuthView("menu")}
+                              >
+                                <Ionicons
+                                  name="arrow-back"
+                                  size={16}
+                                  color={COLORS.muted}
+                                />
+                                <Text style={styles.authBackText}>Back</Text>
+                              </TouchableOpacity>
+
+                              <Text style={styles.authTitle}>
+                                Create business account
+                              </Text>
+                              <Text style={styles.authSubtitle}>
+                                Business accounts are reviewed before they
+                                appear in Wello.
+                              </Text>
+
+                              <Text style={styles.formLabel}>
+                                Business name
+                              </Text>
+                              <AutoFocusInput
+                                style={styles.authInput}
+                                placeholder="Business name"
+                                placeholderTextColor={COLORS.muted}
+                                value={businessName}
+                                onChangeText={setBusinessName}
+                              />
+
+                              <Text style={styles.formLabel}>Category</Text>
+                              <View style={styles.categoryRow}>
+                                {CATEGORY_OPTIONS.map((option) => {
+                                  const isActive =
+                                    businessCategoryKey === option.key;
+                                  return (
+                                    <TouchableOpacity
+                                      key={option.key}
+                                      style={[
+                                        styles.categoryChip,
+                                        isActive && styles.categoryChipActive,
+                                      ]}
+                                      onPress={() =>
+                                        setBusinessCategoryKey(option.key)
+                                      }
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.categoryChipText,
+                                          isActive &&
+                                            styles.categoryChipTextActive,
+                                        ]}
+                                      >
+                                        {option.label}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+
+                              <Text style={styles.formLabel}>
+                                Business address
+                              </Text>
+                              <AutoFocusInput
+                                style={styles.authInput}
+                                placeholder="Street address"
+                                placeholderTextColor={COLORS.muted}
+                                value={businessAddress}
+                                onChangeText={handleBusinessAddressChange}
+                              />
+                              {!GOOGLE_PLACES_KEY && (
+                                <Text style={styles.formHint}>
+                                  Add your Google Places key in `.env` to enable
+                                  address autocomplete.
+                                </Text>
+                              )}
+                              {businessAddressLoading && (
+                                <Text style={styles.formHint}>
+                                  Searching addresses...
+                                </Text>
+                              )}
+                              {businessAddressError && (
+                                <Text style={styles.formError}>
+                                  {businessAddressError}
+                                </Text>
+                              )}
+                              {businessAddressResults.length > 0 && (
+                                <View style={styles.suggestionList}>
+                                  {businessAddressResults.map((result) => (
+                                    <TouchableOpacity
+                                      key={result.place_id}
+                                      style={styles.suggestionItem}
+                                      onPress={() =>
+                                        handleSelectBusinessSuggestion(result)
+                                      }
+                                    >
+                                      <Text style={styles.suggestionTitle}>
+                                        {result.structured_formatting
+                                          ?.main_text || result.description}
+                                      </Text>
+                                      {result.structured_formatting
+                                        ?.secondary_text && (
+                                        <Text style={styles.suggestionSubtitle}>
+                                          {
+                                            result.structured_formatting
+                                              .secondary_text
+                                          }
+                                        </Text>
+                                      )}
+                                    </TouchableOpacity>
+                                  ))}
+                                </View>
+                              )}
+
+                              <View style={styles.formRow}>
+                                <View style={styles.formField}>
+                                  <Text style={styles.formLabel}>City</Text>
+                                  <AutoFocusInput
+                                    style={styles.authInput}
+                                    placeholder="City"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={businessAddressCity}
+                                    onChangeText={setBusinessAddressCity}
+                                  />
+                                </View>
+                                <View style={styles.formField}>
+                                  <Text style={styles.formLabel}>State</Text>
+                                  <AutoFocusInput
+                                    style={styles.authInput}
+                                    placeholder="State"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={businessAddressState}
+                                    onChangeText={setBusinessAddressState}
+                                  />
+                                </View>
+                                <View style={styles.formField}>
+                                  <Text style={styles.formLabel}>Zip code</Text>
+                                  <AutoFocusInput
+                                    style={styles.authInput}
+                                    placeholder="Zip"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={businessAddressPostal}
+                                    onChangeText={setBusinessAddressPostal}
+                                    keyboardType="number-pad"
+                                  />
+                                </View>
+                              </View>
+
+                              <Text style={styles.formLabel}>Phone</Text>
+                              <AutoFocusInput
+                                style={styles.authInput}
+                                placeholder="(555) 123-4567"
+                                placeholderTextColor={COLORS.muted}
+                                value={businessPhone}
+                                onChangeText={setBusinessPhone}
+                                keyboardType="phone-pad"
+                              />
+
+                              <Text style={styles.formLabel}>
+                                Operating hours
+                              </Text>
+                              <View style={styles.timeRow}>
+                                <View style={styles.timeBlock}>
+                                  <Text style={styles.timeLabel}>Start</Text>
+                                  <View style={styles.timeInputRow}>
+                                    <TouchableOpacity
+                                      style={styles.timeSelect}
+                                      onPress={() => openTimePicker("start")}
+                                    >
+                                      <Text style={styles.timeSelectText}>
+                                        {businessHoursStart ||
+                                          (IS_COMPACT
+                                            ? "Select"
+                                            : "Select time")}
+                                      </Text>
+                                      <Ionicons
+                                        name="chevron-down"
+                                        size={16}
+                                        color={COLORS.muted}
+                                      />
+                                    </TouchableOpacity>
+                                    <View style={styles.timeMeridiem}>
+                                      {["AM", "PM"].map((label) => {
+                                        const isActive =
+                                          businessHoursStartMeridiem === label;
+                                        return (
+                                          <TouchableOpacity
+                                            key={label}
+                                            style={[
+                                              styles.timeMeridiemPill,
+                                              isActive &&
+                                                styles.timeMeridiemPillActive,
+                                            ]}
+                                            onPress={() =>
+                                              setBusinessHoursStartMeridiem(
+                                                label,
+                                              )
+                                            }
+                                          >
+                                            <Text
+                                              style={[
+                                                styles.timeMeridiemText,
+                                                isActive &&
+                                                  styles.timeMeridiemTextActive,
+                                              ]}
+                                            >
+                                              {label}
+                                            </Text>
+                                          </TouchableOpacity>
+                                        );
+                                      })}
+                                    </View>
+                                  </View>
+                                </View>
+                                <View style={styles.timeBlock}>
+                                  <Text style={styles.timeLabel}>End</Text>
+                                  <View style={styles.timeInputRow}>
+                                    <TouchableOpacity
+                                      style={styles.timeSelect}
+                                      onPress={() => openTimePicker("end")}
+                                    >
+                                      <Text style={styles.timeSelectText}>
+                                        {businessHoursEnd ||
+                                          (IS_COMPACT
+                                            ? "Select"
+                                            : "Select time")}
+                                      </Text>
+                                      <Ionicons
+                                        name="chevron-down"
+                                        size={16}
+                                        color={COLORS.muted}
+                                      />
+                                    </TouchableOpacity>
+                                    <View style={styles.timeMeridiem}>
+                                      {["AM", "PM"].map((label) => {
+                                        const isActive =
+                                          businessHoursEndMeridiem === label;
+                                        return (
+                                          <TouchableOpacity
+                                            key={label}
+                                            style={[
+                                              styles.timeMeridiemPill,
+                                              isActive &&
+                                                styles.timeMeridiemPillActive,
+                                            ]}
+                                            onPress={() =>
+                                              setBusinessHoursEndMeridiem(label)
+                                            }
+                                          >
+                                            <Text
+                                              style={[
+                                                styles.timeMeridiemText,
+                                                isActive &&
+                                                  styles.timeMeridiemTextActive,
+                                              ]}
+                                            >
+                                              {label}
+                                            </Text>
+                                          </TouchableOpacity>
+                                        );
+                                      })}
+                                    </View>
+                                  </View>
+                                </View>
+                              </View>
+
+                              <Text style={styles.formLabel}>Email</Text>
+                              <AutoFocusInput
+                                style={styles.authInput}
+                                placeholder="owner@business.com"
+                                placeholderTextColor={COLORS.muted}
+                                value={businessEmail}
+                                onChangeText={setBusinessEmail}
+                                keyboardType="email-address"
+                                autoCapitalize="none"
+                              />
+
+                              <Text style={styles.formLabel}>Password</Text>
+                              <AutoFocusInput
+                                style={styles.authInput}
+                                placeholder="--------"
+                                placeholderTextColor={COLORS.muted}
+                                value={businessPassword}
+                                onChangeText={setBusinessPassword}
+                                secureTextEntry
+                              />
+
+                              {businessSignUpError && (
+                                <Text style={styles.formError}>
+                                  {businessSignUpError}
+                                </Text>
+                              )}
+
+                              <TouchableOpacity
+                                style={[
+                                  styles.authButton,
+                                  authBusy && styles.authButtonDisabled,
+                                ]}
+                                onPress={handleBusinessSignUp}
+                                disabled={authBusy}
+                              >
+                                <Text style={styles.authButtonText}>
+                                  {authBusy
+                                    ? "Please wait..."
+                                    : "Create business account"}
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        </View>
+                      ) : (
+                        <>
+                          <View style={styles.sectionBlock}>
+                            <Text style={styles.sectionTitleAlt}>Profile</Text>
+                            <Text style={styles.sectionBody}>
+                              Manage your account details and business access.
+                            </Text>
+                          </View>
+
+                          <View style={styles.profileCard}>
+                            <View style={styles.profileHeader}>
+                              <View style={styles.profileAvatar}>
+                                <Text style={styles.profileInitials}>
+                                  {profileInitials}
+                                </Text>
+                              </View>
+                              <View style={styles.profileHeaderText}>
+                                <Text style={styles.profileName}>
+                                  {profileName || "Wello Owner"}
+                                </Text>
+                                <Text style={styles.profileEmail}>
+                                  {profileEmail || authEmail}
+                                </Text>
+                              </View>
+                              <View style={styles.profileRolePill}>
+                                <Text style={styles.profileRoleText}>
+                                  {roleLabel}
+                                </Text>
+                              </View>
+                            </View>
+                          </View>
+
+                          <View style={styles.notificationPanel}>
+                            <Text style={styles.sectionTitleAlt}>
+                              Notifications
+                            </Text>
+                            <Text style={styles.sectionBody}>
+                              Stay informed about new or nearby offers. Toggle
+                              the categories you care about.
+                            </Text>
+                            {preferencesStatus.loading && (
+                              <Text style={styles.formHint}>
+                                Saving preferences...
+                              </Text>
+                            )}
+                            {preferencesStatus.error && (
+                              <Text style={styles.formError}>
+                                {preferencesStatus.error}
+                              </Text>
+                            )}
+                            <View style={styles.notificationRow}>
+                              <Text style={styles.notificationLabel}>
+                                New offers
+                              </Text>
+                              <Switch
+                                value={notificationPreferences.new_offer}
+                                onValueChange={(value) =>
+                                  handlePreferenceToggle("new_offer", value)
+                                }
+                              />
+                            </View>
+                            <View style={styles.notificationRow}>
+                              <Text style={styles.notificationLabel}>
+                                Offers expiring soon
+                              </Text>
+                              <Switch
+                                value={notificationPreferences.expiring_offer}
+                                onValueChange={(value) =>
+                                  handlePreferenceToggle(
+                                    "expiring_offer",
+                                    value,
+                                  )
+                                }
+                              />
+                            </View>
+                            <View style={styles.notificationRow}>
+                              <Text style={styles.notificationLabel}>
+                                Offers nearby
+                              </Text>
+                              <Switch
+                                value={notificationPreferences.nearby_offer}
+                                onValueChange={(value) =>
+                                  handlePreferenceToggle("nearby_offer", value)
+                                }
+                              />
+                            </View>
+                            <Text style={styles.notificationHelp}>
+                              Push permission:{" "}
+                              {notificationPermissionStatus === "granted"
+                                ? "Enabled"
+                                : notificationPermissionStatus === "denied"
+                                  ? "Denied"
+                                  : notificationPermissionStatus ===
+                                      "unsupported"
+                                    ? "Device unsupported"
+                                    : "Pending"}
+                            </Text>
+                            {tokenError && (
+                              <Text style={styles.formError}>{tokenError}</Text>
+                            )}
+                          </View>
+
+                          <View style={styles.formCard}>
+                            <Text style={styles.formLabel}>Full name</Text>
+                            <AutoFocusInput
+                              style={styles.formInput}
+                              placeholder="Your name"
+                              placeholderTextColor={COLORS.muted}
+                              value={profileName}
+                              onChangeText={setProfileName}
+                            />
+
+                            <Text style={styles.formLabel}>Email</Text>
+                            <AutoFocusInput
+                              style={styles.formInput}
+                              placeholder="name@business.com"
+                              placeholderTextColor={COLORS.muted}
+                              value={profileEmail}
+                              onChangeText={setProfileEmail}
+                              keyboardType="email-address"
+                              autoCapitalize="none"
+                            />
+
+                            <Text style={styles.formLabel}>Phone</Text>
+                            <AutoFocusInput
+                              style={styles.formInput}
+                              placeholder="(555) 123-4567"
+                              placeholderTextColor={COLORS.muted}
+                              value={profilePhone}
+                              onChangeText={setProfilePhone}
+                              keyboardType="phone-pad"
+                            />
+
+                            <Text style={styles.formLabel}>Company</Text>
+                            <AutoFocusInput
+                              style={styles.formInput}
+                              placeholder="Business name"
+                              placeholderTextColor={COLORS.muted}
+                              value={profileCompany}
+                              onChangeText={setProfileCompany}
+                            />
+
+                            <View style={styles.profileMetaRow}>
+                              <View style={styles.profileMetaCard}>
+                                <Text style={styles.profileMetaLabel}>
+                                  Plan
+                                </Text>
+                                <Text style={styles.profileMetaValue}>
+                                  {ownerBusiness?.subscription ||
+                                    "Starter $50/mo"}
+                                </Text>
+                              </View>
+                              <View style={styles.profileMetaCard}>
+                                <Text style={styles.profileMetaLabel}>
+                                  Listings
+                                </Text>
+                                <Text style={styles.profileMetaValue}>
+                                  {approvedBusinesses.length}
+                                </Text>
+                              </View>
+                            </View>
+
+                            <View style={styles.formActions}>
+                              <TouchableOpacity
+                                style={styles.primaryButton}
+                                onPress={handleProfileSave}
+                              >
+                                <Text style={styles.primaryButtonText}>
+                                  Save profile
+                                </Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.secondaryButton}
+                                onPress={handleSignOut}
+                              >
+                                <Text style={styles.secondaryButtonText}>
+                                  Sign out
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+
+                          {profileMessage && (
+                            <View
+                              style={[styles.alertBox, styles.alertSuccess]}
+                            >
+                              <Text style={styles.alertText}>
+                                {profileMessage}
+                              </Text>
+                            </View>
+                          )}
+                        </>
+                      )}
+                    </>
+                  ) : activeTab === "admin" && isStaff ? (
+                    <>
+                      <View style={styles.sectionBlock}>
+                        <Text style={styles.sectionTitleAlt}>Admin review</Text>
+                        <Text style={styles.sectionBody}>
+                          Approve new listings before they go live.
+                        </Text>
+                      </View>
+                      {adminActionStatus.loading && (
+                        <Text style={styles.formHint}>
+                          Processing admin action...
+                        </Text>
+                      )}
+                      {adminActionStatus.error && (
+                        <Text style={styles.formError}>
+                          {adminActionStatus.error}
+                        </Text>
+                      )}
+                      {adminActionStatus.success && (
+                        <Text style={styles.formSuccess}>
+                          {adminActionStatus.success}
+                        </Text>
+                      )}
+
+                      <View style={styles.sectionBlock}>
+                        <Text style={styles.sectionTitleAlt}>
+                          Pending edits
+                        </Text>
+                        <Text style={styles.sectionBody}>
+                          Approve or reject changes to business details.
+                        </Text>
+                      </View>
+
+                      {pendingEditBusinesses.length === 0 ? (
+                        <View style={styles.emptyState}>
+                          <Text style={styles.emptyTitle}>
+                            No edit requests.
+                          </Text>
+                          <Text style={styles.emptyCopy}>
+                            Updates will appear here for review.
+                          </Text>
+                        </View>
+                      ) : (
+                        pendingEditBusinesses.map((business) => (
+                          <View key={business.id} style={styles.adminCard}>
+                            <View style={styles.adminHeader}>
+                              <Text style={styles.adminTitle}>
+                                {business.name}
+                              </Text>
+                              <Text style={styles.adminMeta}>
+                                {
+                                  getCategoryConfig(business.categoryKey)
+                                    .display
+                                }
+                              </Text>
+                            </View>
+                            <Text style={styles.adminOffer}>
+                              Requested updates
                             </Text>
                             <View style={styles.pendingList}>
-                              {Object.keys(ownerBusiness.pendingEdits)
+                              {Object.keys(business.pendingEdits || {})
                                 .filter((field) => field !== "coordinate")
                                 .map((field) => (
                                   <View key={field} style={styles.pendingPill}>
@@ -5746,2429 +7723,578 @@ export default function App() {
                                   </View>
                                 ))}
                             </View>
-                          </View>
-                        )}
-
-                        {!isEditingBusiness && (
-                          <View style={styles.editGate}>
-                            <Text style={styles.editGateText}>
-                              Request an edit to unlock your business info.
-                              Name, address, category, and offer changes are
-                              reviewed before they go live.
-                            </Text>
-                            <TouchableOpacity
-                              style={[
-                                styles.primaryButton,
-                                !canRequestEdits && styles.primaryButtonDisabled
-                              ]}
-                              onPress={() => {
-                                if (!canRequestEdits) return;
-                                setIsEditingBusiness(true);
-                                setFormMessage(null);
-                              }}
-                              disabled={!canRequestEdits}
-                            >
-                              <Text style={styles.primaryButtonText}>
-                                Request edit
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        )}
-                        {isEditingBusiness && (
-                          <View style={styles.editGateActive}>
-                            <Text style={styles.editGateActiveText}>
-                              You're in edit mode. Submit changes for review.
-                            </Text>
-                          </View>
-                        )}
-
-                        <Text style={styles.formLabel}>Business name</Text>
-                        <AutoFocusInput
-                          style={[
-                            styles.formInput,
-                            !canEditBusiness && styles.formInputDisabled
-                          ]}
-                          placeholder="Business name"
-                          placeholderTextColor={COLORS.muted}
-                          value={formData.name}
-                          editable={canEditBusiness}
-                          onChangeText={(value) =>
-                            handleFormChange("name", value)
-                          }
-                        />
-
-                        <Text style={styles.formLabel}>Business address</Text>
-                        <AutoFocusInput
-                          style={[
-                            styles.formInput,
-                            !canEditBusiness && styles.formInputDisabled
-                          ]}
-                          placeholder="Start typing an address"
-                          placeholderTextColor={COLORS.muted}
-                          value={formData.address}
-                          editable={canEditBusiness}
-                          onChangeText={handleAddressChange}
-                        />
-                        {!GOOGLE_PLACES_KEY && canEditBusiness && (
-                          <Text style={styles.formHint}>
-                            Add your Google Places key in `.env` to enable
-                            address autocomplete.
-                          </Text>
-                        )}
-                        {addressLoading && canEditBusiness && (
-                          <Text style={styles.formHint}>
-                            Searching addresses...
-                          </Text>
-                        )}
-                        {addressError && canEditBusiness && (
-                          <Text style={styles.formError}>{addressError}</Text>
-                        )}
-                        {canEditBusiness && addressResults.length > 0 && (
-                          <View style={styles.suggestionList}>
-                            {addressResults.map((result) => (
+                            <View style={styles.adminActions}>
                               <TouchableOpacity
-                                key={result.place_id}
-                                style={styles.suggestionItem}
-                                onPress={() => handleSelectSuggestion(result)}
+                                style={styles.adminApprove}
+                                onPress={() => handleApproveEdits(business.id)}
                               >
-                                <Text style={styles.suggestionTitle}>
-                                  {result.structured_formatting?.main_text ||
-                                    result.description}
+                                <Text style={styles.adminActionText}>
+                                  Approve edits
                                 </Text>
-                                {result.structured_formatting?.secondary_text && (
-                                  <Text style={styles.suggestionSubtitle}>
-                                    {result.structured_formatting.secondary_text}
-                                  </Text>
-                                )}
                               </TouchableOpacity>
-                            ))}
-                          </View>
-                        )}
-
-                        <View style={styles.formRow}>
-                          <View style={styles.formField}>
-                            <Text style={styles.formLabel}>City</Text>
-                            <AutoFocusInput
-                              style={[
-                                styles.formInput,
-                                !canEditBusiness && styles.formInputDisabled
-                              ]}
-                              placeholder="City"
-                              placeholderTextColor={COLORS.muted}
-                              value={formData.city}
-                              editable={canEditBusiness}
-                              onChangeText={(value) =>
-                                handleFormChange("city", value)
-                              }
-                            />
-                          </View>
-                          <View style={styles.formField}>
-                            <Text style={styles.formLabel}>State</Text>
-                            <AutoFocusInput
-                              style={[
-                                styles.formInput,
-                                !canEditBusiness && styles.formInputDisabled
-                              ]}
-                              placeholder="State"
-                              placeholderTextColor={COLORS.muted}
-                              value={formData.state}
-                              editable={canEditBusiness}
-                              onChangeText={(value) =>
-                                handleFormChange("state", value)
-                              }
-                            />
-                          </View>
-                          <View style={styles.formField}>
-                            <Text style={styles.formLabel}>Zip code</Text>
-                            <AutoFocusInput
-                              style={[
-                                styles.formInput,
-                                !canEditBusiness && styles.formInputDisabled
-                              ]}
-                              placeholder="Zip"
-                              placeholderTextColor={COLORS.muted}
-                              value={formData.postalCode}
-                              editable={canEditBusiness}
-                              onChangeText={(value) =>
-                                handleFormChange("postalCode", value)
-                              }
-                              keyboardType="number-pad"
-                            />
-                          </View>
-                        </View>
-
-                        <Text style={styles.formLabel}>Category</Text>
-                        <View style={styles.categoryRow}>
-                          {CATEGORY_OPTIONS.map((option) => {
-                            const isActive =
-                              formData.categoryKey === option.key;
-                            return (
                               <TouchableOpacity
-                                key={option.key}
-                                style={[
-                                  styles.categoryChip,
-                                  isActive && styles.categoryChipActive,
-                                  !canEditBusiness && styles.categoryChipDisabled
-                                ]}
-                                disabled={!canEditBusiness}
-                                onPress={() =>
-                                  handleFormChange("categoryKey", option.key)
-                                }
+                                style={styles.adminReject}
+                                onPress={() => handleRejectEdits(business.id)}
                               >
                                 <Text
                                   style={[
-                                    styles.categoryChipText,
-                                    isActive && styles.categoryChipTextActive,
-                                    !canEditBusiness &&
-                                      styles.categoryChipTextDisabled
+                                    styles.adminActionText,
+                                    styles.adminActionTextDark,
                                   ]}
                                 >
-                                  {option.label}
+                                  Reject edits
                                 </Text>
                               </TouchableOpacity>
-                            );
-                          })}
-                        </View>
-
-                        <Text style={styles.formLabel}>Operating hours</Text>
-                        <View style={styles.timeRow}>
-                          <View style={styles.timeBlock}>
-                            <Text style={styles.timeLabel}>Start</Text>
-                            <View style={styles.timeInputRow}>
-                              <TouchableOpacity
-                                style={[
-                                  styles.timeSelect,
-                                  !canEditBusiness && styles.timeSelectDisabled
-                                ]}
-                                onPress={() => openTimePicker("editStart")}
-                                disabled={!canEditBusiness}
-                              >
-                                <Text style={styles.timeSelectText}>
-                                  {editHoursStart ||
-                                    (IS_COMPACT ? "Select" : "Select time")}
-                                </Text>
-                                <Ionicons
-                                  name="chevron-down"
-                                  size={16}
-                                  color={COLORS.muted}
-                                />
-                              </TouchableOpacity>
-                              <View style={styles.timeMeridiem}>
-                                {["AM", "PM"].map((label) => {
-                                  const isActive =
-                                    editHoursStartMeridiem === label;
-                                  return (
-                                    <TouchableOpacity
-                                      key={label}
-                                      style={[
-                                        styles.timeMeridiemPill,
-                                        isActive && styles.timeMeridiemPillActive,
-                                        !canEditBusiness &&
-                                          styles.timeMeridiemPillDisabled
-                                      ]}
-                                      onPress={() =>
-                                        setEditHoursStartMeridiem(label)
-                                      }
-                                      disabled={!canEditBusiness}
-                                    >
-                                      <Text
-                                        style={[
-                                          styles.timeMeridiemText,
-                                          isActive &&
-                                            styles.timeMeridiemTextActive,
-                                          !canEditBusiness &&
-                                            styles.timeMeridiemTextDisabled
-                                        ]}
-                                      >
-                                        {label}
-                                      </Text>
-                                    </TouchableOpacity>
-                                  );
-                                })}
-                              </View>
                             </View>
                           </View>
-                          <View style={styles.timeBlock}>
-                            <Text style={styles.timeLabel}>End</Text>
-                            <View style={styles.timeInputRow}>
-                              <TouchableOpacity
-                                style={[
-                                  styles.timeSelect,
-                                  !canEditBusiness && styles.timeSelectDisabled
-                                ]}
-                                onPress={() => openTimePicker("editEnd")}
-                                disabled={!canEditBusiness}
-                              >
-                                <Text style={styles.timeSelectText}>
-                                  {editHoursEnd ||
-                                    (IS_COMPACT ? "Select" : "Select time")}
-                                </Text>
-                                <Ionicons
-                                  name="chevron-down"
-                                  size={16}
-                                  color={COLORS.muted}
-                                />
-                              </TouchableOpacity>
-                              <View style={styles.timeMeridiem}>
-                                {["AM", "PM"].map((label) => {
-                                  const isActive =
-                                    editHoursEndMeridiem === label;
-                                  return (
-                                    <TouchableOpacity
-                                      key={label}
-                                      style={[
-                                        styles.timeMeridiemPill,
-                                        isActive && styles.timeMeridiemPillActive,
-                                        !canEditBusiness &&
-                                          styles.timeMeridiemPillDisabled
-                                      ]}
-                                      onPress={() =>
-                                        setEditHoursEndMeridiem(label)
-                                      }
-                                      disabled={!canEditBusiness}
-                                    >
-                                      <Text
-                                        style={[
-                                          styles.timeMeridiemText,
-                                          isActive &&
-                                            styles.timeMeridiemTextActive,
-                                          !canEditBusiness &&
-                                            styles.timeMeridiemTextDisabled
-                                        ]}
-                                      >
-                                        {label}
-                                      </Text>
-                                    </TouchableOpacity>
-                                  );
-                                })}
-                              </View>
-                            </View>
-                          </View>
-                        </View>
+                        ))
+                      )}
 
-                        <Text style={styles.formLabel}>Tags</Text>
-                        <AutoFocusInput
-                          style={[
-                            styles.formInput,
-                            !canEditBusiness && styles.formInputDisabled
-                          ]}
-                          placeholder="wifi, family, happy-hour"
-                          placeholderTextColor={COLORS.muted}
-                          value={formData.tags}
-                          editable={canEditBusiness}
-                          onChangeText={(value) =>
-                            handleFormChange("tags", value)
-                          }
-                        />
-
-                        {isEditingBusiness && (
-                          <View style={styles.formActions}>
-                            <TouchableOpacity
-                              style={[
-                                styles.primaryButton,
-                                businessSaveBusy && styles.primaryButtonDisabled
-                              ]}
-                              onPress={handleSaveBusiness}
-                              disabled={businessSaveBusy}
-                            >
-                              <Text style={styles.primaryButtonText}>
-                                {businessSaveBusy ? "Submitting..." : "Submit for review"}
-                              </Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={styles.secondaryButton}
-                              onPress={() => {
-                                if (ownerBusiness) {
-                                  setFormData(buildFormFromBusiness(ownerBusiness));
-                                }
-                                setFormMessage(null);
-                                setIsEditingBusiness(false);
-                              }}
-                            >
-                              <Text style={styles.secondaryButtonText}>
-                                Cancel
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        )}
+                      <View style={styles.sectionBlock}>
+                        <Text style={styles.sectionTitleAlt}>
+                          Pending offers
+                        </Text>
+                        <Text style={styles.sectionBody}>
+                          Review new offers before they appear on Discover.
+                        </Text>
                       </View>
-                    ) : (
-                      <View style={styles.formCard}>
-                        <Text style={styles.formHeaderTitle}>
-                          Create your business profile
+
+                      {pendingOfferStatus.loading && (
+                        <Text style={styles.formHint}>
+                          Loading pending offers...
                         </Text>
-                        <Text style={styles.formHeaderMeta}>
-                          Add your listing details. You can edit them later if
-                          needed.
+                      )}
+                      {pendingOfferStatus.error && (
+                        <Text style={styles.formError}>
+                          {pendingOfferStatus.error}
                         </Text>
+                      )}
 
-                        <Text style={styles.formLabel}>Business name</Text>
-                        <AutoFocusInput
-                          style={styles.formInput}
-                          placeholder="Business name"
-                          placeholderTextColor={COLORS.muted}
-                          value={createBusinessForm.name}
-                          onChangeText={(value) =>
-                            setCreateBusinessForm((prev) => ({
-                              ...prev,
-                              name: value
-                            }))
-                          }
-                        />
-
-                        <Text style={styles.formLabel}>Business address</Text>
-                        <AutoFocusInput
-                          style={styles.formInput}
-                          placeholder="Street address"
-                          placeholderTextColor={COLORS.muted}
-                          value={createBusinessForm.address}
-                          onChangeText={handleCreateAddressChange}
-                        />
-                        {!GOOGLE_PLACES_KEY && (
-                          <Text style={styles.formHint}>
-                            Add your Google Places key in `.env` to enable
-                            address autocomplete.
+                      {pendingOffers.length === 0 ? (
+                        <View style={styles.emptyState}>
+                          <Text style={styles.emptyTitle}>
+                            No pending offers.
                           </Text>
-                        )}
-                        {createAddressLoading && (
-                          <Text style={styles.formHint}>
-                            Searching addresses...
+                          <Text style={styles.emptyCopy}>
+                            New offers will appear here for approval.
                           </Text>
-                        )}
-                        {createAddressError && (
-                          <Text style={styles.formError}>
-                            {createAddressError}
-                          </Text>
-                        )}
-                        {createAddressResults.length > 0 && (
-                          <View style={styles.suggestionList}>
-                            {createAddressResults.map((result) => (
-                              <TouchableOpacity
-                                key={result.place_id}
-                                style={styles.suggestionItem}
-                                onPress={() => handleSelectCreateSuggestion(result)}
-                              >
-                                <Text style={styles.suggestionTitle}>
-                                  {result.structured_formatting?.main_text ||
-                                    result.description}
-                                </Text>
-                                {result.structured_formatting?.secondary_text && (
-                                  <Text style={styles.suggestionSubtitle}>
-                                    {result.structured_formatting.secondary_text}
-                                  </Text>
-                                )}
-                              </TouchableOpacity>
-                            ))}
-                          </View>
-                        )}
-
-                        <View style={styles.formRow}>
-                          <View style={styles.formField}>
-                            <Text style={styles.formLabel}>City</Text>
-                            <AutoFocusInput
-                              style={styles.formInput}
-                              placeholder="City"
-                              placeholderTextColor={COLORS.muted}
-                              value={createBusinessForm.city}
-                              onChangeText={(value) =>
-                                setCreateBusinessForm((prev) => ({
-                                  ...prev,
-                                  city: value
-                                }))
-                              }
-                            />
-                          </View>
-                          <View style={styles.formField}>
-                            <Text style={styles.formLabel}>State</Text>
-                            <AutoFocusInput
-                              style={styles.formInput}
-                              placeholder="State"
-                              placeholderTextColor={COLORS.muted}
-                              value={createBusinessForm.state}
-                              onChangeText={(value) =>
-                                setCreateBusinessForm((prev) => ({
-                                  ...prev,
-                                  state: value
-                                }))
-                              }
-                            />
-                          </View>
-                          <View style={styles.formField}>
-                            <Text style={styles.formLabel}>Zip code</Text>
-                            <AutoFocusInput
-                              style={styles.formInput}
-                              placeholder="Zip"
-                              placeholderTextColor={COLORS.muted}
-                              value={createBusinessForm.postalCode}
-                              onChangeText={(value) =>
-                                setCreateBusinessForm((prev) => ({
-                                  ...prev,
-                                  postalCode: value
-                                }))
-                              }
-                              keyboardType="number-pad"
-                            />
-                          </View>
                         </View>
-
-                        <Text style={styles.formLabel}>Category</Text>
-                        <View style={styles.categoryRow}>
-                          {CATEGORY_OPTIONS.map((option) => {
-                            const isActive =
-                              createBusinessForm.categoryKey === option.key;
-                            return (
+                      ) : (
+                        pendingOffers.map((offer) => (
+                          <View key={offer.id} style={styles.adminCard}>
+                            <View style={styles.adminHeader}>
+                              <Text style={styles.adminTitle}>
+                                {offer.title || "New offer"}
+                              </Text>
+                              <Text style={styles.adminMeta}>
+                                {offer.business?.name || "Business"}
+                              </Text>
+                            </View>
+                            {offer.description ? (
+                              <Text style={styles.adminOffer}>
+                                {offer.description}
+                              </Text>
+                            ) : null}
+                            <View style={styles.adminActions}>
                               <TouchableOpacity
-                                key={option.key}
-                                style={[
-                                  styles.categoryChip,
-                                  isActive && styles.categoryChipActive
-                                ]}
-                                onPress={() =>
-                                  setCreateBusinessForm((prev) => ({
-                                    ...prev,
-                                    categoryKey: option.key
-                                  }))
-                                }
+                                style={styles.adminApprove}
+                                onPress={() => handleApproveOffer(offer.id)}
+                              >
+                                <Text style={styles.adminActionText}>
+                                  Approve
+                                </Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.adminReject}
+                                onPress={() => handleRejectOffer(offer.id)}
                               >
                                 <Text
                                   style={[
-                                    styles.categoryChipText,
-                                    isActive && styles.categoryChipTextActive
+                                    styles.adminActionText,
+                                    styles.adminActionTextDark,
                                   ]}
                                 >
-                                  {option.label}
+                                  Reject
                                 </Text>
                               </TouchableOpacity>
-                            );
-                          })}
-                        </View>
-
-                        <Text style={styles.formLabel}>Phone</Text>
-                        <AutoFocusInput
-                          style={styles.formInput}
-                          placeholder="(555) 123-4567"
-                          placeholderTextColor={COLORS.muted}
-                          value={createBusinessForm.phone}
-                          onChangeText={(value) =>
-                            setCreateBusinessForm((prev) => ({
-                              ...prev,
-                              phone: value
-                            }))
-                          }
-                          keyboardType="phone-pad"
-                        />
-
-                        <Text style={styles.formLabel}>Operating hours</Text>
-                        <View style={styles.timeRow}>
-                          <View style={styles.timeBlock}>
-                            <Text style={styles.timeLabel}>Start</Text>
-                            <View style={styles.timeInputRow}>
                               <TouchableOpacity
-                                style={styles.timeSelect}
-                                onPress={() => openTimePicker("createStart")}
+                                style={styles.adminDelete}
+                                onPress={() => handleAdminDeleteOffer(offer)}
                               >
-                                <Text style={styles.timeSelectText}>
-                                  {createHoursStart ||
-                                    (IS_COMPACT ? "Select" : "Select time")}
+                                <Text
+                                  style={[
+                                    styles.adminActionText,
+                                    styles.adminActionTextDark,
+                                  ]}
+                                >
+                                  Delete
                                 </Text>
-                                <Ionicons
-                                  name="chevron-down"
-                                  size={16}
-                                  color={COLORS.muted}
-                                />
                               </TouchableOpacity>
-                              <View style={styles.timeMeridiem}>
-                                {["AM", "PM"].map((label) => {
-                                  const isActive =
-                                    createHoursStartMeridiem === label;
-                                  return (
-                                    <TouchableOpacity
-                                      key={label}
-                                      style={[
-                                        styles.timeMeridiemPill,
-                                        isActive && styles.timeMeridiemPillActive
-                                      ]}
-                                      onPress={() =>
-                                        setCreateHoursStartMeridiem(label)
-                                      }
-                                    >
-                                      <Text
-                                        style={[
-                                          styles.timeMeridiemText,
-                                          isActive &&
-                                            styles.timeMeridiemTextActive
-                                        ]}
-                                      >
-                                        {label}
-                                      </Text>
-                                    </TouchableOpacity>
-                                  );
-                                })}
-                              </View>
                             </View>
                           </View>
-                          <View style={styles.timeBlock}>
-                            <Text style={styles.timeLabel}>End</Text>
-                            <View style={styles.timeInputRow}>
-                              <TouchableOpacity
-                                style={styles.timeSelect}
-                                onPress={() => openTimePicker("createEnd")}
-                              >
-                                <Text style={styles.timeSelectText}>
-                                  {createHoursEnd ||
-                                    (IS_COMPACT ? "Select" : "Select time")}
-                                </Text>
-                                <Ionicons
-                                  name="chevron-down"
-                                  size={16}
-                                  color={COLORS.muted}
-                                />
-                              </TouchableOpacity>
-                              <View style={styles.timeMeridiem}>
-                                {["AM", "PM"].map((label) => {
-                                  const isActive =
-                                    createHoursEndMeridiem === label;
-                                  return (
-                                    <TouchableOpacity
-                                      key={label}
-                                      style={[
-                                        styles.timeMeridiemPill,
-                                        isActive && styles.timeMeridiemPillActive
-                                      ]}
-                                      onPress={() =>
-                                        setCreateHoursEndMeridiem(label)
-                                      }
-                                    >
-                                      <Text
-                                        style={[
-                                          styles.timeMeridiemText,
-                                          isActive &&
-                                            styles.timeMeridiemTextActive
-                                        ]}
-                                      >
-                                        {label}
-                                      </Text>
-                                    </TouchableOpacity>
-                                  );
-                                })}
-                              </View>
-                            </View>
-                          </View>
-                        </View>
+                        ))
+                      )}
 
-                        <Text style={styles.formLabel}>Tags</Text>
-                        <AutoFocusInput
-                          style={styles.formInput}
-                          placeholder="wifi, family, happy-hour"
-                          placeholderTextColor={COLORS.muted}
-                          value={createBusinessForm.tags}
-                          onChangeText={(value) =>
-                            setCreateBusinessForm((prev) => ({
-                              ...prev,
-                              tags: value
-                            }))
-                          }
-                        />
-
-                        {createBusinessError && (
-                          <Text style={styles.formError}>
-                            {createBusinessError}
-                          </Text>
-                        )}
-
-                        <View style={styles.formActions}>
-                          <TouchableOpacity
-                            style={[
-                              styles.primaryButton,
-                              createBusinessBusy &&
-                                styles.primaryButtonDisabled
-                            ]}
-                            onPress={handleCreateBusinessProfile}
-                            disabled={createBusinessBusy}
-                          >
-                            <Text style={styles.primaryButtonText}>
-                              {createBusinessBusy
-                                ? "Creating..."
-                                : "Create profile"}
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-
-                        <View style={styles.paymentCard}>
-                          <Text style={styles.paymentTitle}>Membership</Text>
-                          <Text style={styles.paymentBody}>
-                            A subscription is required to publish your listing
-                            once your profile is created.
-                          </Text>
-                          <TouchableOpacity
-                            style={[
-                              styles.primaryButton,
-                              !stripeEnabled && styles.primaryButtonDisabled
-                            ]}
-                            onPress={handleStartSubscription}
-                            disabled={!stripeEnabled}
-                          >
-                            <Text style={styles.primaryButtonText}>
-                              {stripeEnabled
-                                ? "Continue to payment"
-                                : "Stripe setup pending"}
-                            </Text>
-                          </TouchableOpacity>
-                          {paymentMessage && (
-                            <Text style={styles.formHint}>{paymentMessage}</Text>
-                          )}
-                        </View>
+                      <View style={styles.sectionBlock}>
+                        <Text style={styles.sectionTitleAlt}>
+                          Offer management
+                        </Text>
+                        <Text style={styles.sectionBody}>
+                          Remove offers and clean up their images.
+                        </Text>
                       </View>
-                    )}
 
-                    {formMessage && (
-                      <View
-                        style={[
-                          styles.alertBox,
-                          formMessage.type === "error"
-                            ? styles.alertError
-                            : styles.alertSuccess
-                        ]}
-                      >
-                        <Text style={styles.alertText}>{formMessage.text}</Text>
-                      </View>
-                    )}
-
-                    {ownerBusiness && (
-                      <>
-                        <View style={styles.sectionBlock}>
-                          <Text style={styles.sectionTitleAlt}>Offers</Text>
-                          <Text style={styles.sectionBody}>
-                            Create and manage multiple offers for your business.
-                            New offers may require approval.
+                      {adminOffers.length === 0 ? (
+                        <View style={styles.emptyState}>
+                          <Text style={styles.emptyTitle}>No offers yet.</Text>
+                          <Text style={styles.emptyCopy}>
+                            Offers will appear once businesses are active.
                           </Text>
                         </View>
-
-                        <View style={styles.formCard}>
-                          <Text style={styles.formHeaderTitle}>
-                            Create offer
-                          </Text>
-                          <Text style={styles.formHeaderMeta}>
-                            Add a title and description for customers.
-                          </Text>
-
-                          <Text style={styles.formLabel}>Offer title</Text>
-                          <AutoFocusInput
-                            style={styles.formInput}
-                            placeholder="Example: 20% off first visit"
-                            placeholderTextColor={COLORS.muted}
-                            value={offerForm.title}
-                            onChangeText={(value) => {
-                              setOfferForm((prev) => ({ ...prev, title: value }));
-                              if (offerError) setOfferError(null);
-                            }}
-                          />
-
-                          <Text style={styles.formLabel}>Description</Text>
-                          <AutoFocusInput
-                            style={[styles.formInput, styles.formTextarea]}
-                            placeholder="Add the details customers should know."
-                            placeholderTextColor={COLORS.muted}
-                            value={offerForm.description}
-                            onChangeText={(value) => {
-                              setOfferForm((prev) => ({
-                                ...prev,
-                                description: value
-                              }));
-                              if (offerError) setOfferError(null);
-                            }}
-                            multiline
-                            textAlignVertical="top"
-                          />
-
-                          <Text style={styles.formLabel}>Offer type</Text>
-                          <AutoFocusInput
-                            style={styles.formInput}
-                            placeholder="Discount, BOGO, Bundle..."
-                            placeholderTextColor={COLORS.muted}
-                            value={offerForm.type}
-                            onChangeText={(value) => {
-                              setOfferForm((prev) => ({
-                                ...prev,
-                                type: value
-                              }));
-                              if (offerError) setOfferError(null);
-                            }}
-                            autoCorrect
-                            autoCapitalize="words"
-                            onBlur={() => {
-                              const corrected = normalizeOfferType(offerForm.type);
-                              if (corrected && corrected !== offerForm.type) {
-                                setOfferForm((prev) => ({
-                                  ...prev,
-                                  type: corrected
-                                }));
-                              }
-                            }}
-                          />
-                          {showOfferTypeSuggestion && (
-                            <Text style={styles.formHint}>
-                              Suggested: {offerTypeSuggestion}
-                            </Text>
-                          )}
-
-                          <Text style={styles.formLabel}>Offer photo</Text>
-                          <View style={styles.offerUploadRow}>
-                            <TouchableOpacity
-                              style={styles.secondaryButton}
-                              onPress={handlePickOfferImage}
-                              disabled={offerImageStatus.uploading}
-                            >
-                              <Text style={styles.secondaryButtonText}>
-                                {offerImage ? "Replace photo" : "Upload photo"}
+                      ) : (
+                        adminOffers.map((offer) => (
+                          <View key={offer.id} style={styles.adminCard}>
+                            <View style={styles.adminHeader}>
+                              <Text style={styles.adminTitle}>
+                                {offer.title || "Offer"}
                               </Text>
-                            </TouchableOpacity>
-                            {offerImage && (
+                              <Text style={styles.adminMeta}>
+                                {offer.business?.name || "Business"}
+                              </Text>
+                            </View>
+                            {offer.description ? (
+                              <Text style={styles.adminOffer}>
+                                {offer.description}
+                              </Text>
+                            ) : null}
+                            <View style={styles.adminActions}>
                               <TouchableOpacity
-                                style={styles.offerRemoveButton}
-                                onPress={() => setOfferImage(null)}
+                                style={styles.adminDelete}
+                                onPress={() => handleAdminDeleteOffer(offer)}
                               >
-                                <Text style={styles.offerRemoveButtonText}>
-                                  Remove
+                                <Text
+                                  style={[
+                                    styles.adminActionText,
+                                    styles.adminActionTextDark,
+                                  ]}
+                                >
+                                  Delete
                                 </Text>
                               </TouchableOpacity>
+                            </View>
+                          </View>
+                        ))
+                      )}
+
+                      {isAdmin && (
+                        <>
+                          <View style={styles.sectionBlock}>
+                            <Text style={styles.sectionTitleAlt}>
+                              Supervisor access
+                            </Text>
+                            <Text style={styles.sectionBody}>
+                              Promote teammates to review listings without full
+                              admin access.
+                            </Text>
+                          </View>
+
+                          <View style={styles.invitePanel}>
+                            <AutoFocusInput
+                              style={styles.authInput}
+                              placeholder="Search by name, email, phone, or company"
+                              placeholderTextColor={COLORS.muted}
+                              value={supervisorSearch}
+                              onChangeText={setSupervisorSearch}
+                              autoCapitalize="none"
+                            />
+                            {profileStatus.loading && (
+                              <Text style={styles.formHint}>
+                                Loading team members...
+                              </Text>
                             )}
-                          </View>
-                          {offerImageStatus.error && (
-                            <Text style={styles.formError}>
-                              {offerImageStatus.error}
-                            </Text>
-                          )}
-                          <View style={styles.offerUploadFrame}>
-                            {offerImage ? (
-                              <Image
-                                source={{ uri: offerImage.uri }}
-                                style={styles.offerUploadPreview}
-                                resizeMode="cover"
-                                onError={(event) => {
-                                  console.warn("Wello offer preview failed:", {
-                                    uri: offerImage.uri,
-                                    error: event.nativeEvent?.error
-                                  });
-                                }}
-                              />
+                            {profileStatus.error && (
+                              <Text style={styles.formError}>
+                                {profileStatus.error}
+                              </Text>
+                            )}
+                            {supervisorStatus.error && (
+                              <Text style={styles.formError}>
+                                {supervisorStatus.error}
+                              </Text>
+                            )}
+                            {supervisorStatus.success && (
+                              <Text style={styles.formSuccess}>
+                                {supervisorStatus.success}
+                              </Text>
+                            )}
+                            {filteredProfiles.length === 0 ? (
+                              <View style={styles.emptyState}>
+                                <Text style={styles.emptyTitle}>
+                                  No team members yet.
+                                </Text>
+                                <Text style={styles.emptyCopy}>
+                                  New signups will appear here.
+                                </Text>
+                              </View>
                             ) : (
-                              <View style={styles.offerUploadPlaceholder}>
-                                <Ionicons
-                                  name="image-outline"
-                                  size={18}
-                                  color={COLORS.muted}
-                                />
-                                <Text style={styles.offerUploadHint}>
-                                  Upload a photo to help customers spot the offer.
-                                </Text>
-                              </View>
-                            )}
-                          </View>
-
-                          {offerError && (
-                            <Text style={styles.formError}>{offerError}</Text>
-                          )}
-
-                          <View style={styles.formActions}>
-                            <TouchableOpacity
-                              style={[
-                                styles.primaryButton,
-                                offerBusy && styles.primaryButtonDisabled
-                              ]}
-                              onPress={handleCreateOffer}
-                              disabled={offerBusy}
-                            >
-                              <Text style={styles.primaryButtonText}>
-                                {offerBusy ? "Saving..." : "Create offer"}
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-
-                        {ownerOffers.length === 0 ? (
-                          <View style={styles.emptyState}>
-                            <Text style={styles.emptyTitle}>
-                              No offers yet.
-                            </Text>
-                            <Text style={styles.emptyCopy}>
-                              Create your first offer to show on Discover.
-                            </Text>
-                          </View>
-                        ) : (
-                          <View style={styles.offerList}>
-                            {ownerOffers.map((offer) => (
-                              <View key={offer.id} style={styles.offerRow}>
-                                <View style={styles.offerMeta}>
-                                  <Text style={styles.offerTitle}>
-                                    {offer.title || "Untitled offer"}
-                                  </Text>
-                                  {offer.description ? (
-                                    <Text style={styles.offerDescription}>
-                                      {offer.description}
-                                    </Text>
-                                  ) : null}
-                                  <Text style={styles.offerStatus}>
-                                    {offer.active ? "Active" : "Paused"} -{" "}
-                                    {offer.approvalStatus === "pending"
-                                      ? "Pending review"
-                                      : offer.approvalStatus === "rejected"
-                                      ? "Rejected"
-                                      : "Approved"}
-                                  </Text>
-                                </View>
-                                <View style={styles.offerActions}>
-                                  <TouchableOpacity
-                                    style={styles.offerAction}
-                                    onPress={() => handleToggleOffer(offer)}
-                                  >
-                                    <Text style={styles.offerActionText}>
-                                      {offer.active ? "Pause" : "Activate"}
-                                    </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={styles.offerActionGhost}
-                                    onPress={() => handleDeleteOffer(offer)}
-                                  >
-                                    <Text style={styles.offerActionTextGhost}>
-                                      Delete
-                                    </Text>
-                                  </TouchableOpacity>
-                                </View>
-                              </View>
-                            ))}
-                          </View>
-                        )}
-                      </>
-                    )}
-                  </>
-                ) : activeTab === "history" ? (
-                  <>
-                    {!isSignedIn ? (
-                      <View style={styles.authCard}>
-                        <Text style={styles.authTitle}>History</Text>
-                        <Text style={styles.authSubtitle}>
-                          Sign in to see the offers you have redeemed.
-                        </Text>
-                        <TouchableOpacity
-                          style={styles.authPrimaryButton}
-                          onPress={() => {
-                            setAuthView("signin");
-                            setActiveTab("profile");
-                          }}
-                        >
-                          <Text style={styles.authButtonText}>Sign in</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ) : (
-                      <>
-                        <View style={styles.sectionBlock}>
-                          <Text style={styles.sectionTitleAlt}>History</Text>
-                          <Text style={styles.sectionBody}>
-                            Your redeemed offers are grouped by business so you can
-                            leave a review.
-                          </Text>
-                        </View>
-
-                        {redemptionStatus.error && (
-                          <Text style={styles.formError}>
-                            {redemptionStatus.error}
-                          </Text>
-                        )}
-
-                        {redemptionStatus.loading ? (
-                          <View style={styles.remoteNotice}>
-                            <Text style={styles.remoteNoticeText}>
-                              Loading your history...
-                            </Text>
-                          </View>
-                        ) : redemptionHistory.length === 0 ? (
-                          <View style={styles.emptyState}>
-                            <Text style={styles.emptyTitle}>
-                              No redemptions yet.
-                            </Text>
-                            <Text style={styles.emptyCopy}>
-                              Redeem an offer to see it here.
-                            </Text>
-                          </View>
-                        ) : (
-                          <View style={styles.historyList}>
-                            {historyGroups.map((group) => {
-                              const isExpanded = Boolean(
-                                expandedHistoryGroups[group.key]
-                              );
-                              const hasReview = reviewedBusinessIds.has(
-                                String(group.businessId || group.key)
-                              );
-                              return (
-                                <View
-                                  key={group.key}
-                                  style={styles.historyGroupCard}
-                                >
-                                  <TouchableOpacity
-                                    style={styles.historyGroupHeader}
-                                    onPress={() =>
-                                      setExpandedHistoryGroups((prev) => ({
-                                        ...prev,
-                                        [group.key]: !prev[group.key]
-                                      }))
-                                    }
-                                  >
-                                    <View style={styles.historyGroupMeta}>
-                                      <Text
-                                        style={styles.historyGroupTitle}
-                                        numberOfLines={1}
-                                      >
-                                        {group.businessName}
-                                      </Text>
-                                      <Text style={styles.historyGroupSub}>
-                                        {group.entries.length} redeemed · Last{" "}
-                                        {formatHistoryTimestamp(
-                                          group.lastRedeemed
-                                        )}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.historyGroupActions}>
-                                      {group.pendingCount > 0 && (
-                                        <View style={styles.historyReviewBadge}>
-                                          <Text
-                                            style={styles.historyReviewBadgeText}
-                                          >
-                                            {group.pendingCount}
-                                          </Text>
-                                        </View>
-                                      )}
-                                      <Ionicons
-                                        name={
-                                          isExpanded
-                                            ? "chevron-up"
-                                            : "chevron-down"
-                                        }
-                                        size={18}
-                                        color={COLORS.muted}
-                                      />
-                                    </View>
-                                  </TouchableOpacity>
-                                  {isExpanded && (
-                                    <View style={styles.historyEntries}>
-                                      {group.pendingCount > 0 && (
-                                        <TouchableOpacity
-                                          style={styles.historyReviewButton}
-                                          onPress={() => handleOpenReview(group)}
-                                        >
-                                          <Text style={styles.historyReviewText}>
-                                            Leave a review
-                                          </Text>
-                                          <Ionicons
-                                            name="star"
-                                            size={16}
-                                            color={COLORS.sun}
-                                          />
-                                        </TouchableOpacity>
-                                      )}
-                                      {group.entries.map((entry) => {
-                                        const offerTitle =
-                                          entry.offer?.title || "Redeemed offer";
-                                        const offerDescription =
-                                          entry.offer?.description || "";
-                                        return (
-                                          <View
-                                            key={entry.id}
-                                            style={styles.historyEntry}
-                                          >
-                                            <View style={styles.historyEntryRow}>
-                                              <Text
-                                                style={styles.historyEntryTitle}
-                                                numberOfLines={1}
-                                              >
-                                                {offerTitle}
-                                              </Text>
-                                              <Text
-                                                style={styles.historyEntryTime}
-                                              >
-                                                {formatHistoryTimestamp(
-                                                  entry.createdAt
-                                                )}
-                                              </Text>
-                                            </View>
-                                            {!hasReview &&
-                                              entry.id ===
-                                                group.entries[0]?.id && (
-                                              <Text
-                                                style={styles.historyEntryPending}
-                                              >
-                                                Review needed
-                                              </Text>
-                                            )}
-                                            {offerDescription ? (
-                                              <Text
-                                                style={
-                                                  styles.historyEntryDescription
-                                                }
-                                                numberOfLines={2}
-                                              >
-                                                {offerDescription}
-                                              </Text>
-                                            ) : null}
-                                          </View>
-                                        );
-                                      })}
-                                    </View>
-                                  )}
-                                </View>
-                              );
-                            })}
-                          </View>
-                        )}
-                      </>
-                    )}
-                  </>
-                ) : activeTab === "profile" ? (
-                  <>
-                    {!isSignedIn ? (
-                      <View style={styles.authStack}>
-                        {authView === "menu" && (
-                          <View style={styles.authCard}>
-                            <Text style={styles.authBrand}>Wello</Text>
-                            <Text style={styles.authTitle}>
-                              You're not signed in
-                            </Text>
-                            <Text style={styles.authSubtitle}>
-                              Sign in to manage your account or create a new one
-                              to get started.
-                            </Text>
-
-                            <TouchableOpacity
-                              style={styles.authPrimaryButton}
-                              onPress={() => setAuthView("signin")}
-                            >
-                              <Text style={styles.authButtonText}>Sign in</Text>
-                            </TouchableOpacity>
-
-                            <TouchableOpacity
-                              style={styles.authSecondaryButton}
-                              onPress={() => setAuthView("signup")}
-                            >
-                              <Text style={styles.secondaryButtonText}>
-                                Create new account
-                              </Text>
-                            </TouchableOpacity>
-
-                            <TouchableOpacity
-                              style={styles.authSecondaryButton}
-                              onPress={() => setAuthView("business")}
-                            >
-                              <Text style={styles.secondaryButtonText}>
-                                Create business account
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        )}
-
-                        {authView === "signin" && (
-                          <View style={styles.authCard}>
-                            <TouchableOpacity
-                              style={styles.authBack}
-                              onPress={() => setAuthView("menu")}
-                            >
-                              <Ionicons
-                                name="arrow-back"
-                                size={16}
-                                color={COLORS.muted}
-                              />
-                              <Text style={styles.authBackText}>Back</Text>
-                            </TouchableOpacity>
-
-                            <Text style={styles.authTitle}>Sign in</Text>
-                            <Text style={styles.authSubtitle}>
-                              Access your account to manage listings and offers.
-                            </Text>
-
-                            <Text style={styles.formLabel}>Email</Text>
-                            <AutoFocusInput
-                              style={styles.authInput}
-                              placeholder="name@business.com"
-                              placeholderTextColor={COLORS.muted}
-                              value={signInEmail}
-                              onChangeText={setSignInEmail}
-                              keyboardType="email-address"
-                              autoCapitalize="none"
-                            />
-
-                            <Text style={styles.formLabel}>Password</Text>
-                            <AutoFocusInput
-                              style={styles.authInput}
-                              placeholder="--------"
-                              placeholderTextColor={COLORS.muted}
-                              value={signInPassword}
-                              onChangeText={setSignInPassword}
-                              secureTextEntry
-                            />
-
-                            {signInError && (
-                              <Text style={styles.formError}>{signInError}</Text>
-                            )}
-
-                            <TouchableOpacity
-                              style={[
-                                styles.authButton,
-                                authBusy && styles.authButtonDisabled
-                              ]}
-                              onPress={handleSignIn}
-                              disabled={authBusy}
-                            >
-                              <Text style={styles.authButtonText}>
-                                {authBusy ? "Please wait..." : "Sign in"}
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        )}
-
-                        {authView === "signup" && (
-                          <View style={styles.authCard}>
-                            <TouchableOpacity
-                              style={styles.authBack}
-                              onPress={() => setAuthView("menu")}
-                            >
-                              <Ionicons
-                                name="arrow-back"
-                                size={16}
-                                color={COLORS.muted}
-                              />
-                              <Text style={styles.authBackText}>Back</Text>
-                            </TouchableOpacity>
-
-                            <Text style={styles.authTitle}>Create account</Text>
-                            <Text style={styles.authSubtitle}>
-                              Create a member account to save your favorites
-                              and redeem offers.
-                            </Text>
-
-                            <Text style={styles.formLabel}>Email</Text>
-                            <AutoFocusInput
-                              style={styles.authInput}
-                              placeholder="name@business.com"
-                              placeholderTextColor={COLORS.muted}
-                              value={signUpEmail}
-                              onChangeText={setSignUpEmail}
-                              keyboardType="email-address"
-                              autoCapitalize="none"
-                            />
-
-                            <Text style={styles.formLabel}>Password</Text>
-                            <AutoFocusInput
-                              style={styles.authInput}
-                              placeholder="--------"
-                              placeholderTextColor={COLORS.muted}
-                              value={signUpPassword}
-                              onChangeText={setSignUpPassword}
-                              secureTextEntry
-                            />
-
-                            {signUpError && (
-                              <Text style={styles.formError}>{signUpError}</Text>
-                            )}
-
-                            <TouchableOpacity
-                              style={[
-                                styles.authButton,
-                                authBusy && styles.authButtonDisabled
-                              ]}
-                              onPress={handleCreateAccount}
-                              disabled={authBusy}
-                            >
-                              <Text style={styles.authButtonText}>
-                                {authBusy ? "Please wait..." : "Create account"}
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        )}
-
-                        {authView === "business" && (
-                          <View style={styles.authCard}>
-                            <TouchableOpacity
-                              style={styles.authBack}
-                              onPress={() => setAuthView("menu")}
-                            >
-                              <Ionicons
-                                name="arrow-back"
-                                size={16}
-                                color={COLORS.muted}
-                              />
-                              <Text style={styles.authBackText}>Back</Text>
-                            </TouchableOpacity>
-
-                            <Text style={styles.authTitle}>
-                              Create business account
-                            </Text>
-                            <Text style={styles.authSubtitle}>
-                              Business invites require full business details for
-                              review.
-                            </Text>
-
-                            <Text style={styles.formLabel}>Business name</Text>
-                            <AutoFocusInput
-                              style={styles.authInput}
-                              placeholder="Business name"
-                              placeholderTextColor={COLORS.muted}
-                              value={businessName}
-                              onChangeText={setBusinessName}
-                            />
-
-                            <Text style={styles.formLabel}>Category</Text>
-                            <View style={styles.categoryRow}>
-                              {CATEGORY_OPTIONS.map((option) => {
-                                const isActive =
-                                  businessCategoryKey === option.key;
-                                return (
-                                  <TouchableOpacity
-                                    key={option.key}
-                                    style={[
-                                      styles.categoryChip,
-                                      isActive && styles.categoryChipActive
-                                    ]}
-                                    onPress={() =>
-                                      setBusinessCategoryKey(option.key)
-                                    }
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.categoryChipText,
-                                        isActive &&
-                                          styles.categoryChipTextActive
-                                      ]}
-                                    >
-                                      {option.label}
-                                    </Text>
-                                  </TouchableOpacity>
-                                );
-                              })}
-                            </View>
-
-                            <Text style={styles.formLabel}>Business address</Text>
-                            <AutoFocusInput
-                              style={styles.authInput}
-                              placeholder="Street address"
-                              placeholderTextColor={COLORS.muted}
-                              value={businessAddress}
-                              onChangeText={handleBusinessAddressChange}
-                            />
-                            {!GOOGLE_PLACES_KEY && (
-                              <Text style={styles.formHint}>
-                                Add your Google Places key in `.env` to enable
-                                address autocomplete.
-                              </Text>
-                            )}
-                            {businessAddressLoading && (
-                              <Text style={styles.formHint}>
-                                Searching addresses...
-                              </Text>
-                            )}
-                            {businessAddressError && (
-                              <Text style={styles.formError}>
-                                {businessAddressError}
-                              </Text>
-                            )}
-                            {businessAddressResults.length > 0 && (
-                              <View style={styles.suggestionList}>
-                                {businessAddressResults.map((result) => (
-                                  <TouchableOpacity
-                                    key={result.place_id}
-                                    style={styles.suggestionItem}
-                                    onPress={() =>
-                                      handleSelectBusinessSuggestion(result)
-                                    }
-                                  >
-                                    <Text style={styles.suggestionTitle}>
-                                      {result.structured_formatting?.main_text ||
-                                        result.description}
-                                    </Text>
-                                    {result.structured_formatting
-                                      ?.secondary_text && (
-                                      <Text style={styles.suggestionSubtitle}>
-                                        {
-                                          result.structured_formatting
-                                            .secondary_text
-                                        }
-                                      </Text>
-                                    )}
-                                  </TouchableOpacity>
-                                ))}
-                              </View>
-                            )}
-
-                            <View style={styles.formRow}>
-                              <View style={styles.formField}>
-                                <Text style={styles.formLabel}>City</Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="City"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={businessAddressCity}
-                                  onChangeText={setBusinessAddressCity}
-                                />
-                              </View>
-                              <View style={styles.formField}>
-                                <Text style={styles.formLabel}>State</Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="State"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={businessAddressState}
-                                  onChangeText={setBusinessAddressState}
-                                />
-                              </View>
-                              <View style={styles.formField}>
-                                <Text style={styles.formLabel}>Zip code</Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="Zip"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={businessAddressPostal}
-                                  onChangeText={setBusinessAddressPostal}
-                                  keyboardType="number-pad"
-                                />
-                              </View>
-                            </View>
-
-                            <Text style={styles.formLabel}>Phone</Text>
-                            <AutoFocusInput
-                              style={styles.authInput}
-                              placeholder="(555) 123-4567"
-                              placeholderTextColor={COLORS.muted}
-                              value={businessPhone}
-                              onChangeText={setBusinessPhone}
-                              keyboardType="phone-pad"
-                            />
-
-                            <Text style={styles.formLabel}>Operating hours</Text>
-                            <View style={styles.timeRow}>
-                              <View style={styles.timeBlock}>
-                                <Text style={styles.timeLabel}>Start</Text>
-                                <View style={styles.timeInputRow}>
-                                  <TouchableOpacity
-                                    style={styles.timeSelect}
-                                    onPress={() => openTimePicker("start")}
-                                  >
-                                    <Text style={styles.timeSelectText}>
-                                      {businessHoursStart ||
-                                        (IS_COMPACT ? "Select" : "Select time")}
-                                    </Text>
-                                    <Ionicons
-                                      name="chevron-down"
-                                      size={16}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                  <View style={styles.timeMeridiem}>
-                                    {["AM", "PM"].map((label) => {
-                                      const isActive =
-                                        businessHoursStartMeridiem === label;
-                                      return (
-                                        <TouchableOpacity
-                                          key={label}
-                                          style={[
-                                            styles.timeMeridiemPill,
-                                            isActive &&
-                                              styles.timeMeridiemPillActive
-                                          ]}
-                                          onPress={() =>
-                                            setBusinessHoursStartMeridiem(label)
-                                          }
-                                        >
-                                          <Text
-                                            style={[
-                                              styles.timeMeridiemText,
-                                              isActive &&
-                                                styles.timeMeridiemTextActive
-                                            ]}
-                                          >
-                                            {label}
-                                          </Text>
-                                        </TouchableOpacity>
-                                      );
-                                    })}
-                                  </View>
-                                </View>
-                              </View>
-                              <View style={styles.timeBlock}>
-                                <Text style={styles.timeLabel}>End</Text>
-                                <View style={styles.timeInputRow}>
-                                  <TouchableOpacity
-                                    style={styles.timeSelect}
-                                    onPress={() => openTimePicker("end")}
-                                  >
-                                    <Text style={styles.timeSelectText}>
-                                      {businessHoursEnd ||
-                                        (IS_COMPACT ? "Select" : "Select time")}
-                                    </Text>
-                                    <Ionicons
-                                      name="chevron-down"
-                                      size={16}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                  <View style={styles.timeMeridiem}>
-                                    {["AM", "PM"].map((label) => {
-                                      const isActive =
-                                        businessHoursEndMeridiem === label;
-                                      return (
-                                        <TouchableOpacity
-                                          key={label}
-                                          style={[
-                                            styles.timeMeridiemPill,
-                                            isActive &&
-                                              styles.timeMeridiemPillActive
-                                          ]}
-                                          onPress={() =>
-                                            setBusinessHoursEndMeridiem(label)
-                                          }
-                                        >
-                                          <Text
-                                            style={[
-                                              styles.timeMeridiemText,
-                                              isActive &&
-                                                styles.timeMeridiemTextActive
-                                            ]}
-                                          >
-                                            {label}
-                                          </Text>
-                                        </TouchableOpacity>
-                                      );
-                                    })}
-                                  </View>
-                                </View>
-                              </View>
-                            </View>
-
-                            <Text style={styles.formLabel}>Email</Text>
-                            <AutoFocusInput
-                              style={styles.authInput}
-                              placeholder="owner@business.com"
-                              placeholderTextColor={COLORS.muted}
-                              value={businessEmail}
-                              onChangeText={setBusinessEmail}
-                              keyboardType="email-address"
-                              autoCapitalize="none"
-                            />
-
-                            <Text style={styles.formLabel}>Password</Text>
-                            <AutoFocusInput
-                              style={styles.authInput}
-                              placeholder="--------"
-                              placeholderTextColor={COLORS.muted}
-                              value={businessPassword}
-                              onChangeText={setBusinessPassword}
-                              secureTextEntry
-                            />
-
-                            <Text style={styles.formLabel}>Invite code</Text>
-                            <AutoFocusInput
-                              style={styles.authInput}
-                              placeholder="Required"
-                              placeholderTextColor={COLORS.muted}
-                              value={businessInviteCode}
-                              onChangeText={(value) =>
-                                setBusinessInviteCode(value.toUpperCase())
-                              }
-                              autoCapitalize="characters"
-                            />
-
-                            {businessSignUpError && (
-                              <Text style={styles.formError}>
-                                {businessSignUpError}
-                              </Text>
-                            )}
-
-                            <TouchableOpacity
-                              style={[
-                                styles.authButton,
-                                authBusy && styles.authButtonDisabled
-                              ]}
-                              onPress={handleBusinessSignUp}
-                              disabled={authBusy}
-                            >
-                              <Text style={styles.authButtonText}>
-                                {authBusy
-                                  ? "Please wait..."
-                                  : "Create business account"}
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        )}
-                      </View>
-                    ) : (
-                      <>
-                        <View style={styles.sectionBlock}>
-                          <Text style={styles.sectionTitleAlt}>Profile</Text>
-                          <Text style={styles.sectionBody}>
-                            Manage your account details and business access.
-                          </Text>
-                        </View>
-
-                        <View style={styles.profileCard}>
-                          <View style={styles.profileHeader}>
-                            <View style={styles.profileAvatar}>
-                              <Text style={styles.profileInitials}>
-                                {profileInitials}
-                              </Text>
-                            </View>
-                            <View style={styles.profileHeaderText}>
-                              <Text style={styles.profileName}>
-                                {profileName || "Wello Owner"}
-                              </Text>
-                              <Text style={styles.profileEmail}>
-                                {profileEmail || authEmail}
-                              </Text>
-                            </View>
-                            <View style={styles.profileRolePill}>
-                              <Text style={styles.profileRoleText}>
-                                {roleLabel}
-                              </Text>
-                            </View>
-                          </View>
-                        </View>
-
-                        <View style={styles.notificationPanel}>
-                          <Text style={styles.sectionTitleAlt}>
-                            Notifications
-                          </Text>
-                          <Text style={styles.sectionBody}>
-                            Stay informed about new or nearby offers. Toggle the
-                            categories you care about.
-                          </Text>
-                          {preferencesStatus.loading && (
-                            <Text style={styles.formHint}>
-                              Saving preferences...
-                            </Text>
-                          )}
-                          {preferencesStatus.error && (
-                            <Text style={styles.formError}>
-                              {preferencesStatus.error}
-                            </Text>
-                          )}
-                          <View style={styles.notificationRow}>
-                            <Text style={styles.notificationLabel}>
-                              New offers
-                            </Text>
-                            <Switch
-                              value={notificationPreferences.new_offer}
-                              onValueChange={(value) =>
-                                handlePreferenceToggle("new_offer", value)
-                              }
-                            />
-                          </View>
-                          <View style={styles.notificationRow}>
-                            <Text style={styles.notificationLabel}>
-                              Offers expiring soon
-                            </Text>
-                            <Switch
-                              value={notificationPreferences.expiring_offer}
-                              onValueChange={(value) =>
-                                handlePreferenceToggle("expiring_offer", value)
-                              }
-                            />
-                          </View>
-                          <View style={styles.notificationRow}>
-                            <Text style={styles.notificationLabel}>
-                              Offers nearby
-                            </Text>
-                            <Switch
-                              value={notificationPreferences.nearby_offer}
-                              onValueChange={(value) =>
-                                handlePreferenceToggle("nearby_offer", value)
-                              }
-                            />
-                          </View>
-                          <Text style={styles.notificationHelp}>
-                            Push permission:{" "}
-                            {notificationPermissionStatus === "granted"
-                              ? "Enabled"
-                              : notificationPermissionStatus === "denied"
-                              ? "Denied"
-                              : notificationPermissionStatus === "unsupported"
-                              ? "Device unsupported"
-                              : "Pending"}
-                          </Text>
-                          {tokenError && (
-                            <Text style={styles.formError}>{tokenError}</Text>
-                          )}
-                        </View>
-
-                        <View style={styles.formCard}>
-                          <Text style={styles.formLabel}>Full name</Text>
-                          <AutoFocusInput
-                            style={styles.formInput}
-                            placeholder="Your name"
-                            placeholderTextColor={COLORS.muted}
-                            value={profileName}
-                            onChangeText={setProfileName}
-                          />
-
-                          <Text style={styles.formLabel}>Email</Text>
-                          <AutoFocusInput
-                            style={styles.formInput}
-                            placeholder="name@business.com"
-                            placeholderTextColor={COLORS.muted}
-                            value={profileEmail}
-                            onChangeText={setProfileEmail}
-                            keyboardType="email-address"
-                            autoCapitalize="none"
-                          />
-
-                          <Text style={styles.formLabel}>Phone</Text>
-                          <AutoFocusInput
-                            style={styles.formInput}
-                            placeholder="(555) 123-4567"
-                            placeholderTextColor={COLORS.muted}
-                            value={profilePhone}
-                            onChangeText={setProfilePhone}
-                            keyboardType="phone-pad"
-                          />
-
-                          <Text style={styles.formLabel}>Company</Text>
-                          <AutoFocusInput
-                            style={styles.formInput}
-                            placeholder="Business name"
-                            placeholderTextColor={COLORS.muted}
-                            value={profileCompany}
-                            onChangeText={setProfileCompany}
-                          />
-
-                          <View style={styles.profileMetaRow}>
-                            <View style={styles.profileMetaCard}>
-                              <Text style={styles.profileMetaLabel}>Plan</Text>
-                              <Text style={styles.profileMetaValue}>
-                                {ownerBusiness?.subscription || "Starter $50/mo"}
-                              </Text>
-                            </View>
-                            <View style={styles.profileMetaCard}>
-                              <Text style={styles.profileMetaLabel}>Listings</Text>
-                              <Text style={styles.profileMetaValue}>
-                                {approvedBusinesses.length}
-                              </Text>
-                            </View>
-                          </View>
-
-                          <View style={styles.formActions}>
-                            <TouchableOpacity
-                              style={styles.primaryButton}
-                              onPress={handleProfileSave}
-                            >
-                              <Text style={styles.primaryButtonText}>
-                                Save profile
-                              </Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={styles.secondaryButton}
-                              onPress={handleSignOut}
-                            >
-                              <Text style={styles.secondaryButtonText}>
-                                Sign out
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-
-                        {profileMessage && (
-                          <View style={[styles.alertBox, styles.alertSuccess]}>
-                            <Text style={styles.alertText}>{profileMessage}</Text>
-                          </View>
-                        )}
-                      </>
-                    )}
-                  </>
-                ) : activeTab === "admin" && isStaff ? (
-                  <>
-                    <View style={styles.sectionBlock}>
-                      <Text style={styles.sectionTitleAlt}>Admin review</Text>
-                      <Text style={styles.sectionBody}>
-                        Approve new listings before they go live.
-                      </Text>
-                    </View>
-                    {adminActionStatus.loading && (
-                      <Text style={styles.formHint}>Processing admin action...</Text>
-                    )}
-                    {adminActionStatus.error && (
-                      <Text style={styles.formError}>{adminActionStatus.error}</Text>
-                    )}
-                    {adminActionStatus.success && (
-                      <Text style={styles.formSuccess}>
-                        {adminActionStatus.success}
-                      </Text>
-                    )}
-
-                    <View style={styles.sectionBlock}>
-                      <Text style={styles.sectionTitleAlt}>Pending edits</Text>
-                      <Text style={styles.sectionBody}>
-                        Approve or reject changes to business details.
-                      </Text>
-                    </View>
-
-                    {pendingEditBusinesses.length === 0 ? (
-                      <View style={styles.emptyState}>
-                        <Text style={styles.emptyTitle}>
-                          No edit requests.
-                        </Text>
-                        <Text style={styles.emptyCopy}>
-                          Updates will appear here for review.
-                        </Text>
-                      </View>
-                    ) : (
-                      pendingEditBusinesses.map((business) => (
-                        <View key={business.id} style={styles.adminCard}>
-                          <View style={styles.adminHeader}>
-                            <Text style={styles.adminTitle}>
-                              {business.name}
-                            </Text>
-                            <Text style={styles.adminMeta}>
-                              {getCategoryConfig(business.categoryKey).display}
-                            </Text>
-                          </View>
-                          <Text style={styles.adminOffer}>
-                            Requested updates
-                          </Text>
-                          <View style={styles.pendingList}>
-                            {Object.keys(business.pendingEdits || {})
-                              .filter((field) => field !== "coordinate")
-                              .map((field) => (
-                                <View key={field} style={styles.pendingPill}>
-                                  <Text style={styles.pendingPillText}>
-                                    {getPendingEditLabel(field)}
-                                  </Text>
-                                </View>
-                              ))}
-                          </View>
-                          <View style={styles.adminActions}>
-                            <TouchableOpacity
-                              style={styles.adminApprove}
-                              onPress={() => handleApproveEdits(business.id)}
-                            >
-                              <Text style={styles.adminActionText}>
-                                Approve edits
-                              </Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={styles.adminReject}
-                              onPress={() => handleRejectEdits(business.id)}
-                            >
-                              <Text
-                                style={[
-                                  styles.adminActionText,
-                                  styles.adminActionTextDark
-                                ]}
-                              >
-                                Reject edits
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-                      ))
-                    )}
-
-                    <View style={styles.sectionBlock}>
-                      <Text style={styles.sectionTitleAlt}>Pending offers</Text>
-                      <Text style={styles.sectionBody}>
-                        Review new offers before they appear on Discover.
-                      </Text>
-                    </View>
-
-                    {pendingOfferStatus.loading && (
-                      <Text style={styles.formHint}>
-                        Loading pending offers...
-                      </Text>
-                    )}
-                    {pendingOfferStatus.error && (
-                      <Text style={styles.formError}>
-                        {pendingOfferStatus.error}
-                      </Text>
-                    )}
-
-                    {pendingOffers.length === 0 ? (
-                      <View style={styles.emptyState}>
-                        <Text style={styles.emptyTitle}>
-                          No pending offers.
-                        </Text>
-                        <Text style={styles.emptyCopy}>
-                          New offers will appear here for approval.
-                        </Text>
-                      </View>
-                    ) : (
-                      pendingOffers.map((offer) => (
-                        <View key={offer.id} style={styles.adminCard}>
-                          <View style={styles.adminHeader}>
-                            <Text style={styles.adminTitle}>
-                              {offer.title || "New offer"}
-                            </Text>
-                            <Text style={styles.adminMeta}>
-                              {offer.business?.name || "Business"}
-                            </Text>
-                          </View>
-                          {offer.description ? (
-                            <Text style={styles.adminOffer}>
-                              {offer.description}
-                            </Text>
-                          ) : null}
-                          <View style={styles.adminActions}>
-                            <TouchableOpacity
-                              style={styles.adminApprove}
-                              onPress={() => handleApproveOffer(offer.id)}
-                            >
-                              <Text style={styles.adminActionText}>
-                                Approve
-                              </Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={styles.adminReject}
-                              onPress={() => handleRejectOffer(offer.id)}
-                            >
-                              <Text
-                                style={[
-                                  styles.adminActionText,
-                                  styles.adminActionTextDark
-                                ]}
-                              >
-                                Reject
-                              </Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={styles.adminDelete}
-                              onPress={() => handleAdminDeleteOffer(offer)}
-                            >
-                              <Text
-                                style={[
-                                  styles.adminActionText,
-                                  styles.adminActionTextDark
-                                ]}
-                              >
-                                Delete
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-                      ))
-                    )}
-
-                    <View style={styles.sectionBlock}>
-                      <Text style={styles.sectionTitleAlt}>Offer management</Text>
-                      <Text style={styles.sectionBody}>
-                        Remove offers and clean up their images.
-                      </Text>
-                    </View>
-
-                    {adminOffers.length === 0 ? (
-                      <View style={styles.emptyState}>
-                        <Text style={styles.emptyTitle}>No offers yet.</Text>
-                        <Text style={styles.emptyCopy}>
-                          Offers will appear once businesses are active.
-                        </Text>
-                      </View>
-                    ) : (
-                      adminOffers.map((offer) => (
-                        <View key={offer.id} style={styles.adminCard}>
-                          <View style={styles.adminHeader}>
-                            <Text style={styles.adminTitle}>
-                              {offer.title || "Offer"}
-                            </Text>
-                            <Text style={styles.adminMeta}>
-                              {offer.business?.name || "Business"}
-                            </Text>
-                          </View>
-                          {offer.description ? (
-                            <Text style={styles.adminOffer}>
-                              {offer.description}
-                            </Text>
-                          ) : null}
-                          <View style={styles.adminActions}>
-                            <TouchableOpacity
-                              style={styles.adminDelete}
-                              onPress={() => handleAdminDeleteOffer(offer)}
-                            >
-                              <Text
-                                style={[
-                                  styles.adminActionText,
-                                  styles.adminActionTextDark
-                                ]}
-                              >
-                                Delete
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-                      ))
-                    )}
-
-                    {isAdmin && (
-                      <>
-                        <View style={styles.sectionBlock}>
-                          <Text style={styles.sectionTitleAlt}>Invite codes</Text>
-                          <Text style={styles.sectionBody}>
-                            Generate one-time codes for business owners.
-                          </Text>
-                        </View>
-
-                        <View style={styles.invitePanel}>
-                          <TouchableOpacity
-                            style={[
-                              styles.primaryButton,
-                              inviteStatus.loading &&
-                                styles.primaryButtonDisabled
-                            ]}
-                            onPress={handleGenerateInvite}
-                            disabled={inviteStatus.loading}
-                          >
-                            <Text style={styles.primaryButtonText}>
-                              {inviteStatus.loading
-                                ? "Generating..."
-                                : "Generate invite code"}
-                            </Text>
-                          </TouchableOpacity>
-
-                          {inviteStatus.code && (
-                            <View style={styles.inviteCodeBox}>
-                              <Text style={styles.inviteCodeLabel}>
-                                New invite code
-                              </Text>
-                              <View style={styles.inviteCodeRow}>
-                                <Text style={styles.inviteCodeText}>
-                                  {inviteStatus.code}
-                                </Text>
-                                <TouchableOpacity
-                                  style={styles.inviteCopyButton}
-                                  onPress={handleCopyInvite}
-                                >
-                                  <Ionicons
-                                    name="copy-outline"
-                                    size={14}
-                                    color={COLORS.navy}
-                                  />
-                                  <Text style={styles.inviteCopyText}>
-                                    {inviteCopied ? "Copied" : "Copy"}
-                                  </Text>
-                                </TouchableOpacity>
-                              </View>
-                            </View>
-                          )}
-
-                          {inviteStatus.error && (
-                            <Text style={styles.formError}>
-                              {inviteStatus.error}
-                            </Text>
-                          )}
-                        </View>
-
-                        {inviteList.length === 0 ? (
-                          <View style={styles.emptyState}>
-                            <Text style={styles.emptyTitle}>No invites yet.</Text>
-                            <Text style={styles.emptyCopy}>
-                              Generate a code to invite a business account.
-                            </Text>
-                          </View>
-                        ) : (
-                          <View style={styles.inviteList}>
-                            {inviteList.map((invite) => {
-                              const isUsed = Boolean(invite.used_at);
-                              const usedByLine = isUsed
-                                ? [
-                                    invite.used_by_name,
-                                    invite.used_by,
-                                    invite.used_by_business_name
+                              <View style={styles.supervisorList}>
+                                {filteredProfiles.map((profile) => {
+                                  const role = profile.role || "consumer";
+                                  const displayName =
+                                    profile.full_name ||
+                                    profile.email ||
+                                    "Member";
+                                  const metaLine = [
+                                    profile.email,
+                                    profile.phone,
+                                    profile.company,
                                   ]
                                     .filter(Boolean)
-                                    .join(" - ")
-                                : null;
-                              return (
-                                <View key={invite.id} style={styles.inviteRow}>
-                                  <View>
-                                    <Text style={styles.inviteRowCode}>
-                                      {invite.code}
-                                    </Text>
-                                    <Text style={styles.inviteRowMeta}>
-                                      {INVITE_ROLE_LABELS[invite.role] ||
-                                        "Invite"}{" "}
-                                      - {isUsed ? "Used" : "Unused"}
-                                    </Text>
-                                    {usedByLine && (
-                                      <Text style={styles.inviteRowMeta}>
-                                        {usedByLine}
-                                      </Text>
-                                    )}
-                                  </View>
-                                  <View
-                                    style={[
-                                      styles.inviteStatus,
-                                      isUsed
-                                        ? styles.inviteStatusUsed
-                                        : styles.inviteStatusActive
-                                    ]}
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.inviteStatusText,
-                                        isUsed && styles.inviteStatusTextUsed
-                                      ]}
+                                    .join(" - ");
+                                  const isProfileAdmin = role === "admin";
+                                  const isProfileSupervisor =
+                                    role === "supervisor";
+                                  const isProfileBusiness =
+                                    role === "business_owner";
+                                  return (
+                                    <View
+                                      key={profile.id}
+                                      style={styles.supervisorRow}
                                     >
-                                      {isUsed ? "Used" : "Active"}
-                                    </Text>
-                                  </View>
-                                </View>
-                              );
-                            })}
-                          </View>
-                        )}
-                      </>
-                    )}
-
-                    {isAdmin && (
-                      <>
-                        <View style={styles.sectionBlock}>
-                          <Text style={styles.sectionTitleAlt}>
-                            Supervisor access
-                          </Text>
-                          <Text style={styles.sectionBody}>
-                            Promote teammates to review listings without full
-                            admin access.
-                          </Text>
-                        </View>
-
-                        <View style={styles.invitePanel}>
-                          <AutoFocusInput
-                            style={styles.authInput}
-                            placeholder="Search by name, email, phone, or company"
-                            placeholderTextColor={COLORS.muted}
-                            value={supervisorSearch}
-                            onChangeText={setSupervisorSearch}
-                            autoCapitalize="none"
-                          />
-                          {profileStatus.loading && (
-                            <Text style={styles.formHint}>
-                              Loading team members...
-                            </Text>
-                          )}
-                          {profileStatus.error && (
-                            <Text style={styles.formError}>
-                              {profileStatus.error}
-                            </Text>
-                          )}
-                          {supervisorStatus.error && (
-                            <Text style={styles.formError}>
-                              {supervisorStatus.error}
-                            </Text>
-                          )}
-                          {supervisorStatus.success && (
-                            <Text style={styles.formSuccess}>
-                              {supervisorStatus.success}
-                            </Text>
-                          )}
-                          {filteredProfiles.length === 0 ? (
-                            <View style={styles.emptyState}>
-                              <Text style={styles.emptyTitle}>
-                                No team members yet.
-                              </Text>
-                              <Text style={styles.emptyCopy}>
-                                New signups will appear here.
-                              </Text>
-                            </View>
-                          ) : (
-                            <View style={styles.supervisorList}>
-                              {filteredProfiles.map((profile) => {
-                                const role = profile.role || "consumer";
-                                const displayName =
-                                  profile.full_name || profile.email || "Member";
-                                const metaLine = [
-                                  profile.email,
-                                  profile.phone,
-                                  profile.company
-                                ]
-                                  .filter(Boolean)
-                                  .join(" - ");
-                                const isProfileAdmin = role === "admin";
-                                const isProfileSupervisor = role === "supervisor";
-                                const isProfileBusiness = role === "business_owner";
-                                return (
-                                  <View
-                                    key={profile.id}
-                                    style={styles.supervisorRow}
-                                  >
-                                    <View style={styles.supervisorMeta}>
-                                      <Text style={styles.supervisorName}>
-                                        {displayName}
-                                      </Text>
-                                      {metaLine ? (
-                                        <Text style={styles.supervisorDetails}>
-                                          {metaLine}
+                                      <View style={styles.supervisorMeta}>
+                                        <Text style={styles.supervisorName}>
+                                          {displayName}
                                         </Text>
-                                      ) : null}
-                                      <Text style={styles.supervisorRole}>
-                                        {isProfileAdmin
-                                          ? "Admin"
-                                          : isProfileSupervisor
-                                          ? "Supervisor"
-                                          : "Member"}
-                                      </Text>
-                                    </View>
-                                    {isProfileAdmin ? (
-                                      <View style={styles.supervisorBadge}>
-                                        <Text style={styles.supervisorBadgeText}>
-                                          Admin
+                                        {metaLine ? (
+                                          <Text
+                                            style={styles.supervisorDetails}
+                                          >
+                                            {metaLine}
+                                          </Text>
+                                        ) : null}
+                                        <Text style={styles.supervisorRole}>
+                                          {isProfileAdmin
+                                            ? "Admin"
+                                            : isProfileSupervisor
+                                              ? "Supervisor"
+                                              : "Member"}
                                         </Text>
                                       </View>
-                                    ) : (
-                                      <View style={styles.supervisorActionsRow}>
-                                        {isProfileBusiness ? (
-                                          <View style={styles.supervisorBadgeAlt}>
-                                            <Text style={styles.supervisorBadgeText}>
-                                              Business
-                                            </Text>
-                                          </View>
-                                        ) : (
-                                          <TouchableOpacity
-                                            style={styles.supervisorActionAlt}
-                                            onPress={() =>
-                                              handlePromoteBusinessOwner(profile)
-                                            }
+                                      {isProfileAdmin ? (
+                                        <View style={styles.supervisorBadge}>
+                                          <Text
+                                            style={styles.supervisorBadgeText}
                                           >
-                                            <Text style={styles.supervisorActionTextAlt}>
-                                              Make business
-                                            </Text>
-                                          </TouchableOpacity>
-                                        )}
+                                            Admin
+                                          </Text>
+                                        </View>
+                                      ) : (
+                                        <View
+                                          style={styles.supervisorActionsRow}
+                                        >
+                                          {isProfileBusiness ? (
+                                            <View
+                                              style={styles.supervisorBadgeAlt}
+                                            >
+                                              <Text
+                                                style={
+                                                  styles.supervisorBadgeText
+                                                }
+                                              >
+                                                Business
+                                              </Text>
+                                            </View>
+                                          ) : (
+                                            <TouchableOpacity
+                                              style={styles.supervisorActionAlt}
+                                              onPress={() =>
+                                                handlePromoteBusinessOwner(
+                                                  profile,
+                                                )
+                                              }
+                                            >
+                                              <Text
+                                                style={
+                                                  styles.supervisorActionTextAlt
+                                                }
+                                              >
+                                                Make business
+                                              </Text>
+                                            </TouchableOpacity>
+                                          )}
                                           <TouchableOpacity
                                             style={styles.supervisorAction}
                                             onPress={() =>
                                               isProfileSupervisor
-                                              ? handleRemoveSupervisor(profile)
-                                              : handlePromoteSupervisor(profile)
+                                                ? handleRemoveSupervisor(
+                                                    profile,
+                                                  )
+                                                : handlePromoteSupervisor(
+                                                    profile,
+                                                  )
                                             }
                                           >
-                                            <Text style={styles.supervisorActionText}>
+                                            <Text
+                                              style={
+                                                styles.supervisorActionText
+                                              }
+                                            >
                                               {isProfileSupervisor
-                                              ? "Remove"
-                                              : "Make supervisor"}
+                                                ? "Remove"
+                                                : "Make supervisor"}
                                             </Text>
                                           </TouchableOpacity>
-                                      </View>
-                                    )}
-                                  </View>
-                                );
-                              })}
-                            </View>
-                          )}
-                        </View>
-                      </>
-                    )}
-
-                    <View style={styles.sectionBlock}>
-                      <Text style={styles.sectionTitleAlt}>Business management</Text>
-                      <Text style={styles.sectionBody}>
-                        Delete businesses and their offers when needed.
-                      </Text>
-                    </View>
-
-                    {adminBusinesses.length === 0 ? (
-                      <View style={styles.emptyState}>
-                        <Text style={styles.emptyTitle}>No businesses yet.</Text>
-                        <Text style={styles.emptyCopy}>
-                          Approved listings will appear here.
-                        </Text>
-                      </View>
-                    ) : (
-                      adminBusinesses.map((business) => (
-                        <View key={business.id} style={styles.adminCard}>
-                          <View style={styles.adminHeader}>
-                            <Text style={styles.adminTitle}>
-                              {business.name}
-                            </Text>
-                            <Text style={styles.adminMeta}>
-                              {getCategoryConfig(business.categoryKey).display}
-                            </Text>
-                          </View>
-                          <Text style={styles.adminOffer}>{business.offer}</Text>
-                          <View style={styles.adminActions}>
-                            <TouchableOpacity
-                              style={styles.adminDelete}
-                              onPress={() => handleAdminDeleteBusiness(business)}
-                            >
-                              <Text
-                                style={[
-                                  styles.adminActionText,
-                                  styles.adminActionTextDark
-                                ]}
-                              >
-                                Delete
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-                      ))
-                    )}
-
-                    <View style={styles.sectionBlock}>
-                      <Text style={styles.sectionTitleAlt}>Business QR codes</Text>
-                      <Text style={styles.sectionBody}>
-                        Expand a business to show its unique QR code for in-store
-                        redemption.
-                      </Text>
-                    </View>
-
-                    {approvedBusinesses.length === 0 ? (
-                      <View style={styles.emptyState}>
-                        <Text style={styles.emptyTitle}>
-                          No approved businesses yet.
-                        </Text>
-                        <Text style={styles.emptyCopy}>
-                          Approve listings to generate QR codes.
-                        </Text>
-                      </View>
-                    ) : (
-                      approvedBusinesses.map((business) => {
-                        const isExpanded = qrExpandedId === business.id;
-                        const payload = getBusinessQrCode(business);
-                        return (
-                          <View key={business.id} style={styles.qrCard}>
-                            <TouchableOpacity
-                              style={styles.qrHeaderRow}
-                              onPress={() =>
-                                setQrExpandedId(isExpanded ? null : business.id)
-                              }
-                            >
-                              <View style={styles.qrHeaderText}>
-                                <Text style={styles.qrTitle}>
-                                  {business.name}
-                                </Text>
-                                <Text style={styles.qrMeta}>
-                                  {getCategoryConfig(business.categoryKey).display}
-                                </Text>
-                              </View>
-                              <Ionicons
-                                name={isExpanded ? "chevron-up" : "chevron-down"}
-                                size={18}
-                                color={COLORS.muted}
-                              />
-                            </TouchableOpacity>
-                            {isExpanded && (
-                              <View style={styles.qrBody}>
-                                <View style={styles.qrCodeWrap}>
-                                  {BUSINESS_QR_IMAGES[business.id] ||
-                                  qrImageMap[business.id] ? (
-                                    <Image
-                                      source={
-                                        BUSINESS_QR_IMAGES[business.id] || {
-                                          uri: qrImageMap[business.id]
-                                        }
-                                      }
-                                      style={styles.qrImage}
-                                      resizeMode="contain"
-                                    />
-                                  ) : (
-                                    <View style={styles.qrFallback}>
-                                      <Text style={styles.qrFallbackText}>
-                                        Generating QR
-                                      </Text>
+                                        </View>
+                                      )}
                                     </View>
-                                  )}
-                                </View>
-                                <Text style={styles.qrCodeLabel}>{payload}</Text>
-                                <Text style={styles.qrCodeNote}>
-                                  Keep this code private. Scan at checkout to
-                                  redeem offers.
-                                </Text>
+                                  );
+                                })}
                               </View>
                             )}
                           </View>
-                        );
-                      })
-                    )}
+                        </>
+                      )}
 
-                    <View style={styles.adminSummary}>
-                      <View style={styles.statCard}>
-                        <Text style={styles.statValue}>
-                          {pendingBusinesses.length}
+                      <View style={styles.sectionBlock}>
+                        <Text style={styles.sectionTitleAlt}>
+                          Business management
                         </Text>
-                        <Text style={styles.statLabel}>Pending</Text>
-                      </View>
-                      <View style={styles.statCard}>
-                        <Text style={styles.statValue}>
-                          {approvedBusinesses.length}
+                        <Text style={styles.sectionBody}>
+                          Delete businesses and their offers when needed.
                         </Text>
-                        <Text style={styles.statLabel}>Approved</Text>
                       </View>
-                    </View>
 
-                    {pendingBusinesses.length === 0 ? (
-                      <View style={styles.emptyState}>
-                        <Text style={styles.emptyTitle}>
-                          No pending reviews.
-                        </Text>
-                        <Text style={styles.emptyCopy}>
-                          New submissions will appear here.
-                        </Text>
-                      </View>
-                    ) : (
-                      pendingBusinesses.map((business) => (
-                        <View key={business.id} style={styles.adminCard}>
-                          <View style={styles.adminHeader}>
-                            <Text style={styles.adminTitle}>
-                              {business.name}
-                            </Text>
-                            <Text style={styles.adminMeta}>
-                              {getCategoryConfig(business.categoryKey).display}
-                            </Text>
-                          </View>
-                          <Text style={styles.adminOffer}>{business.offer}</Text>
-                          <View style={styles.adminActions}>
-                            <TouchableOpacity
-                              style={styles.adminApprove}
-                              onPress={() => handleApprove(business.id)}
-                            >
-                              <Text style={styles.adminActionText}>
-                                Approve
-                              </Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={styles.adminReject}
-                              onPress={() => handleReject(business.id)}
-                            >
-                              <Text
-                                style={[
-                                  styles.adminActionText,
-                                  styles.adminActionTextDark
-                                ]}
-                              >
-                                Reject
-                              </Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={styles.adminDelete}
-                              onPress={() => handleAdminDeleteBusiness(business)}
-                            >
-                              <Text
-                                style={[
-                                  styles.adminActionText,
-                                  styles.adminActionTextDark
-                                ]}
-                              >
-                                Delete
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
+                      {adminBusinesses.length === 0 ? (
+                        <View style={styles.emptyState}>
+                          <Text style={styles.emptyTitle}>
+                            No businesses yet.
+                          </Text>
+                          <Text style={styles.emptyCopy}>
+                            Approved listings will appear here.
+                          </Text>
                         </View>
-                      ))
-                    )}
-                  </>
-                ) : (
-                  <View style={styles.emptyState}>
-                    <Text style={styles.emptyTitle}>Access restricted.</Text>
-                    <Text style={styles.emptyCopy}>
-                      Switch to an authorized account to view this section.
-                    </Text>
-                  </View>
-                )}
-              </ScrollView>
-            </KeyboardAvoidingView>
-          )}
-        </Animated.View>
-      </View>
+                      ) : (
+                        adminBusinesses.map((business) => (
+                          <View key={business.id} style={styles.adminCard}>
+                            <View style={styles.adminHeader}>
+                              <Text style={styles.adminTitle}>
+                                {business.name}
+                              </Text>
+                              <Text style={styles.adminMeta}>
+                                {
+                                  getCategoryConfig(business.categoryKey)
+                                    .display
+                                }
+                              </Text>
+                            </View>
+                            <Text style={styles.adminOffer}>
+                              {business.offer}
+                            </Text>
+                            <View style={styles.adminActions}>
+                              <TouchableOpacity
+                                style={styles.adminDelete}
+                                onPress={() =>
+                                  handleAdminDeleteBusiness(business)
+                                }
+                              >
+                                <Text
+                                  style={[
+                                    styles.adminActionText,
+                                    styles.adminActionTextDark,
+                                  ]}
+                                >
+                                  Delete
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        ))
+                      )}
+
+                      <View style={styles.sectionBlock}>
+                        <Text style={styles.sectionTitleAlt}>
+                          Business QR codes
+                        </Text>
+                        <Text style={styles.sectionBody}>
+                          Expand a business to show its unique QR code for
+                          in-store redemption.
+                        </Text>
+                      </View>
+
+                      {approvedBusinesses.length === 0 ? (
+                        <View style={styles.emptyState}>
+                          <Text style={styles.emptyTitle}>
+                            No approved businesses yet.
+                          </Text>
+                          <Text style={styles.emptyCopy}>
+                            Approve listings to generate QR codes.
+                          </Text>
+                        </View>
+                      ) : (
+                        approvedBusinesses.map((business) => {
+                          const isExpanded = qrExpandedId === business.id;
+                          const payload = getBusinessQrCode(business);
+                          return (
+                            <View key={business.id} style={styles.qrCard}>
+                              <TouchableOpacity
+                                style={styles.qrHeaderRow}
+                                onPress={() =>
+                                  setQrExpandedId(
+                                    isExpanded ? null : business.id,
+                                  )
+                                }
+                              >
+                                <View style={styles.qrHeaderText}>
+                                  <Text style={styles.qrTitle}>
+                                    {business.name}
+                                  </Text>
+                                  <Text style={styles.qrMeta}>
+                                    {
+                                      getCategoryConfig(business.categoryKey)
+                                        .display
+                                    }
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name={
+                                    isExpanded ? "chevron-up" : "chevron-down"
+                                  }
+                                  size={18}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
+                              {isExpanded && (
+                                <View style={styles.qrBody}>
+                                  <View style={styles.qrCodeWrap}>
+                                    {BUSINESS_QR_IMAGES[business.id] ||
+                                    qrImageMap[business.id] ? (
+                                      <Image
+                                        source={
+                                          BUSINESS_QR_IMAGES[business.id] || {
+                                            uri: qrImageMap[business.id],
+                                          }
+                                        }
+                                        style={styles.qrImage}
+                                        resizeMode="contain"
+                                      />
+                                    ) : (
+                                      <View style={styles.qrFallback}>
+                                        <Text style={styles.qrFallbackText}>
+                                          Generating QR
+                                        </Text>
+                                      </View>
+                                    )}
+                                  </View>
+                                  <Text style={styles.qrCodeLabel}>
+                                    {payload}
+                                  </Text>
+                                  <Text style={styles.qrCodeNote}>
+                                    Keep this code private. Scan at checkout to
+                                    redeem offers.
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+                          );
+                        })
+                      )}
+
+                      <View style={styles.adminSummary}>
+                        <View style={styles.statCard}>
+                          <Text style={styles.statValue}>
+                            {pendingBusinesses.length}
+                          </Text>
+                          <Text style={styles.statLabel}>Pending</Text>
+                        </View>
+                        <View style={styles.statCard}>
+                          <Text style={styles.statValue}>
+                            {approvedBusinesses.length}
+                          </Text>
+                          <Text style={styles.statLabel}>Approved</Text>
+                        </View>
+                      </View>
+
+                      {pendingBusinesses.length === 0 ? (
+                        <View style={styles.emptyState}>
+                          <Text style={styles.emptyTitle}>
+                            No pending reviews.
+                          </Text>
+                          <Text style={styles.emptyCopy}>
+                            New submissions will appear here.
+                          </Text>
+                        </View>
+                      ) : (
+                        pendingBusinesses.map((business) => (
+                          <View key={business.id} style={styles.adminCard}>
+                            <View style={styles.adminHeader}>
+                              <Text style={styles.adminTitle}>
+                                {business.name}
+                              </Text>
+                              <Text style={styles.adminMeta}>
+                                {
+                                  getCategoryConfig(business.categoryKey)
+                                    .display
+                                }
+                              </Text>
+                            </View>
+                            <Text style={styles.adminOffer}>
+                              {business.offer}
+                            </Text>
+                            <View style={styles.adminActions}>
+                              <TouchableOpacity
+                                style={styles.adminApprove}
+                                onPress={() => handleApprove(business.id)}
+                              >
+                                <Text style={styles.adminActionText}>
+                                  Approve
+                                </Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.adminReject}
+                                onPress={() => handleReject(business.id)}
+                              >
+                                <Text
+                                  style={[
+                                    styles.adminActionText,
+                                    styles.adminActionTextDark,
+                                  ]}
+                                >
+                                  Reject
+                                </Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.adminDelete}
+                                onPress={() =>
+                                  handleAdminDeleteBusiness(business)
+                                }
+                              >
+                                <Text
+                                  style={[
+                                    styles.adminActionText,
+                                    styles.adminActionTextDark,
+                                  ]}
+                                >
+                                  Delete
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        ))
+                      )}
+                    </>
+                  ) : (
+                    <View style={styles.emptyState}>
+                      <Text style={styles.emptyTitle}>Access restricted.</Text>
+                      <Text style={styles.emptyCopy}>
+                        Switch to an authorized account to view this section.
+                      </Text>
+                    </View>
+                  )}
+                </ScrollView>
+              </KeyboardAvoidingView>
+            )}
+          </Animated.View>
+        </View>
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -8177,29 +8303,29 @@ export default function App() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: COLORS.cream
+    backgroundColor: COLORS.cream,
   },
   loadingScreen: {
     flex: 1,
-    backgroundColor: COLORS.cream
+    backgroundColor: COLORS.cream,
   },
   container: {
     flex: 1,
-    backgroundColor: COLORS.cream
+    backgroundColor: COLORS.cream,
   },
   authScreen: {
     flex: 1,
-    backgroundColor: COLORS.cream
+    backgroundColor: COLORS.cream,
   },
   authContainer: {
     flex: 1,
     paddingHorizontal: 20,
-    justifyContent: "center"
+    justifyContent: "center",
   },
   authStack: {
     marginTop: 4,
     marginBottom: 12,
-    gap: 16
+    gap: 16,
   },
   authCard: {
     backgroundColor: COLORS.white,
@@ -8211,26 +8337,26 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 10 },
-    elevation: 3
+    elevation: 3,
   },
   authBrand: {
     fontSize: 22,
     color: COLORS.pine,
     fontFamily: FONT_DISPLAY,
-    marginBottom: 6
+    marginBottom: 6,
   },
   authTitle: {
     fontSize: 18,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
-    marginBottom: 6
+    marginBottom: 6,
   },
   authSubtitle: {
     fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 18,
-    marginBottom: 14
+    marginBottom: 14,
   },
   authInput: {
     backgroundColor: COLORS.mint,
@@ -8242,62 +8368,62 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    marginBottom: 12
+    marginBottom: 12,
   },
   authButton: {
     backgroundColor: COLORS.pine,
     borderRadius: 12,
     paddingVertical: 12,
     alignItems: "center",
-    marginTop: 4
+    marginTop: 4,
   },
   authPrimaryButton: {
     backgroundColor: COLORS.pine,
     borderRadius: 12,
     paddingVertical: 12,
     alignItems: "center",
-    marginTop: 8
+    marginTop: 8,
   },
   authButtonDisabled: {
-    backgroundColor: "#9AA7B8"
+    backgroundColor: "#9AA7B8",
   },
   authButtonText: {
     color: COLORS.white,
     fontSize: 14,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   authBack: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    marginBottom: 8
+    marginBottom: 8,
   },
   authBackText: {
     fontSize: 12,
     color: COLORS.muted,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   timeRow: {
     flexDirection: "column",
     gap: 12,
-    marginBottom: 12
+    marginBottom: 12,
   },
   timeBlock: {
     flex: 1,
     alignItems: "flex-start",
-    gap: 6
+    gap: 6,
   },
   timeLabel: {
     fontSize: 11,
     color: COLORS.muted,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   timeInputRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     alignSelf: "stretch",
-    flexWrap: "wrap"
+    flexWrap: "wrap",
   },
   timeSelect: {
     flex: 1,
@@ -8311,16 +8437,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    minHeight: 42
+    minHeight: 42,
   },
   timeSelectDisabled: {
-    opacity: 0.6
+    opacity: 0.6,
   },
   timeSelectText: {
     fontSize: IS_COMPACT ? 12 : 13,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
-    flexShrink: 1
+    flexShrink: 1,
   },
   timeMeridiem: {
     flexDirection: "row",
@@ -8329,7 +8455,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: "hidden",
     minHeight: 42,
-    width: 84
+    width: 84,
   },
   timeMeridiemPill: {
     flex: 1,
@@ -8338,31 +8464,31 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     backgroundColor: COLORS.white,
     alignItems: "center",
-    justifyContent: "center"
+    justifyContent: "center",
   },
   timeMeridiemPillDisabled: {
-    backgroundColor: COLORS.mint
+    backgroundColor: COLORS.mint,
   },
   timeMeridiemPillActive: {
-    backgroundColor: COLORS.pine
+    backgroundColor: COLORS.pine,
   },
   timeMeridiemText: {
     fontSize: IS_COMPACT ? 10 : 11,
     color: COLORS.muted,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   timeMeridiemTextDisabled: {
     color: COLORS.muted,
-    opacity: 0.7
+    opacity: 0.7,
   },
   timeMeridiemTextActive: {
-    color: COLORS.white
+    color: COLORS.white,
   },
   timePickerOverlay: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.45)",
     justifyContent: "center",
-    padding: 20
+    padding: 20,
   },
   timePickerCard: {
     backgroundColor: COLORS.white,
@@ -8370,18 +8496,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     padding: 14,
-    maxHeight: SCREEN_HEIGHT * 0.6
+    maxHeight: SCREEN_HEIGHT * 0.6,
   },
   timePickerHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 10
+    marginBottom: 10,
   },
   timePickerTitle: {
     fontSize: 14,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   timePickerClose: {
     width: 28,
@@ -8391,10 +8517,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   timePickerList: {
-    gap: 6
+    gap: 6,
   },
   timePickerItem: {
     paddingVertical: 10,
@@ -8402,12 +8528,12 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: COLORS.white
+    backgroundColor: COLORS.white,
   },
   timePickerText: {
     fontSize: 13,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   authSecondaryButton: {
     borderWidth: 1,
@@ -8416,14 +8542,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderRadius: 12,
-    marginTop: 8
+    marginTop: 8,
   },
   authToggleText: {
     textAlign: "center",
     marginTop: 12,
     color: COLORS.coral,
     fontSize: 12,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   redeemButton: {
     marginTop: 12,
@@ -8437,35 +8563,35 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.7,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
-    elevation: 3
+    elevation: 3,
   },
   redeemButtonDisabled: {
     backgroundColor: "#E1E8F1",
     borderWidth: 1,
     borderColor: COLORS.sand,
     shadowOpacity: 0,
-    elevation: 0
+    elevation: 0,
   },
   redeemButtonText: {
     color: COLORS.white,
     fontSize: 12,
     fontFamily: FONT_SEMIBOLD,
-    letterSpacing: 0.3
+    letterSpacing: 0.3,
   },
   redeemButtonTextDisabled: {
-    color: COLORS.muted
+    color: COLORS.muted,
   },
   map: {
-    ...StyleSheet.absoluteFillObject
+    ...StyleSheet.absoluteFillObject,
   },
   mapShade: {
-    ...StyleSheet.absoluteFillObject
+    ...StyleSheet.absoluteFillObject,
   },
   topMeta: {
     position: "absolute",
     top: SAFE_TOP,
     left: IS_COMPACT ? 12 : 16,
-    right: IS_COMPACT ? 12 : 16
+    right: IS_COMPACT ? 12 : 16,
   },
   navContainer: {
     alignSelf: "center",
@@ -8480,18 +8606,18 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 8 },
-    elevation: 4
+    elevation: 4,
   },
   navScroll: {
     flexDirection: "row",
     gap: NAV_GAP,
     paddingHorizontal: 2,
     paddingTop: 6,
-    paddingBottom: 2
+    paddingBottom: 2,
   },
   locateRow: {
     alignItems: "flex-end",
-    marginTop: IS_COMPACT ? 8 : 10
+    marginTop: IS_COMPACT ? 8 : 10,
   },
   locateButton: {
     width: IS_COMPACT ? 38 : 42,
@@ -8506,7 +8632,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
-    elevation: 4
+    elevation: 4,
   },
   locateError: {
     marginTop: 8,
@@ -8517,49 +8643,49 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#F1D4A8",
     alignItems: "center",
-    maxWidth: 180
+    maxWidth: 180,
   },
   locateErrorText: {
     fontSize: 10,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    textAlign: "center"
+    textAlign: "center",
   },
   scannerOverlay: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.55)",
     justifyContent: "center",
-    padding: 20
+    padding: 20,
   },
   scannerCard: {
     backgroundColor: COLORS.white,
     borderRadius: 20,
     padding: 16,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   scannerHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 12
+    marginBottom: 12,
   },
   scannerTitle: {
     fontSize: 16,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   scannerSubtitle: {
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   scannerOfferTitle: {
     fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    marginTop: 4
+    marginTop: 4,
   },
   scannerClose: {
     width: 34,
@@ -8569,7 +8695,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   scannerFrame: {
     height: SCANNER_FRAME,
@@ -8577,10 +8703,10 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: COLORS.ink,
     justifyContent: "center",
-    alignItems: "center"
+    alignItems: "center",
   },
   scanner: {
-    ...StyleSheet.absoluteFillObject
+    ...StyleSheet.absoluteFillObject,
   },
   scannerFrameOutline: {
     position: "absolute",
@@ -8588,16 +8714,16 @@ const styles = StyleSheet.create({
     height: 200,
     borderRadius: 16,
     borderWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.8)"
+    borderColor: "rgba(255, 255, 255, 0.8)",
   },
   scannerBlocked: {
-    padding: 20
+    padding: 20,
   },
   scannerBlockedText: {
     fontSize: 12,
     color: COLORS.white,
     fontFamily: FONT_TEXT,
-    textAlign: "center"
+    textAlign: "center",
   },
   scannerStatus: {
     marginTop: 12,
@@ -8605,22 +8731,22 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 10,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   scannerStatusText: {
     fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
-    textAlign: "center"
+    textAlign: "center",
   },
   scannerActions: {
-    marginTop: 12
+    marginTop: 12,
   },
   reviewOverlay: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.55)",
     justifyContent: "center",
-    padding: 20
+    padding: 20,
   },
   reviewCard: {
     backgroundColor: COLORS.white,
@@ -8628,30 +8754,30 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    gap: 12
+    gap: 12,
   },
   reviewHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 12
+    gap: 12,
   },
   reviewTitle: {
     fontSize: 16,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   reviewSubtitle: {
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   reviewOffer: {
     fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    marginTop: 4
+    marginTop: 4,
   },
   reviewClose: {
     width: 34,
@@ -8661,23 +8787,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   reviewStars: {
     flexDirection: "row",
-    gap: 8
+    gap: 8,
   },
   reviewStarButton: {
-    padding: 4
+    padding: 4,
   },
   reviewInput: {
-    minHeight: 90
+    minHeight: 90,
   },
   detailOverlay: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.55)",
     justifyContent: "center",
-    padding: 20
+    padding: 20,
   },
   detailCard: {
     backgroundColor: COLORS.white,
@@ -8685,25 +8811,25 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    maxHeight: SCREEN_HEIGHT * 0.82
+    maxHeight: SCREEN_HEIGHT * 0.82,
   },
   detailHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     gap: 12,
-    marginBottom: 6
+    marginBottom: 6,
   },
   detailTitle: {
     fontSize: 16,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   detailSubtitle: {
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   detailClose: {
     width: 34,
@@ -8713,35 +8839,35 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   detailAddress: {
     fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
-    marginTop: 4
+    marginTop: 4,
   },
   detailHours: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   detailRatingRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    marginTop: 10
+    marginTop: 10,
   },
   detailRatingText: {
     fontSize: 12,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   detailRatingCount: {
     fontSize: 11,
     color: COLORS.muted,
-    fontFamily: FONT_TEXT
+    fontFamily: FONT_TEXT,
   },
   detailReviewButton: {
     marginTop: 12,
@@ -8751,62 +8877,146 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between"
+    justifyContent: "space-between",
   },
   detailReviewButtonText: {
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
-    fontSize: 12
+    fontSize: 12,
+  },
+  detailOffersSection: {
+    marginTop: 16,
+    gap: 12,
+  },
+  detailSectionTitle: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  detailOfferCard: {
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: COLORS.cream,
+  },
+  detailOfferTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  detailOfferText: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  detailOfferMetaRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 8,
+  },
+  detailOfferMeta: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  detailOfferImage: {
+    width: "100%",
+    height: 140,
+    borderRadius: 10,
+    marginBottom: 8,
+    resizeMode: "cover",
+  },
+  detailOfferTagRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginBottom: 6,
+  },
+  detailOfferTag: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: "#F4F6F9",
+  },
+  detailOfferTagText: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  detailOfferRedemption: {
+    marginTop: 10,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: COLORS.pine,
+    alignItems: "center",
+  },
+  detailOfferRedemptionText: {
+    fontSize: 12,
+    fontFamily: FONT_MEDIUM,
+    color: COLORS.white,
+  },
+  detailBody: {
+    marginTop: 12,
+  },
+  detailBodyContent: {
+    paddingBottom: 20,
+    gap: 16,
   },
   detailReviewList: {
     marginTop: 12,
-    gap: 10
+    gap: 10,
   },
   detailReviewCard: {
     borderWidth: 1,
     borderColor: COLORS.sand,
     borderRadius: 12,
     padding: 12,
-    backgroundColor: COLORS.mint
+    backgroundColor: COLORS.mint,
   },
   detailReviewHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 8
+    gap: 8,
   },
   detailReviewUser: {
     fontSize: 11,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   detailReviewTime: {
     fontSize: 10,
     color: COLORS.muted,
-    fontFamily: FONT_TEXT
+    fontFamily: FONT_TEXT,
   },
   detailReviewStars: {
     flexDirection: "row",
     gap: 4,
-    marginTop: 6
+    marginTop: 6,
   },
   detailReviewText: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 6,
-    lineHeight: 16
+    lineHeight: 16,
   },
   confettiOverlay: {
     ...StyleSheet.absoluteFillObject,
     borderRadius: 20,
-    overflow: "hidden"
+    overflow: "hidden",
   },
   confettiPiece: {
     position: "absolute",
     top: -24,
     borderRadius: 3,
-    opacity: 0.85
+    opacity: 0.85,
   },
   navPill: {
     flexGrow: 0,
@@ -8818,19 +9028,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: IS_COMPACT ? 12 : 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    position: "relative"
+    position: "relative",
   },
   navPillActive: {
     backgroundColor: COLORS.pine,
-    borderColor: COLORS.pine
+    borderColor: COLORS.pine,
   },
   navPillText: {
     fontSize: IS_COMPACT ? 12 : 13,
     color: COLORS.muted,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   navPillTextActive: {
-    color: COLORS.white
+    color: COLORS.white,
   },
   navPillBadge: {
     position: "absolute",
@@ -8844,26 +9054,26 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 4,
     borderWidth: 1,
-    borderColor: COLORS.white
+    borderColor: COLORS.white,
   },
   navPillBadgeText: {
     fontSize: 10,
     color: COLORS.white,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   primaryButton: {
     backgroundColor: COLORS.pine,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    borderRadius: 12
+    borderRadius: 12,
   },
   primaryButtonDisabled: {
-    backgroundColor: "#AEB9C7"
+    backgroundColor: "#AEB9C7",
   },
   primaryButtonText: {
     color: COLORS.white,
     fontFamily: FONT_DISPLAY,
-    fontSize: 13
+    fontSize: 13,
   },
   secondaryButton: {
     borderWidth: 1,
@@ -8871,22 +9081,22 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    borderRadius: 12
+    borderRadius: 12,
   },
   secondaryButtonDisabled: {
-    opacity: 0.6
+    opacity: 0.6,
   },
   secondaryButtonText: {
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    fontSize: 13
+    fontSize: 13,
   },
   offerUploadRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
     marginTop: 6,
-    marginBottom: 8
+    marginBottom: 8,
   },
   offerRemoveButton: {
     paddingHorizontal: 12,
@@ -8894,12 +9104,12 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: "#F4F6FA"
+    backgroundColor: "#F4F6FA",
   },
   offerRemoveButtonText: {
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
-    fontSize: 12
+    fontSize: 12,
   },
   offerUploadFrame: {
     width: "100%",
@@ -8910,15 +9120,15 @@ const styles = StyleSheet.create({
     backgroundColor: "#EFF3F8",
     overflow: "hidden",
     justifyContent: "center",
-    alignItems: "center"
+    alignItems: "center",
   },
   offerUploadPreview: {
     width: "100%",
-    height: "100%"
+    height: "100%",
   },
   offerUploadPlaceholder: {
     alignItems: "center",
-    paddingHorizontal: 16
+    paddingHorizontal: 16,
   },
   offerUploadHint: {
     marginTop: 6,
@@ -8926,7 +9136,7 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     textAlign: "center",
-    lineHeight: 16
+    lineHeight: 16,
   },
   sheet: {
     position: "absolute",
@@ -8945,39 +9155,39 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: -8 },
     elevation: 10,
     renderToHardwareTextureAndroid: true,
-    shouldRasterizeIOS: true
+    shouldRasterizeIOS: true,
   },
   sheetScroll: {
-    flex: 1
+    flex: 1,
   },
   sheetScrollContent: {
-    paddingBottom: 24
+    paddingBottom: 24,
   },
   sheetHandle: {
     alignItems: "center",
-    paddingBottom: 12
+    paddingBottom: 12,
   },
   handleBar: {
     width: 48,
     height: 5,
     borderRadius: 999,
     backgroundColor: COLORS.sand,
-    marginBottom: 8
+    marginBottom: 8,
   },
   sheetHint: {
     fontSize: IS_COMPACT ? 11 : 12,
     color: COLORS.muted,
-    fontFamily: FONT_TEXT
+    fontFamily: FONT_TEXT,
   },
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: IS_COMPACT ? 8 : 10,
-    marginBottom: 12
+    marginBottom: 12,
   },
   searchRowCompact: {
     flexDirection: "column",
-    alignItems: "stretch"
+    alignItems: "stretch",
   },
   searchInput: {
     flex: 1,
@@ -8989,7 +9199,7 @@ const styles = StyleSheet.create({
     fontSize: IS_COMPACT ? 13 : 14,
     color: COLORS.ink,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   filterButton: {
     backgroundColor: COLORS.white,
@@ -8997,12 +9207,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: IS_COMPACT ? 12 : 14,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   filterButtonText: {
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    fontSize: IS_COMPACT ? 12 : 13
+    fontSize: IS_COMPACT ? 12 : 13,
   },
   statCard: {
     flex: 1,
@@ -9011,24 +9221,24 @@ const styles = StyleSheet.create({
     padding: 12,
     marginHorizontal: 4,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   statValue: {
     fontSize: 17,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   statLabel: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   filterRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
-    marginBottom: 10
+    marginBottom: 10,
   },
   filterPill: {
     backgroundColor: COLORS.white,
@@ -9036,41 +9246,41 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   filterPillActive: {
     backgroundColor: COLORS.pine,
-    borderColor: COLORS.pine
+    borderColor: COLORS.pine,
   },
   filterText: {
     fontSize: 11,
     color: COLORS.muted,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   filterTextActive: {
-    color: COLORS.white
+    color: COLORS.white,
   },
   cardHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 8
+    marginBottom: 8,
   },
   sectionTitle: {
     fontSize: 16,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   sectionMeta: {
     fontSize: 12,
     color: COLORS.muted,
-    fontFamily: FONT_TEXT
+    fontFamily: FONT_TEXT,
   },
   analyticsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
-    marginBottom: 14
+    marginBottom: 14,
   },
   analyticsCard: {
     flexBasis: "48%",
@@ -9079,22 +9289,22 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 12,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   analyticsValue: {
     fontSize: 18,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   analyticsLabel: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   cardList: {
     paddingBottom: 16,
-    paddingRight: 8
+    paddingRight: 8,
   },
   cardShell: {
     width: CARD_WIDTH,
@@ -9103,7 +9313,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.6,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
-    elevation: 2
+    elevation: 2,
   },
   card: {
     backgroundColor: COLORS.white,
@@ -9112,20 +9322,20 @@ const styles = StyleSheet.create({
     minHeight: IS_SHORT ? 220 : 250,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    overflow: "hidden"
+    overflow: "hidden",
   },
   cardSelected: {
-    borderColor: COLORS.coral
+    borderColor: COLORS.coral,
   },
   cardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center"
+    alignItems: "center",
   },
   cardName: {
     fontSize: IS_COMPACT ? 14 : 15,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   cardBadge: {
     backgroundColor: COLORS.mint,
@@ -9133,20 +9343,20 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   cardBadgeOpen: {
     backgroundColor: "#E4F3E9",
-    borderColor: "#BFE1C9"
+    borderColor: "#BFE1C9",
   },
   cardBadgeClosed: {
     backgroundColor: "#F7ECEC",
-    borderColor: "#E5C0C0"
+    borderColor: "#E5C0C0",
   },
   cardBadgeText: {
     fontSize: 10,
     color: COLORS.pine,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   cardCategory: {
     fontSize: 11,
@@ -9154,31 +9364,31 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     marginTop: 8,
     letterSpacing: 0.8,
-    textTransform: "uppercase"
+    textTransform: "uppercase",
   },
   cardOfferTitle: {
     fontSize: IS_COMPACT ? 14 : 15,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    marginTop: 8
+    marginTop: 8,
   },
   cardOffer: {
     fontSize: IS_COMPACT ? 12 : 13,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     marginTop: 6,
-    lineHeight: 20
+    lineHeight: 20,
   },
   cardMetaRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginTop: 12
+    marginTop: 12,
   },
   cardMeta: {
     fontSize: IS_COMPACT ? 10 : 11,
     color: COLORS.muted,
-    fontFamily: FONT_TEXT
+    fontFamily: FONT_TEXT,
   },
   cardMedia: {
     position: "relative",
@@ -9192,7 +9402,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#EFF3F8",
     alignItems: "center",
     justifyContent: "center",
-    overflow: "hidden"
+    overflow: "hidden",
   },
   cardMediaOverlay: {
     position: "absolute",
@@ -9200,18 +9410,18 @@ const styles = StyleSheet.create({
     right: 8,
     flexDirection: "row",
     gap: 6,
-    zIndex: 2
+    zIndex: 2,
   },
   cardMediaImage: {
     width: "100%",
     height: "100%",
-    borderRadius: 12
+    borderRadius: 12,
   },
   cardMediaLabel: {
     marginTop: 6,
     fontSize: 11,
     color: COLORS.muted,
-    fontFamily: FONT_TEXT
+    fontFamily: FONT_TEXT,
   },
   tagPill: {
     backgroundColor: COLORS.mint,
@@ -9219,18 +9429,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   tagPillOverlay: {
-    backgroundColor: "rgba(255, 255, 255, 0.9)"
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
   },
   tagText: {
     fontSize: 10,
     color: COLORS.ink,
-    fontFamily: FONT_TEXT
+    fontFamily: FONT_TEXT,
   },
   tagTextOverlay: {
-    color: COLORS.ink
+    color: COLORS.ink,
   },
   emptyState: {
     backgroundColor: COLORS.white,
@@ -9238,34 +9448,34 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    marginBottom: 12
+    marginBottom: 12,
   },
   emptyTitle: {
     fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
-    marginBottom: 4
+    marginBottom: 4,
   },
   emptyCopy: {
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    lineHeight: 16
+    lineHeight: 16,
   },
   sectionBlock: {
-    marginBottom: 12
+    marginBottom: 12,
   },
   sectionTitleAlt: {
     fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
-    marginBottom: 4
+    marginBottom: 4,
   },
   sectionBody: {
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    lineHeight: 16
+    lineHeight: 16,
   },
   formCard: {
     backgroundColor: COLORS.white,
@@ -9273,7 +9483,7 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    marginBottom: 12
+    marginBottom: 12,
   },
   paymentCard: {
     marginTop: 12,
@@ -9281,46 +9491,46 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: COLORS.mint
+    backgroundColor: COLORS.mint,
   },
   paymentTitle: {
     fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    marginBottom: 4
+    marginBottom: 4,
   },
   paymentBody: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
-    marginBottom: 10
+    marginBottom: 10,
   },
   formHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 12
+    marginBottom: 12,
   },
   formHeaderTitle: {
     fontSize: 15,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   formHeaderMeta: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   formRow: {
     flexDirection: "row",
     gap: 10,
-    flexWrap: "wrap"
+    flexWrap: "wrap",
   },
   formField: {
     flex: 1,
-    minWidth: 120
+    minWidth: 120,
   },
   pendingNotice: {
     backgroundColor: "#FFF7E6",
@@ -9328,27 +9538,27 @@ const styles = StyleSheet.create({
     padding: 12,
     borderWidth: 1,
     borderColor: "#F1D4A8",
-    marginBottom: 12
+    marginBottom: 12,
   },
   pendingNoticeTitle: {
     fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    marginBottom: 4
+    marginBottom: 4,
   },
   pendingNoticeBody: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
-    marginBottom: 8
+    marginBottom: 8,
   },
   pendingList: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
     marginTop: 6,
-    marginBottom: 6
+    marginBottom: 6,
   },
   pendingPill: {
     backgroundColor: COLORS.white,
@@ -9356,12 +9566,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderWidth: 1,
-    borderColor: "#E5D1B2"
+    borderColor: "#E5D1B2",
   },
   pendingPillText: {
     fontSize: 10,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   profileCard: {
     backgroundColor: COLORS.white,
@@ -9369,13 +9579,13 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    marginBottom: 12
+    marginBottom: 12,
   },
   profileHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12
+    gap: 12,
   },
   profileAvatar: {
     width: 52,
@@ -9385,26 +9595,26 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   profileInitials: {
     fontSize: 16,
     color: COLORS.pine,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   profileHeaderText: {
-    flex: 1
+    flex: 1,
   },
   profileName: {
     fontSize: 15,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   profileEmail: {
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   profileRolePill: {
     backgroundColor: COLORS.mint,
@@ -9412,21 +9622,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   profileRoleText: {
     fontSize: 11,
     color: COLORS.pine,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   roleRow: {
     marginTop: 8,
-    marginBottom: 12
+    marginBottom: 12,
   },
   rolePillRow: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 8
+    marginTop: 8,
   },
   rolePill: {
     paddingHorizontal: 12,
@@ -9434,19 +9644,19 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: COLORS.white
+    backgroundColor: COLORS.white,
   },
   rolePillActive: {
     backgroundColor: COLORS.pine,
-    borderColor: COLORS.pine
+    borderColor: COLORS.pine,
   },
   rolePillText: {
     fontSize: 12,
     color: COLORS.muted,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   rolePillTextActive: {
-    color: COLORS.white
+    color: COLORS.white,
   },
   invitePanel: {
     backgroundColor: COLORS.white,
@@ -9455,105 +9665,15 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
     padding: 14,
     gap: 10,
-    marginBottom: 12
-  },
-  inviteCodeBox: {
-    backgroundColor: COLORS.mint,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.sand,
-    padding: 12
-  },
-  inviteCodeLabel: {
-    fontSize: 11,
-    color: COLORS.muted,
-    fontFamily: FONT_MEDIUM,
-    textTransform: "uppercase",
-    letterSpacing: 0.6
-  },
-  inviteCodeText: {
-    fontSize: 16,
-    color: COLORS.ink,
-    fontFamily: FONT_BOLD
-  },
-  inviteCodeRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    marginTop: 6
-  },
-  inviteCopyButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: COLORS.sand,
-    backgroundColor: COLORS.white
-  },
-  inviteCopyText: {
-    fontSize: 11,
-    color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
-  },
-  inviteList: {
-    backgroundColor: COLORS.white,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.sand,
-    padding: 12,
-    gap: 10,
-    marginBottom: 16
-  },
-  inviteRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingVertical: 6
-  },
-  inviteRowCode: {
-    fontSize: 12,
-    color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
-  },
-  inviteRowMeta: {
-    fontSize: 11,
-    color: COLORS.muted,
-    fontFamily: FONT_TEXT,
-    marginTop: 4
-  },
-  inviteStatus: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderWidth: 1
-  },
-  inviteStatusActive: {
-    backgroundColor: "#E8F3EC",
-    borderColor: "#9AC9AE"
-  },
-  inviteStatusUsed: {
-    backgroundColor: "#F4F6F9",
-    borderColor: "#D7DEE8"
-  },
-  inviteStatusText: {
-    fontSize: 10,
-    fontFamily: FONT_MEDIUM,
-    color: COLORS.pine
-  },
-  inviteStatusTextUsed: {
-    color: COLORS.muted
+    marginBottom: 12,
   },
   formSuccess: {
     fontSize: 12,
     color: COLORS.pine,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   supervisorList: {
-    gap: 12
+    gap: 12,
   },
   supervisorRow: {
     flexDirection: "row",
@@ -9563,28 +9683,28 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     paddingHorizontal: 12,
-    paddingVertical: 10
+    paddingVertical: 10,
   },
   supervisorMeta: {
     flex: 1,
-    paddingRight: 12
+    paddingRight: 12,
   },
   supervisorName: {
     fontSize: 12,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   supervisorDetails: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 4
+    marginTop: 4,
   },
   supervisorRole: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   supervisorAction: {
     paddingHorizontal: 12,
@@ -9592,17 +9712,17 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: COLORS.pine,
-    backgroundColor: COLORS.pine
+    backgroundColor: COLORS.pine,
   },
   supervisorActionText: {
     fontSize: 11,
     color: COLORS.white,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   supervisorActionsRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8
+    gap: 8,
   },
   supervisorActionAlt: {
     paddingHorizontal: 12,
@@ -9610,12 +9730,12 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: COLORS.white
+    backgroundColor: COLORS.white,
   },
   supervisorActionTextAlt: {
     fontSize: 11,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   supervisorBadgeAlt: {
     paddingHorizontal: 12,
@@ -9623,7 +9743,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: COLORS.mint
+    backgroundColor: COLORS.mint,
   },
   supervisorBadge: {
     paddingHorizontal: 12,
@@ -9631,18 +9751,18 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: COLORS.mint
+    backgroundColor: COLORS.mint,
   },
   supervisorBadgeText: {
     fontSize: 11,
     color: COLORS.pine,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   profileMetaRow: {
     flexDirection: "row",
     gap: 10,
     marginTop: 6,
-    marginBottom: 6
+    marginBottom: 6,
   },
   profileMetaCard: {
     flex: 1,
@@ -9651,26 +9771,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   profileMetaLabel: {
     fontSize: 10,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     textTransform: "uppercase",
-    letterSpacing: 0.6
+    letterSpacing: 0.6,
   },
   profileMetaValue: {
     fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    marginTop: 4
+    marginTop: 4,
   },
   formLabel: {
     fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    marginBottom: 6
+    marginBottom: 6,
   },
   formInput: {
     backgroundColor: COLORS.mint,
@@ -9682,14 +9802,14 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    marginBottom: 12
+    marginBottom: 12,
   },
   formTextarea: {
-    minHeight: 88
+    minHeight: 88,
   },
   formInputDisabled: {
     backgroundColor: "#EEF2F7",
-    color: "#94A3B8"
+    color: "#94A3B8",
   },
   editGate: {
     backgroundColor: COLORS.mint,
@@ -9698,13 +9818,13 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
     padding: 12,
     marginBottom: 14,
-    gap: 10
+    gap: 10,
   },
   editGateText: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    lineHeight: 16
+    lineHeight: 16,
   },
   editGateActive: {
     backgroundColor: "#E8F3EC",
@@ -9712,19 +9832,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#9AC9AE",
     padding: 12,
-    marginBottom: 14
+    marginBottom: 14,
   },
   editGateActiveText: {
     fontSize: 11,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    lineHeight: 16
+    lineHeight: 16,
   },
   formHint: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginBottom: 12
+    marginBottom: 12,
   },
   notificationPanel: {
     backgroundColor: COLORS.white,
@@ -9733,23 +9853,23 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
     padding: 14,
     gap: 8,
-    marginBottom: 16
+    marginBottom: 16,
   },
   notificationRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between"
+    justifyContent: "space-between",
   },
   notificationLabel: {
     fontSize: 12,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   notificationHelp: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 8
+    marginTop: 8,
   },
   remoteNotice: {
     backgroundColor: COLORS.mint,
@@ -9758,13 +9878,13 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    marginBottom: 12
+    marginBottom: 12,
   },
   remoteNoticeText: {
     fontSize: 11,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    textAlign: "center"
+    textAlign: "center",
   },
   offerList: {
     backgroundColor: COLORS.white,
@@ -9773,11 +9893,11 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
     padding: 12,
     gap: 12,
-    marginBottom: 16
+    marginBottom: 16,
   },
   historyList: {
     gap: 12,
-    marginBottom: 12
+    marginBottom: 12,
   },
   historyGroupCard: {
     backgroundColor: COLORS.white,
@@ -9785,33 +9905,33 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     padding: 12,
-    gap: 6
+    gap: 6,
   },
   historyGroupHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 10
+    gap: 10,
   },
   historyGroupMeta: {
-    flex: 1
+    flex: 1,
   },
   historyGroupTitle: {
     flex: 1,
     fontSize: 13,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   historyGroupSub: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 4
+    marginTop: 4,
   },
   historyGroupActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8
+    gap: 8,
   },
   historyReviewBadge: {
     minWidth: 18,
@@ -9820,16 +9940,16 @@ const styles = StyleSheet.create({
     backgroundColor: "#D62246",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 4
+    paddingHorizontal: 4,
   },
   historyReviewBadgeText: {
     fontSize: 10,
     color: COLORS.white,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   historyEntries: {
     marginTop: 10,
-    gap: 10
+    gap: 10,
   },
   historyReviewButton: {
     flexDirection: "row",
@@ -9839,49 +9959,49 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: "#FFF7E6"
+    backgroundColor: "#FFF7E6",
   },
   historyReviewText: {
     fontSize: 12,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   historyEntry: {
     padding: 10,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: COLORS.mint
+    backgroundColor: COLORS.mint,
   },
   historyEntryRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10
+    gap: 10,
   },
   historyEntryTitle: {
     flex: 1,
     fontSize: 12,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   historyEntryTime: {
     fontSize: 10,
     color: COLORS.muted,
-    fontFamily: FONT_TEXT
+    fontFamily: FONT_TEXT,
   },
   historyEntryPending: {
     fontSize: 10,
     color: "#B42318",
     fontFamily: FONT_MEDIUM,
-    marginTop: 4
+    marginTop: 4,
   },
   historyEntryDescription: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 6,
-    lineHeight: 16
+    lineHeight: 16,
   },
   offerRow: {
     flexDirection: "row",
@@ -9891,32 +10011,32 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    padding: 12
+    padding: 12,
   },
   offerMeta: {
-    flex: 1
+    flex: 1,
   },
   offerTitle: {
     fontSize: 13,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   offerDescription: {
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 6,
-    lineHeight: 16
+    lineHeight: 16,
   },
   offerStatus: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 8
+    marginTop: 8,
   },
   offerActions: {
     alignItems: "flex-end",
-    gap: 8
+    gap: 8,
   },
   offerAction: {
     paddingHorizontal: 12,
@@ -9924,12 +10044,12 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: COLORS.pine,
-    backgroundColor: COLORS.pine
+    backgroundColor: COLORS.pine,
   },
   offerActionText: {
     fontSize: 11,
     color: COLORS.white,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   offerActionGhost: {
     paddingHorizontal: 12,
@@ -9937,18 +10057,18 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: COLORS.white
+    backgroundColor: COLORS.white,
   },
   offerActionTextGhost: {
     fontSize: 11,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   formError: {
     fontSize: 11,
     color: "#B42318",
     fontFamily: FONT_TEXT,
-    marginBottom: 12
+    marginBottom: 12,
   },
   suggestionList: {
     backgroundColor: COLORS.white,
@@ -9956,36 +10076,36 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     marginBottom: 12,
-    overflow: "hidden"
+    overflow: "hidden",
   },
   suggestionItem: {
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.sand
+    borderBottomColor: COLORS.sand,
   },
   suggestionTitle: {
     fontSize: 12,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   suggestionSubtitle: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   formActions: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
-    marginTop: 12
+    marginTop: 12,
   },
   categoryRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
-    marginBottom: 12
+    marginBottom: 12,
   },
   categoryChip: {
     backgroundColor: COLORS.white,
@@ -9993,32 +10113,32 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
     borderRadius: 12,
     paddingVertical: 6,
-    paddingHorizontal: 10
+    paddingHorizontal: 10,
   },
   categoryChipDisabled: {
     backgroundColor: "#EEF2F7",
-    borderColor: "#D6DEE8"
+    borderColor: "#D6DEE8",
   },
   categoryChipActive: {
     backgroundColor: COLORS.pine,
-    borderColor: COLORS.pine
+    borderColor: COLORS.pine,
   },
   categoryChipText: {
     fontSize: 11,
     color: COLORS.muted,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   categoryChipTextDisabled: {
-    color: "#9AA7B8"
+    color: "#9AA7B8",
   },
   categoryChipTextActive: {
-    color: COLORS.white
+    color: COLORS.white,
   },
   planRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
-    marginBottom: 12
+    marginBottom: 12,
   },
   planOption: {
     width: "48%",
@@ -10026,76 +10146,76 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 12,
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   planOptionActive: {
     backgroundColor: COLORS.pine,
-    borderColor: COLORS.pine
+    borderColor: COLORS.pine,
   },
   planOptionDisabled: {
     backgroundColor: "#EEF2F7",
-    borderColor: "#D6DEE8"
+    borderColor: "#D6DEE8",
   },
   planOptionName: {
     fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    marginBottom: 4
+    marginBottom: 4,
   },
   planOptionNameActive: {
-    color: COLORS.white
+    color: COLORS.white,
   },
   planOptionPrice: {
     fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_BOLD,
-    marginBottom: 6
+    marginBottom: 6,
   },
   planOptionPriceActive: {
-    color: COLORS.white
+    color: COLORS.white,
   },
   planOptionDesc: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    lineHeight: 15
+    lineHeight: 15,
   },
   planOptionDescActive: {
-    color: "rgba(255, 255, 255, 0.8)"
+    color: "rgba(255, 255, 255, 0.8)",
   },
   planOptionTextDisabled: {
-    color: "#9AA7B8"
+    color: "#9AA7B8",
   },
   planOptionBadge: {
     marginTop: 8,
     fontSize: 10,
     color: COLORS.muted,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   switchRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 12
+    marginBottom: 12,
   },
   alertBox: {
     padding: 12,
     borderRadius: 12,
     borderWidth: 1,
-    marginBottom: 12
+    marginBottom: 12,
   },
   alertSuccess: {
     backgroundColor: "#E8F3EC",
-    borderColor: "#9AC9AE"
+    borderColor: "#9AC9AE",
   },
   alertError: {
     backgroundColor: "#F8E7E7",
-    borderColor: "#E3A2A2"
+    borderColor: "#E3A2A2",
   },
   alertText: {
     fontSize: 12,
     color: COLORS.ink,
-    fontFamily: FONT_TEXT
+    fontFamily: FONT_TEXT,
   },
   submissionCard: {
     backgroundColor: COLORS.white,
@@ -10106,42 +10226,42 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center"
+    alignItems: "center",
   },
   submissionTitle: {
     fontSize: 13,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   submissionMeta: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   statusPill: {
     borderRadius: 12,
     paddingHorizontal: 10,
-    paddingVertical: 4
+    paddingVertical: 4,
   },
   statusPending: {
-    backgroundColor: "#F2E8D5"
+    backgroundColor: "#F2E8D5",
   },
   statusApproved: {
-    backgroundColor: "#DDEBE2"
+    backgroundColor: "#DDEBE2",
   },
   statusRejected: {
-    backgroundColor: "#F5DDDD"
+    backgroundColor: "#F5DDDD",
   },
   statusText: {
     fontSize: 11,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   adminSummary: {
     flexDirection: "row",
     gap: 8,
-    marginBottom: 12
+    marginBottom: 12,
   },
   adminCard: {
     backgroundColor: COLORS.white,
@@ -10149,31 +10269,31 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    marginBottom: 12
+    marginBottom: 12,
   },
   adminHeader: {
-    marginBottom: 6
+    marginBottom: 6,
   },
   adminTitle: {
     fontSize: 14,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   adminMeta: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   adminOffer: {
     fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
-    marginBottom: 10
+    marginBottom: 10,
   },
   adminActions: {
     flexDirection: "row",
-    gap: 8
+    gap: 8,
   },
   qrCard: {
     backgroundColor: COLORS.white,
@@ -10181,42 +10301,42 @@ const styles = StyleSheet.create({
     padding: 14,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    marginBottom: 12
+    marginBottom: 12,
   },
   qrHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center"
+    alignItems: "center",
   },
   qrHeaderText: {
     flex: 1,
-    paddingRight: 12
+    paddingRight: 12,
   },
   qrTitle: {
     fontSize: 14,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY
+    fontFamily: FONT_DISPLAY,
   },
   qrMeta: {
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 2
+    marginTop: 2,
   },
   qrBody: {
     marginTop: 12,
-    alignItems: "center"
+    alignItems: "center",
   },
   qrCodeWrap: {
     padding: 12,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: COLORS.white
+    backgroundColor: COLORS.white,
   },
   qrImage: {
     width: QR_SIZE,
-    height: QR_SIZE
+    height: QR_SIZE,
   },
   qrFallback: {
     width: QR_SIZE,
@@ -10226,32 +10346,32 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: COLORS.mint
+    backgroundColor: COLORS.mint,
   },
   qrFallbackText: {
     fontSize: 11,
     color: COLORS.muted,
-    fontFamily: FONT_TEXT
+    fontFamily: FONT_TEXT,
   },
   qrCodeLabel: {
     marginTop: 10,
     fontSize: 11,
     color: COLORS.muted,
-    fontFamily: FONT_TEXT
+    fontFamily: FONT_TEXT,
   },
   qrCodeNote: {
     marginTop: 6,
     fontSize: 10,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    textAlign: "center"
+    textAlign: "center",
   },
   adminApprove: {
     flex: 1,
     backgroundColor: COLORS.pine,
     paddingVertical: 10,
     borderRadius: 12,
-    alignItems: "center"
+    alignItems: "center",
   },
   adminReject: {
     flex: 1,
@@ -10260,7 +10380,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    alignItems: "center"
+    alignItems: "center",
   },
   adminDelete: {
     flex: 1,
@@ -10269,15 +10389,15 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#F5B3B3",
-    alignItems: "center"
+    alignItems: "center",
   },
   adminActionText: {
     fontSize: 12,
     color: COLORS.white,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   adminActionTextDark: {
-    color: COLORS.ink
+    color: COLORS.ink,
   },
   planStrip: {
     marginTop: 4,
@@ -10288,50 +10408,50 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     borderWidth: 1,
-    borderColor: COLORS.sand
+    borderColor: COLORS.sand,
   },
   planStripCompact: {
     flexDirection: "column",
     alignItems: "flex-start",
-    gap: 10
+    gap: 10,
   },
   planTextWrap: {
     flex: 1,
-    paddingRight: 10
+    paddingRight: 10,
   },
   planTitle: {
     color: COLORS.ink,
     fontSize: IS_COMPACT ? 12 : 13,
     fontFamily: FONT_MEDIUM,
-    marginBottom: 4
+    marginBottom: 4,
   },
   planCopy: {
     color: COLORS.muted,
     fontSize: IS_COMPACT ? 11 : 12,
     fontFamily: FONT_TEXT,
-    lineHeight: 16
+    lineHeight: 16,
   },
   planButton: {
     backgroundColor: COLORS.pine,
     paddingHorizontal: IS_COMPACT ? 12 : 14,
     paddingVertical: IS_COMPACT ? 8 : 10,
-    borderRadius: 12
+    borderRadius: 12,
   },
   planButtonCompact: {
     alignSelf: "stretch",
-    alignItems: "center"
+    alignItems: "center",
   },
   planButtonText: {
     color: COLORS.white,
     fontSize: IS_COMPACT ? 11 : 12,
-    fontFamily: FONT_MEDIUM
+    fontFamily: FONT_MEDIUM,
   },
   markerWrap: {
     width: 52,
     height: 62,
     alignItems: "center",
     justifyContent: "flex-start",
-    overflow: "visible"
+    overflow: "visible",
   },
   markerIcon: {
     width: 36,
@@ -10340,22 +10460,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
-    borderColor: "transparent"
+    borderColor: "transparent",
   },
   markerIconSelected: {
-    borderColor: COLORS.white
+    borderColor: COLORS.white,
   },
   markerPointerWrap: {
     width: 16,
     height: 16,
     alignItems: "center",
     justifyContent: "center",
-    marginTop: -4
+    marginTop: -4,
   },
   markerPointer: {
     width: 10,
     height: 10,
     borderRadius: 2,
-    transform: [{ rotate: "45deg" }]
-  }
+    transform: [{ rotate: "45deg" }],
+  },
 });

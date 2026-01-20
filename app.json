@@ -5,6 +5,15 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "backgroundColor": "#F6F2E9",
+    "icon": "./assets/logo/wello-logo.jpeg",
+    "notification": {
+      "icon": "./assets/logo/wello-logo.jpeg"
+    },
+    "splash": {
+      "image": "./assets/logo/wello-logo.jpeg",
+      "resizeMode": "contain",
+      "backgroundColor": "#F6F2E9"
+    },
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -25,6 +34,10 @@
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.RECORD_AUDIO"
       ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/logo/wello-logo.jpeg",
+        "backgroundColor": "#F6F2E9"
+      },
       "package": "com.aihamh1.wello"
     },
     "plugins": [
