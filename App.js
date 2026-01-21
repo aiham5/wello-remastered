@@ -6,6 +6,7 @@ import React, {
   useState,
 } from "react";
 import {
+  AppState,
   Animated,
   Dimensions,
   FlatList,
@@ -15,6 +16,7 @@ import {
   Modal,
   PanResponder,
   Platform,
+  RefreshControl,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -95,6 +97,7 @@ const TIME_SELECT_MAX = Math.min(160, Math.round(SCREEN_WIDTH * 0.42));
 const TIME_SELECT_MIN = IS_COMPACT ? 80 : 96;
 const TIME_MERIDIEM_WIDTH = IS_COMPACT ? 68 : 80;
 const OFFERS_REFRESH_INTERVAL_MS = 1000 * 60 * 2;
+const REFRESH_MIN_INTERVAL_MS = 1000 * 15;
 const TIME_OPTIONS = [
   "12:00",
   "12:30",
@@ -307,7 +310,7 @@ const BUSINESSES = [
     qrCode: "WELLO-4-K3T8Q1B6",
     distance: "1.4 mi",
     subscription: "Starter $50/mo",
-    rating: 4.7,
+    rating: 4.9,
     tags: ["gel", "walk-in", "new"],
     isOpen: false,
     hours: "10:00 AM - 7:00 PM",
@@ -480,7 +483,7 @@ const mapSupabaseBusiness = (row, index) => {
       row.subscription_plan,
       row.subscription_price_cents,
     ),
-    rating: 4.7,
+    rating: Number.isFinite(Number(row.rating)) ? Number(row.rating) : null,
     tags: Array.isArray(row.tags) && row.tags.length ? row.tags : ["local"],
     isOpen: row.is_open ?? true,
     hours: row.hours || "Hours available upon request",
@@ -531,6 +534,14 @@ const mapSupabaseReview = (row) => ({
   createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
 });
 
+const computeAverageRating = (reviews) => {
+  const values = (reviews || [])
+    .map((review) => Number(review.rating))
+    .filter((rating) => Number.isFinite(rating) && rating > 0);
+  if (!values.length) return null;
+  return values.reduce((sum, rating) => sum + rating, 0) / values.length;
+};
+
 const formatDisplayName = (email) => {
   if (!email) return "Wello Member";
   const fallbackName = email.split("@")[0] || "Wello Member";
@@ -563,14 +574,18 @@ const formatBusinessHours = (startTime, startMeridiem, endTime, endMeridiem) =>
 
 const parseBusinessHours = (value) => {
   if (!value) return null;
-  const parts = String(value).split(" - ");
+  const normalized = String(value).replace(/[–—]/g, "-");
+  const parts = normalized
+    .split("-")
+    .map((part) => part.trim())
+    .filter(Boolean);
   if (parts.length !== 2) return null;
   const parsePart = (part) => {
-    const [time, meridiem] = part.trim().split(" ");
-    if (!time) return null;
+    const match = part.match(/^(\d{1,2}(?::\d{2})?)\s*(AM|PM)?$/i);
+    if (!match) return null;
     return {
-      time,
-      meridiem: meridiem || "AM",
+      time: match[1],
+      meridiem: (match[2] || "AM").toUpperCase(),
     };
   };
   const start = parsePart(parts[0]);
@@ -791,8 +806,8 @@ const CATEGORY_CONFIG = {
   drink: {
     label: "DR",
     color: "#3F6DF6",
-    display: "Refreshment Studio",
-    icon: "cup",
+    display: "Drinks",
+    icon: "water",
   },
   restaurant: {
     label: "FO",
@@ -804,7 +819,7 @@ const CATEGORY_CONFIG = {
     label: "BA",
     color: "#0F172A",
     display: "Barbershop / Salon",
-    icon: "scissors",
+    icon: "cut",
   },
   activity: {
     label: "AC",
@@ -816,7 +831,7 @@ const CATEGORY_CONFIG = {
     label: "AU",
     color: "#196A55",
     display: "Carwash / Auto Cosmetic",
-    icon: "car-wash",
+    icon: "car",
   },
   default: {
     label: "LO",
@@ -948,9 +963,7 @@ function getPendingEditLabel(field) {
 function OfferCard({ item, onPress, onRedeem, selected }) {
   const category = getCategoryConfig(item.categoryKey);
   const ratingLabel =
-    item.rating && Number.isFinite(item.rating)
-      ? item.rating.toFixed(1)
-      : "New";
+    item.rating && Number.isFinite(item.rating) ? item.rating.toFixed(1) : null;
   const offerTitle = item.offerTitle || item.offer;
   const offerDescription = item.offerDescription || "";
   const hoursValue = item.hours || item.business?.hours || "";
@@ -1007,7 +1020,9 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
         </TouchableOpacity>
         <View style={styles.cardMetaRow}>
           <Text style={styles.cardMeta}>{item.distance || "--"}</Text>
-          <Text style={styles.cardMeta}>Rating {ratingLabel}</Text>
+          <Text style={styles.cardMeta}>
+            {ratingLabel ? `Rating ${ratingLabel}` : "Not rated yet"}
+          </Text>
         </View>
         <View style={styles.cardMedia}>
           {tags.length > 0 && (
@@ -1147,7 +1162,10 @@ export default function App() {
   const [expoPushToken, setExpoPushToken] = useState(null);
   const [tokenError, setTokenError] = useState(null);
   const geocodeCacheRef = useRef(new Map());
+  const hydrateBusinessCoordinatesRef = useRef(null);
   const lastLocationHashRef = useRef("");
+  const lastRefreshRef = useRef(0);
+  const refreshInFlightRef = useRef(false);
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [isEditingBusiness, setIsEditingBusiness] = useState(false);
   const [businessSaveBusy, setBusinessSaveBusy] = useState(false);
@@ -1159,6 +1177,7 @@ export default function App() {
     loading: false,
     error: null,
   });
+  const [refreshing, setRefreshing] = useState(false);
   const [pendingOfferStatus, setPendingOfferStatus] = useState({
     loading: false,
     error: null,
@@ -1479,11 +1498,55 @@ export default function App() {
     return Component;
   }, []);
 
-  useEffect(() => {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
-    let isMounted = true;
-    const loadRemoteBusinesses = async () => {
-      setRemoteStatus({ loading: true, error: null });
+  const mergeBusinesses = useCallback((nextBusinesses) => {
+    setBusinesses((prev) => {
+      const map = new Map(prev.map((business) => [business.id, business]));
+      nextBusinesses.forEach((business) => {
+        const existing = map.get(business.id);
+        if (existing) {
+          const nextRating = Number.isFinite(business.rating)
+            ? business.rating
+            : Number.isFinite(existing.rating)
+              ? existing.rating
+              : null;
+          const nextDistance =
+            business.distance && business.distance !== "--"
+              ? business.distance
+              : existing.distance || business.distance;
+          map.set(business.id, {
+            ...existing,
+            ...business,
+            rating: nextRating,
+            distance: nextDistance,
+            coordinate: business.hasCoordinates
+              ? business.coordinate
+              : existing.coordinate || business.coordinate,
+            hasCoordinates: business.hasCoordinates || existing.hasCoordinates,
+          });
+        } else {
+          map.set(business.id, business);
+        }
+      });
+      return Array.from(map.values()).sort(
+        (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
+      );
+    });
+  }, []);
+
+  const loadRemoteBusinesses = useCallback(
+    async ({ silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        if (!silent) {
+          setRemoteStatus({
+            loading: false,
+            error: "Supabase is not configured for businesses yet.",
+          });
+        }
+        return;
+      }
+      if (!silent) {
+        setRemoteStatus({ loading: true, error: null });
+      }
       const { data, error } = await supabase
         .from("businesses")
         .select(
@@ -1514,28 +1577,33 @@ export default function App() {
         )
         .order("created_at", { ascending: false });
 
-      if (!isMounted) return;
       if (error) {
-        setRemoteStatus({
-          loading: false,
-          error: error.message || "Unable to load businesses.",
-        });
+        if (!silent) {
+          setRemoteStatus({
+            loading: false,
+            error: error.message || "Unable to load businesses.",
+          });
+        }
         return;
       }
 
-      if (Array.isArray(data) && data.length) {
-        const mapped = data.map(mapSupabaseBusiness);
-        setBusinesses(mapped);
-        hydrateBusinessCoordinates(mapped);
+      const mapped = Array.isArray(data) ? data.map(mapSupabaseBusiness) : [];
+      if (mapped.length) {
+        mergeBusinesses(mapped);
+        hydrateBusinessCoordinatesRef.current?.(mapped);
       }
-      setRemoteStatus({ loading: false, error: null });
-    };
+      if (!silent) {
+        setRemoteStatus({ loading: false, error: null });
+      }
+    },
+    [mergeBusinesses],
+  );
 
+  useEffect(() => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
     loadRemoteBusinesses();
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+    loadBusinessRatings({ silent: true });
+  }, [loadRemoteBusinesses, loadBusinessRatings]);
 
   useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
@@ -1545,13 +1613,21 @@ export default function App() {
   useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
     const intervalId = setInterval(() => {
+      loadRemoteBusinesses({ silent: true });
       loadRemoteOffers({ silent: true });
+      loadBusinessRatings({ silent: true });
       if (ownerBusiness?.id) {
         loadOwnerOffers(ownerBusiness.id);
       }
     }, OFFERS_REFRESH_INTERVAL_MS);
     return () => clearInterval(intervalId);
-  }, [loadRemoteOffers, loadOwnerOffers, ownerBusiness?.id]);
+  }, [
+    loadRemoteBusinesses,
+    loadRemoteOffers,
+    loadBusinessRatings,
+    loadOwnerOffers,
+    ownerBusiness?.id,
+  ]);
 
   useEffect(() => {
     if (!ownerBusiness?.id) return;
@@ -1791,7 +1867,7 @@ export default function App() {
     );
     return publicOffers
       .map((offer) => {
-        const business = offer.business || businessMap.get(offer.businessId);
+        const business = businessMap.get(offer.businessId) || offer.business;
         if (!business) return null;
         const categoryKey =
           business.categoryKey || business.category_key || "restaurant";
@@ -1831,7 +1907,7 @@ export default function App() {
               business.subscription_price_cents,
             ) ||
             "Starter $50/mo",
-          rating: business.rating || 4.7,
+          rating: Number.isFinite(business.rating) ? business.rating : null,
           tags: business.tags || [],
           imageUrl: offer.imageUrl,
           searchText,
@@ -2892,6 +2968,18 @@ export default function App() {
   const handleRedeemOffer = async (card) => {
     const business = resolveBusinessFromCard(card);
     if (!business) return;
+    if (!isSignedIn) {
+      if (businessDetailOpen) {
+        setBusinessDetailOpen(false);
+      }
+      setSignInError("Sign in to redeem offers.");
+      setAuthView("signin");
+      openSheet("profile");
+      return;
+    }
+    if (businessDetailOpen) {
+      setBusinessDetailOpen(false);
+    }
     setScannerBusiness(business);
     setScannerOffer(card);
     setScannerStatus("checking");
@@ -2998,8 +3086,8 @@ export default function App() {
     setReviewBusy(false);
     closeReviewModal();
     loadUserReviews({ silent: true });
-    if (businessDetail?.id) {
-      loadBusinessReviews(businessDetail.id, { silent: true });
+    if (entry.businessId) {
+      loadBusinessReviews(entry.businessId, { silent: true });
     }
   };
 
@@ -3218,6 +3306,7 @@ export default function App() {
     },
     [geocodeAddress],
   );
+  hydrateBusinessCoordinatesRef.current = hydrateBusinessCoordinates;
 
   const handleCardPress = async (card) => {
     const business = resolveBusinessFromCard(card);
@@ -4028,6 +4117,44 @@ export default function App() {
     [mergeOffers],
   );
 
+  const loadBusinessRatings = useCallback(async ({ silent } = {}) => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    const { data, error } = await supabase
+      .from("reviews")
+      .select("business_id, rating");
+    if (error) {
+      if (!silent) {
+        console.warn("Wello ratings load failed:", error.message || error);
+      }
+      return;
+    }
+    const totals = new Map();
+    (data || []).forEach((row) => {
+      if (!row?.business_id) return;
+      const rating = Number(row.rating);
+      if (!Number.isFinite(rating) || rating <= 0) return;
+      const current = totals.get(row.business_id) || { sum: 0, count: 0 };
+      current.sum += rating;
+      current.count += 1;
+      totals.set(row.business_id, current);
+    });
+    setBusinesses((prev) =>
+      prev.map((business) => {
+        const stat = totals.get(business.id);
+        if (!stat) return business;
+        const average = stat.sum / stat.count;
+        return { ...business, rating: average };
+      }),
+    );
+    setBusinessDetail((prev) => {
+      if (!prev?.id) return prev;
+      const stat = totals.get(prev.id);
+      if (!stat) return prev;
+      const average = stat.sum / stat.count;
+      return { ...prev, rating: average };
+    });
+  }, []);
+
   const loadOwnerOffers = useCallback(
     async (businessId) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !businessId) return;
@@ -4055,6 +4182,55 @@ export default function App() {
     },
     [mergeOffers],
   );
+
+  const refreshAll = useCallback(
+    async ({ silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+      const now = Date.now();
+      if (refreshInFlightRef.current) return;
+      if (now - lastRefreshRef.current < REFRESH_MIN_INTERVAL_MS) return;
+      refreshInFlightRef.current = true;
+      lastRefreshRef.current = now;
+      if (!silent) {
+        setRefreshing(true);
+      }
+      try {
+        await Promise.all([
+          loadRemoteBusinesses({ silent: true }),
+          loadRemoteOffers({ silent: true }),
+        ]);
+        await loadBusinessRatings({ silent: true });
+        if (ownerBusiness?.id) {
+          await loadOwnerOffers(ownerBusiness.id);
+        }
+      } finally {
+        refreshInFlightRef.current = false;
+        if (!silent) {
+          setRefreshing(false);
+        }
+      }
+    },
+    [
+      loadRemoteBusinesses,
+      loadRemoteOffers,
+      loadBusinessRatings,
+      loadOwnerOffers,
+      ownerBusiness?.id,
+    ],
+  );
+
+  const handleRefresh = useCallback(() => {
+    refreshAll({ silent: false });
+  }, [refreshAll]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        refreshAll({ silent: true });
+      }
+    });
+    return () => subscription.remove();
+  }, [refreshAll]);
 
   const loadPendingOffers = useCallback(async () => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -4616,7 +4792,21 @@ export default function App() {
         }
         return;
       }
-      setBusinessDetailReviews((data || []).map(mapSupabaseReview));
+      const mapped = (data || []).map(mapSupabaseReview);
+      const averageRating = computeAverageRating(mapped);
+      setBusinessDetailReviews(mapped);
+      setBusinesses((prev) =>
+        prev.map((business) =>
+          business.id === businessId
+            ? { ...business, rating: averageRating }
+            : business,
+        ),
+      );
+      setBusinessDetail((prev) =>
+        prev && prev.id === businessId
+          ? { ...prev, rating: averageRating }
+          : prev,
+      );
       if (!silent) {
         setBusinessDetailStatus({ loading: false, error: null });
       }
@@ -5400,6 +5590,7 @@ export default function App() {
                   style={styles.detailBody}
                   contentContainerStyle={styles.detailBodyContent}
                   showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
                 >
                   <View style={styles.detailRatingRow}>
                   {(() => {
@@ -5620,7 +5811,18 @@ export default function App() {
               <Text style={styles.sheetHint}>Swipe up to explore offers</Text>
             </View>
             {activeTab === "discover" ? (
-              <>
+              <ScrollView
+                style={styles.sheetScroll}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.sheetScrollContent}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={handleRefresh}
+                    tintColor={COLORS.pine}
+                  />
+                }
+              >
                 <View
                   style={[
                     styles.searchRow,
@@ -5724,7 +5926,7 @@ export default function App() {
                     onScrollToIndexFailed={handleScrollToIndexFailed}
                   />
                 )}
-              </>
+              </ScrollView>
             ) : (
               <KeyboardAvoidingView
                 behavior={Platform.OS === "ios" ? "padding" : "height"}
