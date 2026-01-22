@@ -112,6 +112,41 @@ create table if not exists public.reviews (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.receipt_uploads (
+  id uuid primary key default gen_random_uuid(),
+  redemption_id uuid not null references public.redemptions on delete cascade,
+  business_id uuid not null references public.businesses on delete cascade,
+  user_id uuid not null references auth.users on delete cascade,
+  storage_path text not null,
+  uploaded_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.notification_tokens (
+  user_id uuid primary key references auth.users on delete cascade,
+  expo_push_token text not null,
+  platform text,
+  device_info text,
+  last_seen_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.notification_preferences (
+  user_id uuid primary key references auth.users on delete cascade,
+  new_offer boolean not null default true,
+  expiring_offer boolean not null default true,
+  nearby_offer boolean not null default false,
+  updated_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.user_locations (
+  user_id uuid primary key references auth.users on delete cascade,
+  latitude double precision not null,
+  longitude double precision not null,
+  recorded_at timestamptz not null default now()
+);
+
 create index if not exists businesses_owner_id_idx on public.businesses(owner_id);
 create index if not exists businesses_location_idx
   on public.businesses(latitude, longitude);
@@ -125,6 +160,22 @@ create index if not exists reviews_user_id_idx on public.reviews(user_id);
 create index if not exists reviews_redemption_id_idx on public.reviews(redemption_id);
 create unique index if not exists reviews_redemption_unique_idx
   on public.reviews(redemption_id);
+create unique index if not exists receipt_uploads_redemption_id_idx
+  on public.receipt_uploads(redemption_id);
+create index if not exists receipt_uploads_business_id_idx
+  on public.receipt_uploads(business_id);
+create index if not exists receipt_uploads_user_id_idx
+  on public.receipt_uploads(user_id);
+create index if not exists notification_tokens_token_idx
+  on public.notification_tokens(expo_push_token);
+create index if not exists user_locations_coords_idx
+  on public.user_locations(latitude, longitude);
+
+-- Points system (safe to re-run).
+alter table if exists public.offers
+  add column if not exists points_value integer;
+alter table if exists public.redemptions
+  add column if not exists points_awarded integer;
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -190,6 +241,10 @@ alter table public.offers enable row level security;
 alter table public.change_requests enable row level security;
 alter table public.redemptions enable row level security;
 alter table public.reviews enable row level security;
+alter table public.notification_tokens enable row level security;
+alter table public.notification_preferences enable row level security;
+alter table public.user_locations enable row level security;
+alter table public.receipt_uploads enable row level security;
 
 -- Drop existing policies to keep this script idempotent.
 drop policy if exists "Invites are readable" on public.invites;
@@ -206,12 +261,14 @@ drop policy if exists "Owners can read own businesses" on public.businesses;
 drop policy if exists "Owners can insert businesses" on public.businesses;
 drop policy if exists "Owners can update own businesses" on public.businesses;
 drop policy if exists "Staff can update businesses" on public.businesses;
+drop policy if exists "Staff can delete businesses" on public.businesses;
 drop policy if exists "Offers are public read" on public.offers;
 drop policy if exists "Staff can read offers" on public.offers;
 drop policy if exists "Owners can read own offers" on public.offers;
 drop policy if exists "Owners can manage offers" on public.offers;
 drop policy if exists "Owners can insert offers" on public.offers;
 drop policy if exists "Staff can update offers" on public.offers;
+drop policy if exists "Staff can delete offers" on public.offers;
 drop policy if exists "Owners can create change requests" on public.change_requests;
 drop policy if exists "Owners can read their change requests" on public.change_requests;
 drop policy if exists "Staff can read change requests" on public.change_requests;
@@ -219,6 +276,7 @@ drop policy if exists "Staff can update change requests" on public.change_reques
 drop policy if exists "Owners can read redemptions" on public.redemptions;
 drop policy if exists "Users can read own redemptions" on public.redemptions;
 drop policy if exists "Users can create redemptions" on public.redemptions;
+drop policy if exists "Users can update own redemptions" on public.redemptions;
 drop policy if exists "Users can read own reviews" on public.reviews;
 drop policy if exists "Reviews are public read" on public.reviews;
 drop policy if exists "Users can create reviews" on public.reviews;
@@ -232,6 +290,12 @@ drop policy if exists "Users can manage user locations"
   on public.user_locations;
 drop policy if exists "Staff can read user locations"
   on public.user_locations;
+drop policy if exists "Users can upload receipts"
+  on public.receipt_uploads;
+drop policy if exists "Users can read own receipts"
+  on public.receipt_uploads;
+drop policy if exists "Owners can read receipts"
+  on public.receipt_uploads;
 
 create table if not exists public.invites (
   id uuid primary key default gen_random_uuid(),
@@ -395,6 +459,18 @@ create policy "Users can create redemptions"
 on public.redemptions for insert
 with check (auth.uid() is not null and scanned_by = auth.uid());
 
+create policy "Users can update own redemptions"
+on public.redemptions for update
+using (auth.uid() = scanned_by)
+with check (
+  auth.uid() = scanned_by
+  and exists (
+    select 1 from public.receipt_uploads ru
+    where ru.redemption_id = id
+      and ru.user_id = auth.uid()
+  )
+);
+
 create policy "Users can read own reviews"
 on public.reviews for select
 using (auth.uid() = user_id);
@@ -407,14 +483,68 @@ create policy "Users can create reviews"
 on public.reviews for insert
 with check (auth.uid() is not null and user_id = auth.uid());
 
+create policy "Users can manage notification tokens"
+on public.notification_tokens for all
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+create policy "Staff can read notification tokens"
+on public.notification_tokens for select
+using (public.is_staff());
+
+create policy "Users can manage notification preferences"
+on public.notification_preferences for all
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+create policy "Users can manage user locations"
+on public.user_locations for all
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+create policy "Staff can read user locations"
+on public.user_locations for select
+using (public.is_staff());
+
+create policy "Users can upload receipts"
+on public.receipt_uploads for insert
+with check (
+  auth.uid() = user_id
+  and exists (
+    select 1 from public.redemptions r
+    where r.id = redemption_id
+      and r.scanned_by = auth.uid()
+  )
+);
+
+create policy "Users can read own receipts"
+on public.receipt_uploads for select
+using (auth.uid() = user_id);
+
+create policy "Owners can read receipts"
+on public.receipt_uploads for select
+using (
+  auth.uid() = (
+    select owner_id from public.businesses where id = business_id
+  )
+);
+
 -- Storage (offer images)
 insert into storage.buckets (id, name, public)
 values ('offer-images', 'offer-images', true)
 on conflict (id) do update set public = excluded.public;
 
+insert into storage.buckets (id, name, public)
+values ('receipt-images', 'receipt-images', false)
+on conflict (id) do update set public = excluded.public;
+
 drop policy if exists "Offer images are public read" on storage.objects;
 drop policy if exists "Business owners can upload offer images" on storage.objects;
 drop policy if exists "Authenticated users can upload offer images" on storage.objects;
+drop policy if exists "Staff can delete offer images" on storage.objects;
+drop policy if exists "Receipt images are readable by owners" on storage.objects;
+drop policy if exists "Authenticated users can upload receipt images"
+  on storage.objects;
 
 create policy "Offer images are public read"
 on storage.objects for select
@@ -432,4 +562,24 @@ on storage.objects for delete
 using (
   bucket_id = 'offer-images'
   and public.is_staff()
+);
+
+create policy "Receipt images are readable by owners"
+on storage.objects for select
+using (
+  bucket_id = 'receipt-images'
+  and exists (
+    select 1
+    from public.receipt_uploads ru
+    join public.businesses b on b.id = ru.business_id
+    where ru.storage_path = storage.objects.name
+      and b.owner_id = auth.uid()
+  )
+);
+
+create policy "Authenticated users can upload receipt images"
+on storage.objects for insert
+with check (
+  bucket_id = 'receipt-images'
+  and auth.uid() is not null
 );

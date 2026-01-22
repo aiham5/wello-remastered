@@ -67,6 +67,7 @@ const OFFER_IMAGE_ASPECT = 2 / 1;
 const CARD_MEDIA_HEIGHT = Math.round(
   (CARD_WIDTH - (IS_COMPACT ? 28 : 32)) / OFFER_IMAGE_ASPECT,
 );
+const CARD_MEDIA_FULL_HEIGHT = Math.round(CARD_WIDTH / OFFER_IMAGE_ASPECT);
 const QR_SIZE = Math.min(200, Math.max(130, Math.round(SCREEN_WIDTH * 0.42)));
 const SCANNER_FRAME = Math.min(
   300,
@@ -98,6 +99,8 @@ const TIME_SELECT_MIN = IS_COMPACT ? 80 : 96;
 const TIME_MERIDIEM_WIDTH = IS_COMPACT ? 68 : 80;
 const OFFERS_REFRESH_INTERVAL_MS = 1000 * 60 * 2;
 const REFRESH_MIN_INTERVAL_MS = 1000 * 15;
+const DEFAULT_OFFER_POINTS = 50;
+const POINT_MILESTONES = [200, 500, 1000];
 const TIME_OPTIONS = [
   "12:00",
   "12:30",
@@ -406,6 +409,7 @@ const OFFER_SEEDS = BUSINESSES.flatMap((business, index) => [
     description: "Tap to redeem this in-store offer.",
     offerType: "discount",
     imageUrl: "",
+    pointsValue: DEFAULT_OFFER_POINTS,
     active: true,
     approvalStatus: "approved",
     createdAt: daysAgo(index + 1),
@@ -509,6 +513,9 @@ const mapSupabaseOffer = (row) => ({
   description: row.description || "",
   offerType: row.offer_type || "",
   imageUrl: row.image_url || "",
+  pointsValue: Number.isFinite(Number(row.points_value))
+    ? Number(row.points_value)
+    : null,
   active: row.active ?? true,
   approvalStatus: row.approval_status || "approved",
   createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
@@ -522,6 +529,22 @@ const mapSupabaseRedemption = (row) => ({
   offerId: row.offer_id || null,
   offer: row.offer || null,
   business: row.business || null,
+  pointsAwarded: Number.isFinite(Number(row.points_awarded))
+    ? Number(row.points_awarded)
+    : null,
+  receipt: (() => {
+    const receipt = Array.isArray(row.receipt_uploads)
+      ? row.receipt_uploads[0]
+      : row.receipt_uploads;
+    if (!receipt) return null;
+    return {
+      id: String(receipt.id),
+      storagePath: receipt.storage_path || "",
+      uploadedAt: receipt.uploaded_at
+        ? new Date(receipt.uploaded_at).getTime()
+        : Date.now(),
+    };
+  })(),
 });
 
 const mapSupabaseReview = (row) => ({
@@ -567,6 +590,14 @@ const formatOfferDate = (value) => {
   if (!value) return "Date unavailable";
   const date = new Date(value);
   return date.toLocaleDateString();
+};
+
+const formatReceiptTime = (value) => {
+  if (!value) return "--";
+  return new Date(value).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 };
 
 const formatBusinessHours = (startTime, startMeridiem, endTime, endMeridiem) =>
@@ -676,6 +707,26 @@ const normalizeOfferType = (input) => {
   const threshold = Math.max(2, Math.floor(raw.length * 0.3));
   return bestScore <= threshold ? bestLabel : raw;
 };
+
+const resolveOfferPoints = (offer) => {
+  const rawValue =
+    offer?.pointsValue ??
+    offer?.points_value ??
+    offer?.points ??
+    offer?.points_awarded ??
+    null;
+  const numeric = Number(rawValue);
+  if (Number.isFinite(numeric) && numeric > 0) return Math.round(numeric);
+  return DEFAULT_OFFER_POINTS;
+};
+
+const resolveRedemptionPoints = (entry) => {
+  const direct = Number(entry?.pointsAwarded);
+  if (Number.isFinite(direct) && direct > 0) return Math.round(direct);
+  return 0;
+};
+
+const resolvePendingPoints = (entry) => resolveOfferPoints(entry?.offer);
 
 const parseClockMinutes = (time, meridiem) => {
   if (!time) return null;
@@ -869,6 +920,9 @@ function getBusinessQrCode(business) {
 }
 
 const OFFER_IMAGE_BUCKET = "offer-images";
+const RECEIPT_IMAGE_BUCKET = "receipt-images";
+const RECEIPT_UPLOAD_WINDOW_MS = 1000 * 60 * 60 * 24;
+const RECEIPT_URL_TTL_SECONDS = 60 * 60;
 
 const uploadOfferImage = async (image, businessId) => {
   if (!image?.uri && !image?.base64) return { url: null, error: null };
@@ -919,6 +973,67 @@ const uploadOfferImage = async (image, businessId) => {
   } catch (error) {
     return { url: null, error: error?.message || "Upload failed." };
   }
+};
+
+const uploadReceiptImage = async (image, businessId, redemptionId) => {
+  if (!image?.uri && !image?.base64) return { path: null, error: null };
+  const safeBusinessId = String(businessId || "business").replace(
+    /[^a-zA-Z0-9-]/g,
+    "",
+  );
+  const safeRedemptionId = String(redemptionId || "redemption").replace(
+    /[^a-zA-Z0-9-]/g,
+    "",
+  );
+  const uri = image.uri || "";
+  const rawName = image.fileName || uri.split("/").pop() || "receipt.jpg";
+  const cleanedName = rawName.split("?")[0];
+  const extension = cleanedName.split(".").pop()?.toLowerCase() || "jpg";
+  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+  const filePath = `${safeBusinessId}/${safeRedemptionId}/${fileName}`;
+
+  try {
+    const contentType =
+      image.mimeType ||
+      (extension === "jpg" || extension === "jpeg"
+        ? "image/jpeg"
+        : `image/${extension}`);
+    const base64 =
+      image.base64 ||
+      (uri
+        ? await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          })
+        : "");
+    if (!base64) {
+      return { path: null, error: "Unable to read image data." };
+    }
+    const normalizedBase64 = base64.includes(",")
+      ? base64.split(",")[1]
+      : base64;
+    const data = toByteArray(normalizedBase64);
+    const { error } = await supabase.storage
+      .from(RECEIPT_IMAGE_BUCKET)
+      .upload(filePath, data, {
+        contentType,
+        upsert: false,
+      });
+    if (error) {
+      return { path: null, error: error.message || "Upload failed." };
+    }
+    return { path: filePath, error: null };
+  } catch (error) {
+    return { path: null, error: error?.message || "Upload failed." };
+  }
+};
+
+const createReceiptSignedUrl = async (path) => {
+  if (!path || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  const { data, error } = await supabase.storage
+    .from(RECEIPT_IMAGE_BUCKET)
+    .createSignedUrl(path, RECEIPT_URL_TTL_SECONDS);
+  if (error) return null;
+  return data?.signedUrl || null;
 };
 
 const getOfferImagePath = (url) => {
@@ -982,47 +1097,49 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
         onPress={onPress}
         activeOpacity={0.85}
       >
-        <View style={styles.cardHeader}>
-          <Text style={styles.cardName} numberOfLines={1}>
-            {item.name}
-          </Text>
-          {isOpen && (
-            <View style={[styles.cardBadge, styles.cardBadgeOpen]}>
-              <Text style={styles.cardBadgeText}>Open</Text>
-            </View>
-          )}
-        </View>
-        <Text style={styles.cardCategory}>{category.display}</Text>
-        {offerTitle ? (
-          <Text style={styles.cardOfferTitle} numberOfLines={1}>
-            {offerTitle}
-          </Text>
-        ) : null}
-        {offerDescription ? (
-          <Text style={styles.cardOffer} numberOfLines={2}>
-            {offerDescription}
-          </Text>
-        ) : null}
-        <TouchableOpacity
-          style={[styles.redeemButton, !isOpen && styles.redeemButtonDisabled]}
-          onPress={onRedeem}
-          activeOpacity={0.85}
-          disabled={!isOpen}
-        >
-          <Text
-            style={[
-              styles.redeemButtonText,
-              !isOpen && styles.redeemButtonTextDisabled,
-            ]}
+        <View style={styles.cardContent}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardName} numberOfLines={1}>
+              {item.name}
+            </Text>
+            {isOpen && (
+              <View style={[styles.cardBadge, styles.cardBadgeOpen]}>
+                <Text style={styles.cardBadgeText}>Open</Text>
+              </View>
+            )}
+          </View>
+          <Text style={styles.cardCategory}>{category.display}</Text>
+          {offerTitle ? (
+            <Text style={styles.cardOfferTitle} numberOfLines={1}>
+              {offerTitle}
+            </Text>
+          ) : null}
+          {offerDescription ? (
+            <Text style={styles.cardOffer} numberOfLines={2}>
+              {offerDescription}
+            </Text>
+          ) : null}
+          <TouchableOpacity
+            style={[styles.redeemButton, !isOpen && styles.redeemButtonDisabled]}
+            onPress={onRedeem}
+            activeOpacity={0.85}
+            disabled={!isOpen}
           >
-            {isOpen ? "Redeem offer" : "Closed now"}
-          </Text>
-        </TouchableOpacity>
-        <View style={styles.cardMetaRow}>
-          <Text style={styles.cardMeta}>{item.distance || "--"}</Text>
-          <Text style={styles.cardMeta}>
-            {ratingLabel ? `Rating ${ratingLabel}` : "Not rated yet"}
-          </Text>
+            <Text
+              style={[
+                styles.redeemButtonText,
+                !isOpen && styles.redeemButtonTextDisabled,
+              ]}
+            >
+              {isOpen ? "Redeem offer" : "Closed now"}
+            </Text>
+          </TouchableOpacity>
+          <View style={styles.cardMetaRow}>
+            <Text style={styles.cardMeta}>{item.distance || "--"}</Text>
+            <Text style={styles.cardMeta}>
+              {ratingLabel ? `Rating ${ratingLabel}` : "Not rated yet"}
+            </Text>
+          </View>
         </View>
         <View style={styles.cardMedia}>
           {tags.length > 0 && (
@@ -1150,6 +1267,8 @@ export default function App() {
   const redemptionLoggedRef = useRef(false);
   const [qrExpandedId, setQrExpandedId] = useState(null);
   const [qrImageMap, setQrImageMap] = useState({});
+  const [businessQrOpen, setBusinessQrOpen] = useState(false);
+  const [businessQrNotice, setBusinessQrNotice] = useState(null);
   const [notificationPreferences, setNotificationPreferences] = useState(
     NOTIFICATION_DEFAULTS,
   );
@@ -1205,6 +1324,11 @@ export default function App() {
   });
   const [userReviews, setUserReviews] = useState([]);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [receiptsModalOpen, setReceiptsModalOpen] = useState(false);
+  const [expandedReceiptOffers, setExpandedReceiptOffers] = useState({});
+  const [receiptPreview, setReceiptPreview] = useState(null);
+  const [receiptNoticeOpen, setReceiptNoticeOpen] = useState(false);
+  const receiptNoticeShownRef = useRef(false);
   const [reviewTarget, setReviewTarget] = useState(null);
   const [reviewRating, setReviewRating] = useState(0);
   const [reviewText, setReviewText] = useState("");
@@ -1290,6 +1414,16 @@ export default function App() {
     uploading: false,
     error: null,
   });
+  const [receiptUploadStatus, setReceiptUploadStatus] = useState({
+    uploading: false,
+    error: null,
+    targetId: null,
+  });
+  const [businessReceiptStatus, setBusinessReceiptStatus] = useState({
+    loading: false,
+    error: null,
+  });
+  const [businessReceipts, setBusinessReceipts] = useState([]);
   const [offerBusy, setOfferBusy] = useState(false);
   const [offerError, setOfferError] = useState(null);
   const [formMessage, setFormMessage] = useState(null);
@@ -1899,6 +2033,7 @@ export default function App() {
           offerTitle,
           offerDescription,
           offerType,
+          pointsValue: offer.pointsValue ?? offer.points_value ?? null,
           distance: business.distance || "--",
           subscription:
             business.subscription ||
@@ -1989,8 +2124,11 @@ export default function App() {
     const count = visibleTabs.length || 1;
     const baseWidth =
       count * NAV_PILL_MIN + (count - 1) * NAV_GAP + NAV_PADDING * 2 + 4;
-    const maxWidth = SCREEN_WIDTH - (IS_COMPACT ? 24 : 32);
-    return Math.min(baseWidth, maxWidth);
+    const maxWidth = SCREEN_WIDTH - (IS_COMPACT ? 16 : 24);
+    if (count <= 2) {
+      return Math.min(baseWidth, maxWidth);
+    }
+    return maxWidth;
   }, [visibleTabs.length]);
 
   const profileInitials = useMemo(() => {
@@ -2072,6 +2210,43 @@ export default function App() {
     return map;
   }, [redemptionHistory]);
 
+  const totalPoints = useMemo(
+    () =>
+      redemptionHistory.reduce(
+        (sum, entry) => sum + resolveRedemptionPoints(entry),
+        0,
+      ),
+    [redemptionHistory],
+  );
+  const pointsProgress = useMemo(() => {
+    const milestones = POINT_MILESTONES.slice().sort((a, b) => a - b);
+    const lastMilestone = milestones[milestones.length - 1] || 0;
+    const nextMilestone =
+      milestones.find((milestone) => totalPoints < milestone) || lastMilestone;
+    const nextIndex = milestones.indexOf(nextMilestone);
+    const prevMilestone = nextIndex > 0 ? milestones[nextIndex - 1] : 0;
+    const range = Math.max(1, nextMilestone - prevMilestone);
+    const progress = Math.min(
+      1,
+      Math.max(0, (totalPoints - prevMilestone) / range),
+    );
+    const label =
+      totalPoints >= lastMilestone
+        ? "All milestones unlocked"
+        : `Next milestone at ${nextMilestone} pts`;
+    return {
+      progress,
+      label,
+      nextMilestone,
+      prevMilestone,
+    };
+  }, [totalPoints]);
+
+  const isReceiptWindowOpen = (entry) => {
+    if (!entry?.createdAt) return false;
+    return Date.now() - entry.createdAt <= RECEIPT_UPLOAD_WINDOW_MS;
+  };
+
   const historyGroups = useMemo(() => {
     const grouped = new Map();
     redemptionHistory.forEach((entry) => {
@@ -2100,9 +2275,47 @@ export default function App() {
       const hasReview = reviewedBusinessIds.has(String(businessKey));
       group.pendingEntries = hasReview ? [] : group.entries.slice(0, 1);
       group.pendingCount = hasReview ? 0 : group.pendingEntries.length;
+      group.receiptPendingCount = group.entries.reduce((total, entry) => {
+        const hasReceipt = Boolean(entry.receipt?.id);
+        const hasPoints = resolveRedemptionPoints(entry) > 0;
+        if (!hasReceipt && !hasPoints && isReceiptWindowOpen(entry)) {
+          return total + 1;
+        }
+        return total;
+      }, 0);
     });
     return list.sort((a, b) => (b.lastRedeemed || 0) - (a.lastRedeemed || 0));
   }, [redemptionHistory, reviewedBusinessIds]);
+
+  const receiptOfferGroups = useMemo(() => {
+    const grouped = new Map();
+    businessReceipts.forEach((receipt) => {
+      const key = receipt.offerId || receipt.offerTitle || "offer";
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          key,
+          offerId: receipt.offerId || null,
+          offerTitle: receipt.offerTitle || "Offer",
+          receipts: [],
+          lastUploadedAt: 0,
+        });
+      }
+      const group = grouped.get(key);
+      group.receipts.push(receipt);
+      if ((receipt.uploadedAt || 0) > group.lastUploadedAt) {
+        group.lastUploadedAt = receipt.uploadedAt || 0;
+      }
+    });
+    const list = Array.from(grouped.values());
+    list.forEach((group) => {
+      group.receipts.sort(
+        (a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0),
+      );
+    });
+    return list.sort(
+      (a, b) => (b.lastUploadedAt || 0) - (a.lastUploadedAt || 0),
+    );
+  }, [businessReceipts]);
 
   const pendingReviewCount = useMemo(
     () =>
@@ -2112,6 +2325,19 @@ export default function App() {
       ),
     [historyGroups],
   );
+  const pendingReceiptCount = useMemo(
+    () =>
+      redemptionHistory.reduce((total, entry) => {
+        const hasReceipt = Boolean(entry.receipt?.id);
+        const hasPoints = resolveRedemptionPoints(entry) > 0;
+        if (!hasReceipt && !hasPoints && isReceiptWindowOpen(entry)) {
+          return total + 1;
+        }
+        return total;
+      }, 0),
+    [redemptionHistory],
+  );
+  const pendingHistoryCount = pendingReviewCount + pendingReceiptCount;
 
   useEffect(() => {
     if (!businesses.length) return;
@@ -2159,8 +2385,22 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    if (activeTab === "business" && isOwner && ownerBusiness?.id) {
+      loadBusinessReceipts(ownerBusiness.id);
+    }
+  }, [
+    activeTab,
+    isOwner,
+    ownerBusiness?.id,
+    loadBusinessReceipts,
+    SUPABASE_URL,
+    SUPABASE_ANON_KEY,
+  ]);
+
+  useEffect(() => {
     if (!qrExpandedId) return;
-    const business = approvedBusinesses.find(
+    const business = businesses.find(
       (item) => String(item.id) === String(qrExpandedId),
     );
     if (!business) return;
@@ -2186,7 +2426,7 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, [approvedBusinesses, qrExpandedId, qrImageMap]);
+  }, [businesses, qrExpandedId, qrImageMap]);
 
   useEffect(() => {
     if (activeTab === "admin" && !isStaff) {
@@ -2507,6 +2747,21 @@ export default function App() {
     },
     [notificationPreferences, saveNotificationPreferences],
   );
+
+  const handleOpenBusinessQr = () => {
+    if (!ownerBusiness?.id) return;
+    setQrExpandedId(ownerBusiness.id);
+    setBusinessQrNotice(null);
+    setBusinessQrOpen(true);
+  };
+
+  const handleCloseBusinessQr = () => {
+    setBusinessQrOpen(false);
+  };
+
+  const handlePrintBusinessQr = () => {
+    setBusinessQrNotice("Print template coming soon.");
+  };
 
   const stripeEnabled = Boolean(STRIPE_PUBLISHABLE_KEY);
 
@@ -4091,6 +4346,7 @@ export default function App() {
             "description",
             "offer_type",
             "image_url",
+            "points_value",
             "active",
             "approval_status",
             "created_at",
@@ -4168,6 +4424,7 @@ export default function App() {
             "description",
             "offer_type",
             "image_url",
+            "points_value",
             "active",
             "approval_status",
             "created_at",
@@ -4243,20 +4500,21 @@ export default function App() {
     setPendingOfferStatus({ loading: true, error: null });
     const { data, error } = await supabase
       .from("offers")
-      .select(
-        [
-          "id",
-          "business_id",
-          "title",
-          "description",
-          "offer_type",
-          "image_url",
-          "active",
-          "approval_status",
-          "created_at",
-          "business:businesses (id, name, category_key, category_label)",
-        ].join(","),
-      )
+        .select(
+          [
+            "id",
+            "business_id",
+            "title",
+            "description",
+            "offer_type",
+            "image_url",
+            "points_value",
+            "active",
+            "approval_status",
+            "created_at",
+            "business:businesses (id, name, category_key, category_label)",
+          ].join(","),
+        )
       .eq("approval_status", "pending")
       .order("created_at", { ascending: false });
     if (error) {
@@ -4277,20 +4535,21 @@ export default function App() {
       .from("offers")
       .update({ approval_status: "approved" })
       .eq("id", offerId)
-      .select(
-        [
-          "id",
-          "business_id",
-          "title",
-          "description",
-          "offer_type",
-          "image_url",
-          "active",
-          "approval_status",
-          "created_at",
-          "business:businesses (id, name, category_key, category_label)",
-        ].join(","),
-      )
+        .select(
+          [
+            "id",
+            "business_id",
+            "title",
+            "description",
+            "offer_type",
+            "image_url",
+            "points_value",
+            "active",
+            "approval_status",
+            "created_at",
+            "business:businesses (id, name, category_key, category_label)",
+          ].join(","),
+        )
       .maybeSingle();
     if (error || !data) {
       console.warn("Wello offer approve failed:", error?.message);
@@ -4317,6 +4576,7 @@ export default function App() {
           "description",
           "offer_type",
           "image_url",
+          "points_value",
           "active",
           "approval_status",
           "created_at",
@@ -4508,6 +4768,183 @@ export default function App() {
     }
   };
 
+  const handleUploadReceipt = async (entry) => {
+    if (!entry?.id || !entry.businessId) return;
+    setReceiptUploadStatus((prev) => ({ ...prev, error: null }));
+    if (
+      !ensureSupabaseReady((message) =>
+        setReceiptUploadStatus({
+          uploading: false,
+          error: message,
+          targetId: null,
+        }),
+      )
+    ) {
+      return;
+    }
+    if (!authUserId) {
+      setReceiptUploadStatus({
+        uploading: false,
+        error: "Sign in to upload receipts.",
+        targetId: null,
+      });
+      return;
+    }
+    if (entry.receipt?.id) {
+      setReceiptUploadStatus({
+        uploading: false,
+        error: "Receipt already uploaded.",
+        targetId: null,
+      });
+      return;
+    }
+    if (!isReceiptWindowOpen(entry)) {
+      setReceiptUploadStatus({
+        uploading: false,
+        error: "Receipt window expired.",
+        targetId: null,
+      });
+      return;
+    }
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const hasPermission = permission.granted || permission.status === "limited";
+    if (!hasPermission) {
+      setReceiptUploadStatus({
+        uploading: false,
+        error: "Photo access is required. Enable it in Settings.",
+        targetId: null,
+      });
+      return;
+    }
+    try {
+      const mediaTypes = ImagePicker.MediaType?.Images
+        ? [ImagePicker.MediaType.Images]
+        : ImagePicker.MediaTypeOptions?.Images;
+      if (!mediaTypes) {
+        setReceiptUploadStatus({
+          uploading: false,
+          error: "Image picker is not available in this Expo Go version.",
+          targetId: null,
+        });
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes,
+        allowsEditing: true,
+        aspect: [4, 5],
+        quality: 0.85,
+        base64: true,
+      });
+      if (result.canceled) return;
+      const asset = result.assets?.[0];
+      if (!asset?.uri) return;
+      setReceiptUploadStatus({
+        uploading: true,
+        error: null,
+        targetId: entry.id,
+      });
+      const { path, error } = await uploadReceiptImage(
+        {
+          uri: asset.uri,
+          mimeType: asset.mimeType || "image/jpeg",
+          fileName: asset.fileName || null,
+          base64: asset.base64 || null,
+        },
+        entry.businessId,
+        entry.id,
+      );
+      if (error || !path) {
+        setReceiptUploadStatus({
+          uploading: false,
+          error: error || "Unable to upload receipt.",
+          targetId: null,
+        });
+        return;
+      }
+      const { data, error: insertError } = await supabase
+        .from("receipt_uploads")
+        .insert({
+          redemption_id: entry.id,
+          business_id: entry.businessId,
+          user_id: authUserId,
+          storage_path: path,
+        })
+        .select("id, uploaded_at, storage_path")
+        .maybeSingle();
+      if (insertError || !data) {
+        setReceiptUploadStatus({
+          uploading: false,
+          error: insertError?.message || "Unable to save receipt.",
+          targetId: null,
+        });
+        return;
+      }
+      const pointsValue = resolvePendingPoints(entry);
+      const { error: updateError } = await supabase
+        .from("redemptions")
+        .update({ points_awarded: pointsValue })
+        .eq("id", entry.id);
+      if (updateError) {
+        console.warn("Wello receipt points update failed:", updateError.message);
+      }
+      setRedemptionHistory((prev) =>
+        prev.map((item) =>
+          item.id === entry.id
+            ? {
+                ...item,
+                pointsAwarded: updateError ? item.pointsAwarded : pointsValue,
+                receipt: {
+                  id: String(data.id),
+                  storagePath: data.storage_path || "",
+                  uploadedAt: data.uploaded_at
+                    ? new Date(data.uploaded_at).getTime()
+                    : Date.now(),
+                },
+              }
+            : item,
+        ),
+      );
+      setReceiptUploadStatus({
+        uploading: false,
+        error: updateError
+          ? "Receipt saved, but points could not be awarded yet."
+          : null,
+        targetId: null,
+      });
+      loadRedemptions({ silent: true });
+    } catch (error) {
+      setReceiptUploadStatus({
+        uploading: false,
+        error: error?.message || "Unable to upload receipt.",
+        targetId: null,
+      });
+    }
+  };
+
+  const handleOpenReceiptPreview = async (receipt, offerTitle) => {
+    if (!receipt) return;
+    const title = offerTitle || receipt.offerTitle || "Receipt";
+    setReceiptPreview({
+      uri: "",
+      title,
+      timestamp: receipt.uploadedAt,
+      loading: true,
+      error: null,
+    });
+    let signedUrl = null;
+    if (receipt.storagePath) {
+      signedUrl = await createReceiptSignedUrl(receipt.storagePath);
+    }
+    const finalUrl = signedUrl || receipt.imageUrl || "";
+    setReceiptPreview({
+      uri: finalUrl,
+      title,
+      timestamp: receipt.uploadedAt,
+      loading: false,
+      error: finalUrl ? null : "Unable to load receipt image.",
+    });
+  };
+
   const handleCreateOffer = async () => {
     if (!ownerBusiness) {
       setOfferError("Create your business profile first.");
@@ -4694,9 +5131,11 @@ export default function App() {
             "id",
             "business_id",
             "offer_id",
+            "points_awarded",
             "created_at",
-            "offer:offers (id, title, description, offer_type, image_url)",
+            "offer:offers (id, title, description, offer_type, image_url, points_value)",
             "business:businesses (id, name, category_key, category_label)",
+            "receipt_uploads (id, uploaded_at, storage_path)",
           ].join(","),
         )
         .eq("scanned_by", authUserId)
@@ -4842,6 +5281,7 @@ export default function App() {
             "description",
             "offer_type",
             "image_url",
+            "points_value",
             "active",
             "approval_status",
             "created_at",
@@ -4863,6 +5303,75 @@ export default function App() {
       setBusinessDetailOffers((data || []).map(mapSupabaseOffer));
       if (!silent) {
         setBusinessDetailOffersStatus({ loading: false, error: null });
+      }
+    },
+    [],
+  );
+
+  const loadBusinessReceipts = useCallback(
+    async (businessId, { silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setBusinessReceiptStatus({
+          loading: false,
+          error: "Supabase is not configured for receipts yet.",
+        });
+        return;
+      }
+      if (!businessId) {
+        setBusinessReceipts([]);
+        setBusinessReceiptStatus({ loading: false, error: null });
+        return;
+      }
+      if (!silent) {
+        setBusinessReceiptStatus({ loading: true, error: null });
+      }
+      const { data, error } = await supabase
+        .from("receipt_uploads")
+        .select(
+          [
+            "id",
+            "redemption_id",
+            "business_id",
+            "user_id",
+            "storage_path",
+            "uploaded_at",
+            "redemption:redemptions (id, created_at, offer:offers (id, title))",
+          ].join(","),
+        )
+        .eq("business_id", businessId)
+        .order("uploaded_at", { ascending: false });
+      if (error) {
+        if (!silent) {
+          setBusinessReceiptStatus({
+            loading: false,
+            error: error.message || "Unable to load receipts.",
+          });
+        }
+        return;
+      }
+      const mapped = await Promise.all(
+        (data || []).map(async (row) => {
+          const signedUrl = await createReceiptSignedUrl(row.storage_path);
+          return {
+            id: String(row.id),
+            redemptionId: row.redemption_id || null,
+            businessId: row.business_id || null,
+            offerId: row.redemption?.offer?.id || null,
+            uploadedAt: row.uploaded_at
+              ? new Date(row.uploaded_at).getTime()
+              : Date.now(),
+            redeemedAt: row.redemption?.created_at
+              ? new Date(row.redemption.created_at).getTime()
+              : null,
+            offerTitle: row.redemption?.offer?.title || "",
+            storagePath: row.storage_path || "",
+            imageUrl: signedUrl || "",
+          };
+        }),
+      );
+      setBusinessReceipts(mapped);
+      if (!silent) {
+        setBusinessReceiptStatus({ loading: false, error: null });
       }
     },
     [],
@@ -4892,6 +5401,19 @@ export default function App() {
     }
     loadRedemptions({ silent: true });
   }, [isSignedIn, showHistoryTab, loadRedemptions]);
+
+  useEffect(() => {
+    if (!isSignedIn || !showHistoryTab) {
+      receiptNoticeShownRef.current = false;
+      setReceiptNoticeOpen(false);
+      return;
+    }
+    if (activeTab !== "history") return;
+    if (pendingReceiptCount <= 0) return;
+    if (receiptNoticeShownRef.current) return;
+    receiptNoticeShownRef.current = true;
+    setReceiptNoticeOpen(true);
+  }, [activeTab, isSignedIn, showHistoryTab, pendingReceiptCount]);
 
   useEffect(() => {
     if (!businessDetailOpen || !businessDetail?.id) return;
@@ -5309,11 +5831,7 @@ export default function App() {
 
           <View style={styles.topMeta} pointerEvents="box-none">
             <View style={[styles.navContainer, { width: navContainerWidth }]}>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.navScroll}
-              >
+              <View style={styles.navRow}>
                 {visibleTabs.map((tab) => {
                   const isActive = activeTab === tab.key;
                   return (
@@ -5327,20 +5845,25 @@ export default function App() {
                           styles.navPillText,
                           isActive && styles.navPillTextActive,
                         ]}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.85}
                       >
                         {tab.label}
                       </Text>
-                      {tab.key === "history" && pendingReviewCount > 0 && (
+                      {tab.key === "history" && pendingHistoryCount > 0 && (
                         <View style={styles.navPillBadge}>
                           <Text style={styles.navPillBadgeText}>
-                            {pendingReviewCount > 9 ? "9+" : pendingReviewCount}
+                            {pendingHistoryCount > 9
+                              ? "9+"
+                              : pendingHistoryCount}
                           </Text>
                         </View>
                       )}
                     </TouchableOpacity>
                   );
                 })}
-              </ScrollView>
+              </View>
             </View>
             <View style={styles.locateRow} pointerEvents="box-none">
               <TouchableOpacity
@@ -5699,6 +6222,7 @@ export default function App() {
                             business: businessDetail,
                             offerTitle: offer.title || offer.offer || businessDetail.offer,
                             offerType: offer.offerType || offer.offer_type,
+                            pointsValue: offer.pointsValue ?? offer.points_value ?? null,
                             tags: businessDetail.tags,
                           })
                         }
@@ -5769,6 +6293,274 @@ export default function App() {
                   )}
                   </View>
                 </ScrollView>
+              </View>
+            </View>
+          </Modal>
+
+          <Modal visible={receiptsModalOpen} animationType="slide">
+            <SafeAreaView style={styles.receiptsScreen} edges={["top", "bottom"]}>
+              <View style={styles.receiptsHeader}>
+                <View>
+                  <Text style={styles.receiptsTitle}>Receipts</Text>
+                  <Text style={styles.receiptsSubtitle}>
+                    View uploaded receipts by offer.
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.receiptsClose}
+                  onPress={() => {
+                    setReceiptsModalOpen(false);
+                    setReceiptPreview(null);
+                  }}
+                >
+                  <Ionicons name="close" size={18} color={COLORS.ink} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                style={styles.receiptsBody}
+                contentContainerStyle={styles.receiptsBodyContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {businessReceiptStatus.error && (
+                  <Text style={styles.formError}>
+                    {businessReceiptStatus.error}
+                  </Text>
+                )}
+
+                {businessReceiptStatus.loading ? (
+                  <View style={styles.remoteNotice}>
+                    <Text style={styles.remoteNoticeText}>
+                      Loading receipts...
+                    </Text>
+                  </View>
+                ) : businessReceipts.length === 0 ? (
+                  <View style={styles.emptyState}>
+                    <Text style={styles.emptyTitle}>No receipts yet.</Text>
+                    <Text style={styles.emptyCopy}>
+                      Receipts uploaded by customers will appear here.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.receiptList}>
+                    {receiptOfferGroups.map((group) => {
+                      const isExpanded = Boolean(
+                        expandedReceiptOffers[group.key],
+                      );
+                      return (
+                        <View
+                          key={group.key}
+                          style={styles.receiptOfferCard}
+                        >
+                          <TouchableOpacity
+                            style={styles.receiptOfferHeader}
+                            onPress={() =>
+                              setExpandedReceiptOffers((prev) => ({
+                                ...prev,
+                                [group.key]: !prev[group.key],
+                              }))
+                            }
+                          >
+                            <View style={styles.receiptOfferMeta}>
+                              <Text
+                                style={styles.receiptOfferTitle}
+                                numberOfLines={1}
+                              >
+                                {group.offerTitle}
+                              </Text>
+                              <Text style={styles.receiptOfferSub}>
+                                {group.receipts.length} receipts · Last{" "}
+                                {formatHistoryTimestamp(group.lastUploadedAt)}
+                              </Text>
+                            </View>
+                            <Ionicons
+                              name={isExpanded ? "chevron-up" : "chevron-down"}
+                              size={18}
+                              color={COLORS.muted}
+                            />
+                          </TouchableOpacity>
+                          {isExpanded && (
+                            <View style={styles.receiptTileGrid}>
+                              {group.receipts.map((receipt) => (
+                                <TouchableOpacity
+                                  key={receipt.id}
+                                  style={styles.receiptTile}
+                                  onPress={() =>
+                                    handleOpenReceiptPreview(
+                                      receipt,
+                                      group.offerTitle,
+                                    )
+                                  }
+                                >
+                                  <Text style={styles.receiptTileDate}>
+                                    {formatOfferDate(receipt.uploadedAt)}
+                                  </Text>
+                                  <Text style={styles.receiptTileTime}>
+                                    {formatReceiptTime(receipt.uploadedAt)}
+                                  </Text>
+                                </TouchableOpacity>
+                              ))}
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
+              </ScrollView>
+            </SafeAreaView>
+          </Modal>
+
+          <Modal
+            transparent
+            visible={Boolean(receiptPreview)}
+            animationType="fade"
+            presentationStyle="overFullScreen"
+            statusBarTranslucent
+          >
+            <View style={styles.receiptPreviewOverlay}>
+              <View style={styles.receiptPreviewCard}>
+                <View style={styles.receiptPreviewHeader}>
+                  <View>
+                    <Text style={styles.receiptPreviewTitle}>
+                      {receiptPreview?.title || "Receipt"}
+                    </Text>
+                    {receiptPreview?.timestamp ? (
+                      <Text style={styles.receiptPreviewMeta}>
+                        Uploaded{" "}
+                        {formatHistoryTimestamp(receiptPreview.timestamp)}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <TouchableOpacity
+                    style={styles.receiptsClose}
+                    onPress={() => setReceiptPreview(null)}
+                  >
+                    <Ionicons name="close" size={18} color={COLORS.ink} />
+                  </TouchableOpacity>
+                </View>
+                {receiptPreview?.loading ? (
+                  <View style={styles.receiptPreviewPlaceholder}>
+                    <Ionicons
+                      name="time-outline"
+                      size={18}
+                      color={COLORS.muted}
+                    />
+                    <Text style={styles.receiptPreviewPlaceholderText}>
+                      Loading receipt...
+                    </Text>
+                  </View>
+                ) : receiptPreview?.uri ? (
+                  <Image
+                    source={{ uri: receiptPreview.uri }}
+                    style={styles.receiptPreviewImage}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  <View style={styles.receiptPreviewPlaceholder}>
+                    <Ionicons
+                      name="image-outline"
+                      size={18}
+                      color={COLORS.muted}
+                    />
+                    <Text style={styles.receiptPreviewPlaceholderText}>
+                      {receiptPreview?.error || "Receipt image unavailable."}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          </Modal>
+
+          <Modal
+            transparent
+            visible={receiptNoticeOpen}
+            animationType="fade"
+            presentationStyle="overFullScreen"
+            statusBarTranslucent
+          >
+            <View style={styles.noticeOverlay}>
+              <View style={styles.noticeCard}>
+                <Text style={styles.noticeTitle}>Receipts needed</Text>
+                <Text style={styles.noticeBody}>
+                  Upload receipts within 24 hours of redeeming offers to earn
+                  points.
+                </Text>
+                <View style={styles.noticeActions}>
+                  <TouchableOpacity
+                    style={styles.primaryButton}
+                    onPress={() => setReceiptNoticeOpen(false)}
+                  >
+                    <Text style={styles.primaryButtonText}>Got it</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
+
+          <Modal transparent visible={businessQrOpen} animationType="fade">
+            <View style={styles.qrModalOverlay}>
+              <View style={styles.qrModalCard}>
+                <View style={styles.qrModalHeader}>
+                  <View>
+                    <Text style={styles.qrTitle}>
+                      {ownerBusiness?.name || "Business QR"}
+                    </Text>
+                    <Text style={styles.qrMeta}>
+                      {ownerBusiness
+                        ? getCategoryConfig(ownerBusiness.categoryKey).display
+                        : "Business QR"}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.detailClose}
+                    onPress={handleCloseBusinessQr}
+                  >
+                    <Ionicons name="close" size={18} color={COLORS.ink} />
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.qrBody}>
+                  <View style={styles.qrCodeWrap}>
+                    {ownerBusiness &&
+                    (BUSINESS_QR_IMAGES[ownerBusiness.id] ||
+                      qrImageMap[ownerBusiness.id]) ? (
+                      <Image
+                        source={
+                          BUSINESS_QR_IMAGES[ownerBusiness.id] || {
+                            uri: qrImageMap[ownerBusiness.id],
+                          }
+                        }
+                        style={styles.qrImage}
+                        resizeMode="contain"
+                      />
+                    ) : (
+                      <View style={styles.qrFallback}>
+                        <Text style={styles.qrFallbackText}>
+                          Generating QR
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  {ownerBusiness && (
+                    <Text style={styles.qrCodeLabel}>
+                      {getBusinessQrCode(ownerBusiness)}
+                    </Text>
+                  )}
+                  <Text style={styles.qrCodeNote}>
+                    Keep this code private. Scan at checkout to redeem offers.
+                  </Text>
+                </View>
+                <View style={styles.qrModalActions}>
+                  <TouchableOpacity
+                    style={styles.primaryButton}
+                    onPress={handlePrintBusinessQr}
+                  >
+                    <Text style={styles.primaryButtonText}>Print</Text>
+                  </TouchableOpacity>
+                  {businessQrNotice && (
+                    <Text style={styles.formHint}>{businessQrNotice}</Text>
+                  )}
+                </View>
               </View>
             </View>
           </Modal>
@@ -6760,6 +7552,26 @@ export default function App() {
                       )}
 
                       {ownerBusiness && (
+                        <View style={styles.sectionBlock}>
+                          <Text style={styles.sectionTitleAlt}>
+                            Business QR code
+                          </Text>
+                          <Text style={styles.sectionBody}>
+                            Share this QR at checkout so customers can redeem
+                            offers.
+                          </Text>
+                          <TouchableOpacity
+                            style={styles.primaryButton}
+                            onPress={handleOpenBusinessQr}
+                          >
+                            <Text style={styles.primaryButtonText}>
+                              View QR code
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+
+                      {ownerBusiness && (
                         <>
                           <View style={styles.sectionBlock}>
                             <Text style={styles.sectionTitleAlt}>Offers</Text>
@@ -6975,6 +7787,22 @@ export default function App() {
                               ))}
                             </View>
                           )}
+
+                          <View style={styles.sectionBlock}>
+                            <Text style={styles.sectionTitleAlt}>Receipts</Text>
+                            <Text style={styles.sectionBody}>
+                              Receipts uploaded by customers are grouped by the
+                              day they redeemed their offers.
+                            </Text>
+                            <TouchableOpacity
+                              style={styles.secondaryButton}
+                              onPress={() => setReceiptsModalOpen(true)}
+                            >
+                              <Text style={styles.secondaryButtonText}>
+                                View receipts
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
                         </>
                       )}
                     </>
@@ -7005,11 +7833,53 @@ export default function App() {
                               you can leave a review.
                             </Text>
                           </View>
+                          <View style={styles.pointsCard}>
+                            <View style={styles.pointsHeader}>
+                              <Text style={styles.pointsLabel}>Points</Text>
+                              <Text style={styles.pointsValue}>
+                                {totalPoints.toLocaleString()}
+                              </Text>
+                            </View>
+                            <Text style={styles.pointsMeta}>
+                              {pointsProgress.label}
+                            </Text>
+                            <View style={styles.pointsBar}>
+                              <View
+                                style={[
+                                  styles.pointsBarFill,
+                                  {
+                                    width: `${Math.round(
+                                      pointsProgress.progress * 100,
+                                    )}%`,
+                                  },
+                                ]}
+                              />
+                            </View>
+                            <Text style={styles.pointsReward}>
+                              Reward: Milestone
+                            </Text>
+                          </View>
 
                           {redemptionStatus.error && (
                             <Text style={styles.formError}>
                               {redemptionStatus.error}
                             </Text>
+                          )}
+                          {receiptUploadStatus.error && (
+                            <Text style={styles.formError}>
+                              {receiptUploadStatus.error}
+                            </Text>
+                          )}
+                          {pendingReceiptCount > 0 && (
+                            <View style={styles.receiptNoticeCard}>
+                              <Text style={styles.receiptNoticeTitle}>
+                                Receipts needed
+                              </Text>
+                              <Text style={styles.receiptNoticeBody}>
+                                Upload your receipts within 24 hours to earn
+                                points on recent redemptions.
+                              </Text>
+                            </View>
                           )}
 
                           {redemptionStatus.loading ? (
@@ -7078,6 +7948,19 @@ export default function App() {
                                             </Text>
                                           </View>
                                         )}
+                                        {group.receiptPendingCount > 0 && (
+                                          <View
+                                            style={styles.historyReceiptBadge}
+                                          >
+                                            <Text
+                                              style={
+                                                styles.historyReceiptBadgeText
+                                              }
+                                            >
+                                              {group.receiptPendingCount}
+                                            </Text>
+                                          </View>
+                                        )}
                                         <Ionicons
                                           name={
                                             isExpanded
@@ -7116,6 +7999,22 @@ export default function App() {
                                             "Redeemed offer";
                                           const offerDescription =
                                             entry.offer?.description || "";
+                                          const pointsAwarded =
+                                            resolveRedemptionPoints(entry);
+                                          const pendingPoints = pointsAwarded
+                                            ? 0
+                                            : resolvePendingPoints(entry);
+                                          const hasReceipt = Boolean(
+                                            entry.receipt?.id,
+                                          );
+                                          const receiptWindowOpen =
+                                            isReceiptWindowOpen(entry);
+                                          const isUploadingReceipt =
+                                            receiptUploadStatus.uploading &&
+                                            receiptUploadStatus.targetId ===
+                                              entry.id;
+                                          const needsReceipt =
+                                            !hasReceipt && !pointsAwarded;
                                           return (
                                             <View
                                               key={entry.id}
@@ -7132,15 +8031,34 @@ export default function App() {
                                                 >
                                                   {offerTitle}
                                                 </Text>
-                                                <Text
+                                                <View
                                                   style={
-                                                    styles.historyEntryTime
+                                                    styles.historyEntryMeta
                                                   }
                                                 >
-                                                  {formatHistoryTimestamp(
-                                                    entry.createdAt,
-                                                  )}
-                                                </Text>
+                                                  <Text
+                                                    style={
+                                                      styles.historyEntryTime
+                                                    }
+                                                  >
+                                                    {formatHistoryTimestamp(
+                                                      entry.createdAt,
+                                                    )}
+                                                  </Text>
+                                                  <Text
+                                                    style={
+                                                      [
+                                                        styles.historyEntryPoints,
+                                                        !pointsAwarded &&
+                                                          styles.historyEntryPointsPending,
+                                                      ]
+                                                    }
+                                                  >
+                                                    {pointsAwarded
+                                                      ? `+${pointsAwarded} pts`
+                                                      : `Pending ${pendingPoints} pts`}
+                                                  </Text>
+                                                </View>
                                               </View>
                                               {!hasReview &&
                                                 entry.id ===
@@ -7153,6 +8071,17 @@ export default function App() {
                                                     Review needed
                                                   </Text>
                                                 )}
+                                              {needsReceipt && (
+                                                <Text
+                                                  style={
+                                                    styles.historyEntryPending
+                                                  }
+                                                >
+                                                  {receiptWindowOpen
+                                                    ? "Receipt needed within 24 hours to earn points."
+                                                    : "Receipt window expired."}
+                                                </Text>
+                                              )}
                                               {offerDescription ? (
                                                 <Text
                                                   style={
@@ -7163,6 +8092,30 @@ export default function App() {
                                                   {offerDescription}
                                                 </Text>
                                               ) : null}
+                                              {needsReceipt &&
+                                                receiptWindowOpen && (
+                                                  <TouchableOpacity
+                                                    style={[
+                                                      styles.receiptUploadButton,
+                                                      isUploadingReceipt &&
+                                                        styles.receiptUploadButtonDisabled,
+                                                    ]}
+                                                    onPress={() =>
+                                                      handleUploadReceipt(entry)
+                                                    }
+                                                    disabled={isUploadingReceipt}
+                                                  >
+                                                    <Text
+                                                      style={
+                                                        styles.receiptUploadButtonText
+                                                      }
+                                                    >
+                                                      {isUploadingReceipt
+                                                        ? "Uploading..."
+                                                        : "Upload receipt"}
+                                                    </Text>
+                                                  </TouchableOpacity>
+                                                )}
                                             </View>
                                           );
                                         })}
@@ -8792,8 +9745,8 @@ const styles = StyleSheet.create({
   topMeta: {
     position: "absolute",
     top: SAFE_TOP,
-    left: IS_COMPACT ? 12 : 16,
-    right: IS_COMPACT ? 12 : 16,
+    left: IS_COMPACT ? 8 : 12,
+    right: IS_COMPACT ? 8 : 12,
   },
   navContainer: {
     alignSelf: "center",
@@ -8810,7 +9763,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 4,
   },
-  navScroll: {
+  navRow: {
     flexDirection: "row",
     gap: NAV_GAP,
     paddingHorizontal: 2,
@@ -9132,6 +10085,39 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     resizeMode: "cover",
   },
+  receiptsHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+  },
+  receiptsTitle: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+  },
+  receiptsSubtitle: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 2,
+  },
+  receiptsClose: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: COLORS.mint,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+  },
+  receiptsBody: {
+    marginTop: 12,
+  },
+  receiptsBodyContent: {
+    paddingBottom: 6,
+  },
   detailOfferTagRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -9221,8 +10207,8 @@ const styles = StyleSheet.create({
     opacity: 0.85,
   },
   navPill: {
-    flexGrow: 0,
-    minWidth: NAV_PILL_MIN,
+    flex: 1,
+    minWidth: 0,
     alignItems: "center",
     backgroundColor: COLORS.white,
     borderRadius: 999,
@@ -9316,9 +10302,7 @@ const styles = StyleSheet.create({
   offerUploadFrame: {
     width: "100%",
     aspectRatio: OFFER_IMAGE_ASPECT,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: COLORS.sand,
+    borderRadius: 16,
     backgroundColor: "#EFF3F8",
     overflow: "hidden",
     justifyContent: "center",
@@ -9327,6 +10311,7 @@ const styles = StyleSheet.create({
   offerUploadPreview: {
     width: "100%",
     height: "100%",
+    borderRadius: 16,
   },
   offerUploadPlaceholder: {
     alignItems: "center",
@@ -9520,11 +10505,14 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: COLORS.white,
     borderRadius: 16,
-    padding: IS_COMPACT ? 14 : 16,
     minHeight: IS_SHORT ? 220 : 250,
     borderWidth: 1,
     borderColor: COLORS.sand,
     overflow: "hidden",
+  },
+  cardContent: {
+    padding: IS_COMPACT ? 14 : 16,
+    paddingBottom: IS_COMPACT ? 12 : 14,
   },
   cardSelected: {
     borderColor: COLORS.coral,
@@ -9594,17 +10582,14 @@ const styles = StyleSheet.create({
   },
   cardMedia: {
     position: "relative",
-    height: CARD_MEDIA_HEIGHT,
-    marginTop: 12,
+    height: CARD_MEDIA_FULL_HEIGHT,
     alignSelf: "stretch",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.sand,
-    borderStyle: "dashed",
     backgroundColor: "#EFF3F8",
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
   },
   cardMediaOverlay: {
     position: "absolute",
@@ -9617,7 +10602,8 @@ const styles = StyleSheet.create({
   cardMediaImage: {
     width: "100%",
     height: "100%",
-    borderRadius: 12,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
   },
   cardMediaLabel: {
     marginTop: 6,
@@ -10097,6 +11083,174 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 16,
   },
+  receiptList: {
+    gap: 12,
+    marginBottom: 16,
+  },
+  receiptOfferCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 12,
+    gap: 10,
+  },
+  receiptOfferHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  receiptOfferMeta: {
+    flex: 1,
+  },
+  receiptOfferTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  receiptOfferSub: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 4,
+  },
+  receiptTileGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  receiptTile: {
+    width: "48%",
+    aspectRatio: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.mint,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  receiptTileDisabled: {
+    opacity: 0.6,
+  },
+  receiptTileDate: {
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    textAlign: "center",
+  },
+  receiptTileTime: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 4,
+    textAlign: "center",
+  },
+  receiptsScreen: {
+    flex: 1,
+    backgroundColor: COLORS.cream,
+    padding: 16,
+  },
+  receiptPreviewOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.7)",
+    justifyContent: "center",
+    padding: 20,
+  },
+  receiptPreviewCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+  },
+  receiptPreviewHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 12,
+  },
+  receiptPreviewTitle: {
+    fontSize: 15,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  receiptPreviewMeta: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 2,
+  },
+  receiptPreviewImage: {
+    width: "100%",
+    height: 360,
+    borderRadius: 12,
+    backgroundColor: "#EFF3F8",
+  },
+  receiptPreviewPlaceholder: {
+    width: "100%",
+    height: 260,
+    borderRadius: 12,
+    backgroundColor: "#EFF3F8",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  receiptPreviewPlaceholderText: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  receiptNoticeCard: {
+    backgroundColor: "#FFF7E6",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#F1D4A8",
+    padding: 12,
+    marginBottom: 12,
+  },
+  receiptNoticeTitle: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    marginBottom: 4,
+  },
+  receiptNoticeBody: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+  },
+  noticeOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    justifyContent: "center",
+    padding: 20,
+  },
+  noticeCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+  },
+  noticeTitle: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+    marginBottom: 6,
+  },
+  noticeBody: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 18,
+  },
+  noticeActions: {
+    marginTop: 12,
+  },
   historyList: {
     gap: 12,
     marginBottom: 12,
@@ -10168,6 +11322,53 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
+  pointsCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 14,
+    backgroundColor: COLORS.mint,
+    marginBottom: 12,
+  },
+  pointsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 6,
+  },
+  pointsLabel: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  pointsValue: {
+    fontSize: 18,
+    color: COLORS.ink,
+    fontFamily: FONT_BOLD,
+  },
+  pointsMeta: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  pointsBar: {
+    marginTop: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "#E4E9F0",
+    overflow: "hidden",
+  },
+  pointsBarFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: COLORS.pine,
+  },
+  pointsReward: {
+    marginTop: 8,
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
   historyEntry: {
     padding: 10,
     borderRadius: 12,
@@ -10192,6 +11393,18 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
+  historyEntryMeta: {
+    alignItems: "flex-end",
+    gap: 4,
+  },
+  historyEntryPoints: {
+    fontSize: 10,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+  },
+  historyEntryPointsPending: {
+    color: COLORS.muted,
+  },
   historyEntryPending: {
     fontSize: 10,
     color: "#B42318",
@@ -10204,6 +11417,38 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     marginTop: 6,
     lineHeight: 16,
+  },
+  historyReceiptBadge: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#F97316",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  historyReceiptBadgeText: {
+    fontSize: 10,
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM,
+  },
+  receiptUploadButton: {
+    marginTop: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    alignSelf: "flex-start",
+  },
+  receiptUploadButtonDisabled: {
+    opacity: 0.6,
+  },
+  receiptUploadButtonText: {
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
   },
   offerRow: {
     flexDirection: "row",
@@ -10567,6 +11812,30 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     textAlign: "center",
+  },
+  qrModalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    justifyContent: "center",
+    padding: 20,
+  },
+  qrModalCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+  },
+  qrModalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 8,
+  },
+  qrModalActions: {
+    marginTop: 16,
+    gap: 8,
   },
   adminApprove: {
     flex: 1,
