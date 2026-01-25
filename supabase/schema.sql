@@ -23,6 +23,8 @@ alter table public.profiles alter column role set default 'consumer';
 alter table public.profiles
   add column if not exists phone text,
   add column if not exists company text;
+alter table public.profiles
+  add column if not exists points_balance integer not null default 0;
 
 create table if not exists public.businesses (
   id uuid primary key default gen_random_uuid(),
@@ -101,6 +103,21 @@ create table if not exists public.redemptions (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.business_views (
+  id uuid primary key default gen_random_uuid(),
+  business_id uuid not null references public.businesses on delete cascade,
+  user_id uuid references auth.users on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.offer_views (
+  id uuid primary key default gen_random_uuid(),
+  business_id uuid not null references public.businesses on delete cascade,
+  offer_id uuid not null references public.offers on delete cascade,
+  user_id uuid references auth.users on delete set null,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.reviews (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references auth.users on delete set null,
@@ -151,6 +168,20 @@ create index if not exists businesses_owner_id_idx on public.businesses(owner_id
 create index if not exists businesses_location_idx
   on public.businesses(latitude, longitude);
 create index if not exists offers_business_id_idx on public.offers(business_id);
+create index if not exists business_views_business_id_idx
+  on public.business_views(business_id);
+create index if not exists business_views_user_id_idx
+  on public.business_views(user_id);
+create index if not exists business_views_created_idx
+  on public.business_views(created_at);
+create index if not exists offer_views_business_id_idx
+  on public.offer_views(business_id);
+create index if not exists offer_views_offer_id_idx
+  on public.offer_views(offer_id);
+create index if not exists offer_views_user_id_idx
+  on public.offer_views(user_id);
+create index if not exists offer_views_created_idx
+  on public.offer_views(created_at);
 create index if not exists change_requests_entity_idx
   on public.change_requests(entity_type, entity_id);
 create index if not exists change_requests_business_idx
@@ -158,8 +189,9 @@ create index if not exists change_requests_business_idx
 create index if not exists reviews_business_id_idx on public.reviews(business_id);
 create index if not exists reviews_user_id_idx on public.reviews(user_id);
 create index if not exists reviews_redemption_id_idx on public.reviews(redemption_id);
-create unique index if not exists reviews_redemption_unique_idx
-  on public.reviews(redemption_id);
+drop index if exists reviews_redemption_unique_idx;
+create unique index if not exists reviews_user_business_unique_idx
+  on public.reviews(user_id, business_id);
 create unique index if not exists receipt_uploads_redemption_id_idx
   on public.receipt_uploads(redemption_id);
 create index if not exists receipt_uploads_business_id_idx
@@ -185,6 +217,58 @@ set search_path = public
 as $$
 begin
   new.updated_at = now();
+  return new;
+end;
+$$;
+
+create or replace function public.increment_points(target_user uuid, delta integer)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if target_user is null then
+    return;
+  end if;
+  update public.profiles
+  set points_balance = coalesce(points_balance, 0) + coalesce(delta, 0)
+  where id = target_user;
+end;
+$$;
+
+create or replace function public.award_points_on_redemption()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  delta integer;
+begin
+  if new.points_awarded is null then
+    return new;
+  end if;
+  if old.points_awarded is null then
+    delta := new.points_awarded;
+  else
+    delta := new.points_awarded - old.points_awarded;
+  end if;
+  if delta <> 0 then
+    perform public.increment_points(new.scanned_by, delta);
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.award_points_on_review()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.increment_points(new.user_id, 50);
   return new;
 end;
 $$;
@@ -234,12 +318,24 @@ create trigger set_offers_updated_at
 before update on public.offers
 for each row execute function public.set_updated_at();
 
+drop trigger if exists award_points_on_redemption on public.redemptions;
+create trigger award_points_on_redemption
+after update of points_awarded on public.redemptions
+for each row execute function public.award_points_on_redemption();
+
+drop trigger if exists award_points_on_review on public.reviews;
+create trigger award_points_on_review
+after insert on public.reviews
+for each row execute function public.award_points_on_review();
+
 -- Row level security (RLS)
 alter table public.profiles enable row level security;
 alter table public.businesses enable row level security;
 alter table public.offers enable row level security;
 alter table public.change_requests enable row level security;
 alter table public.redemptions enable row level security;
+alter table public.business_views enable row level security;
+alter table public.offer_views enable row level security;
 alter table public.reviews enable row level security;
 alter table public.notification_tokens enable row level security;
 alter table public.notification_preferences enable row level security;
@@ -277,6 +373,12 @@ drop policy if exists "Owners can read redemptions" on public.redemptions;
 drop policy if exists "Users can read own redemptions" on public.redemptions;
 drop policy if exists "Users can create redemptions" on public.redemptions;
 drop policy if exists "Users can update own redemptions" on public.redemptions;
+drop policy if exists "Users can create views" on public.business_views;
+drop policy if exists "Owners can read views" on public.business_views;
+drop policy if exists "Staff can read views" on public.business_views;
+drop policy if exists "Users can create offer views" on public.offer_views;
+drop policy if exists "Owners can read offer views" on public.offer_views;
+drop policy if exists "Staff can read offer views" on public.offer_views;
 drop policy if exists "Users can read own reviews" on public.reviews;
 drop policy if exists "Reviews are public read" on public.reviews;
 drop policy if exists "Users can create reviews" on public.reviews;
@@ -461,15 +563,54 @@ with check (auth.uid() is not null and scanned_by = auth.uid());
 
 create policy "Users can update own redemptions"
 on public.redemptions for update
-using (auth.uid() = scanned_by)
+using (
+  auth.uid() = scanned_by
+  or exists (
+    select 1 from public.receipt_uploads ru
+    where ru.redemption_id = id
+      and ru.user_id = auth.uid()
+  )
+)
 with check (
   auth.uid() = scanned_by
-  and exists (
+  or exists (
     select 1 from public.receipt_uploads ru
     where ru.redemption_id = id
       and ru.user_id = auth.uid()
   )
 );
+
+create policy "Users can create views"
+on public.business_views for insert
+with check (auth.uid() = user_id);
+
+create policy "Owners can read views"
+on public.business_views for select
+using (
+  auth.uid() = (
+    select owner_id from public.businesses where id = business_id
+  )
+);
+
+create policy "Staff can read views"
+on public.business_views for select
+using (public.is_staff());
+
+create policy "Users can create offer views"
+on public.offer_views for insert
+with check (auth.uid() = user_id);
+
+create policy "Owners can read offer views"
+on public.offer_views for select
+using (
+  auth.uid() = (
+    select owner_id from public.businesses where id = business_id
+  )
+);
+
+create policy "Staff can read offer views"
+on public.offer_views for select
+using (public.is_staff());
 
 create policy "Users can read own reviews"
 on public.reviews for select

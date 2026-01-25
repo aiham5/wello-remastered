@@ -728,6 +728,13 @@ const resolveRedemptionPoints = (entry) => {
 
 const resolvePendingPoints = (entry) => resolveOfferPoints(entry?.offer);
 
+const formatMetricValue = (value) => {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "number") return value.toLocaleString();
+  const text = String(value).trim();
+  return text.length ? text : "—";
+};
+
 const parseClockMinutes = (time, meridiem) => {
   if (!time) return null;
   const [hoursRaw, minutesRaw = "0"] = String(time).split(":");
@@ -811,7 +818,7 @@ const FILTERS = [
   { key: "open", label: "Open now" },
   { key: "top", label: "Top rated" },
   { key: "new", label: "New offers" },
-  { key: "family", label: "Family friendly" },
+  { key: "family", label: "Entertainment" },
 ];
 
 const CATEGORY_OPTIONS = [
@@ -1215,11 +1222,13 @@ export default function App() {
   const [signInEmail, setSignInEmail] = useState("");
   const [signInPassword, setSignInPassword] = useState("");
   const [signInError, setSignInError] = useState(null);
+  const [signUpName, setSignUpName] = useState("");
   const [signUpEmail, setSignUpEmail] = useState("");
   const [signUpPassword, setSignUpPassword] = useState("");
   const [signUpError, setSignUpError] = useState(null);
   const [businessEmail, setBusinessEmail] = useState("");
   const [businessPassword, setBusinessPassword] = useState("");
+  const [businessOwnerName, setBusinessOwnerName] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [businessCategoryKey, setBusinessCategoryKey] = useState("restaurant");
   const [businessAddress, setBusinessAddress] = useState("");
@@ -1247,6 +1256,7 @@ export default function App() {
   const [profileEmail, setProfileEmail] = useState("");
   const [profilePhone, setProfilePhone] = useState("");
   const [profileCompany, setProfileCompany] = useState("");
+  const [profilePoints, setProfilePoints] = useState(null);
   const [profileMessage, setProfileMessage] = useState(null);
   const [accountRole, setAccountRole] = useState("consumer");
   const [authUserId, setAuthUserId] = useState(null);
@@ -1329,6 +1339,10 @@ export default function App() {
   const [receiptPreview, setReceiptPreview] = useState(null);
   const [receiptNoticeOpen, setReceiptNoticeOpen] = useState(false);
   const receiptNoticeShownRef = useRef(false);
+  const [expandedAdminEdits, setExpandedAdminEdits] = useState({});
+  const [expandedAdminOffers, setExpandedAdminOffers] = useState({});
+  const [expandedAdminBusinesses, setExpandedAdminBusinesses] = useState({});
+  const [showReachTooltip, setShowReachTooltip] = useState(false);
   const [reviewTarget, setReviewTarget] = useState(null);
   const [reviewRating, setReviewRating] = useState(0);
   const [reviewText, setReviewText] = useState("");
@@ -1414,6 +1428,15 @@ export default function App() {
     uploading: false,
     error: null,
   });
+  const [ownerAnalytics, setOwnerAnalytics] = useState({
+    redemptions: null,
+    views: null,
+    reach: null,
+  });
+  const [ownerAnalyticsStatus, setOwnerAnalyticsStatus] = useState({
+    loading: false,
+    error: null,
+  });
   const [receiptUploadStatus, setReceiptUploadStatus] = useState({
     uploading: false,
     error: null,
@@ -1424,6 +1447,12 @@ export default function App() {
     error: null,
   });
   const [businessReceipts, setBusinessReceipts] = useState([]);
+  const [viewsModalOpen, setViewsModalOpen] = useState(false);
+  const [viewsBreakdownStatus, setViewsBreakdownStatus] = useState({
+    loading: false,
+    error: null,
+  });
+  const [viewsBreakdown, setViewsBreakdown] = useState([]);
   const [offerBusy, setOfferBusy] = useState(false);
   const [offerError, setOfferError] = useState(null);
   const [formMessage, setFormMessage] = useState(null);
@@ -1432,6 +1461,8 @@ export default function App() {
   const [addressError, setAddressError] = useState(null);
   const addressRequestRef = useRef(0);
   const addressSelectionRef = useRef(false);
+  const reachTooltipTimerRef = useRef(null);
+  const viewedOfferIdsRef = useRef(new Set());
   const translateY = useRef(new Animated.Value(COLLAPSED_Y)).current;
   const translateYRef = useRef(COLLAPSED_Y);
   const dragStart = useRef(COLLAPSED_Y);
@@ -1446,7 +1477,7 @@ export default function App() {
     const fallbackName = formatDisplayName(email);
     const { data, error } = await supabase
       .from("profiles")
-      .select("full_name, email, role, phone, company")
+      .select("full_name, email, role, phone, company, points_balance")
       .eq("id", user.id)
       .maybeSingle();
     if (error) {
@@ -1467,6 +1498,9 @@ export default function App() {
     const profileEmailValue = data?.email || email;
     const profilePhoneValue = data?.phone || metadataPhone || "";
     const profileCompanyValue = data?.company || metadataCompany || "";
+    const profilePointsValue = Number.isFinite(Number(data?.points_balance))
+      ? Number(data.points_balance)
+      : 0;
 
     if (!data || roleOverride) {
       const { error: upsertError } = await supabase.from("profiles").upsert({
@@ -1487,6 +1521,7 @@ export default function App() {
     setProfileEmail(profileEmailValue);
     setProfilePhone(profilePhoneValue);
     setProfileCompany(profileCompanyValue);
+    setProfilePoints(profilePointsValue);
     setAuthBusinessDraft(metadataDraft);
     setAccountRole(nextRole);
     console.log("Wello role hydrate:", {
@@ -1632,6 +1667,198 @@ export default function App() {
     return Component;
   }, []);
 
+  const refreshProfilePoints = useCallback(async () => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !authUserId) return;
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("points_balance")
+      .eq("id", authUserId)
+      .maybeSingle();
+    if (error) {
+      return;
+    }
+    const pointsValue = Number.isFinite(Number(data?.points_balance))
+      ? Number(data.points_balance)
+      : 0;
+    setProfilePoints(pointsValue);
+  }, [authUserId]);
+
+  const trackOfferView = useCallback(
+    async (businessId, offerId) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+      if (!authUserId || !businessId || !offerId) return;
+      const key = String(offerId);
+      if (viewedOfferIdsRef.current.has(key)) return;
+      viewedOfferIdsRef.current.add(key);
+      const { error } = await supabase.from("offer_views").insert({
+        business_id: businessId,
+        offer_id: offerId,
+        user_id: authUserId,
+      });
+      if (error) {
+        console.warn("Wello offer view insert failed:", error.message);
+        viewedOfferIdsRef.current.delete(key);
+      }
+    },
+    [authUserId],
+  );
+
+  const loadOwnerAnalytics = useCallback(
+    async (businessId, { silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !businessId) return;
+      if (!silent) {
+        setOwnerAnalyticsStatus({ loading: true, error: null });
+      }
+      const { data, error } = await supabase
+        .from("redemptions")
+        .select("id")
+        .eq("business_id", businessId);
+      if (error) {
+        setOwnerAnalyticsStatus({
+          loading: false,
+          error: error.message || "Unable to load analytics.",
+        });
+        console.warn("Wello analytics load failed:", error.message);
+        return;
+      }
+      const count = Array.isArray(data) ? data.length : 0;
+    const { data: viewRows, error: viewError } = await supabase
+        .from("offer_views")
+        .select("user_id")
+        .eq("business_id", businessId);
+      if (viewError) {
+        setOwnerAnalyticsStatus({
+          loading: false,
+          error: viewError.message || "Unable to load analytics.",
+        });
+        console.warn("Wello analytics view load failed:", viewError.message);
+        return;
+      }
+      const viewsCount = Array.isArray(viewRows) ? viewRows.length : 0;
+      const reachCount = Array.isArray(viewRows)
+        ? new Set(
+            viewRows
+              .map((row) => row.user_id)
+              .filter((value) => value),
+          ).size
+        : 0;
+    setOwnerAnalytics({
+      redemptions: count,
+      views: viewsCount,
+      reach: reachCount,
+    });
+      if (!silent) {
+        setOwnerAnalyticsStatus({ loading: false, error: null });
+      } else {
+        setOwnerAnalyticsStatus((prev) =>
+          prev.error ? prev : { loading: false, error: null },
+        );
+      }
+    },
+    [],
+  );
+
+  const loadOfferViewsBreakdown = useCallback(
+    async (businessIdOverride = null) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        return;
+      }
+      const targetBusinessId =
+        businessIdOverride || ownerBusiness?.id || ownerBusinessId;
+      if (!targetBusinessId) {
+        return;
+      }
+      setViewsBreakdownStatus({ loading: true, error: null });
+      const { data, error } = await supabase
+        .from("offer_views")
+        .select("offer_id")
+        .eq("business_id", targetBusinessId);
+    setViewsDebugInfo((prev) => ({
+      ...(prev || {}),
+      offerViewsRows: Array.isArray(data) ? data.length : 0,
+    }));
+    if (error) {
+      setViewsBreakdownStatus({
+        loading: false,
+        error: error.message || "Unable to load view details.",
+      });
+      return;
+    }
+    const counts = new Map();
+    (data || []).forEach((row) => {
+      if (!row.offer_id) return;
+      counts.set(row.offer_id, (counts.get(row.offer_id) || 0) + 1);
+    });
+    const offerIds = Array.from(counts.keys());
+    const titles = new Map();
+    if (offerIds.length) {
+      const { data: offersData, error: offersError } = await supabase
+        .from("offers")
+        .select("id, title")
+        .in("id", offerIds);
+      setViewsDebugInfo((prev) => ({
+        ...(prev || {}),
+        offerIds: offerIds.length,
+        offerTitleRows: Array.isArray(offersData) ? offersData.length : 0,
+      }));
+      if (offersError) {
+        setViewsBreakdownStatus({
+          loading: false,
+          error: offersError.message || "Unable to load view details.",
+        });
+        return;
+      }
+      (offersData || []).forEach((offer) => {
+        if (offer?.id && offer?.title) {
+          titles.set(String(offer.id), offer.title);
+        }
+      });
+    }
+    let baseOffers = ownerOffers;
+    if (!baseOffers.length) {
+      const { data: ownedOffers, error: ownedOffersError } = await supabase
+        .from("offers")
+        .select("id, title")
+        .eq("business_id", targetBusinessId);
+      setViewsDebugInfo((prev) => ({
+        ...(prev || {}),
+        fallbackOfferRows: Array.isArray(ownedOffers)
+          ? ownedOffers.length
+          : 0,
+      }));
+      if (!ownedOffersError && Array.isArray(ownedOffers)) {
+        baseOffers = ownedOffers;
+      }
+    }
+    const items = [];
+    baseOffers.forEach((offer) => {
+      const id = String(offer.id);
+      items.push({
+        id,
+        title: offer.title || "Offer",
+        count: counts.get(id) || 0,
+      });
+      counts.delete(id);
+    });
+    counts.forEach((count, id) => {
+      items.push({
+        id,
+        title: titles.get(id) || "Offer (archived)",
+        count,
+      });
+    });
+    items.sort((a, b) => b.count - a.count);
+    setViewsBreakdown(items);
+    setViewsBreakdownStatus({ loading: false, error: null });
+    },
+    [ownerBusiness?.id, ownerBusinessId, ownerOffers],
+  );
+
+  useEffect(() => {
+    if (!authUserId) return;
+    refreshProfilePoints();
+  }, [authUserId, refreshProfilePoints]);
+
   const mergeBusinesses = useCallback((nextBusinesses) => {
     setBusinesses((prev) => {
       const map = new Map(prev.map((business) => [business.id, business]));
@@ -1752,6 +1979,7 @@ export default function App() {
       loadBusinessRatings({ silent: true });
       if (ownerBusiness?.id) {
         loadOwnerOffers(ownerBusiness.id);
+        loadOwnerAnalytics(ownerBusiness.id, { silent: true });
       }
     }, OFFERS_REFRESH_INTERVAL_MS);
     return () => clearInterval(intervalId);
@@ -1760,13 +1988,44 @@ export default function App() {
     loadRemoteOffers,
     loadBusinessRatings,
     loadOwnerOffers,
+    loadOwnerAnalytics,
     ownerBusiness?.id,
   ]);
 
   useEffect(() => {
     if (!ownerBusiness?.id) return;
     loadOwnerOffers(ownerBusiness.id);
-  }, [ownerBusiness?.id, loadOwnerOffers]);
+    loadOwnerAnalytics(ownerBusiness.id, { silent: true });
+  }, [ownerBusiness?.id, loadOwnerOffers, loadOwnerAnalytics]);
+
+  useEffect(() => {
+    if (activeTab !== "business" || !ownerBusiness?.id) return;
+    loadOwnerAnalytics(ownerBusiness.id, { silent: false });
+  }, [activeTab, ownerBusiness?.id, loadOwnerAnalytics]);
+
+  useEffect(() => {
+    if (!viewsModalOpen) return;
+    loadOfferViewsBreakdown(ownerBusiness?.id || ownerBusinessId);
+  }, [viewsModalOpen, loadOfferViewsBreakdown]);
+
+  useEffect(
+    () => () => {
+      if (reachTooltipTimerRef.current) {
+        clearTimeout(reachTooltipTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  const triggerReachTooltip = useCallback(() => {
+    setShowReachTooltip(true);
+    if (reachTooltipTimerRef.current) {
+      clearTimeout(reachTooltipTimerRef.current);
+    }
+    reachTooltipTimerRef.current = setTimeout(() => {
+      setShowReachTooltip(false);
+    }, 2600);
+  }, []);
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
@@ -1927,17 +2186,6 @@ export default function App() {
     return () => clearTimeout(timeout);
   }, [businessAddress]);
 
-  const filterPredicates = useMemo(
-    () => ({
-      open: (business) => business.isOpen,
-      top: (business) => business.rating && business.rating >= 4.7,
-      new: (business) =>
-        business.createdAt && Date.now() - business.createdAt <= NEW_WINDOW_MS,
-      family: (business) => business.tags.includes("family"),
-    }),
-    [],
-  );
-
   const approvedBusinesses = useMemo(
     () =>
       businesses.filter((business) => business.approved && !business.rejected),
@@ -1950,51 +2198,6 @@ export default function App() {
       ),
     [offers],
   );
-  const offersByBusiness = useMemo(() => {
-    const map = new Map();
-    publicOffers.forEach((offer) => {
-      if (!map.has(offer.businessId)) {
-        map.set(offer.businessId, []);
-      }
-      map.get(offer.businessId).push(offer);
-    });
-    return map;
-  }, [publicOffers]);
-
-  const filteredBusinesses = useMemo(() => {
-    const trimmed = query.trim().toLowerCase();
-    const baseList = approvedBusinesses.filter((business) =>
-      activeFilters.every((filterKey) =>
-        filterPredicates[filterKey]
-          ? filterPredicates[filterKey](business)
-          : true,
-      ),
-    );
-    if (!trimmed) return baseList;
-    return baseList.filter((business) => {
-      const offerText = (offersByBusiness.get(business.id) || [])
-        .map((offer) => `${offer.title} ${offer.description}`)
-        .join(" ")
-        .toLowerCase();
-      const haystack = [
-        business.name,
-        business.category,
-        business.offer,
-        business.subscription,
-        business.tags.join(" "),
-      ]
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(trimmed) || offerText.includes(trimmed);
-    });
-  }, [
-    query,
-    approvedBusinesses,
-    activeFilters,
-    filterPredicates,
-    offersByBusiness,
-  ]);
-
   const offerCards = useMemo(() => {
     const businessMap = new Map(
       businesses.map((business) => [business.id, business]),
@@ -2022,6 +2225,9 @@ export default function App() {
         ]
           .join(" ")
           .toLowerCase();
+        const openFromHours = isBusinessOpenNow(business.hours);
+        const isOpen =
+          openFromHours === null ? business.isOpen ?? true : openFromHours;
         return {
           id: offer.id,
           offerId: offer.id,
@@ -2046,6 +2252,8 @@ export default function App() {
           tags: business.tags || [],
           imageUrl: offer.imageUrl,
           searchText,
+          isOpen,
+          offerCreatedAt: offer.createdAt,
         };
       })
       .filter(Boolean);
@@ -2053,15 +2261,72 @@ export default function App() {
 
   const filteredOfferCards = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
-    const visibleBusinessIds = new Set(
-      filteredBusinesses.map((business) => business.id),
-    );
-    return offerCards.filter((card) => {
-      if (!visibleBusinessIds.has(card.businessId)) return false;
+    const base = offerCards.filter((card) => {
+      const matchesFilters = activeFilters.every((filterKey) => {
+        switch (filterKey) {
+          case "open":
+            return Boolean(card.isOpen);
+          case "family":
+            return ["cafe", "activity"].includes(
+              String(card.categoryKey || "").toLowerCase(),
+            );
+          default:
+            return true;
+        }
+      });
+      if (!matchesFilters) return false;
       if (!trimmed) return true;
       return card.searchText.includes(trimmed);
     });
-  }, [offerCards, filteredBusinesses, query]);
+
+    const wantsTop = activeFilters.includes("top");
+    const wantsNew = activeFilters.includes("new");
+
+    let filtered = base;
+    if (wantsTop) {
+      filtered = filtered.filter(
+        (card) => Number.isFinite(card.rating) && card.rating >= 4.0,
+      );
+      if (!filtered.length) {
+        filtered = base;
+      }
+    }
+    if (wantsNew) {
+      const newFiltered = filtered.filter(
+        (card) =>
+          card.offerCreatedAt &&
+          Date.now() - card.offerCreatedAt <= NEW_WINDOW_MS,
+      );
+      if (newFiltered.length) {
+        filtered = newFiltered;
+      }
+    }
+
+    const sorted = [...filtered];
+    if (wantsTop && wantsNew) {
+      sorted.sort((a, b) => {
+        const ratingDelta = (b.rating || 0) - (a.rating || 0);
+        if (ratingDelta !== 0) return ratingDelta;
+        return (b.offerCreatedAt || 0) - (a.offerCreatedAt || 0);
+      });
+    } else if (wantsTop) {
+      sorted.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    } else if (wantsNew) {
+      sorted.sort(
+        (a, b) => (b.offerCreatedAt || 0) - (a.offerCreatedAt || 0),
+      );
+    }
+    return sorted;
+  }, [offerCards, activeFilters, query]);
+
+  const filteredBusinesses = useMemo(() => {
+    const visibleBusinessIds = new Set(
+      filteredOfferCards.map((card) => card.businessId),
+    );
+    return approvedBusinesses.filter((business) =>
+      visibleBusinessIds.has(business.id),
+    );
+  }, [approvedBusinesses, filteredOfferCards]);
 
   const ownerOffers = useMemo(() => {
     if (!ownerBusiness?.id) return [];
@@ -2090,8 +2355,22 @@ export default function App() {
 
   const ownerMetrics = useMemo(() => {
     if (!ownerBusiness) return DEFAULT_ANALYTICS;
-    return BUSINESS_ANALYTICS[ownerBusiness.id] || DEFAULT_ANALYTICS;
-  }, [ownerBusiness]);
+    const fallback = BUSINESS_ANALYTICS[ownerBusiness.id] || DEFAULT_ANALYTICS;
+    return {
+      views:
+        ownerAnalytics.views ??
+        fallback.views ??
+        DEFAULT_ANALYTICS.views,
+      redemptions:
+        ownerAnalytics.redemptions ??
+        fallback.redemptions ??
+        DEFAULT_ANALYTICS.redemptions,
+      reach:
+        ownerAnalytics.reach ??
+        fallback.reach ??
+        DEFAULT_ANALYTICS.reach,
+    };
+  }, [ownerBusiness, ownerAnalytics]);
 
   const pendingEditBusinesses = useMemo(
     () => businesses.filter((business) => business.pendingEdits),
@@ -2218,20 +2497,23 @@ export default function App() {
       ),
     [redemptionHistory],
   );
+  const pointsBalance =
+    profilePoints === null ? totalPoints : profilePoints;
   const pointsProgress = useMemo(() => {
     const milestones = POINT_MILESTONES.slice().sort((a, b) => a - b);
     const lastMilestone = milestones[milestones.length - 1] || 0;
     const nextMilestone =
-      milestones.find((milestone) => totalPoints < milestone) || lastMilestone;
+      milestones.find((milestone) => pointsBalance < milestone) ||
+      lastMilestone;
     const nextIndex = milestones.indexOf(nextMilestone);
     const prevMilestone = nextIndex > 0 ? milestones[nextIndex - 1] : 0;
     const range = Math.max(1, nextMilestone - prevMilestone);
     const progress = Math.min(
       1,
-      Math.max(0, (totalPoints - prevMilestone) / range),
+      Math.max(0, (pointsBalance - prevMilestone) / range),
     );
     const label =
-      totalPoints >= lastMilestone
+      pointsBalance >= lastMilestone
         ? "All milestones unlocked"
         : `Next milestone at ${nextMilestone} pts`;
     return {
@@ -2240,7 +2522,7 @@ export default function App() {
       nextMilestone,
       prevMilestone,
     };
-  }, [totalPoints]);
+  }, [pointsBalance]);
 
   const isReceiptWindowOpen = (entry) => {
     if (!entry?.createdAt) return false;
@@ -2806,6 +3088,10 @@ export default function App() {
   };
 
   const handleCreateAccount = async () => {
+    if (!signUpName.trim()) {
+      setSignUpError("Full name is required.");
+      return;
+    }
     if (!signUpEmail.trim() || !signUpPassword.trim()) {
       setSignUpError("Email and password are required.");
       return;
@@ -2818,6 +3104,12 @@ export default function App() {
       const { data, error } = await supabase.auth.signUp({
         email,
         password: signUpPassword,
+        options: {
+          data: {
+            full_name: signUpName.trim(),
+            role: "consumer",
+          },
+        },
       });
       if (error) {
         setSignUpError(error.message || "Unable to create account.");
@@ -2830,6 +3122,7 @@ export default function App() {
       await hydrateProfile(data.user, "consumer");
       setIsSignedIn(true);
       setSignUpPassword("");
+      setSignUpName("");
     } finally {
       setAuthBusy(false);
     }
@@ -2838,6 +3131,10 @@ export default function App() {
   const handleBusinessSignUp = async () => {
     if (!businessEmail.trim() || !businessPassword.trim()) {
       setBusinessSignUpError("Email and password are required.");
+      return;
+    }
+    if (!businessOwnerName.trim()) {
+      setBusinessSignUpError("Full name is required.");
       return;
     }
     if (!businessName.trim() || !businessAddress.trim()) {
@@ -2887,7 +3184,7 @@ export default function App() {
         options: {
           data: {
             role: "business_owner",
-            full_name: businessName.trim(),
+            full_name: businessOwnerName.trim(),
             phone: businessPhone.trim(),
             company: businessName.trim(),
             business_draft: businessDraft,
@@ -2911,7 +3208,7 @@ export default function App() {
           .upsert({
             id: data.user.id,
             email,
-            full_name: businessName.trim(),
+            full_name: businessOwnerName.trim(),
             phone: businessPhone.trim() || null,
             company: businessName.trim(),
             role: "business_owner",
@@ -2995,6 +3292,7 @@ export default function App() {
 
       setIsSignedIn(true);
       setBusinessPassword("");
+      setBusinessOwnerName("");
       setBusinessName("");
       setBusinessAddress("");
       setBusinessAddressCoords(null);
@@ -3073,6 +3371,12 @@ export default function App() {
     setAccountRole("consumer");
     setAuthUserId(null);
     setAuthEmail("");
+    setProfileName("");
+    setProfileEmail("");
+    setProfilePhone("");
+    setProfileCompany("");
+    setProfilePoints(null);
+    viewedOfferIdsRef.current = new Set();
     setAuthBusinessDraft(null);
     setSignInError(null);
     setSignUpError(null);
@@ -3314,6 +3618,15 @@ export default function App() {
       setReviewError("Sign in to submit a review.");
       return;
     }
+    if (reviewTarget.entry.businessId) {
+      const alreadyReviewed = reviewedBusinessIds.has(
+        String(reviewTarget.entry.businessId),
+      );
+      if (alreadyReviewed) {
+        setReviewError("You already reviewed this business.");
+        return;
+      }
+    }
     setReviewBusy(true);
     setReviewError(null);
     const entry = reviewTarget.entry;
@@ -3333,7 +3646,11 @@ export default function App() {
       )
       .maybeSingle();
     if (error || !data) {
-      setReviewError(error?.message || "Unable to submit your review.");
+      if (error?.code === "23505") {
+        setReviewError("You already reviewed this business.");
+      } else {
+        setReviewError(error?.message || "Unable to submit your review.");
+      }
       setReviewBusy(false);
       return;
     }
@@ -3341,6 +3658,7 @@ export default function App() {
     setReviewBusy(false);
     closeReviewModal();
     loadUserReviews({ silent: true });
+    refreshProfilePoints();
     if (entry.businessId) {
       loadBusinessReviews(entry.businessId, { silent: true });
     }
@@ -3566,6 +3884,7 @@ export default function App() {
   const handleCardPress = async (card) => {
     const business = resolveBusinessFromCard(card);
     if (!business) return;
+    trackOfferView(business.id, card?.offerId || card?.id);
     openSheetForBusiness(business);
     openBusinessDetail(business);
     let coordinate = getBusinessCoordinate(business);
@@ -4737,15 +5056,8 @@ export default function App() {
       const mediaTypes = ImagePicker.MediaType?.Images
         ? [ImagePicker.MediaType.Images]
         : ImagePicker.MediaTypeOptions?.Images;
-      if (!mediaTypes) {
-        setOfferImageStatus({
-          uploading: false,
-          error: "Image picker is not available in this Expo Go version.",
-        });
-        return;
-      }
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes,
+        ...(mediaTypes ? { mediaTypes } : {}),
         allowsEditing: true,
         aspect: [2, 1],
         quality: 0.85,
@@ -4820,16 +5132,8 @@ export default function App() {
       const mediaTypes = ImagePicker.MediaType?.Images
         ? [ImagePicker.MediaType.Images]
         : ImagePicker.MediaTypeOptions?.Images;
-      if (!mediaTypes) {
-        setReceiptUploadStatus({
-          uploading: false,
-          error: "Image picker is not available in this Expo Go version.",
-          targetId: null,
-        });
-        return;
-      }
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes,
+        ...(mediaTypes ? { mediaTypes } : {}),
         allowsEditing: true,
         aspect: [4, 5],
         quality: 0.85,
@@ -4886,6 +5190,8 @@ export default function App() {
         .eq("id", entry.id);
       if (updateError) {
         console.warn("Wello receipt points update failed:", updateError.message);
+      } else {
+        refreshProfilePoints();
       }
       setRedemptionHistory((prev) =>
         prev.map((item) =>
@@ -6180,7 +6486,15 @@ export default function App() {
                       </Text>
                     </View>
                 ) : (
-                  businessDetailOffers.map((offer) => (
+                  businessDetailOffers.map((offer) => {
+                    const detailHours =
+                      businessDetail?.hours || businessDetail?.business?.hours || "";
+                    const openFromHours = isBusinessOpenNow(detailHours);
+                    const isBusinessOpen =
+                      openFromHours === null
+                        ? (businessDetail?.isOpen ?? true)
+                        : openFromHours;
+                    return (
                     <View key={offer.id} style={styles.detailOfferCard}>
                       {offer.imageUrl ? (
                         <Image
@@ -6214,7 +6528,10 @@ export default function App() {
                         </Text>
                       </View>
                       <TouchableOpacity
-                        style={styles.detailOfferRedemption}
+                        style={[
+                          styles.detailOfferRedemption,
+                          !isBusinessOpen && styles.detailOfferRedemptionDisabled,
+                        ]}
                         onPress={() =>
                           handleRedeemOffer({
                             id: offer.id,
@@ -6226,14 +6543,14 @@ export default function App() {
                             tags: businessDetail.tags,
                           })
                         }
-                        disabled={redeemGateBusy}
+                        disabled={redeemGateBusy || !isBusinessOpen}
                       >
                         <Text style={styles.detailOfferRedemptionText}>
-                          Redeem this offer
+                          {isBusinessOpen ? "Redeem this offer" : "Closed now"}
                         </Text>
                       </TouchableOpacity>
                     </View>
-                  ))
+                  )})
                 )}
                   </View>
 
@@ -6748,31 +7065,81 @@ export default function App() {
                       </View>
 
                       <View style={styles.analyticsGrid}>
+                        <TouchableOpacity
+                          style={[styles.analyticsCard, styles.analyticsCardInteractive]}
+                          onPress={() => {
+                            setViewsModalOpen(true);
+                            loadOfferViewsBreakdown(ownerBusiness?.id || ownerBusinessId);
+                          }}
+                          activeOpacity={0.85}
+                        >
+                          <Text style={styles.analyticsValue}>
+                            {formatMetricValue(ownerMetrics.views)}
+                          </Text>
+                          <View style={styles.analyticsLabelRow}>
+                            <Text style={styles.analyticsLabel}>Views</Text>
+                            <Ionicons
+                              name="chevron-forward"
+                              size={14}
+                              color={COLORS.muted}
+                            />
+                          </View>
+                          <Text style={styles.analyticsHint}>Tap to view offer breakdown</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.analyticsCard, styles.analyticsCardInteractive]}
+                          onPress={() => setReceiptsModalOpen(true)}
+                          activeOpacity={0.85}
+                        >
+                          <Text style={styles.analyticsValue}>
+                            {formatMetricValue(ownerMetrics.redemptions)}
+                          </Text>
+                          <View style={styles.analyticsLabelRow}>
+                            <Text style={styles.analyticsLabel}>
+                              Redemptions
+                            </Text>
+                            <Ionicons
+                              name="chevron-forward"
+                              size={14}
+                              color={COLORS.muted}
+                            />
+                          </View>
+                          <Text style={styles.analyticsHint}>
+                            Tap to view receipts
+                          </Text>
+                        </TouchableOpacity>
                         <View style={styles.analyticsCard}>
                           <Text style={styles.analyticsValue}>
-                            {ownerMetrics.views.toLocaleString()}
+                            {formatMetricValue(ownerMetrics.reach)}
                           </Text>
-                          <Text style={styles.analyticsLabel}>Views</Text>
-                        </View>
-                        <View style={styles.analyticsCard}>
-                          <Text style={styles.analyticsValue}>
-                            {ownerMetrics.saves.toLocaleString()}
-                          </Text>
-                          <Text style={styles.analyticsLabel}>Saves</Text>
-                        </View>
-                        <View style={styles.analyticsCard}>
-                          <Text style={styles.analyticsValue}>
-                            {ownerMetrics.redemptions.toLocaleString()}
-                          </Text>
-                          <Text style={styles.analyticsLabel}>Redemptions</Text>
-                        </View>
-                        <View style={styles.analyticsCard}>
-                          <Text style={styles.analyticsValue}>
-                            {ownerMetrics.reach}
-                          </Text>
-                          <Text style={styles.analyticsLabel}>Reach</Text>
+                          <View style={styles.analyticsLabelRow}>
+                            <Text style={styles.analyticsLabel}>Reach</Text>
+                            <TouchableOpacity
+                              style={styles.analyticsInfoButton}
+                              onPress={triggerReachTooltip}
+                            >
+                              <Ionicons
+                                name="information-circle-outline"
+                                size={14}
+                                color={COLORS.muted}
+                              />
+                            </TouchableOpacity>
+                          </View>
+                          {showReachTooltip && (
+                            <View style={styles.analyticsTooltip}>
+                              <Text style={styles.analyticsTooltipText}>
+                                Reach is the estimated number of unique people
+                                who saw your listing.
+                              </Text>
+                            </View>
+                          )}
                         </View>
                       </View>
+                      {ownerAnalyticsStatus.error && (
+                        <Text style={styles.formError}>
+                          {ownerAnalyticsStatus.error}
+                        </Text>
+                      )}
 
                       <View style={styles.sectionBlock}>
                         <Text style={styles.sectionTitleAlt}>
@@ -7837,7 +8204,7 @@ export default function App() {
                             <View style={styles.pointsHeader}>
                               <Text style={styles.pointsLabel}>Points</Text>
                               <Text style={styles.pointsValue}>
-                                {totalPoints.toLocaleString()}
+                                {pointsBalance.toLocaleString()}
                               </Text>
                             </View>
                             <Text style={styles.pointsMeta}>
@@ -8093,28 +8460,11 @@ export default function App() {
                                                 </Text>
                                               ) : null}
                                               {needsReceipt &&
-                                                receiptWindowOpen && (
-                                                  <TouchableOpacity
-                                                    style={[
-                                                      styles.receiptUploadButton,
-                                                      isUploadingReceipt &&
-                                                        styles.receiptUploadButtonDisabled,
-                                                    ]}
-                                                    onPress={() =>
-                                                      handleUploadReceipt(entry)
-                                                    }
-                                                    disabled={isUploadingReceipt}
-                                                  >
-                                                    <Text
-                                                      style={
-                                                        styles.receiptUploadButtonText
-                                                      }
-                                                    >
-                                                      {isUploadingReceipt
-                                                        ? "Uploading..."
-                                                        : "Upload receipt"}
-                                                    </Text>
-                                                  </TouchableOpacity>
+                                                receiptWindowOpen &&
+                                                isUploadingReceipt && (
+                                                  <Text style={styles.formHint}>
+                                                    Uploading receipt...
+                                                  </Text>
                                                 )}
                                             </View>
                                           );
@@ -8257,6 +8607,15 @@ export default function App() {
                                 and redeem offers.
                               </Text>
 
+                              <Text style={styles.formLabel}>Full name</Text>
+                              <AutoFocusInput
+                                style={styles.authInput}
+                                placeholder="Your name"
+                                placeholderTextColor={COLORS.muted}
+                                value={signUpName}
+                                onChangeText={setSignUpName}
+                              />
+
                               <Text style={styles.formLabel}>Email</Text>
                               <AutoFocusInput
                                 style={styles.authInput}
@@ -8322,6 +8681,15 @@ export default function App() {
                                 Business accounts are reviewed before they
                                 appear in Wello.
                               </Text>
+
+                              <Text style={styles.formLabel}>Full name</Text>
+                              <AutoFocusInput
+                                style={styles.authInput}
+                                placeholder="Your name"
+                                placeholderTextColor={COLORS.muted}
+                                value={businessOwnerName}
+                                onChangeText={setBusinessOwnerName}
+                              />
 
                               <Text style={styles.formLabel}>
                                 Business name
@@ -8747,34 +9115,20 @@ export default function App() {
                               keyboardType="phone-pad"
                             />
 
-                            <Text style={styles.formLabel}>Company</Text>
-                            <AutoFocusInput
-                              style={styles.formInput}
-                              placeholder="Business name"
-                              placeholderTextColor={COLORS.muted}
-                              value={profileCompany}
-                              onChangeText={setProfileCompany}
-                            />
+                            {accountRole !== "consumer" && (
+                              <>
+                                <Text style={styles.formLabel}>Company</Text>
+                                <AutoFocusInput
+                                  style={styles.formInput}
+                                  placeholder="Business name"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={profileCompany}
+                                  onChangeText={setProfileCompany}
+                                />
+                              </>
+                            )}
 
-                            <View style={styles.profileMetaRow}>
-                              <View style={styles.profileMetaCard}>
-                                <Text style={styles.profileMetaLabel}>
-                                  Plan
-                                </Text>
-                                <Text style={styles.profileMetaValue}>
-                                  {ownerBusiness?.subscription ||
-                                    "Starter $50/mo"}
-                                </Text>
-                              </View>
-                              <View style={styles.profileMetaCard}>
-                                <Text style={styles.profileMetaLabel}>
-                                  Listings
-                                </Text>
-                                <Text style={styles.profileMetaValue}>
-                                  {approvedBusinesses.length}
-                                </Text>
-                              </View>
-                            </View>
+                            <View style={styles.profileMetaRow} />
 
                             <View style={styles.formActions}>
                               <TouchableOpacity
@@ -8832,6 +9186,33 @@ export default function App() {
                         </Text>
                       )}
 
+                      <View style={styles.adminSummary}>
+                        <View style={styles.statCard}>
+                          <Text style={styles.statValue}>
+                            {pendingBusinesses.length}
+                          </Text>
+                          <Text style={styles.statLabel}>Pending listings</Text>
+                        </View>
+                        <View style={styles.statCard}>
+                          <Text style={styles.statValue}>
+                            {pendingEditBusinesses.length}
+                          </Text>
+                          <Text style={styles.statLabel}>Edit requests</Text>
+                        </View>
+                        <View style={styles.statCard}>
+                          <Text style={styles.statValue}>
+                            {pendingOffers.length}
+                          </Text>
+                          <Text style={styles.statLabel}>Offer reviews</Text>
+                        </View>
+                        <View style={styles.statCard}>
+                          <Text style={styles.statValue}>
+                            {approvedBusinesses.length}
+                          </Text>
+                          <Text style={styles.statLabel}>Approved</Text>
+                        </View>
+                      </View>
+
                       <View style={styles.sectionBlock}>
                         <Text style={styles.sectionTitleAlt}>
                           Pending edits
@@ -8851,58 +9232,109 @@ export default function App() {
                           </Text>
                         </View>
                       ) : (
-                        pendingEditBusinesses.map((business) => (
+                        pendingEditBusinesses.map((business) => {
+                          const isExpanded = Boolean(
+                            expandedAdminEdits[business.id],
+                          );
+                          const pendingEdits = business.pendingEdits || {};
+                          const fields = Object.keys(pendingEdits).filter(
+                            (field) => field !== "coordinate",
+                          );
+                          const resolveValue = (field, value) => {
+                            if (field === "categoryKey") {
+                              return getCategoryConfig(value).display;
+                            }
+                            return value || "--";
+                          };
+                          return (
                           <View key={business.id} style={styles.adminCard}>
-                            <View style={styles.adminHeader}>
-                              <Text style={styles.adminTitle}>
-                                {business.name}
-                              </Text>
-                              <Text style={styles.adminMeta}>
-                                {
-                                  getCategoryConfig(business.categoryKey)
-                                    .display
+                              <TouchableOpacity
+                                style={styles.adminHeaderRow}
+                                onPress={() =>
+                                  setExpandedAdminEdits((prev) => ({
+                                    ...prev,
+                                    [business.id]: !prev[business.id],
+                                  }))
                                 }
+                              >
+                                <View style={styles.adminHeaderText}>
+                                  <Text style={styles.adminTitle}>
+                                    {business.name}
+                                  </Text>
+                                  <Text style={styles.adminMeta}>
+                                    {
+                                      getCategoryConfig(business.categoryKey)
+                                        .display
+                                    }
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name={isExpanded ? "chevron-up" : "chevron-down"}
+                                  size={18}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
+                              <Text style={styles.adminOffer}>
+                                Requested updates
                               </Text>
-                            </View>
-                            <Text style={styles.adminOffer}>
-                              Requested updates
-                            </Text>
-                            <View style={styles.pendingList}>
-                              {Object.keys(business.pendingEdits || {})
-                                .filter((field) => field !== "coordinate")
-                                .map((field) => (
+                              <View style={styles.pendingList}>
+                                {fields.map((field) => (
                                   <View key={field} style={styles.pendingPill}>
                                     <Text style={styles.pendingPillText}>
                                       {getPendingEditLabel(field)}
                                     </Text>
                                   </View>
                                 ))}
-                            </View>
-                            <View style={styles.adminActions}>
-                              <TouchableOpacity
-                                style={styles.adminApprove}
-                                onPress={() => handleApproveEdits(business.id)}
-                              >
-                                <Text style={styles.adminActionText}>
-                                  Approve edits
-                                </Text>
-                              </TouchableOpacity>
-                              <TouchableOpacity
-                                style={styles.adminReject}
-                                onPress={() => handleRejectEdits(business.id)}
-                              >
-                                <Text
-                                  style={[
-                                    styles.adminActionText,
-                                    styles.adminActionTextDark,
-                                  ]}
+                              </View>
+                              {isExpanded && fields.length > 0 && (
+                                <View style={styles.adminDetails}>
+                                  {fields.map((field) => (
+                                    <View
+                                      key={field}
+                                      style={styles.adminDetailRow}
+                                    >
+                                      <Text style={styles.adminDetailLabel}>
+                                        {getPendingEditLabel(field)}
+                                      </Text>
+                                      <Text style={styles.adminDetailValue}>
+                                        {resolveValue(field, business[field])}
+                                      </Text>
+                                      <Text style={styles.adminDetailValueNew}>
+                                        {resolveValue(
+                                          field,
+                                          pendingEdits[field],
+                                        )}
+                                      </Text>
+                                    </View>
+                                  ))}
+                                </View>
+                              )}
+                              <View style={styles.adminActions}>
+                                <TouchableOpacity
+                                  style={styles.adminApprove}
+                                  onPress={() => handleApproveEdits(business.id)}
                                 >
-                                  Reject edits
-                                </Text>
-                              </TouchableOpacity>
+                                  <Text style={styles.adminActionText}>
+                                    Approve edits
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.adminReject}
+                                  onPress={() => handleRejectEdits(business.id)}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.adminActionText,
+                                      styles.adminActionTextDark,
+                                    ]}
+                                  >
+                                    Reject edits
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
                             </View>
-                          </View>
-                        ))
+                          );
+                        })
                       )}
 
                       <View style={styles.sectionBlock}>
@@ -8935,59 +9367,260 @@ export default function App() {
                           </Text>
                         </View>
                       ) : (
-                        pendingOffers.map((offer) => (
+                        pendingOffers.map((offer) => {
+                          const isExpanded = Boolean(
+                            expandedAdminOffers[offer.id],
+                          );
+                          return (
                           <View key={offer.id} style={styles.adminCard}>
-                            <View style={styles.adminHeader}>
-                              <Text style={styles.adminTitle}>
-                                {offer.title || "New offer"}
-                              </Text>
-                              <Text style={styles.adminMeta}>
-                                {offer.business?.name || "Business"}
-                              </Text>
+                              <TouchableOpacity
+                                style={styles.adminHeaderRow}
+                                onPress={() =>
+                                  setExpandedAdminOffers((prev) => ({
+                                    ...prev,
+                                    [offer.id]: !prev[offer.id],
+                                  }))
+                                }
+                              >
+                                <View style={styles.adminHeaderText}>
+                                  <Text style={styles.adminTitle}>
+                                    {offer.title || "New offer"}
+                                  </Text>
+                                  <Text style={styles.adminMeta}>
+                                    {offer.business?.name || "Business"}
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name={isExpanded ? "chevron-up" : "chevron-down"}
+                                  size={18}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
+                              {isExpanded && (
+                                <View style={styles.adminDetails}>
+                                  {offer.description ? (
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Description
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {offer.description}
+                                      </Text>
+                                    </View>
+                                  ) : null}
+                                  <View style={styles.adminDetailRow}>
+                                    <Text style={styles.adminDetailLabel}>
+                                      Offer type
+                                    </Text>
+                                    <Text style={styles.adminDetailValueFull}>
+                                      {offer.offerType
+                                        ? normalizeOfferType(offer.offerType)
+                                        : "Offer"}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.adminDetailRow}>
+                                    <Text style={styles.adminDetailLabel}>
+                                      Created
+                                    </Text>
+                                    <Text style={styles.adminDetailValueFull}>
+                                      {formatOfferDate(offer.createdAt)}
+                                    </Text>
+                                  </View>
+                                </View>
+                              )}
+                              <View style={styles.adminActions}>
+                                <TouchableOpacity
+                                  style={styles.adminApprove}
+                                  onPress={() => handleApproveOffer(offer.id)}
+                                >
+                                  <Text style={styles.adminActionText}>
+                                    Approve
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.adminReject}
+                                  onPress={() => handleRejectOffer(offer.id)}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.adminActionText,
+                                      styles.adminActionTextDark,
+                                    ]}
+                                  >
+                                    Reject
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.adminDelete}
+                                  onPress={() => handleAdminDeleteOffer(offer)}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.adminActionText,
+                                      styles.adminActionTextDark,
+                                    ]}
+                                  >
+                                    Delete
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
                             </View>
-                            {offer.description ? (
+                          );
+                        })
+                      )}
+
+                      <View style={styles.sectionBlock}>
+                        <Text style={styles.sectionTitleAlt}>
+                          Pending businesses
+                        </Text>
+                        <Text style={styles.sectionBody}>
+                          Review new businesses before they go live.
+                        </Text>
+                      </View>
+
+                      {pendingBusinesses.length === 0 ? (
+                        <View style={styles.emptyState}>
+                          <Text style={styles.emptyTitle}>
+                            No pending reviews.
+                          </Text>
+                          <Text style={styles.emptyCopy}>
+                            New submissions will appear here.
+                          </Text>
+                        </View>
+                      ) : (
+                        pendingBusinesses.map((business) => {
+                          const isExpanded = Boolean(
+                            expandedAdminBusinesses[business.id],
+                          );
+                          const addressLine = [
+                            business.address,
+                            [business.city, business.state, business.postalCode]
+                              .filter(Boolean)
+                              .join(", "),
+                          ]
+                            .filter(Boolean)
+                            .join(", ");
+                          const tagLine = Array.isArray(business.tags)
+                            ? business.tags.filter(Boolean).join(", ")
+                            : "";
+                          return (
+                            <View key={business.id} style={styles.adminCard}>
+                              <TouchableOpacity
+                                style={styles.adminHeaderRow}
+                                onPress={() =>
+                                  setExpandedAdminBusinesses((prev) => ({
+                                    ...prev,
+                                    [business.id]: !prev[business.id],
+                                  }))
+                                }
+                              >
+                                <View style={styles.adminHeaderText}>
+                                  <Text style={styles.adminTitle}>
+                                    {business.name}
+                                  </Text>
+                                  <Text style={styles.adminMeta}>
+                                    {
+                                      getCategoryConfig(business.categoryKey)
+                                        .display
+                                    }
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name={
+                                    isExpanded ? "chevron-up" : "chevron-down"
+                                  }
+                                  size={18}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
                               <Text style={styles.adminOffer}>
-                                {offer.description}
+                                {business.offer}
                               </Text>
-                            ) : null}
-                            <View style={styles.adminActions}>
-                              <TouchableOpacity
-                                style={styles.adminApprove}
-                                onPress={() => handleApproveOffer(offer.id)}
-                              >
-                                <Text style={styles.adminActionText}>
-                                  Approve
-                                </Text>
-                              </TouchableOpacity>
-                              <TouchableOpacity
-                                style={styles.adminReject}
-                                onPress={() => handleRejectOffer(offer.id)}
-                              >
-                                <Text
-                                  style={[
-                                    styles.adminActionText,
-                                    styles.adminActionTextDark,
-                                  ]}
+                              {isExpanded && (
+                                <View style={styles.adminDetails}>
+                                  <View style={styles.adminDetailRow}>
+                                    <Text style={styles.adminDetailLabel}>
+                                      Address
+                                    </Text>
+                                    <Text style={styles.adminDetailValueFull}>
+                                      {addressLine || "--"}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.adminDetailRow}>
+                                    <Text style={styles.adminDetailLabel}>
+                                      Phone
+                                    </Text>
+                                    <Text style={styles.adminDetailValueFull}>
+                                      {business.phone || "--"}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.adminDetailRow}>
+                                    <Text style={styles.adminDetailLabel}>
+                                      Hours
+                                    </Text>
+                                    <Text style={styles.adminDetailValueFull}>
+                                      {business.hours || "--"}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.adminDetailRow}>
+                                    <Text style={styles.adminDetailLabel}>
+                                      Tags
+                                    </Text>
+                                    <Text style={styles.adminDetailValueFull}>
+                                      {tagLine || "--"}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.adminDetailRow}>
+                                    <Text style={styles.adminDetailLabel}>
+                                      Submitted
+                                    </Text>
+                                    <Text style={styles.adminDetailValueFull}>
+                                      {formatOfferDate(business.createdAt)}
+                                    </Text>
+                                  </View>
+                                </View>
+                              )}
+                              <View style={styles.adminActions}>
+                                <TouchableOpacity
+                                  style={styles.adminApprove}
+                                  onPress={() => handleApprove(business.id)}
                                 >
-                                  Reject
-                                </Text>
-                              </TouchableOpacity>
-                              <TouchableOpacity
-                                style={styles.adminDelete}
-                                onPress={() => handleAdminDeleteOffer(offer)}
-                              >
-                                <Text
-                                  style={[
-                                    styles.adminActionText,
-                                    styles.adminActionTextDark,
-                                  ]}
+                                  <Text style={styles.adminActionText}>
+                                    Approve
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.adminReject}
+                                  onPress={() => handleReject(business.id)}
                                 >
-                                  Delete
-                                </Text>
-                              </TouchableOpacity>
+                                  <Text
+                                    style={[
+                                      styles.adminActionText,
+                                      styles.adminActionTextDark,
+                                    ]}
+                                  >
+                                    Reject
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.adminDelete}
+                                  onPress={() =>
+                                    handleAdminDeleteBusiness(business)
+                                  }
+                                >
+                                  <Text
+                                    style={[
+                                      styles.adminActionText,
+                                      styles.adminActionTextDark,
+                                    ]}
+                                  >
+                                    Delete
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
                             </View>
-                          </View>
-                        ))
+                          );
+                        })
                       )}
 
                       <View style={styles.sectionBlock}>
@@ -9039,6 +9672,150 @@ export default function App() {
                             </View>
                           </View>
                         ))
+                      )}
+
+                      <View style={styles.sectionBlock}>
+                        <Text style={styles.sectionTitleAlt}>
+                          Business management
+                        </Text>
+                        <Text style={styles.sectionBody}>
+                          Delete businesses and their offers when needed.
+                        </Text>
+                      </View>
+
+                      {adminBusinesses.length === 0 ? (
+                        <View style={styles.emptyState}>
+                          <Text style={styles.emptyTitle}>
+                            No businesses yet.
+                          </Text>
+                          <Text style={styles.emptyCopy}>
+                            Approved listings will appear here.
+                          </Text>
+                        </View>
+                      ) : (
+                        adminBusinesses.map((business) => (
+                          <View key={business.id} style={styles.adminCard}>
+                            <View style={styles.adminHeader}>
+                              <Text style={styles.adminTitle}>
+                                {business.name}
+                              </Text>
+                              <Text style={styles.adminMeta}>
+                                {
+                                  getCategoryConfig(business.categoryKey)
+                                    .display
+                                }
+                              </Text>
+                            </View>
+                            <Text style={styles.adminOffer}>
+                              {business.offer}
+                            </Text>
+                            <View style={styles.adminActions}>
+                              <TouchableOpacity
+                                style={styles.adminDelete}
+                                onPress={() =>
+                                  handleAdminDeleteBusiness(business)
+                                }
+                              >
+                                <Text
+                                  style={[
+                                    styles.adminActionText,
+                                    styles.adminActionTextDark,
+                                  ]}
+                                >
+                                  Delete
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        ))
+                      )}
+
+                      <View style={styles.sectionBlock}>
+                        <Text style={styles.sectionTitleAlt}>
+                          Business QR codes
+                        </Text>
+                        <Text style={styles.sectionBody}>
+                          Expand a business to show its unique QR code for
+                          in-store redemption.
+                        </Text>
+                      </View>
+
+                      {approvedBusinesses.length === 0 ? (
+                        <View style={styles.emptyState}>
+                          <Text style={styles.emptyTitle}>
+                            No approved businesses yet.
+                          </Text>
+                          <Text style={styles.emptyCopy}>
+                            Approve listings to generate QR codes.
+                          </Text>
+                        </View>
+                      ) : (
+                        approvedBusinesses.map((business) => {
+                          const isExpanded = qrExpandedId === business.id;
+                          const payload = getBusinessQrCode(business);
+                          return (
+                            <View key={business.id} style={styles.qrCard}>
+                              <TouchableOpacity
+                                style={styles.qrHeaderRow}
+                                onPress={() =>
+                                  setQrExpandedId(
+                                    isExpanded ? null : business.id,
+                                  )
+                                }
+                              >
+                                <View style={styles.qrHeaderText}>
+                                  <Text style={styles.qrTitle}>
+                                    {business.name}
+                                  </Text>
+                                  <Text style={styles.qrMeta}>
+                                    {
+                                      getCategoryConfig(business.categoryKey)
+                                        .display
+                                    }
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name={
+                                    isExpanded ? "chevron-up" : "chevron-down"
+                                  }
+                                  size={18}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
+                              {isExpanded && (
+                                <View style={styles.qrBody}>
+                                  <View style={styles.qrCodeWrap}>
+                                    {BUSINESS_QR_IMAGES[business.id] ||
+                                    qrImageMap[business.id] ? (
+                                      <Image
+                                        source={
+                                          BUSINESS_QR_IMAGES[business.id] || {
+                                            uri: qrImageMap[business.id],
+                                          }
+                                        }
+                                        style={styles.qrImage}
+                                        resizeMode="contain"
+                                      />
+                                    ) : (
+                                      <View style={styles.qrFallback}>
+                                        <Text style={styles.qrFallbackText}>
+                                          Generating QR
+                                        </Text>
+                                      </View>
+                                    )}
+                                  </View>
+                                  <Text style={styles.qrCodeLabel}>
+                                    {payload}
+                                  </Text>
+                                  <Text style={styles.qrCodeNote}>
+                                    Keep this code private. Scan at checkout to
+                                    redeem offers.
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+                          );
+                        })
                       )}
 
                       {isAdmin && (
@@ -9210,232 +9987,6 @@ export default function App() {
                         </>
                       )}
 
-                      <View style={styles.sectionBlock}>
-                        <Text style={styles.sectionTitleAlt}>
-                          Business management
-                        </Text>
-                        <Text style={styles.sectionBody}>
-                          Delete businesses and their offers when needed.
-                        </Text>
-                      </View>
-
-                      {adminBusinesses.length === 0 ? (
-                        <View style={styles.emptyState}>
-                          <Text style={styles.emptyTitle}>
-                            No businesses yet.
-                          </Text>
-                          <Text style={styles.emptyCopy}>
-                            Approved listings will appear here.
-                          </Text>
-                        </View>
-                      ) : (
-                        adminBusinesses.map((business) => (
-                          <View key={business.id} style={styles.adminCard}>
-                            <View style={styles.adminHeader}>
-                              <Text style={styles.adminTitle}>
-                                {business.name}
-                              </Text>
-                              <Text style={styles.adminMeta}>
-                                {
-                                  getCategoryConfig(business.categoryKey)
-                                    .display
-                                }
-                              </Text>
-                            </View>
-                            <Text style={styles.adminOffer}>
-                              {business.offer}
-                            </Text>
-                            <View style={styles.adminActions}>
-                              <TouchableOpacity
-                                style={styles.adminDelete}
-                                onPress={() =>
-                                  handleAdminDeleteBusiness(business)
-                                }
-                              >
-                                <Text
-                                  style={[
-                                    styles.adminActionText,
-                                    styles.adminActionTextDark,
-                                  ]}
-                                >
-                                  Delete
-                                </Text>
-                              </TouchableOpacity>
-                            </View>
-                          </View>
-                        ))
-                      )}
-
-                      <View style={styles.sectionBlock}>
-                        <Text style={styles.sectionTitleAlt}>
-                          Business QR codes
-                        </Text>
-                        <Text style={styles.sectionBody}>
-                          Expand a business to show its unique QR code for
-                          in-store redemption.
-                        </Text>
-                      </View>
-
-                      {approvedBusinesses.length === 0 ? (
-                        <View style={styles.emptyState}>
-                          <Text style={styles.emptyTitle}>
-                            No approved businesses yet.
-                          </Text>
-                          <Text style={styles.emptyCopy}>
-                            Approve listings to generate QR codes.
-                          </Text>
-                        </View>
-                      ) : (
-                        approvedBusinesses.map((business) => {
-                          const isExpanded = qrExpandedId === business.id;
-                          const payload = getBusinessQrCode(business);
-                          return (
-                            <View key={business.id} style={styles.qrCard}>
-                              <TouchableOpacity
-                                style={styles.qrHeaderRow}
-                                onPress={() =>
-                                  setQrExpandedId(
-                                    isExpanded ? null : business.id,
-                                  )
-                                }
-                              >
-                                <View style={styles.qrHeaderText}>
-                                  <Text style={styles.qrTitle}>
-                                    {business.name}
-                                  </Text>
-                                  <Text style={styles.qrMeta}>
-                                    {
-                                      getCategoryConfig(business.categoryKey)
-                                        .display
-                                    }
-                                  </Text>
-                                </View>
-                                <Ionicons
-                                  name={
-                                    isExpanded ? "chevron-up" : "chevron-down"
-                                  }
-                                  size={18}
-                                  color={COLORS.muted}
-                                />
-                              </TouchableOpacity>
-                              {isExpanded && (
-                                <View style={styles.qrBody}>
-                                  <View style={styles.qrCodeWrap}>
-                                    {BUSINESS_QR_IMAGES[business.id] ||
-                                    qrImageMap[business.id] ? (
-                                      <Image
-                                        source={
-                                          BUSINESS_QR_IMAGES[business.id] || {
-                                            uri: qrImageMap[business.id],
-                                          }
-                                        }
-                                        style={styles.qrImage}
-                                        resizeMode="contain"
-                                      />
-                                    ) : (
-                                      <View style={styles.qrFallback}>
-                                        <Text style={styles.qrFallbackText}>
-                                          Generating QR
-                                        </Text>
-                                      </View>
-                                    )}
-                                  </View>
-                                  <Text style={styles.qrCodeLabel}>
-                                    {payload}
-                                  </Text>
-                                  <Text style={styles.qrCodeNote}>
-                                    Keep this code private. Scan at checkout to
-                                    redeem offers.
-                                  </Text>
-                                </View>
-                              )}
-                            </View>
-                          );
-                        })
-                      )}
-
-                      <View style={styles.adminSummary}>
-                        <View style={styles.statCard}>
-                          <Text style={styles.statValue}>
-                            {pendingBusinesses.length}
-                          </Text>
-                          <Text style={styles.statLabel}>Pending</Text>
-                        </View>
-                        <View style={styles.statCard}>
-                          <Text style={styles.statValue}>
-                            {approvedBusinesses.length}
-                          </Text>
-                          <Text style={styles.statLabel}>Approved</Text>
-                        </View>
-                      </View>
-
-                      {pendingBusinesses.length === 0 ? (
-                        <View style={styles.emptyState}>
-                          <Text style={styles.emptyTitle}>
-                            No pending reviews.
-                          </Text>
-                          <Text style={styles.emptyCopy}>
-                            New submissions will appear here.
-                          </Text>
-                        </View>
-                      ) : (
-                        pendingBusinesses.map((business) => (
-                          <View key={business.id} style={styles.adminCard}>
-                            <View style={styles.adminHeader}>
-                              <Text style={styles.adminTitle}>
-                                {business.name}
-                              </Text>
-                              <Text style={styles.adminMeta}>
-                                {
-                                  getCategoryConfig(business.categoryKey)
-                                    .display
-                                }
-                              </Text>
-                            </View>
-                            <Text style={styles.adminOffer}>
-                              {business.offer}
-                            </Text>
-                            <View style={styles.adminActions}>
-                              <TouchableOpacity
-                                style={styles.adminApprove}
-                                onPress={() => handleApprove(business.id)}
-                              >
-                                <Text style={styles.adminActionText}>
-                                  Approve
-                                </Text>
-                              </TouchableOpacity>
-                              <TouchableOpacity
-                                style={styles.adminReject}
-                                onPress={() => handleReject(business.id)}
-                              >
-                                <Text
-                                  style={[
-                                    styles.adminActionText,
-                                    styles.adminActionTextDark,
-                                  ]}
-                                >
-                                  Reject
-                                </Text>
-                              </TouchableOpacity>
-                              <TouchableOpacity
-                                style={styles.adminDelete}
-                                onPress={() =>
-                                  handleAdminDeleteBusiness(business)
-                                }
-                              >
-                                <Text
-                                  style={[
-                                    styles.adminActionText,
-                                    styles.adminActionTextDark,
-                                  ]}
-                                >
-                                  Delete
-                                </Text>
-                              </TouchableOpacity>
-                            </View>
-                          </View>
-                        ))
-                      )}
                     </>
                   ) : (
                     <View style={styles.emptyState}>
@@ -9445,6 +9996,68 @@ export default function App() {
                       </Text>
                     </View>
                   )}
+                  <Modal
+                    visible={viewsModalOpen}
+                    transparent
+                    animationType="slide"
+                    onRequestClose={() => setViewsModalOpen(false)}
+                  >
+                    <View style={styles.modalOverlay}>
+                      <View style={styles.modalCard}>
+                        <View style={styles.modalHeader}>
+                          <Text style={styles.modalTitle}>Offer views</Text>
+                          <TouchableOpacity
+                            style={styles.modalCloseButton}
+                            onPress={() => setViewsModalOpen(false)}
+                          >
+                            <Ionicons
+                              name="close"
+                              size={18}
+                              color={COLORS.ink}
+                            />
+                          </TouchableOpacity>
+                        </View>
+                        <Text style={styles.modalSubtitle}>
+                          Total views: {formatMetricValue(ownerMetrics.views)}
+                        </Text>
+                        {viewsBreakdownStatus.loading ? (
+                          <Text style={styles.formHint}>Loading views...</Text>
+                        ) : viewsBreakdownStatus.error ? (
+                          <Text style={styles.formError}>
+                            {viewsBreakdownStatus.error}
+                          </Text>
+                        ) : viewsBreakdown.length === 0 ? (
+                          <View style={styles.emptyState}>
+                            <Text style={styles.emptyTitle}>
+                              No offers yet.
+                            </Text>
+                            <Text style={styles.emptyCopy}>
+                              Create an offer to start tracking views.
+                            </Text>
+                          </View>
+                        ) : (
+                          <ScrollView
+                            showsVerticalScrollIndicator={false}
+                            contentContainerStyle={styles.modalList}
+                          >
+                            {viewsBreakdown.map((item) => (
+                              <View key={item.id} style={styles.modalRow}>
+                                <Text
+                                  style={styles.modalRowTitle}
+                                  numberOfLines={1}
+                                >
+                                  {item.title}
+                                </Text>
+                                <Text style={styles.modalRowValue}>
+                                  {item.count}
+                                </Text>
+                              </View>
+                            ))}
+                          </ScrollView>
+                        )}
+                      </View>
+                    </View>
+                  </Modal>
                 </ScrollView>
               </KeyboardAvoidingView>
             )}
@@ -10144,6 +10757,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.pine,
     alignItems: "center",
   },
+  detailOfferRedemptionDisabled: {
+    backgroundColor: "#D5DDE8",
+  },
   detailOfferRedemptionText: {
     fontSize: 12,
     fontFamily: FONT_MEDIUM,
@@ -10406,7 +11022,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderRadius: 14,
     padding: 12,
-    marginHorizontal: 4,
     borderWidth: 1,
     borderColor: COLORS.sand,
   },
@@ -10478,6 +11093,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
   },
+  analyticsCardInteractive: {
+    borderColor: "#D4DCE8",
+  },
   analyticsValue: {
     fontSize: 18,
     color: COLORS.ink,
@@ -10488,6 +11106,100 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
+  },
+  analyticsHint: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 6,
+  },
+  analyticsLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 2,
+  },
+  analyticsInfoButton: {
+    padding: 2,
+  },
+  analyticsTooltip: {
+    marginTop: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: COLORS.mint,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+  },
+  analyticsTooltipText: {
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    lineHeight: 15,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.35)",
+    justifyContent: "flex-end",
+  },
+  modalCard: {
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: "80%",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  modalTitle: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+  },
+  modalCloseButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.mint,
+  },
+  modalSubtitle: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginBottom: 12,
+  },
+  modalList: {
+    paddingBottom: 20,
+    gap: 10,
+  },
+  modalRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: COLORS.cream,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+  },
+  modalRowTitle: {
+    flex: 1,
+    marginRight: 12,
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+  },
+  modalRowValue: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
   },
   cardList: {
     paddingBottom: 16,
@@ -11357,6 +12069,8 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "#E4E9F0",
     overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
   },
   pointsBarFill: {
     height: "100%",
@@ -11707,8 +12421,9 @@ const styles = StyleSheet.create({
   },
   adminSummary: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
-    marginBottom: 12,
+    marginBottom: 16,
   },
   adminCard: {
     backgroundColor: COLORS.white,
@@ -11720,6 +12435,16 @@ const styles = StyleSheet.create({
   },
   adminHeader: {
     marginBottom: 6,
+  },
+  adminHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 6,
+    gap: 12,
+  },
+  adminHeaderText: {
+    flex: 1,
   },
   adminTitle: {
     fontSize: 14,
@@ -11737,6 +12462,41 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     marginBottom: 10,
+  },
+  adminDetails: {
+    borderTopWidth: 1,
+    borderColor: COLORS.sand,
+    paddingTop: 10,
+    marginTop: 6,
+    marginBottom: 10,
+  },
+  adminDetailRow: {
+    marginBottom: 10,
+  },
+  adminDetailLabel: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+    marginBottom: 4,
+  },
+  adminDetailValue: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    marginBottom: 2,
+  },
+  adminDetailValueNew: {
+    fontSize: 13,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+  },
+  adminDetailValueFull: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    lineHeight: 18,
   },
   adminActions: {
     flexDirection: "row",
