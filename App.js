@@ -13,6 +13,7 @@ import {
   Image,
   Keyboard,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   PanResponder,
   Platform,
@@ -82,7 +83,6 @@ const ADDRESS_DEBOUNCE_MS = 300;
 const GOOGLE_PLACES_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-const STRIPE_PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY;
 const ANDROID_MARKER_SIZE = 34;
 const ANDROID_MARKER_SELECTED_SIZE = 44;
 const CONFETTI_PIECES = 20;
@@ -255,7 +255,6 @@ const BUSINESSES = [
     offer: "Buy 1 latte, get a croissant",
     qrCode: "WELLO-1-9FQ7K2A1",
     distance: "0.6 mi",
-    subscription: "Starter $50/mo",
     rating: 4.8,
     tags: ["breakfast", "wifi", "open"],
     isOpen: true,
@@ -274,7 +273,6 @@ const BUSINESSES = [
     offer: "First month 30% off",
     qrCode: "WELLO-2-L4M8Z0T7",
     distance: "1.1 mi",
-    subscription: "Starter $50/mo",
     rating: 4.9,
     tags: ["classes", "movement", "community"],
     isOpen: true,
@@ -293,7 +291,6 @@ const BUSINESSES = [
     offer: "Deluxe wash w/ ceramic coat",
     qrCode: "WELLO-3-7P2X5N9C",
     distance: "0.9 mi",
-    subscription: "Starter $50/mo",
     rating: 4.6,
     tags: ["ceramic", "detail", "shine"],
     isOpen: true,
@@ -312,7 +309,6 @@ const BUSINESSES = [
     offer: "Free gloss with any set",
     qrCode: "WELLO-4-K3T8Q1B6",
     distance: "1.4 mi",
-    subscription: "Starter $50/mo",
     rating: 4.9,
     tags: ["gel", "walk-in", "new"],
     isOpen: false,
@@ -331,7 +327,6 @@ const BUSINESSES = [
     offer: "Evening cocktail flight $18",
     qrCode: "WELLO-5-M9R2V7D4",
     distance: "0.5 mi",
-    subscription: "Starter $50/mo",
     rating: 4.9,
     tags: ["cocktails", "cozy", "live"],
     isOpen: true,
@@ -350,7 +345,6 @@ const BUSINESSES = [
     offer: "Bundle any 2 services",
     qrCode: "WELLO-6-J5C1Y8W3",
     distance: "1.8 mi",
-    subscription: "Starter $50/mo",
     rating: 4.5,
     tags: ["detail", "finish"],
     isOpen: true,
@@ -369,7 +363,6 @@ const BUSINESSES = [
     offer: "Free line-up with any cut",
     qrCode: "WELLO-7-H2N6F9S4",
     distance: "1.0 mi",
-    subscription: "Starter $50/mo",
     rating: 4.6,
     tags: ["fade", "appointments", "open"],
     isOpen: true,
@@ -388,7 +381,6 @@ const BUSINESSES = [
     offer: "Lunch special $14",
     qrCode: "WELLO-8-Q4B7U1X9",
     distance: "0.8 mi",
-    subscription: "Starter $50/mo",
     rating: 4.7,
     tags: ["patio", "happy-hour", "open"],
     isOpen: true,
@@ -446,22 +438,6 @@ const MAP_REGION = {
   longitudeDelta: 0.045,
 };
 
-const formatSubscription = (plan, priceCents) => {
-  if (!plan && (priceCents === null || priceCents === undefined)) {
-    return "Starter $50/mo";
-  }
-  if (plan && Number.isFinite(Number(priceCents))) {
-    const dollars = Math.round(Number(priceCents) / 100);
-    return `${plan} $${dollars}/mo`;
-  }
-  if (plan) return plan;
-  if (Number.isFinite(Number(priceCents))) {
-    const dollars = Math.round(Number(priceCents) / 100);
-    return `$${dollars}/mo`;
-  }
-  return "Starter $50/mo";
-};
-
 const mapSupabaseBusiness = (row, index) => {
   const categoryKey = row.category_key || "restaurant";
   const categoryConfig = getCategoryConfig(categoryKey);
@@ -483,10 +459,6 @@ const mapSupabaseBusiness = (row, index) => {
     categoryKey,
     offer: row.offer_highlight || "New offer available",
     distance: "--",
-    subscription: formatSubscription(
-      row.subscription_plan,
-      row.subscription_price_cents,
-    ),
     rating: Number.isFinite(Number(row.rating)) ? Number(row.rating) : null,
     tags: Array.isArray(row.tags) && row.tags.length ? row.tags : ["local"],
     isOpen: row.is_open ?? true,
@@ -708,6 +680,12 @@ const normalizeOfferType = (input) => {
   return bestScore <= threshold ? bestLabel : raw;
 };
 
+const normalizeTagsInput = (value) =>
+  String(value || "")
+    .split(",")
+    .map((tag) => tag.trim().toLowerCase())
+    .filter(Boolean);
+
 const resolveOfferPoints = (offer) => {
   const rawValue =
     offer?.pointsValue ??
@@ -733,6 +711,40 @@ const formatMetricValue = (value) => {
   if (typeof value === "number") return value.toLocaleString();
   const text = String(value).trim();
   return text.length ? text : "—";
+};
+
+const openMapsForBusiness = (business) => {
+  if (!business) return;
+  const latitude =
+    business.coordinate?.latitude ??
+    business.latitude ??
+    business.lat ??
+    null;
+  const longitude =
+    business.coordinate?.longitude ??
+    business.longitude ??
+    business.lng ??
+    null;
+  const addressParts = [
+    business.address,
+    business.city,
+    business.state,
+    business.postalCode,
+  ]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  const address = addressParts.join(", ");
+  const destination =
+    latitude && longitude
+      ? `${latitude},${longitude}`
+      : address
+        ? encodeURIComponent(address)
+        : null;
+  if (!destination) return;
+  const url = latitude && longitude
+    ? `https://www.google.com/maps/dir/?api=1&destination=${destination}`
+    : `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
+  Linking.openURL(url).catch(() => null);
 };
 
 const parseClockMinutes = (time, meridiem) => {
@@ -814,11 +826,23 @@ const MAP_STYLE = [
   },
 ];
 
+const TAG_OPTIONS = [
+  { value: "bogo", label: "BOGO" },
+  { value: "free-item", label: "Free item" },
+  { value: "bundle", label: "Bundle" },
+  { value: "limited-time", label: "Limited time" },
+  { value: "new-customer", label: "New customer" },
+];
+
 const FILTERS = [
   { key: "open", label: "Open now" },
   { key: "top", label: "Top rated" },
   { key: "new", label: "New offers" },
   { key: "family", label: "Entertainment" },
+  ...TAG_OPTIONS.map((tag) => ({
+    key: `tag:${tag.value}`,
+    label: tag.label,
+  })),
 ];
 
 const CATEGORY_OPTIONS = [
@@ -828,30 +852,6 @@ const CATEGORY_OPTIONS = [
   { key: "barbersalon", label: "Barbershops/Salons" },
   { key: "activity", label: "Activities/Entertainment" },
   { key: "auto", label: "Carwash/Auto Cosmetic" },
-];
-
-const PLAN_OPTIONS = [
-  {
-    key: "starter",
-    label: "Starter",
-    price: "$50/mo",
-    desc: "Map listing and offers",
-    enabled: true,
-  },
-  {
-    key: "growth",
-    label: "Growth",
-    price: "$75/mo",
-    desc: "Priority placement + insights",
-    enabled: false,
-  },
-  {
-    key: "premium",
-    label: "Premium",
-    price: "$99/mo",
-    desc: "Featured badge + campaigns",
-    enabled: false,
-  },
 ];
 
 const CATEGORY_CONFIG = {
@@ -901,13 +901,6 @@ const CATEGORY_CONFIG = {
 
 function getCategoryConfig(categoryKey) {
   return CATEGORY_CONFIG[categoryKey] || CATEGORY_CONFIG.default;
-}
-
-function getPlanKeyFromSubscription(subscription = "") {
-  const lower = subscription.toLowerCase();
-  if (lower.includes("premium")) return "premium";
-  if (lower.includes("growth")) return "growth";
-  return "starter";
 }
 
 function buildQrHash(value) {
@@ -1088,6 +1081,10 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
     item.rating && Number.isFinite(item.rating) ? item.rating.toFixed(1) : null;
   const offerTitle = item.offerTitle || item.offer;
   const offerDescription = item.offerDescription || "";
+  const offerTypeLabel = item.offerType
+    ? normalizeOfferType(item.offerType)
+    : "Offer";
+  const offerPoints = resolveOfferPoints(item);
   const hoursValue = item.hours || item.business?.hours || "";
   const openFromHours = isBusinessOpenNow(hoursValue);
   const isOpen =
@@ -1141,8 +1138,20 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
               {isOpen ? "Redeem offer" : "Closed now"}
             </Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.directionsButton}
+            onPress={() => openMapsForBusiness(item.business || item)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="navigate" size={14} color={COLORS.pine} />
+            <Text style={styles.directionsButtonText}>
+              Directions
+            </Text>
+          </TouchableOpacity>
           <View style={styles.cardMetaRow}>
-            <Text style={styles.cardMeta}>{item.distance || "--"}</Text>
+            <Text style={styles.cardMeta}>
+              {offerTypeLabel} · {offerPoints} pts
+            </Text>
             <Text style={styles.cardMeta}>
               {ratingLabel ? `Rating ${ratingLabel}` : "Not rated yet"}
             </Text>
@@ -1336,6 +1345,8 @@ export default function App() {
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [receiptsModalOpen, setReceiptsModalOpen] = useState(false);
   const [expandedReceiptOffers, setExpandedReceiptOffers] = useState({});
+  const [expandedOwnerOffers, setExpandedOwnerOffers] = useState({});
+  const [ownerOffersModalOpen, setOwnerOffersModalOpen] = useState(false);
   const [receiptPreview, setReceiptPreview] = useState(null);
   const [receiptNoticeOpen, setReceiptNoticeOpen] = useState(false);
   const receiptNoticeShownRef = useRef(false);
@@ -1385,7 +1396,6 @@ export default function App() {
     categoryKey: "restaurant",
     offer: "",
     hours: "",
-    planKey: "starter",
     tags: "",
     isOpen: true,
   });
@@ -1403,7 +1413,6 @@ export default function App() {
   });
   const [createBusinessBusy, setCreateBusinessBusy] = useState(false);
   const [createBusinessError, setCreateBusinessError] = useState(null);
-  const [paymentMessage, setPaymentMessage] = useState(null);
   const [createHoursStart, setCreateHoursStart] = useState("");
   const [createHoursStartMeridiem, setCreateHoursStartMeridiem] =
     useState("AM");
@@ -1424,6 +1433,19 @@ export default function App() {
     type: "",
   });
   const [offerImage, setOfferImage] = useState(null);
+  const [editOfferOpen, setEditOfferOpen] = useState(false);
+  const [editOfferDraft, setEditOfferDraft] = useState({
+    id: null,
+    title: "",
+    description: "",
+    type: "",
+    imageUrl: "",
+  });
+  const [editOfferImage, setEditOfferImage] = useState(null);
+  const [editOfferStatus, setEditOfferStatus] = useState({
+    saving: false,
+    error: null,
+  });
   const [offerImageStatus, setOfferImageStatus] = useState({
     uploading: false,
     error: null,
@@ -1447,12 +1469,22 @@ export default function App() {
     error: null,
   });
   const [businessReceipts, setBusinessReceipts] = useState([]);
+  const [businessRedemptionStatus, setBusinessRedemptionStatus] = useState({
+    loading: false,
+    error: null,
+  });
+  const [businessRedemptions, setBusinessRedemptions] = useState([]);
   const [viewsModalOpen, setViewsModalOpen] = useState(false);
   const [viewsBreakdownStatus, setViewsBreakdownStatus] = useState({
     loading: false,
     error: null,
   });
   const [viewsBreakdown, setViewsBreakdown] = useState([]);
+  const [tagSaveStatus, setTagSaveStatus] = useState({
+    saving: false,
+    error: null,
+    success: null,
+  });
   const [offerBusy, setOfferBusy] = useState(false);
   const [offerError, setOfferError] = useState(null);
   const [formMessage, setFormMessage] = useState(null);
@@ -1766,90 +1798,72 @@ export default function App() {
       const targetBusinessId =
         businessIdOverride || ownerBusiness?.id || ownerBusinessId;
       if (!targetBusinessId) {
-        return;
-      }
-      setViewsBreakdownStatus({ loading: true, error: null });
-      const { data, error } = await supabase
-        .from("offer_views")
-        .select("offer_id")
-        .eq("business_id", targetBusinessId);
-    setViewsDebugInfo((prev) => ({
-      ...(prev || {}),
-      offerViewsRows: Array.isArray(data) ? data.length : 0,
-    }));
-    if (error) {
-      setViewsBreakdownStatus({
-        loading: false,
-        error: error.message || "Unable to load view details.",
-      });
-      return;
-    }
-    const counts = new Map();
-    (data || []).forEach((row) => {
-      if (!row.offer_id) return;
-      counts.set(row.offer_id, (counts.get(row.offer_id) || 0) + 1);
-    });
-    const offerIds = Array.from(counts.keys());
-    const titles = new Map();
-    if (offerIds.length) {
-      const { data: offersData, error: offersError } = await supabase
-        .from("offers")
-        .select("id, title")
-        .in("id", offerIds);
-      setViewsDebugInfo((prev) => ({
-        ...(prev || {}),
-        offerIds: offerIds.length,
-        offerTitleRows: Array.isArray(offersData) ? offersData.length : 0,
-      }));
-      if (offersError) {
         setViewsBreakdownStatus({
           loading: false,
-          error: offersError.message || "Unable to load view details.",
+          error: "Business not ready.",
         });
         return;
       }
-      (offersData || []).forEach((offer) => {
-        if (offer?.id && offer?.title) {
-          titles.set(String(offer.id), offer.title);
+      setViewsBreakdownStatus({ loading: true, error: null });
+      try {
+        const { data, error } = await supabase
+          .from("offer_views")
+          .select("offer_id")
+          .eq("business_id", targetBusinessId);
+        if (error) {
+          setViewsBreakdownStatus({
+            loading: false,
+            error: error.message || "Unable to load view details.",
+          });
+          return;
         }
-      });
-    }
-    let baseOffers = ownerOffers;
-    if (!baseOffers.length) {
-      const { data: ownedOffers, error: ownedOffersError } = await supabase
-        .from("offers")
-        .select("id, title")
-        .eq("business_id", targetBusinessId);
-      setViewsDebugInfo((prev) => ({
-        ...(prev || {}),
-        fallbackOfferRows: Array.isArray(ownedOffers)
-          ? ownedOffers.length
-          : 0,
-      }));
-      if (!ownedOffersError && Array.isArray(ownedOffers)) {
-        baseOffers = ownedOffers;
+        const counts = new Map();
+        (data || []).forEach((row) => {
+          if (!row.offer_id) return;
+          counts.set(row.offer_id, (counts.get(row.offer_id) || 0) + 1);
+        });
+        let baseOffers = ownerOffers;
+        if (!baseOffers.length) {
+          const { data: ownedOffers, error: ownedOffersError } = await supabase
+            .from("offers")
+            .select("id, title")
+            .eq("business_id", targetBusinessId);
+          if (!ownedOffersError && Array.isArray(ownedOffers)) {
+            baseOffers = ownedOffers;
+          }
+        }
+        const items = [];
+        const baseOfferMap = new Map(
+          (baseOffers || []).map((offer) => [
+            String(offer.id),
+            offer.title || "Offer",
+          ]),
+        );
+        (baseOffers || []).forEach((offer) => {
+          const id = String(offer.id);
+          items.push({
+            id,
+            title: offer.title || "Offer",
+            count: counts.get(id) || 0,
+          });
+          counts.delete(id);
+        });
+        counts.forEach((count, id) => {
+          items.push({
+            id,
+            title: baseOfferMap.get(id) || "Offer (archived)",
+            count,
+          });
+        });
+        items.sort((a, b) => b.count - a.count);
+        setViewsBreakdown(items);
+        setViewsBreakdownStatus({ loading: false, error: null });
+      } catch (error) {
+        setViewsBreakdownStatus({
+          loading: false,
+          error: error?.message || "Unable to load view details.",
+        });
       }
-    }
-    const items = [];
-    baseOffers.forEach((offer) => {
-      const id = String(offer.id);
-      items.push({
-        id,
-        title: offer.title || "Offer",
-        count: counts.get(id) || 0,
-      });
-      counts.delete(id);
-    });
-    counts.forEach((count, id) => {
-      items.push({
-        id,
-        title: titles.get(id) || "Offer (archived)",
-        count,
-      });
-    });
-    items.sort((a, b) => b.count - a.count);
-    setViewsBreakdown(items);
-    setViewsBreakdownStatus({ loading: false, error: null });
     },
     [ownerBusiness?.id, ownerBusinessId, ownerOffers],
   );
@@ -1927,8 +1941,6 @@ export default function App() {
             "tags",
             "latitude",
             "longitude",
-            "subscription_plan",
-            "subscription_price_cents",
             "qr_code",
             "is_open",
             "approval_status",
@@ -2007,6 +2019,18 @@ export default function App() {
     if (!viewsModalOpen) return;
     loadOfferViewsBreakdown(ownerBusiness?.id || ownerBusinessId);
   }, [viewsModalOpen, loadOfferViewsBreakdown]);
+
+  useEffect(() => {
+    if (!receiptsModalOpen) return;
+    if (!ownerBusiness?.id) return;
+    loadBusinessReceipts(ownerBusiness.id, { silent: true });
+    loadBusinessRedemptions(ownerBusiness.id, { silent: true });
+  }, [
+    receiptsModalOpen,
+    ownerBusiness?.id,
+    loadBusinessReceipts,
+    loadBusinessRedemptions,
+  ]);
 
   useEffect(
     () => () => {
@@ -2241,13 +2265,6 @@ export default function App() {
           offerType,
           pointsValue: offer.pointsValue ?? offer.points_value ?? null,
           distance: business.distance || "--",
-          subscription:
-            business.subscription ||
-            formatSubscription(
-              business.subscription_plan,
-              business.subscription_price_cents,
-            ) ||
-            "Starter $50/mo",
           rating: Number.isFinite(business.rating) ? business.rating : null,
           tags: business.tags || [],
           imageUrl: offer.imageUrl,
@@ -2270,8 +2287,16 @@ export default function App() {
             return ["cafe", "activity"].includes(
               String(card.categoryKey || "").toLowerCase(),
             );
-          default:
+          default: {
+            if (filterKey.startsWith("tag:")) {
+              const tagValue = filterKey.replace("tag:", "");
+              const tags = Array.isArray(card.tags) ? card.tags : [];
+              return tags
+                .map((tag) => String(tag || "").toLowerCase())
+                .includes(tagValue);
+            }
             return true;
+          }
         }
       });
       if (!matchesFilters) return false;
@@ -2319,6 +2344,7 @@ export default function App() {
     return sorted;
   }, [offerCards, activeFilters, query]);
 
+
   const filteredBusinesses = useMemo(() => {
     const visibleBusinessIds = new Set(
       filteredOfferCards.map((card) => card.businessId),
@@ -2352,6 +2378,25 @@ export default function App() {
   const canRequestEdits =
     Boolean(ownerBusiness) && !ownerBusiness?.pendingEdits;
   const canEditBusiness = isEditingBusiness && !ownerBusiness?.pendingEdits;
+  const canEditTags = Boolean(ownerBusiness);
+  const tagsDirty = useMemo(() => {
+    if (!ownerBusiness) return false;
+    const currentTags = Array.isArray(ownerBusiness.tags)
+      ? ownerBusiness.tags
+          .map((tag) => String(tag || "").trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+    const nextTags = normalizeTagsInput(formData.tags);
+    return currentTags.join(",") !== nextTags.join(",");
+  }, [ownerBusiness, formData.tags]);
+  const selectedBusinessTags = useMemo(
+    () => new Set(normalizeTagsInput(formData.tags)),
+    [formData.tags],
+  );
+  const selectedCreateTags = useMemo(
+    () => new Set(normalizeTagsInput(createBusinessForm.tags)),
+    [createBusinessForm.tags],
+  );
 
   const ownerMetrics = useMemo(() => {
     if (!ownerBusiness) return DEFAULT_ANALYTICS;
@@ -2599,6 +2644,35 @@ export default function App() {
     );
   }, [businessReceipts]);
 
+  const pendingRedemptionGroups = useMemo(() => {
+    const grouped = new Map();
+    businessRedemptions.forEach((entry) => {
+      if (entry.receipt?.id) return;
+      const key = entry.offerId || entry.offer?.title || "offer";
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          key,
+          offerId: entry.offerId || null,
+          offerTitle: entry.offer?.title || "Offer",
+          entries: [],
+          lastRedeemed: 0,
+        });
+      }
+      const group = grouped.get(key);
+      group.entries.push(entry);
+      if ((entry.createdAt || 0) > group.lastRedeemed) {
+        group.lastRedeemed = entry.createdAt || 0;
+      }
+    });
+    const list = Array.from(grouped.values());
+    list.forEach((group) => {
+      group.entries.sort(
+        (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
+      );
+    });
+    return list.sort((a, b) => (b.lastRedeemed || 0) - (a.lastRedeemed || 0));
+  }, [businessRedemptions]);
+
   const pendingReviewCount = useMemo(
     () =>
       historyGroups.reduce(
@@ -2670,12 +2744,14 @@ export default function App() {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
     if (activeTab === "business" && isOwner && ownerBusiness?.id) {
       loadBusinessReceipts(ownerBusiness.id);
+      loadBusinessRedemptions(ownerBusiness.id);
     }
   }, [
     activeTab,
     isOwner,
     ownerBusiness?.id,
     loadBusinessReceipts,
+    loadBusinessRedemptions,
     SUPABASE_URL,
     SUPABASE_ANON_KEY,
   ]);
@@ -2733,7 +2809,6 @@ export default function App() {
     categoryKey: business?.categoryKey || "restaurant",
     offer: business?.offer || "",
     hours: business?.hours || "",
-    planKey: getPlanKeyFromSubscription(business?.subscription || ""),
     tags: business?.tags?.join(", ") || "",
     isOpen: business?.isOpen ?? true,
   });
@@ -3045,18 +3120,6 @@ export default function App() {
     setBusinessQrNotice("Print template coming soon.");
   };
 
-  const stripeEnabled = Boolean(STRIPE_PUBLISHABLE_KEY);
-
-  const handleStartSubscription = () => {
-    if (!stripeEnabled) {
-      setPaymentMessage(
-        "Stripe is not connected yet. Add your publishable key to enable payments.",
-      );
-      return;
-    }
-    setPaymentMessage("Stripe checkout will be wired here before launch.");
-  };
-
   const handleSignIn = async () => {
     if (!signInEmail.trim() || !signInPassword.trim()) {
       setSignInError("Email and password are required.");
@@ -3244,8 +3307,6 @@ export default function App() {
           category_key: businessCategoryKey,
           category_label: categoryConfig.display,
           hours: hoursValue,
-          subscription_plan: "Starter",
-          subscription_price_cents: 5000,
           approval_status: "pending",
           status: "active",
           is_open: true,
@@ -3269,8 +3330,6 @@ export default function App() {
             "tags",
             "latitude",
             "longitude",
-            "subscription_plan",
-            "subscription_price_cents",
             "qr_code",
             "is_open",
             "approval_status",
@@ -4051,6 +4110,94 @@ export default function App() {
     }
   };
 
+  const handleSaveTags = async () => {
+    if (!ownerBusiness || !tagsDirty) return;
+    const tagList = normalizeTagsInput(formData.tags);
+    const nextTags = tagList.length ? tagList : ["local"];
+    setTagSaveStatus({ saving: true, error: null, success: null });
+    const updatedBusiness = {
+      ...ownerBusiness,
+      tags: nextTags,
+    };
+
+    if (
+      !SUPABASE_URL ||
+      !SUPABASE_ANON_KEY ||
+      ownerBusiness.source !== "supabase"
+    ) {
+      setBusinesses((prev) =>
+        prev.map((business) =>
+          business.id === ownerBusiness.id ? updatedBusiness : business,
+        ),
+      );
+      setTagSaveStatus({
+        saving: false,
+        error: null,
+        success: "Tags saved.",
+      });
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("businesses")
+        .update({ tags: nextTags })
+        .eq("id", ownerBusiness.id)
+        .select(
+          [
+            "id",
+            "owner_id",
+            "name",
+            "address",
+            "city",
+            "state",
+            "postal_code",
+            "phone",
+            "category_key",
+            "category_label",
+            "offer_highlight",
+            "hours",
+            "tags",
+            "latitude",
+            "longitude",
+            "qr_code",
+            "is_open",
+            "approval_status",
+            "status",
+            "created_at",
+          ].join(","),
+        )
+        .maybeSingle();
+      if (error || !data) {
+        setTagSaveStatus({
+          saving: false,
+          error: error?.message || "Unable to save tags.",
+          success: null,
+        });
+        return;
+      }
+      const mapped = mapSupabaseBusiness(data, 0);
+      setBusinesses((prev) =>
+        prev.map((business) =>
+          business.id === ownerBusiness.id
+            ? { ...mapped, pendingEdits: ownerBusiness.pendingEdits }
+            : business,
+        ),
+      );
+      setTagSaveStatus({
+        saving: false,
+        error: null,
+        success: "Tags saved.",
+      });
+    } catch (error) {
+      setTagSaveStatus({
+        saving: false,
+        error: error?.message || "Unable to save tags.",
+        success: null,
+      });
+    }
+  };
+
   const handleSaveBusiness = async () => {
     if (!ownerBusiness) return;
     if (!formData.name.trim()) {
@@ -4062,19 +4209,12 @@ export default function App() {
     }
     setFormMessage(null);
 
-    const tagList = formData.tags
-      .split(",")
-      .map((tag) => tag.trim().toLowerCase())
-      .filter(Boolean);
+    const tagList = normalizeTagsInput(formData.tags);
     const trimmedName = formData.name.trim();
     const trimmedAddress = formData.address.trim();
     const trimmedCity = formData.city.trim();
     const trimmedState = formData.state.trim();
     const trimmedPostal = formData.postalCode.trim();
-    const selectedPlan =
-      PLAN_OPTIONS.find((plan) => plan.key === formData.planKey) ||
-      PLAN_OPTIONS[0];
-    const approvedPlan = selectedPlan.enabled ? selectedPlan : PLAN_OPTIONS[0];
     const pendingEdits = {};
 
     if (trimmedName && trimmedName !== ownerBusiness.name) {
@@ -4115,7 +4255,6 @@ export default function App() {
       category: categoryDisplay,
       categoryKey: nextCategoryKey,
       offer: ownerBusiness.offer,
-      subscription: `${approvedPlan.label} ${approvedPlan.price}`,
       tags: tagList.length ? tagList : ["local"],
       isOpen: formData.isOpen,
       hours: formData.hours.trim() || ownerBusiness.hours,
@@ -4178,18 +4317,10 @@ export default function App() {
         applyPendingEditsFromRequests(nextRequests);
       }
 
-      const priceValue = Number(
-        String(approvedPlan.price || "")
-          .replace(/[^0-9]/g, "")
-          .trim(),
-      );
-      const priceCents = Number.isFinite(priceValue) ? priceValue * 100 : 5000;
       const updatePayload = {
         tags: tagList.length ? tagList : [],
         hours: formData.hours.trim() || ownerBusiness.hours || null,
         is_open: formData.isOpen,
-        subscription_plan: approvedPlan.label,
-        subscription_price_cents: priceCents,
       };
       if (!hasPendingEdits) {
         updatePayload.name = trimmedName;
@@ -4228,8 +4359,6 @@ export default function App() {
             "tags",
             "latitude",
             "longitude",
-            "subscription_plan",
-            "subscription_price_cents",
             "qr_code",
             "is_open",
             "approval_status",
@@ -4297,13 +4426,11 @@ export default function App() {
           "category_key",
           "category_label",
           "offer_highlight",
-          "hours",
-          "tags",
-          "latitude",
-          "longitude",
-          "subscription_plan",
-          "subscription_price_cents",
-          "qr_code",
+            "hours",
+            "tags",
+            "latitude",
+            "longitude",
+            "qr_code",
           "is_open",
           "approval_status",
           "status",
@@ -4390,8 +4517,6 @@ export default function App() {
           "tags",
           "latitude",
           "longitude",
-          "subscription_plan",
-          "subscription_price_cents",
           "qr_code",
           "is_open",
           "approval_status",
@@ -4516,8 +4641,6 @@ export default function App() {
           "tags",
           "latitude",
           "longitude",
-          "subscription_plan",
-          "subscription_price_cents",
           "qr_code",
           "is_open",
           "approval_status",
@@ -4669,7 +4792,7 @@ export default function App() {
             "active",
             "approval_status",
             "created_at",
-            "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, subscription_plan, subscription_price_cents, is_open, approval_status, status)",
+            "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, is_open, approval_status, status)",
           ].join(","),
         )
         .eq("active", true)
@@ -5080,6 +5203,46 @@ export default function App() {
     }
   };
 
+  const handlePickEditOfferImage = async () => {
+    setEditOfferStatus((prev) => ({ ...prev, error: null }));
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const hasPermission = permission.granted || permission.status === "limited";
+    if (!hasPermission) {
+      setEditOfferStatus({
+        saving: false,
+        error: "Photo access is required. Enable it in Settings.",
+      });
+      return;
+    }
+    try {
+      const mediaTypes = ImagePicker.MediaType?.Images
+        ? [ImagePicker.MediaType.Images]
+        : ImagePicker.MediaTypeOptions?.Images;
+      const result = await ImagePicker.launchImageLibraryAsync({
+        ...(mediaTypes ? { mediaTypes } : {}),
+        allowsEditing: true,
+        aspect: [2, 1],
+        quality: 0.85,
+        base64: true,
+      });
+      if (result.canceled) return;
+      const asset = result.assets?.[0];
+      if (!asset?.uri) return;
+      setEditOfferImage({
+        uri: asset.uri,
+        mimeType: asset.mimeType || "image/jpeg",
+        fileName: asset.fileName || null,
+        base64: asset.base64 || null,
+        isRemote: false,
+      });
+    } catch (error) {
+      setEditOfferStatus({
+        saving: false,
+        error: error?.message || "Unable to open photo library.",
+      });
+    }
+  };
+
   const handleUploadReceipt = async (entry) => {
     if (!entry?.id || !entry.businessId) return;
     setReceiptUploadStatus((prev) => ({ ...prev, error: null }));
@@ -5224,6 +5387,92 @@ export default function App() {
         error: error?.message || "Unable to upload receipt.",
         targetId: null,
       });
+    }
+  };
+
+  const handleOpenOfferEdit = (offer) => {
+    if (!offer) return;
+    setEditOfferDraft({
+      id: offer.id,
+      title: offer.title || "",
+      description: offer.description || "",
+      type: offer.offerType || offer.offer_type || "",
+      imageUrl: offer.imageUrl || "",
+    });
+    setEditOfferImage(
+      offer.imageUrl
+        ? { uri: offer.imageUrl, isRemote: true }
+        : null,
+    );
+    setEditOfferStatus({ saving: false, error: null });
+    setEditOfferOpen(true);
+  };
+
+  const handleSubmitOfferEdit = async () => {
+    if (!ownerBusiness || !editOfferDraft.id) return;
+    if (!editOfferDraft.title.trim()) {
+      setEditOfferStatus({
+        saving: false,
+        error: "Offer title is required.",
+      });
+      return;
+    }
+    setEditOfferStatus({ saving: true, error: null });
+    if (!ensureSupabaseReady((message) =>
+      setEditOfferStatus({ saving: false, error: message }),
+    )) {
+      return;
+    }
+    try {
+      let imageUrl = editOfferDraft.imageUrl || "";
+      if (editOfferImage && !editOfferImage.isRemote) {
+        const upload = await uploadOfferImage(
+          editOfferImage,
+          ownerBusiness.id,
+        );
+        if (upload.error) {
+          setEditOfferStatus({ saving: false, error: upload.error });
+          return;
+        }
+        imageUrl = upload.url || "";
+      }
+      const payload = {
+        title: editOfferDraft.title.trim(),
+        description: editOfferDraft.description.trim() || null,
+        offer_type: editOfferDraft.type.trim(),
+        image_url: imageUrl || null,
+        approval_status: "pending",
+      };
+      const { data, error } = await supabase
+        .from("offers")
+        .update(payload)
+        .eq("id", editOfferDraft.id)
+        .select(
+          [
+            "id",
+            "business_id",
+            "title",
+            "description",
+            "offer_type",
+            "image_url",
+            "points_value",
+            "active",
+            "approval_status",
+            "created_at",
+          ].join(","),
+        )
+        .maybeSingle();
+      if (error || !data) {
+        setEditOfferStatus({
+          saving: false,
+          error: error?.message || "Unable to submit offer edits.",
+        });
+        return;
+      }
+      mergeOffers([mapSupabaseOffer(data)]);
+      setEditOfferOpen(false);
+    } finally {
+      setEditOfferStatus((prev) => ({ ...prev, saving: false }));
     }
   };
 
@@ -5683,6 +5932,55 @@ export default function App() {
     [],
   );
 
+  const loadBusinessRedemptions = useCallback(
+    async (businessId, { silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setBusinessRedemptionStatus({
+          loading: false,
+          error: "Supabase is not configured for redemptions yet.",
+        });
+        return;
+      }
+      if (!businessId) {
+        setBusinessRedemptions([]);
+        setBusinessRedemptionStatus({ loading: false, error: null });
+        return;
+      }
+      if (!silent) {
+        setBusinessRedemptionStatus({ loading: true, error: null });
+      }
+      const { data, error } = await supabase
+        .from("redemptions")
+        .select(
+          [
+            "id",
+            "business_id",
+            "offer_id",
+            "points_awarded",
+            "created_at",
+            "offer:offers (id, title, description, offer_type, image_url, points_value)",
+            "receipt_uploads (id, uploaded_at, storage_path)",
+          ].join(","),
+        )
+        .eq("business_id", businessId)
+        .order("created_at", { ascending: false });
+      if (error) {
+        if (!silent) {
+          setBusinessRedemptionStatus({
+            loading: false,
+            error: error.message || "Unable to load redemptions.",
+          });
+        }
+        return;
+      }
+      setBusinessRedemptions((data || []).map(mapSupabaseRedemption));
+      if (!silent) {
+        setBusinessRedemptionStatus({ loading: false, error: null });
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (activeTab !== "history") return;
     if (!isSignedIn || !showHistoryTab) return;
@@ -5871,14 +6169,7 @@ export default function App() {
           category_label: categoryConfig.display,
           offer_highlight: null,
           hours: hoursValue,
-          tags: createBusinessForm.tags
-            ? createBusinessForm.tags
-                .split(",")
-                .map((tag) => tag.trim())
-                .filter(Boolean)
-            : [],
-          subscription_plan: "Starter",
-          subscription_price_cents: 5000,
+          tags: normalizeTagsInput(createBusinessForm.tags),
           approval_status: "pending",
           status: "active",
           is_open: true,
@@ -6549,6 +6840,15 @@ export default function App() {
                           {isBusinessOpen ? "Redeem this offer" : "Closed now"}
                         </Text>
                       </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.detailOfferDirections}
+                        onPress={() => openMapsForBusiness(businessDetail)}
+                      >
+                        <Ionicons name="navigate" size={14} color={COLORS.pine} />
+                        <Text style={styles.detailOfferDirectionsText}>
+                          Get directions
+                        </Text>
+                      </TouchableOpacity>
                     </View>
                   )})
                 )}
@@ -6644,79 +6944,476 @@ export default function App() {
                     {businessReceiptStatus.error}
                   </Text>
                 )}
+                {businessRedemptionStatus.error && (
+                  <Text style={styles.formError}>
+                    {businessRedemptionStatus.error}
+                  </Text>
+                )}
 
-                {businessReceiptStatus.loading ? (
+                {businessReceiptStatus.loading ||
+                businessRedemptionStatus.loading ? (
                   <View style={styles.remoteNotice}>
                     <Text style={styles.remoteNoticeText}>
-                      Loading receipts...
+                      Loading redemptions...
                     </Text>
                   </View>
-                ) : businessReceipts.length === 0 ? (
+                ) : businessReceipts.length === 0 &&
+                  pendingRedemptionGroups.length === 0 ? (
                   <View style={styles.emptyState}>
                     <Text style={styles.emptyTitle}>No receipts yet.</Text>
                     <Text style={styles.emptyCopy}>
-                      Receipts uploaded by customers will appear here.
+                      Redemptions will appear here as customers redeem offers.
                     </Text>
                   </View>
                 ) : (
                   <View style={styles.receiptList}>
-                    {receiptOfferGroups.map((group) => {
+                    {receiptOfferGroups.length > 0 && (
+                      <>
+                        <Text style={styles.receiptSectionTitle}>
+                          Verified redemptions
+                        </Text>
+                        {receiptOfferGroups.map((group) => {
+                          const expandKey = `verified:${group.key}`;
+                          const isExpanded = Boolean(
+                            expandedReceiptOffers[expandKey],
+                          );
+                          return (
+                            <View
+                              key={`verified-${group.key}`}
+                              style={styles.receiptOfferCard}
+                            >
+                              <TouchableOpacity
+                                style={styles.receiptOfferHeader}
+                                onPress={() =>
+                                  setExpandedReceiptOffers((prev) => ({
+                                    ...prev,
+                                    [expandKey]: !prev[expandKey],
+                                  }))
+                                }
+                              >
+                                <View style={styles.receiptOfferMeta}>
+                                  <Text
+                                    style={styles.receiptOfferTitle}
+                                    numberOfLines={1}
+                                  >
+                                    {group.offerTitle}
+                                  </Text>
+                                  <Text style={styles.receiptOfferSub}>
+                                    {group.receipts.length} receipts · Last{" "}
+                                    {formatHistoryTimestamp(
+                                      group.lastUploadedAt,
+                                    )}
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name={
+                                    isExpanded ? "chevron-up" : "chevron-down"
+                                  }
+                                  size={18}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
+                              {isExpanded && (
+                                <View style={styles.receiptTileGrid}>
+                                  {group.receipts.map((receipt) => (
+                                    <TouchableOpacity
+                                      key={receipt.id}
+                                      style={styles.receiptTile}
+                                      onPress={() =>
+                                        handleOpenReceiptPreview(
+                                          receipt,
+                                          group.offerTitle,
+                                        )
+                                      }
+                                    >
+                                      <View style={styles.receiptThumbWrap}>
+                                        {receipt.imageUrl ? (
+                                          <Image
+                                            source={{ uri: receipt.imageUrl }}
+                                            style={styles.receiptThumb}
+                                            resizeMode="cover"
+                                          />
+                                        ) : (
+                                          <View
+                                            style={
+                                              styles.receiptThumbPlaceholder
+                                            }
+                                          >
+                                            <Ionicons
+                                              name="image"
+                                              size={16}
+                                              color={COLORS.muted}
+                                            />
+                                          </View>
+                                        )}
+                                      </View>
+                                      <Text style={styles.receiptTileDate}>
+                                        {formatOfferDate(receipt.uploadedAt)}
+                                      </Text>
+                                      <Text style={styles.receiptTileTime}>
+                                        {formatReceiptTime(receipt.uploadedAt)}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  ))}
+                                </View>
+                              )}
+                            </View>
+                          );
+                        })}
+                      </>
+                    )}
+                    {pendingRedemptionGroups.length > 0 && (
+                      <>
+                        <Text style={styles.receiptSectionTitle}>
+                          Pending receipts
+                        </Text>
+                        {pendingRedemptionGroups.map((group) => {
+                          const expandKey = `pending:${group.key}`;
+                          const isExpanded = Boolean(
+                            expandedReceiptOffers[expandKey],
+                          );
+                          return (
+                            <View
+                              key={`pending-${group.key}`}
+                              style={styles.receiptOfferCard}
+                            >
+                              <TouchableOpacity
+                                style={styles.receiptOfferHeader}
+                                onPress={() =>
+                                  setExpandedReceiptOffers((prev) => ({
+                                    ...prev,
+                                    [expandKey]: !prev[expandKey],
+                                  }))
+                                }
+                              >
+                                <View style={styles.receiptOfferMeta}>
+                                  <Text
+                                    style={styles.receiptOfferTitle}
+                                    numberOfLines={1}
+                                  >
+                                    {group.offerTitle}
+                                  </Text>
+                                  <Text style={styles.receiptOfferSub}>
+                                    {group.entries.length} redeems · Last{" "}
+                                    {formatHistoryTimestamp(
+                                      group.lastRedeemed,
+                                    )}
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name={
+                                    isExpanded ? "chevron-up" : "chevron-down"
+                                  }
+                                  size={18}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
+                              {isExpanded && (
+                                <View style={styles.receiptTileGrid}>
+                                  {group.entries.map((entry) => (
+                                    <View
+                                      key={entry.id}
+                                      style={[
+                                        styles.receiptTile,
+                                        styles.redeemTile,
+                                      ]}
+                                    >
+                                      <View style={styles.redeemTileBadge}>
+                                        <Text style={styles.redeemTileBadgeText}>
+                                          No receipt
+                                        </Text>
+                                      </View>
+                                      <Text style={styles.receiptTileDate}>
+                                        {formatOfferDate(entry.createdAt)}
+                                      </Text>
+                                      <Text style={styles.receiptTileTime}>
+                                        {formatReceiptTime(entry.createdAt)}
+                                      </Text>
+                                    </View>
+                                  ))}
+                                </View>
+                              )}
+                            </View>
+                          );
+                        })}
+                      </>
+                    )}
+                  </View>
+                )}
+              </ScrollView>
+            </SafeAreaView>
+          </Modal>
+
+          <Modal visible={editOfferOpen} animationType="slide">
+            <SafeAreaView style={styles.editOfferScreen} edges={["top", "bottom"]}>
+              <View style={styles.editOfferHeader}>
+                <Text style={styles.editOfferTitle}>Request offer edit</Text>
+                <TouchableOpacity
+                  style={styles.receiptsClose}
+                  onPress={() => setEditOfferOpen(false)}
+                >
+                  <Ionicons name="close" size={18} color={COLORS.ink} />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.editOfferSubtitle}>
+                Updates are reviewed before they go live.
+              </Text>
+              <ScrollView
+                style={styles.editOfferBody}
+                contentContainerStyle={styles.editOfferBodyContent}
+                showsVerticalScrollIndicator={false}
+              >
+                <Text style={styles.formLabel}>Offer title</Text>
+                <AutoFocusInput
+                  style={styles.formInput}
+                  placeholder="Offer title"
+                  placeholderTextColor={COLORS.muted}
+                  value={editOfferDraft.title}
+                  onChangeText={(value) =>
+                    setEditOfferDraft((prev) => ({ ...prev, title: value }))
+                  }
+                />
+
+                <Text style={styles.formLabel}>Description</Text>
+                <AutoFocusInput
+                  style={[styles.formInput, styles.formTextarea]}
+                  placeholder="Describe the offer details"
+                  placeholderTextColor={COLORS.muted}
+                  value={editOfferDraft.description}
+                  onChangeText={(value) =>
+                    setEditOfferDraft((prev) => ({
+                      ...prev,
+                      description: value,
+                    }))
+                  }
+                  multiline
+                  textAlignVertical="top"
+                />
+
+                <Text style={styles.formLabel}>Offer type</Text>
+                <AutoFocusInput
+                  style={styles.formInput}
+                  placeholder="Discount, BOGO, Bundle..."
+                  placeholderTextColor={COLORS.muted}
+                  value={editOfferDraft.type}
+                  onChangeText={(value) =>
+                    setEditOfferDraft((prev) => ({ ...prev, type: value }))
+                  }
+                  autoCorrect
+                  autoCapitalize="words"
+                />
+
+                <Text style={styles.formLabel}>Offer photo</Text>
+                <View style={styles.offerUploadRow}>
+                  <TouchableOpacity
+                    style={styles.secondaryButton}
+                    onPress={handlePickEditOfferImage}
+                    disabled={editOfferStatus.saving}
+                  >
+                    <Text style={styles.secondaryButtonText}>
+                      {editOfferImage ? "Replace photo" : "Upload photo"}
+                    </Text>
+                  </TouchableOpacity>
+                  {editOfferImage && (
+                    <TouchableOpacity
+                      style={styles.offerRemoveButton}
+                      onPress={() => setEditOfferImage(null)}
+                    >
+                      <Text style={styles.offerRemoveButtonText}>Remove</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                <View style={styles.offerUploadFrame}>
+                  {editOfferImage?.uri ? (
+                    <Image
+                      source={{ uri: editOfferImage.uri }}
+                      style={styles.offerUploadPreview}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={styles.offerUploadPlaceholder}>
+                      <Ionicons
+                        name="image-outline"
+                        size={18}
+                        color={COLORS.muted}
+                      />
+                      <Text style={styles.offerUploadHint}>
+                        Upload a new photo for this offer.
+                      </Text>
+                    </View>
+                  )}
+                </View>
+
+                {editOfferStatus.error && (
+                  <Text style={styles.formError}>{editOfferStatus.error}</Text>
+                )}
+
+                <View style={styles.formActions}>
+                  <TouchableOpacity
+                    style={[
+                      styles.primaryButton,
+                      editOfferStatus.saving && styles.primaryButtonDisabled,
+                    ]}
+                    onPress={handleSubmitOfferEdit}
+                    disabled={editOfferStatus.saving}
+                  >
+                    <Text style={styles.primaryButtonText}>
+                      {editOfferStatus.saving
+                        ? "Submitting..."
+                        : "Submit for approval"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
+            </SafeAreaView>
+          </Modal>
+
+          <Modal visible={ownerOffersModalOpen} animationType="slide">
+            <SafeAreaView style={styles.editOfferScreen} edges={["top", "bottom"]}>
+              <View style={styles.editOfferHeader}>
+                <Text style={styles.editOfferTitle}>Your offers</Text>
+                <TouchableOpacity
+                  style={styles.receiptsClose}
+                  onPress={() => setOwnerOffersModalOpen(false)}
+                >
+                  <Ionicons name="close" size={18} color={COLORS.ink} />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.editOfferSubtitle}>
+                Tap an offer to view full details or request edits.
+              </Text>
+              <ScrollView
+                style={styles.editOfferBody}
+                contentContainerStyle={styles.editOfferBodyContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {ownerOffers.length === 0 ? (
+                  <View style={styles.emptyState}>
+                    <Text style={styles.emptyTitle}>No offers yet.</Text>
+                    <Text style={styles.emptyCopy}>
+                      Create your first offer to show on Discover.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.offerList}>
+                    {ownerOffers.map((offer) => {
                       const isExpanded = Boolean(
-                        expandedReceiptOffers[group.key],
+                        expandedOwnerOffers[offer.id],
                       );
+                      const statusLabel =
+                        offer.approvalStatus === "pending"
+                          ? "Pending review"
+                          : offer.approvalStatus === "rejected"
+                            ? "Rejected"
+                            : "Approved";
+                      const offerTypeLabel = offer.offerType
+                        ? normalizeOfferType(offer.offerType)
+                        : "Offer";
+                      const pointsValue = resolveOfferPoints(offer);
+                      const canEdit = offer.approvalStatus !== "pending";
                       return (
                         <View
-                          key={group.key}
-                          style={styles.receiptOfferCard}
+                          key={offer.id}
+                          style={styles.ownerOfferCard}
                         >
                           <TouchableOpacity
-                            style={styles.receiptOfferHeader}
+                            style={styles.ownerOfferHeader}
                             onPress={() =>
-                              setExpandedReceiptOffers((prev) => ({
+                              setExpandedOwnerOffers((prev) => ({
                                 ...prev,
-                                [group.key]: !prev[group.key],
+                                [offer.id]: !prev[offer.id],
                               }))
                             }
                           >
-                            <View style={styles.receiptOfferMeta}>
-                              <Text
-                                style={styles.receiptOfferTitle}
-                                numberOfLines={1}
-                              >
-                                {group.offerTitle}
+                            <View style={styles.offerMeta}>
+                              <Text style={styles.offerTitle}>
+                                {offer.title || "Untitled offer"}
                               </Text>
-                              <Text style={styles.receiptOfferSub}>
-                                {group.receipts.length} receipts · Last{" "}
-                                {formatHistoryTimestamp(group.lastUploadedAt)}
+                              <Text style={styles.offerStatus}>
+                                {offer.active ? "Active" : "Paused"} ·{" "}
+                                {statusLabel}
                               </Text>
                             </View>
                             <Ionicons
-                              name={isExpanded ? "chevron-up" : "chevron-down"}
+                              name={
+                                isExpanded ? "chevron-up" : "chevron-down"
+                              }
                               size={18}
                               color={COLORS.muted}
                             />
                           </TouchableOpacity>
                           {isExpanded && (
-                            <View style={styles.receiptTileGrid}>
-                              {group.receipts.map((receipt) => (
-                                <TouchableOpacity
-                                  key={receipt.id}
-                                  style={styles.receiptTile}
-                                  onPress={() =>
-                                    handleOpenReceiptPreview(
-                                      receipt,
-                                      group.offerTitle,
-                                    )
-                                  }
-                                >
-                                  <Text style={styles.receiptTileDate}>
-                                    {formatOfferDate(receipt.uploadedAt)}
+                            <View style={styles.ownerOfferBody}>
+                              {offer.imageUrl ? (
+                                <Image
+                                  source={{ uri: offer.imageUrl }}
+                                  style={styles.detailOfferImage}
+                                  resizeMode="cover"
+                                />
+                              ) : (
+                                <View style={styles.ownerOfferImagePlaceholder}>
+                                  <Ionicons
+                                    name="image-outline"
+                                    size={18}
+                                    color={COLORS.muted}
+                                  />
+                                  <Text style={styles.cardMediaLabel}>
+                                    Offer image
                                   </Text>
-                                  <Text style={styles.receiptTileTime}>
-                                    {formatReceiptTime(receipt.uploadedAt)}
+                                </View>
+                              )}
+                              <View style={styles.detailOfferTagRow}>
+                                {(ownerBusiness?.tags || []).map((tag) => (
+                                  <View key={tag} style={styles.detailOfferTag}>
+                                    <Text style={styles.detailOfferTagText}>
+                                      {tag}
+                                    </Text>
+                                  </View>
+                                ))}
+                              </View>
+                              {offer.description ? (
+                                <Text style={styles.detailOfferText}>
+                                  {offer.description}
+                                </Text>
+                              ) : null}
+                              <View style={styles.detailOfferMetaRow}>
+                                <Text style={styles.detailOfferMeta}>
+                                  {offerTypeLabel}
+                                </Text>
+                                <Text style={styles.detailOfferMeta}>
+                                  {pointsValue} pts
+                                </Text>
+                              </View>
+                              <View style={styles.offerActionsRow}>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.offerAction,
+                                    !canEdit && styles.offerActionDisabled,
+                                  ]}
+                                  onPress={() => handleOpenOfferEdit(offer)}
+                                  disabled={!canEdit}
+                                >
+                                  <Text style={styles.offerActionText}>
+                                    {canEdit ? "Request edit" : "Pending review"}
                                   </Text>
                                 </TouchableOpacity>
-                              ))}
+                                <TouchableOpacity
+                                  style={styles.offerActionGhost}
+                                  onPress={() => handleToggleOffer(offer)}
+                                >
+                                  <Text style={styles.offerActionTextGhost}>
+                                    {offer.active ? "Pause" : "Activate"}
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.offerActionGhost}
+                                  onPress={() => handleDeleteOffer(offer)}
+                                >
+                                  <Text style={styles.offerActionTextGhost}>
+                                    Delete
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
                             </View>
                           )}
                         </View>
@@ -7163,7 +7860,6 @@ export default function App() {
                                   getCategoryConfig(ownerBusiness.categoryKey)
                                     .display
                                 }{" "}
-                                - {ownerBusiness.subscription}
                               </Text>
                             </View>
                             <View
@@ -7514,19 +8210,82 @@ export default function App() {
                           </View>
 
                           <Text style={styles.formLabel}>Tags</Text>
-                          <AutoFocusInput
+                          <View
                             style={[
-                              styles.formInput,
-                              !canEditBusiness && styles.formInputDisabled,
+                              styles.tagOptionRow,
+                              !canEditTags && styles.tagOptionRowDisabled,
                             ]}
-                            placeholder="wifi, family, happy-hour"
-                            placeholderTextColor={COLORS.muted}
-                            value={formData.tags}
-                            editable={canEditBusiness}
-                            onChangeText={(value) =>
-                              handleFormChange("tags", value)
-                            }
-                          />
+                          >
+                            {TAG_OPTIONS.map((option) => {
+                              const isActive = selectedBusinessTags.has(
+                                option.value,
+                              );
+                              return (
+                                <TouchableOpacity
+                                  key={option.value}
+                                  style={[
+                                    styles.tagOptionPill,
+                                    isActive && styles.tagOptionPillActive,
+                                    !canEditTags &&
+                                      styles.tagOptionPillDisabled,
+                                  ]}
+                                  disabled={!canEditTags}
+                                  onPress={() => {
+                                    if (!canEditTags) return;
+                                    const next = new Set(selectedBusinessTags);
+                                    if (next.has(option.value)) {
+                                      next.delete(option.value);
+                                    } else {
+                                      next.add(option.value);
+                                    }
+                                    handleFormChange(
+                                      "tags",
+                                      Array.from(next).join(", "),
+                                    );
+                                  }}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.tagOptionText,
+                                      isActive && styles.tagOptionTextActive,
+                                    ]}
+                                  >
+                                    {option.label}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                          <View style={styles.tagActionsRow}>
+                            <Text style={styles.formHint}>
+                              Tags save instantly.
+                            </Text>
+                            <TouchableOpacity
+                              style={[
+                                styles.tagSaveButton,
+                                (!tagsDirty || tagSaveStatus.saving) &&
+                                  styles.tagSaveButtonDisabled,
+                              ]}
+                              onPress={handleSaveTags}
+                              disabled={!tagsDirty || tagSaveStatus.saving}
+                            >
+                              <Text style={styles.tagSaveButtonText}>
+                                {tagSaveStatus.saving
+                                  ? "Saving..."
+                                  : "Save tags"}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                          {tagSaveStatus.error && (
+                            <Text style={styles.formError}>
+                              {tagSaveStatus.error}
+                            </Text>
+                          )}
+                          {tagSaveStatus.success && (
+                            <Text style={styles.formHint}>
+                              {tagSaveStatus.success}
+                            </Text>
+                          )}
 
                           {isEditingBusiness && (
                             <View style={styles.formActions}>
@@ -7837,18 +8596,43 @@ export default function App() {
                           </View>
 
                           <Text style={styles.formLabel}>Tags</Text>
-                          <AutoFocusInput
-                            style={styles.formInput}
-                            placeholder="wifi, family, happy-hour"
-                            placeholderTextColor={COLORS.muted}
-                            value={createBusinessForm.tags}
-                            onChangeText={(value) =>
-                              setCreateBusinessForm((prev) => ({
-                                ...prev,
-                                tags: value,
-                              }))
-                            }
-                          />
+                          <View style={styles.tagOptionRow}>
+                            {TAG_OPTIONS.map((option) => {
+                              const isActive = selectedCreateTags.has(
+                                option.value,
+                              );
+                              return (
+                                <TouchableOpacity
+                                  key={option.value}
+                                  style={[
+                                    styles.tagOptionPill,
+                                    isActive && styles.tagOptionPillActive,
+                                  ]}
+                                  onPress={() => {
+                                    const next = new Set(selectedCreateTags);
+                                    if (next.has(option.value)) {
+                                      next.delete(option.value);
+                                    } else {
+                                      next.add(option.value);
+                                    }
+                                    setCreateBusinessForm((prev) => ({
+                                      ...prev,
+                                      tags: Array.from(next).join(", "),
+                                    }));
+                                  }}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.tagOptionText,
+                                      isActive && styles.tagOptionTextActive,
+                                    ]}
+                                  >
+                                    {option.label}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
 
                           {createBusinessError && (
                             <Text style={styles.formError}>
@@ -7872,33 +8656,6 @@ export default function App() {
                                   : "Create profile"}
                               </Text>
                             </TouchableOpacity>
-                          </View>
-
-                          <View style={styles.paymentCard}>
-                            <Text style={styles.paymentTitle}>Membership</Text>
-                            <Text style={styles.paymentBody}>
-                              A subscription is required to publish your listing
-                              once your profile is created.
-                            </Text>
-                            <TouchableOpacity
-                              style={[
-                                styles.primaryButton,
-                                !stripeEnabled && styles.primaryButtonDisabled,
-                              ]}
-                              onPress={handleStartSubscription}
-                              disabled={!stripeEnabled}
-                            >
-                              <Text style={styles.primaryButtonText}>
-                                {stripeEnabled
-                                  ? "Continue to payment"
-                                  : "Stripe setup pending"}
-                              </Text>
-                            </TouchableOpacity>
-                            {paymentMessage && (
-                              <Text style={styles.formHint}>
-                                {paymentMessage}
-                              </Text>
-                            )}
                           </View>
                         </View>
                       )}
@@ -7946,6 +8703,14 @@ export default function App() {
                               Create and manage multiple offers for your
                               business. New offers may require approval.
                             </Text>
+                            <TouchableOpacity
+                              style={styles.secondaryButton}
+                              onPress={() => setOwnerOffersModalOpen(true)}
+                            >
+                              <Text style={styles.secondaryButtonText}>
+                                View current offers
+                              </Text>
+                            </TouchableOpacity>
                           </View>
 
                           <View style={styles.formCard}>
@@ -8101,7 +8866,7 @@ export default function App() {
                             </View>
                           </View>
 
-                          {ownerOffers.length === 0 ? (
+                          {ownerOffers.length === 0 && (
                             <View style={styles.emptyState}>
                               <Text style={styles.emptyTitle}>
                                 No offers yet.
@@ -8109,49 +8874,6 @@ export default function App() {
                               <Text style={styles.emptyCopy}>
                                 Create your first offer to show on Discover.
                               </Text>
-                            </View>
-                          ) : (
-                            <View style={styles.offerList}>
-                              {ownerOffers.map((offer) => (
-                                <View key={offer.id} style={styles.offerRow}>
-                                  <View style={styles.offerMeta}>
-                                    <Text style={styles.offerTitle}>
-                                      {offer.title || "Untitled offer"}
-                                    </Text>
-                                    {offer.description ? (
-                                      <Text style={styles.offerDescription}>
-                                        {offer.description}
-                                      </Text>
-                                    ) : null}
-                                    <Text style={styles.offerStatus}>
-                                      {offer.active ? "Active" : "Paused"} -{" "}
-                                      {offer.approvalStatus === "pending"
-                                        ? "Pending review"
-                                        : offer.approvalStatus === "rejected"
-                                          ? "Rejected"
-                                          : "Approved"}
-                                    </Text>
-                                  </View>
-                                  <View style={styles.offerActions}>
-                                    <TouchableOpacity
-                                      style={styles.offerAction}
-                                      onPress={() => handleToggleOffer(offer)}
-                                    >
-                                      <Text style={styles.offerActionText}>
-                                        {offer.active ? "Pause" : "Activate"}
-                                      </Text>
-                                    </TouchableOpacity>
-                                    <TouchableOpacity
-                                      style={styles.offerActionGhost}
-                                      onPress={() => handleDeleteOffer(offer)}
-                                    >
-                                      <Text style={styles.offerActionTextGhost}>
-                                        Delete
-                                      </Text>
-                                    </TouchableOpacity>
-                                  </View>
-                                </View>
-                              ))}
                             </View>
                           )}
 
@@ -8273,6 +8995,99 @@ export default function App() {
                                 const hasReview = reviewedBusinessIds.has(
                                   String(group.businessId || group.key),
                                 );
+                                const entriesWithReceipt = group.entries.filter(
+                                  (entry) => Boolean(entry.receipt?.id),
+                                );
+                                const entriesWithoutReceipt =
+                                  group.entries.filter(
+                                    (entry) => !entry.receipt?.id,
+                                  );
+                                const renderHistoryEntry = (entry) => {
+                                  const offerTitle =
+                                    entry.offer?.title || "Redeemed offer";
+                                  const offerDescription =
+                                    entry.offer?.description || "";
+                                  const pointsAwarded =
+                                    resolveRedemptionPoints(entry);
+                                  const pendingPoints = pointsAwarded
+                                    ? 0
+                                    : resolvePendingPoints(entry);
+                                  const hasReceipt = Boolean(
+                                    entry.receipt?.id,
+                                  );
+                                  const receiptWindowOpen =
+                                    isReceiptWindowOpen(entry);
+                                  const isUploadingReceipt =
+                                    receiptUploadStatus.uploading &&
+                                    receiptUploadStatus.targetId === entry.id;
+                                  const needsReceipt =
+                                    !hasReceipt && !pointsAwarded;
+                                  return (
+                                    <View
+                                      key={entry.id}
+                                      style={styles.historyEntry}
+                                    >
+                                      <View style={styles.historyEntryRow}>
+                                        <Text
+                                          style={styles.historyEntryTitle}
+                                          numberOfLines={1}
+                                        >
+                                          {offerTitle}
+                                        </Text>
+                                        <View style={styles.historyEntryMeta}>
+                                          <Text style={styles.historyEntryTime}>
+                                            {formatHistoryTimestamp(
+                                              entry.createdAt,
+                                            )}
+                                          </Text>
+                                          <Text
+                                            style={[
+                                              styles.historyEntryPoints,
+                                              !pointsAwarded &&
+                                                styles.historyEntryPointsPending,
+                                            ]}
+                                          >
+                                            {pointsAwarded
+                                              ? `+${pointsAwarded} pts`
+                                              : `Pending ${pendingPoints} pts`}
+                                          </Text>
+                                        </View>
+                                      </View>
+                                      {!hasReview &&
+                                        entry.id === group.entries[0]?.id && (
+                                          <Text
+                                            style={styles.historyEntryPending}
+                                          >
+                                            Review needed
+                                          </Text>
+                                        )}
+                                      {needsReceipt && (
+                                        <Text
+                                          style={styles.historyEntryPending}
+                                        >
+                                          {receiptWindowOpen
+                                            ? "Receipt needed within 24 hours to earn points."
+                                            : "Receipt window expired."}
+                                        </Text>
+                                      )}
+                                      {offerDescription ? (
+                                        <Text
+                                          style={styles.historyEntryDescription}
+                                          numberOfLines={2}
+                                        >
+                                          {offerDescription}
+                                        </Text>
+                                      ) : null}
+                                      {needsReceipt &&
+                                        receiptWindowOpen &&
+                                        isUploadingReceipt && (
+                                          <Text style={styles.formHint}>
+                                            Uploading receipt...
+                                          </Text>
+                                        )}
+                                    </View>
+                                  );
+                                };
                                 return (
                                   <View
                                     key={group.key}
@@ -8360,115 +9175,34 @@ export default function App() {
                                             />
                                           </TouchableOpacity>
                                         )}
-                                        {group.entries.map((entry) => {
-                                          const offerTitle =
-                                            entry.offer?.title ||
-                                            "Redeemed offer";
-                                          const offerDescription =
-                                            entry.offer?.description || "";
-                                          const pointsAwarded =
-                                            resolveRedemptionPoints(entry);
-                                          const pendingPoints = pointsAwarded
-                                            ? 0
-                                            : resolvePendingPoints(entry);
-                                          const hasReceipt = Boolean(
-                                            entry.receipt?.id,
-                                          );
-                                          const receiptWindowOpen =
-                                            isReceiptWindowOpen(entry);
-                                          const isUploadingReceipt =
-                                            receiptUploadStatus.uploading &&
-                                            receiptUploadStatus.targetId ===
-                                              entry.id;
-                                          const needsReceipt =
-                                            !hasReceipt && !pointsAwarded;
-                                          return (
-                                            <View
-                                              key={entry.id}
-                                              style={styles.historyEntry}
+                                        {entriesWithoutReceipt.length > 0 && (
+                                          <View style={styles.historySection}>
+                                            <Text
+                                              style={
+                                                styles.historySectionTitle
+                                              }
                                             >
-                                              <View
-                                                style={styles.historyEntryRow}
-                                              >
-                                                <Text
-                                                  style={
-                                                    styles.historyEntryTitle
-                                                  }
-                                                  numberOfLines={1}
-                                                >
-                                                  {offerTitle}
-                                                </Text>
-                                                <View
-                                                  style={
-                                                    styles.historyEntryMeta
-                                                  }
-                                                >
-                                                  <Text
-                                                    style={
-                                                      styles.historyEntryTime
-                                                    }
-                                                  >
-                                                    {formatHistoryTimestamp(
-                                                      entry.createdAt,
-                                                    )}
-                                                  </Text>
-                                                  <Text
-                                                    style={
-                                                      [
-                                                        styles.historyEntryPoints,
-                                                        !pointsAwarded &&
-                                                          styles.historyEntryPointsPending,
-                                                      ]
-                                                    }
-                                                  >
-                                                    {pointsAwarded
-                                                      ? `+${pointsAwarded} pts`
-                                                      : `Pending ${pendingPoints} pts`}
-                                                  </Text>
-                                                </View>
-                                              </View>
-                                              {!hasReview &&
-                                                entry.id ===
-                                                  group.entries[0]?.id && (
-                                                  <Text
-                                                    style={
-                                                      styles.historyEntryPending
-                                                    }
-                                                  >
-                                                    Review needed
-                                                  </Text>
-                                                )}
-                                              {needsReceipt && (
-                                                <Text
-                                                  style={
-                                                    styles.historyEntryPending
-                                                  }
-                                                >
-                                                  {receiptWindowOpen
-                                                    ? "Receipt needed within 24 hours to earn points."
-                                                    : "Receipt window expired."}
-                                                </Text>
-                                              )}
-                                              {offerDescription ? (
-                                                <Text
-                                                  style={
-                                                    styles.historyEntryDescription
-                                                  }
-                                                  numberOfLines={2}
-                                                >
-                                                  {offerDescription}
-                                                </Text>
-                                              ) : null}
-                                              {needsReceipt &&
-                                                receiptWindowOpen &&
-                                                isUploadingReceipt && (
-                                                  <Text style={styles.formHint}>
-                                                    Uploading receipt...
-                                                  </Text>
-                                                )}
-                                            </View>
-                                          );
-                                        })}
+                                              Needs receipt
+                                            </Text>
+                                            {entriesWithoutReceipt.map(
+                                              renderHistoryEntry,
+                                            )}
+                                          </View>
+                                        )}
+                                        {entriesWithReceipt.length > 0 && (
+                                          <View style={styles.historySection}>
+                                            <Text
+                                              style={
+                                                styles.historySectionTitle
+                                              }
+                                            >
+                                              Receipt uploaded
+                                            </Text>
+                                            {entriesWithReceipt.map(
+                                              renderHistoryEntry,
+                                            )}
+                                          </View>
+                                        )}
                                       </View>
                                     )}
                                   </View>
@@ -10020,7 +10754,8 @@ export default function App() {
                         <Text style={styles.modalSubtitle}>
                           Total views: {formatMetricValue(ownerMetrics.views)}
                         </Text>
-                        {viewsBreakdownStatus.loading ? (
+                        {viewsBreakdownStatus.loading &&
+                        viewsBreakdown.length === 0 ? (
                           <Text style={styles.formHint}>Loading views...</Text>
                         ) : viewsBreakdownStatus.error ? (
                           <Text style={styles.formError}>
@@ -10040,6 +10775,11 @@ export default function App() {
                             showsVerticalScrollIndicator={false}
                             contentContainerStyle={styles.modalList}
                           >
+                            {viewsBreakdownStatus.loading && (
+                              <Text style={styles.formHint}>
+                                Refreshing views...
+                              </Text>
+                            )}
                             {viewsBreakdown.map((item) => (
                               <View key={item.id} style={styles.modalRow}>
                                 <Text
@@ -10348,6 +11088,25 @@ const styles = StyleSheet.create({
   },
   redeemButtonTextDisabled: {
     color: COLORS.muted,
+  },
+  directionsButton: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    justifyContent: "center",
+    alignSelf: "stretch",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+  },
+  directionsButtonText: {
+    fontSize: 12,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
   },
   map: {
     ...StyleSheet.absoluteFillObject,
@@ -10764,6 +11523,25 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: FONT_MEDIUM,
     color: COLORS.white,
+  },
+  detailOfferDirections: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    justifyContent: "center",
+    alignSelf: "stretch",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+  },
+  detailOfferDirectionsText: {
+    fontSize: 12,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
   },
   detailBody: {
     marginTop: 12,
@@ -11342,6 +12120,61 @@ const styles = StyleSheet.create({
   tagTextOverlay: {
     color: COLORS.ink,
   },
+  tagActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  tagSaveButton: {
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  tagSaveButtonDisabled: {
+    opacity: 0.6,
+  },
+  tagSaveButtonText: {
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    fontSize: 12,
+  },
+  tagOptionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 8,
+  },
+  tagOptionRowDisabled: {
+    opacity: 0.6,
+  },
+  tagOptionPill: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+  },
+  tagOptionPillActive: {
+    backgroundColor: COLORS.pine,
+    borderColor: COLORS.pine,
+  },
+  tagOptionPillDisabled: {
+    opacity: 0.6,
+  },
+  tagOptionText: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  tagOptionTextActive: {
+    color: COLORS.white,
+  },
   emptyState: {
     backgroundColor: COLORS.white,
     borderRadius: 14,
@@ -11827,6 +12660,13 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     marginTop: 4,
   },
+  receiptSectionTitle: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    marginBottom: 8,
+    marginTop: 4,
+  },
   receiptTileGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -11839,9 +12679,44 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.mint,
+    padding: 8,
+    justifyContent: "flex-start",
+  },
+  receiptThumbWrap: {
+    width: "100%",
+    height: 64,
+    borderRadius: 10,
+    overflow: "hidden",
+    backgroundColor: COLORS.cream,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    marginBottom: 6,
+  },
+  receiptThumb: {
+    width: "100%",
+    height: "100%",
+  },
+  receiptThumbPlaceholder: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
+  },
+  redeemTile: {
+    justifyContent: "space-between",
+  },
+  redeemTileBadge: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    backgroundColor: "#FFF1F2",
+    borderWidth: 1,
+    borderColor: "#F3C2C7",
     paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  redeemTileBadgeText: {
+    fontSize: 10,
+    color: "#B42318",
+    fontFamily: FONT_MEDIUM,
   },
   receiptTileDisabled: {
     opacity: 0.6,
@@ -11850,19 +12725,48 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    textAlign: "center",
+    textAlign: "left",
   },
   receiptTileTime: {
     fontSize: 10,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 4,
-    textAlign: "center",
+    textAlign: "left",
   },
   receiptsScreen: {
     flex: 1,
     backgroundColor: COLORS.cream,
     padding: 16,
+  },
+  editOfferScreen: {
+    flex: 1,
+    backgroundColor: COLORS.cream,
+    padding: 16,
+  },
+  editOfferHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+  },
+  editOfferTitle: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+  },
+  editOfferSubtitle: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 6,
+    marginBottom: 12,
+  },
+  editOfferBody: {
+    flex: 1,
+  },
+  editOfferBodyContent: {
+    paddingBottom: 24,
   },
   receiptPreviewOverlay: {
     flex: 1,
@@ -12019,6 +12923,16 @@ const styles = StyleSheet.create({
     marginTop: 10,
     gap: 10,
   },
+  historySection: {
+    gap: 8,
+  },
+  historySectionTitle: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
   historyReviewButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -12174,6 +13088,36 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
     padding: 12,
   },
+  ownerOfferCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    overflow: "hidden",
+  },
+  ownerOfferHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+  },
+  ownerOfferBody: {
+    borderTopWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 12,
+    gap: 8,
+  },
+  ownerOfferImagePlaceholder: {
+    width: "100%",
+    height: 140,
+    borderRadius: 10,
+    backgroundColor: "#EFF3F8",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginBottom: 8,
+  },
   offerMeta: {
     flex: 1,
   },
@@ -12199,6 +13143,11 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     gap: 8,
   },
+  offerActionsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
   offerAction: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -12206,6 +13155,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.pine,
     backgroundColor: COLORS.pine,
+  },
+  offerActionDisabled: {
+    backgroundColor: "#B7C3D3",
+    borderColor: "#B7C3D3",
   },
   offerActionText: {
     fontSize: 11,
