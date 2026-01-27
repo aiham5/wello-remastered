@@ -33,6 +33,7 @@ import * as Font from "expo-font";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as FileSystem from "expo-file-system";
 import { toByteArray } from "base64-js";
 import * as Location from "expo-location";
@@ -65,6 +66,8 @@ const SAFE_TOP =
 const CARD_WIDTH = Math.min(280, Math.max(210, Math.round(SCREEN_WIDTH * 0.7)));
 const CARD_GAP = Math.round(Math.max(10, SCREEN_WIDTH * 0.03));
 const OFFER_IMAGE_ASPECT = 2 / 1;
+const OFFER_UPLOAD_WIDTH = 1200;
+const OFFER_UPLOAD_HEIGHT = Math.round(OFFER_UPLOAD_WIDTH / OFFER_IMAGE_ASPECT);
 const CARD_MEDIA_HEIGHT = Math.round(
   (CARD_WIDTH - (IS_COMPACT ? 28 : 32)) / OFFER_IMAGE_ASPECT,
 );
@@ -924,6 +927,112 @@ const RECEIPT_IMAGE_BUCKET = "receipt-images";
 const RECEIPT_UPLOAD_WINDOW_MS = 1000 * 60 * 60 * 24;
 const RECEIPT_URL_TTL_SECONDS = 60 * 60;
 
+const getImagePickerMediaTypes = () => {
+  if (ImagePicker.MediaType?.Images) {
+    return [ImagePicker.MediaType.Images];
+  }
+  return undefined;
+};
+
+const isImageAsset = (asset) => {
+  if (!asset) return false;
+  if (asset.type && asset.type !== "image") return false;
+  if (asset.mimeType && !asset.mimeType.startsWith("image/")) return false;
+  return true;
+};
+
+const getCenteredOfferCrop = (width, height) => {
+  if (!width || !height) return null;
+  const targetAspect = OFFER_IMAGE_ASPECT;
+  const currentAspect = width / height;
+  let cropWidth = width;
+  let cropHeight = height;
+  if (currentAspect > targetAspect) {
+    cropHeight = height;
+    cropWidth = Math.round(height * targetAspect);
+  } else if (currentAspect < targetAspect) {
+    cropWidth = width;
+    cropHeight = Math.round(width / targetAspect);
+  }
+  const originX = Math.max(0, Math.round((width - cropWidth) / 2));
+  const originY = Math.max(0, Math.round((height - cropHeight) / 2));
+  return {
+    originX,
+    originY,
+    width: cropWidth,
+    height: cropHeight,
+  };
+};
+
+const normalizeOfferImage = async (asset) => {
+  if (!asset?.uri) {
+    return { image: null, error: "Invalid image selection." };
+  }
+  try {
+    const crop = getCenteredOfferCrop(asset.width, asset.height);
+    const actions = crop
+      ? [{ crop }, { resize: { width: OFFER_UPLOAD_WIDTH, height: OFFER_UPLOAD_HEIGHT } }]
+      : [{ resize: { width: OFFER_UPLOAD_WIDTH, height: OFFER_UPLOAD_HEIGHT } }];
+    const result = await ImageManipulator.manipulateAsync(
+      asset.uri,
+      actions,
+      {
+        compress: 0.85,
+        format: ImageManipulator.SaveFormat.JPEG,
+        base64: true,
+      },
+    );
+    return {
+      image: {
+        uri: result.uri,
+        mimeType: "image/jpeg",
+        fileName: `offer-${Date.now()}.jpg`,
+        base64: result.base64 || null,
+      },
+      error: null,
+    };
+  } catch (error) {
+    return {
+      image: null,
+      error: error?.message || "Unable to process the image.",
+    };
+  }
+};
+
+const normalizeReceiptImage = async (asset) => {
+  if (!asset?.uri) {
+    return { image: null, error: "Invalid image selection." };
+  }
+  try {
+    const maxWidth = 1600;
+    const resize =
+      asset.width && asset.width > maxWidth ? [{ resize: { width: maxWidth } }] : [];
+    const result = await ImageManipulator.manipulateAsync(
+      asset.uri,
+      resize,
+      {
+        compress: 0.85,
+        format: ImageManipulator.SaveFormat.JPEG,
+        base64: true,
+      },
+    );
+    return {
+      image: {
+        uri: result.uri,
+        mimeType: "image/jpeg",
+        fileName: `receipt-${Date.now()}.jpg`,
+        base64: result.base64 || null,
+      },
+      error: null,
+    };
+  } catch (error) {
+    return {
+      image: null,
+      error: error?.message || "Unable to process the receipt image.",
+    };
+  }
+};
+
 const uploadOfferImage = async (image, businessId) => {
   if (!image?.uri && !image?.base64) return { url: null, error: null };
   const safeBusinessId = String(businessId || "business").replace(
@@ -1444,6 +1553,11 @@ export default function App() {
   const [editOfferImage, setEditOfferImage] = useState(null);
   const [editOfferStatus, setEditOfferStatus] = useState({
     saving: false,
+    error: null,
+  });
+  const [ownerOffersList, setOwnerOffersList] = useState([]);
+  const [ownerOffersStatus, setOwnerOffersStatus] = useState({
+    loading: false,
     error: null,
   });
   const [offerImageStatus, setOfferImageStatus] = useState({
@@ -2031,6 +2145,12 @@ export default function App() {
     loadBusinessReceipts,
     loadBusinessRedemptions,
   ]);
+
+  useEffect(() => {
+    if (!ownerOffersModalOpen) return;
+    if (!ownerBusiness?.id) return;
+    loadOwnerOffers(ownerBusiness.id, { silent: false });
+  }, [ownerOffersModalOpen, ownerBusiness?.id, loadOwnerOffers]);
 
   useEffect(
     () => () => {
@@ -4854,8 +4974,11 @@ export default function App() {
   }, []);
 
   const loadOwnerOffers = useCallback(
-    async (businessId) => {
+    async (businessId, { silent } = {}) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !businessId) return;
+      if (!silent) {
+        setOwnerOffersStatus({ loading: true, error: null });
+      }
       const { data, error } = await supabase
         .from("offers")
         .select(
@@ -4875,9 +4998,20 @@ export default function App() {
         .eq("business_id", businessId)
         .order("created_at", { ascending: false });
       if (error) {
+        if (!silent) {
+          setOwnerOffersStatus({
+            loading: false,
+            error: error.message || "Unable to load offers.",
+          });
+        }
         return;
       }
-      mergeOffers((data || []).map(mapSupabaseOffer));
+      const mapped = (data || []).map(mapSupabaseOffer);
+      setOwnerOffersList(mapped);
+      mergeOffers(mapped);
+      if (!silent) {
+        setOwnerOffersStatus({ loading: false, error: null });
+      }
     },
     [mergeOffers],
   );
@@ -5176,12 +5310,10 @@ export default function App() {
       return;
     }
     try {
-      const mediaTypes = ImagePicker.MediaType?.Images
-        ? [ImagePicker.MediaType.Images]
-        : ImagePicker.MediaTypeOptions?.Images;
+      const mediaTypes = getImagePickerMediaTypes();
       const result = await ImagePicker.launchImageLibraryAsync({
         ...(mediaTypes ? { mediaTypes } : {}),
-        allowsEditing: true,
+        allowsEditing: false,
         aspect: [2, 1],
         quality: 0.85,
         base64: true,
@@ -5189,12 +5321,22 @@ export default function App() {
       if (result.canceled) return;
       const asset = result.assets?.[0];
       if (!asset?.uri) return;
-      setOfferImage({
-        uri: asset.uri,
-        mimeType: asset.mimeType || "image/jpeg",
-        fileName: asset.fileName || null,
-        base64: asset.base64 || null,
-      });
+      if (!isImageAsset(asset)) {
+        setOfferImageStatus({
+          uploading: false,
+          error: "Please select an image file.",
+        });
+        return;
+      }
+      const normalized = await normalizeOfferImage(asset);
+      if (normalized.error || !normalized.image) {
+        setOfferImageStatus({
+          uploading: false,
+          error: normalized.error || "Unable to process the image.",
+        });
+        return;
+      }
+      setOfferImage(normalized.image);
     } catch (error) {
       setOfferImageStatus({
         uploading: false,
@@ -5215,12 +5357,10 @@ export default function App() {
       return;
     }
     try {
-      const mediaTypes = ImagePicker.MediaType?.Images
-        ? [ImagePicker.MediaType.Images]
-        : ImagePicker.MediaTypeOptions?.Images;
+      const mediaTypes = getImagePickerMediaTypes();
       const result = await ImagePicker.launchImageLibraryAsync({
         ...(mediaTypes ? { mediaTypes } : {}),
-        allowsEditing: true,
+        allowsEditing: false,
         aspect: [2, 1],
         quality: 0.85,
         base64: true,
@@ -5228,11 +5368,23 @@ export default function App() {
       if (result.canceled) return;
       const asset = result.assets?.[0];
       if (!asset?.uri) return;
+      if (!isImageAsset(asset)) {
+        setEditOfferStatus({
+          saving: false,
+          error: "Please select an image file.",
+        });
+        return;
+      }
+      const normalized = await normalizeOfferImage(asset);
+      if (normalized.error || !normalized.image) {
+        setEditOfferStatus({
+          saving: false,
+          error: normalized.error || "Unable to process the image.",
+        });
+        return;
+      }
       setEditOfferImage({
-        uri: asset.uri,
-        mimeType: asset.mimeType || "image/jpeg",
-        fileName: asset.fileName || null,
-        base64: asset.base64 || null,
+        ...normalized.image,
         isRemote: false,
       });
     } catch (error) {
@@ -5292,9 +5444,7 @@ export default function App() {
       return;
     }
     try {
-      const mediaTypes = ImagePicker.MediaType?.Images
-        ? [ImagePicker.MediaType.Images]
-        : ImagePicker.MediaTypeOptions?.Images;
+      const mediaTypes = getImagePickerMediaTypes();
       const result = await ImagePicker.launchImageLibraryAsync({
         ...(mediaTypes ? { mediaTypes } : {}),
         allowsEditing: true,
@@ -5305,18 +5455,30 @@ export default function App() {
       if (result.canceled) return;
       const asset = result.assets?.[0];
       if (!asset?.uri) return;
+      if (!isImageAsset(asset)) {
+        setReceiptUploadStatus({
+          uploading: false,
+          error: "Please select an image file.",
+          targetId: null,
+        });
+        return;
+      }
+      const normalized = await normalizeReceiptImage(asset);
+      if (normalized.error || !normalized.image) {
+        setReceiptUploadStatus({
+          uploading: false,
+          error: normalized.error || "Unable to process the receipt image.",
+          targetId: null,
+        });
+        return;
+      }
       setReceiptUploadStatus({
         uploading: true,
         error: null,
         targetId: entry.id,
       });
       const { path, error } = await uploadReceiptImage(
-        {
-          uri: asset.uri,
-          mimeType: asset.mimeType || "image/jpeg",
-          fileName: asset.fileName || null,
-          base64: asset.base64 || null,
-        },
+        normalized.image,
         entry.businessId,
         entry.id,
       );
@@ -7287,7 +7449,18 @@ export default function App() {
                 contentContainerStyle={styles.editOfferBodyContent}
                 showsVerticalScrollIndicator={false}
               >
-                {ownerOffers.length === 0 ? (
+                {ownerOffersStatus.error && (
+                  <Text style={styles.formError}>
+                    {ownerOffersStatus.error}
+                  </Text>
+                )}
+                {ownerOffersStatus.loading ? (
+                  <View style={styles.remoteNotice}>
+                    <Text style={styles.remoteNoticeText}>
+                      Loading offers...
+                    </Text>
+                  </View>
+                ) : ownerOffersList.length === 0 ? (
                   <View style={styles.emptyState}>
                     <Text style={styles.emptyTitle}>No offers yet.</Text>
                     <Text style={styles.emptyCopy}>
@@ -7296,7 +7469,7 @@ export default function App() {
                   </View>
                 ) : (
                   <View style={styles.offerList}>
-                    {ownerOffers.map((offer) => {
+                    {ownerOffersList.map((offer) => {
                       const isExpanded = Boolean(
                         expandedOwnerOffers[offer.id],
                       );
@@ -9085,6 +9258,29 @@ export default function App() {
                                             Uploading receipt...
                                           </Text>
                                         )}
+                                      {needsReceipt && receiptWindowOpen && (
+                                        <TouchableOpacity
+                                          style={[
+                                            styles.receiptUploadButton,
+                                            isUploadingReceipt &&
+                                              styles.receiptUploadButtonDisabled,
+                                          ]}
+                                          onPress={() =>
+                                            handleUploadReceipt(entry)
+                                          }
+                                          disabled={isUploadingReceipt}
+                                        >
+                                          <Text
+                                            style={
+                                              styles.receiptUploadButtonText
+                                            }
+                                          >
+                                            {isUploadingReceipt
+                                              ? "Uploading..."
+                                              : "Upload receipt"}
+                                          </Text>
+                                        </TouchableOpacity>
+                                      )}
                                     </View>
                                   );
                                 };
