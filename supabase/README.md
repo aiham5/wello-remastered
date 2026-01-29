@@ -11,6 +11,22 @@ EXPO_PUBLIC_SUPABASE_ANON_KEY=...
 
 4) Use `lib/supabase.js` in the app when you wire data fetching.
 
+Stripe (commission billing):
+- Deploy the Edge Functions in `supabase/functions/`:
+  - `stripe-create-account-link`
+  - `stripe-create-setup-session`
+  - `stripe-webhook`
+  - `stripe-create-monthly-invoices` (optional scheduled billing)
+- Set these secrets in Supabase:
+  - `STRIPE_SECRET_KEY`
+  - `STRIPE_WEBHOOK_SECRET`
+  - `STRIPE_CONNECT_REFRESH_URL`
+  - `STRIPE_CONNECT_RETURN_URL`
+  - `STRIPE_CHECKOUT_SUCCESS_URL`
+  - `STRIPE_CHECKOUT_CANCEL_URL`
+- In Stripe, add the webhook URL for `stripe-webhook`.
+- Schedule `stripe-create-monthly-invoices` monthly (Supabase scheduled functions).
+
 Invite codes + roles:
 - Re-run the updated `supabase/schema.sql` to create the `invites` table.
 - The schema also adds a `consumer` role for regular users.

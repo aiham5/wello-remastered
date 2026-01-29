@@ -59,6 +59,17 @@ alter table public.businesses
   add column if not exists city text,
   add column if not exists state text,
   add column if not exists postal_code text;
+alter table public.businesses
+  add column if not exists stripe_account_id text,
+  add column if not exists stripe_customer_id text,
+  add column if not exists stripe_payment_method_id text,
+  add column if not exists stripe_payment_method_brand text,
+  add column if not exists stripe_payment_method_last4 text,
+  add column if not exists stripe_charges_enabled boolean not null default false,
+  add column if not exists stripe_payouts_enabled boolean not null default false,
+  add column if not exists stripe_onboarded_at timestamptz,
+  add column if not exists commission_enabled boolean not null default true,
+  add column if not exists commission_rate_cents integer not null default 150;
 
 create table if not exists public.offers (
   id uuid primary key default gen_random_uuid(),
@@ -139,6 +150,29 @@ create table if not exists public.receipt_uploads (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.commission_events (
+  id uuid primary key default gen_random_uuid(),
+  business_id uuid not null references public.businesses on delete cascade,
+  redemption_id uuid not null references public.redemptions on delete cascade,
+  user_id uuid not null references auth.users on delete cascade,
+  amount_cents integer not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'invoiced', 'paid', 'failed')),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.commission_invoices (
+  id uuid primary key default gen_random_uuid(),
+  business_id uuid not null references public.businesses on delete cascade,
+  stripe_invoice_id text,
+  period_start date,
+  period_end date,
+  amount_cents integer not null default 0,
+  status text not null default 'draft'
+    check (status in ('draft', 'open', 'paid', 'failed')),
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.notification_tokens (
   user_id uuid primary key references auth.users on delete cascade,
   expo_push_token text not null,
@@ -198,6 +232,14 @@ create index if not exists receipt_uploads_business_id_idx
   on public.receipt_uploads(business_id);
 create index if not exists receipt_uploads_user_id_idx
   on public.receipt_uploads(user_id);
+create unique index if not exists commission_events_redemption_id_idx
+  on public.commission_events(redemption_id);
+create index if not exists commission_events_business_id_idx
+  on public.commission_events(business_id);
+create index if not exists commission_events_status_idx
+  on public.commission_events(status);
+create index if not exists commission_invoices_business_id_idx
+  on public.commission_invoices(business_id);
 create index if not exists notification_tokens_token_idx
   on public.notification_tokens(expo_push_token);
 create index if not exists user_locations_coords_idx
@@ -341,6 +383,8 @@ alter table public.notification_tokens enable row level security;
 alter table public.notification_preferences enable row level security;
 alter table public.user_locations enable row level security;
 alter table public.receipt_uploads enable row level security;
+alter table public.commission_events enable row level security;
+alter table public.commission_invoices enable row level security;
 
 -- Drop existing policies to keep this script idempotent.
 drop policy if exists "Invites are readable" on public.invites;
@@ -398,6 +442,16 @@ drop policy if exists "Users can read own receipts"
   on public.receipt_uploads;
 drop policy if exists "Owners can read receipts"
   on public.receipt_uploads;
+drop policy if exists "Users can create commission events"
+  on public.commission_events;
+drop policy if exists "Owners can read commission events"
+  on public.commission_events;
+drop policy if exists "Staff can read commission events"
+  on public.commission_events;
+drop policy if exists "Staff can manage commission events"
+  on public.commission_events;
+drop policy if exists "Staff can read commission invoices"
+  on public.commission_invoices;
 
 create table if not exists public.invites (
   id uuid primary key default gen_random_uuid(),
@@ -669,6 +723,38 @@ using (
     select owner_id from public.businesses where id = business_id
   )
 );
+
+create policy "Users can create commission events"
+on public.commission_events for insert
+with check (
+  auth.uid() = user_id
+  and exists (
+    select 1 from public.redemptions r
+    where r.id = redemption_id
+      and r.scanned_by = auth.uid()
+  )
+);
+
+create policy "Owners can read commission events"
+on public.commission_events for select
+using (
+  auth.uid() = (
+    select owner_id from public.businesses where id = business_id
+  )
+);
+
+create policy "Staff can read commission events"
+on public.commission_events for select
+using (public.is_staff());
+
+create policy "Staff can manage commission events"
+on public.commission_events for update
+using (public.is_staff())
+with check (public.is_staff());
+
+create policy "Staff can read commission invoices"
+on public.commission_invoices for select
+using (public.is_staff());
 
 -- Storage (offer images)
 insert into storage.buckets (id, name, public)

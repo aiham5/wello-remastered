@@ -8,6 +8,7 @@ import React, {
 import {
   AppState,
   Animated,
+  Alert,
   Dimensions,
   FlatList,
   Image,
@@ -81,6 +82,8 @@ const SCANNER_CARD_WIDTH = Math.max(280, SCREEN_WIDTH - 40);
 const SCANNER_CARD_HEIGHT = SCANNER_FRAME + (IS_COMPACT ? 160 : 180);
 const REDEEM_RADIUS_METERS = 150;
 const REDEEM_BLOCKED_MESSAGE = "You need to be in store to redeem.";
+const COMMISSION_CENTS = 150;
+const COMMISSION_LABEL = "$1.50";
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
 const GOOGLE_PLACES_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -477,6 +480,20 @@ const mapSupabaseBusiness = (row, index) => {
     approved: row.approval_status === "approved",
     rejected: row.approval_status === "rejected",
     qrCode: row.qr_code || "",
+    stripeAccountId: row.stripe_account_id || null,
+    stripeCustomerId: row.stripe_customer_id || null,
+    stripePaymentMethodId: row.stripe_payment_method_id || null,
+    stripePaymentMethodBrand: row.stripe_payment_method_brand || null,
+    stripePaymentMethodLast4: row.stripe_payment_method_last4 || null,
+    stripeChargesEnabled: row.stripe_charges_enabled ?? false,
+    stripePayoutsEnabled: row.stripe_payouts_enabled ?? false,
+    stripeOnboardedAt: row.stripe_onboarded_at
+      ? new Date(row.stripe_onboarded_at).getTime()
+      : null,
+    commissionRateCents: Number.isFinite(Number(row.commission_rate_cents))
+      ? Number(row.commission_rate_cents)
+      : COMMISSION_CENTS,
+    commissionEnabled: row.commission_enabled ?? true,
     source: "supabase",
   };
 };
@@ -1573,6 +1590,11 @@ export default function App() {
     loading: false,
     error: null,
   });
+  const [stripeActionStatus, setStripeActionStatus] = useState({
+    loading: false,
+    error: null,
+    success: null,
+  });
   const [receiptUploadStatus, setReceiptUploadStatus] = useState({
     uploading: false,
     error: null,
@@ -1829,6 +1851,99 @@ export default function App() {
     setProfilePoints(pointsValue);
   }, [authUserId]);
 
+  const incrementProfilePoints = useCallback(
+    async (delta) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !authUserId) return false;
+      const amount = Number(delta);
+      if (!Number.isFinite(amount) || amount <= 0) return false;
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("points_balance")
+        .eq("id", authUserId)
+        .maybeSingle();
+      if (error) return false;
+      const current = Number.isFinite(Number(data?.points_balance))
+        ? Number(data.points_balance)
+        : 0;
+      const next = current + amount;
+      const { error: updateError } = await supabase
+        .from("profiles")
+        .update({ points_balance: next })
+        .eq("id", authUserId);
+      if (updateError) return false;
+      setProfilePoints(next);
+      return true;
+    },
+    [authUserId],
+  );
+
+  const handleStripeConnect = useCallback(async () => {
+    if (!ownerBusiness?.id) return;
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setStripeActionStatus({
+        loading: false,
+        error: "Supabase is not configured for Stripe.",
+        success: null,
+      });
+      return;
+    }
+    setStripeActionStatus({ loading: true, error: null, success: null });
+    const { data, error } = await supabase.functions.invoke(
+      "stripe-create-account-link",
+      {
+        body: { businessId: ownerBusiness.id },
+      },
+    );
+    if (error || !data?.url) {
+      setStripeActionStatus({
+        loading: false,
+        error: error?.message || data?.error || "Unable to start onboarding.",
+        success: null,
+      });
+      return;
+    }
+    setStripeActionStatus({
+      loading: false,
+      error: null,
+      success: "Stripe onboarding opened.",
+    });
+    Linking.openURL(data.url).catch(() => null);
+  }, [ownerBusiness?.id]);
+
+  const handleStripePaymentSetup = useCallback(async () => {
+    if (!ownerBusiness?.id) return;
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setStripeActionStatus({
+        loading: false,
+        error: "Supabase is not configured for Stripe.",
+        success: null,
+      });
+      return;
+    }
+    setStripeActionStatus({ loading: true, error: null, success: null });
+    const { data, error } = await supabase.functions.invoke(
+      "stripe-create-setup-session",
+      {
+        body: { businessId: ownerBusiness.id },
+      },
+    );
+    if (error || !data?.url) {
+      setStripeActionStatus({
+        loading: false,
+        error:
+          error?.message || data?.error || "Unable to open payment setup.",
+        success: null,
+      });
+      return;
+    }
+    setStripeActionStatus({
+      loading: false,
+      error: null,
+      success: "Payment setup opened.",
+    });
+    Linking.openURL(data.url).catch(() => null);
+  }, [ownerBusiness?.id]);
+
   const trackOfferView = useCallback(
     async (businessId, offerId) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
@@ -2059,6 +2174,16 @@ export default function App() {
             "is_open",
             "approval_status",
             "status",
+            "stripe_account_id",
+            "stripe_customer_id",
+            "stripe_payment_method_id",
+            "stripe_payment_method_brand",
+            "stripe_payment_method_last4",
+            "stripe_charges_enabled",
+            "stripe_payouts_enabled",
+            "stripe_onboarded_at",
+            "commission_rate_cents",
+            "commission_enabled",
             "created_at",
           ].join(","),
         )
@@ -3454,6 +3579,16 @@ export default function App() {
             "is_open",
             "approval_status",
             "status",
+            "stripe_account_id",
+            "stripe_customer_id",
+            "stripe_payment_method_id",
+            "stripe_payment_method_brand",
+            "stripe_payment_method_last4",
+            "stripe_charges_enabled",
+            "stripe_payouts_enabled",
+            "stripe_onboarded_at",
+            "commission_rate_cents",
+            "commission_enabled",
             "created_at",
           ].join(","),
         )
@@ -4284,6 +4419,16 @@ export default function App() {
             "is_open",
             "approval_status",
             "status",
+            "stripe_account_id",
+            "stripe_customer_id",
+            "stripe_payment_method_id",
+            "stripe_payment_method_brand",
+            "stripe_payment_method_last4",
+            "stripe_charges_enabled",
+            "stripe_payouts_enabled",
+            "stripe_onboarded_at",
+            "commission_rate_cents",
+            "commission_enabled",
             "created_at",
           ].join(","),
         )
@@ -4546,14 +4691,24 @@ export default function App() {
           "category_key",
           "category_label",
           "offer_highlight",
-            "hours",
-            "tags",
-            "latitude",
-            "longitude",
-            "qr_code",
+          "hours",
+          "tags",
+          "latitude",
+          "longitude",
+          "qr_code",
           "is_open",
           "approval_status",
           "status",
+          "stripe_account_id",
+          "stripe_customer_id",
+          "stripe_payment_method_id",
+          "stripe_payment_method_brand",
+          "stripe_payment_method_last4",
+          "stripe_charges_enabled",
+          "stripe_payouts_enabled",
+          "stripe_onboarded_at",
+          "commission_rate_cents",
+          "commission_enabled",
           "created_at",
         ].join(","),
       )
@@ -4641,6 +4796,16 @@ export default function App() {
           "is_open",
           "approval_status",
           "status",
+          "stripe_account_id",
+          "stripe_customer_id",
+          "stripe_payment_method_id",
+          "stripe_payment_method_brand",
+          "stripe_payment_method_last4",
+          "stripe_charges_enabled",
+          "stripe_payouts_enabled",
+          "stripe_onboarded_at",
+          "commission_rate_cents",
+          "commission_enabled",
           "created_at",
         ].join(","),
       )
@@ -4765,6 +4930,16 @@ export default function App() {
           "is_open",
           "approval_status",
           "status",
+          "stripe_account_id",
+          "stripe_customer_id",
+          "stripe_payment_method_id",
+          "stripe_payment_method_brand",
+          "stripe_payment_method_last4",
+          "stripe_charges_enabled",
+          "stripe_payouts_enabled",
+          "stripe_onboarded_at",
+          "commission_rate_cents",
+          "commission_enabled",
           "created_at",
         ].join(","),
       )
@@ -5395,7 +5570,24 @@ export default function App() {
     }
   };
 
-  const handleUploadReceipt = async (entry) => {
+  const recordCommissionEvent = async (entry, amountCents) => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    if (!entry?.id || !entry.businessId || !authUserId) return;
+    const value = Number(amountCents);
+    if (!Number.isFinite(value) || value <= 0) return;
+    const { error } = await supabase.from("commission_events").insert({
+      business_id: entry.businessId,
+      redemption_id: entry.id,
+      user_id: authUserId,
+      amount_cents: Math.round(value),
+      status: "pending",
+    });
+    if (error) {
+      console.warn("Wello commission event insert failed:", error.message);
+    }
+  };
+
+  const handleUploadReceipt = async (entry, source = "library") => {
     if (!entry?.id || !entry.businessId) return;
     setReceiptUploadStatus((prev) => ({ ...prev, error: null }));
     if (
@@ -5433,7 +5625,10 @@ export default function App() {
       });
       return;
     }
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const permission =
+      source === "camera"
+        ? await ImagePicker.requestCameraPermissionsAsync()
+        : await ImagePicker.requestMediaLibraryPermissionsAsync();
     const hasPermission = permission.granted || permission.status === "limited";
     if (!hasPermission) {
       setReceiptUploadStatus({
@@ -5445,10 +5640,12 @@ export default function App() {
     }
     try {
       const mediaTypes = getImagePickerMediaTypes();
-      const result = await ImagePicker.launchImageLibraryAsync({
+      const launch = source === "camera"
+        ? ImagePicker.launchCameraAsync
+        : ImagePicker.launchImageLibraryAsync;
+      const result = await launch({
         ...(mediaTypes ? { mediaTypes } : {}),
-        allowsEditing: true,
-        aspect: [4, 5],
+        allowsEditing: false,
         quality: 0.85,
         base64: true,
       });
@@ -5509,14 +5706,22 @@ export default function App() {
         return;
       }
       const pointsValue = resolvePendingPoints(entry);
+      const hadPoints = Number(entry.pointsAwarded) > 0;
       const { error: updateError } = await supabase
         .from("redemptions")
         .update({ points_awarded: pointsValue })
         .eq("id", entry.id);
       if (updateError) {
         console.warn("Wello receipt points update failed:", updateError.message);
-      } else {
-        refreshProfilePoints();
+      } else if (!hadPoints) {
+        const updated = await incrementProfilePoints(pointsValue);
+        if (!updated) {
+          refreshProfilePoints();
+        }
+        const commissionCents =
+          businesses.find((business) => business.id === entry.businessId)
+            ?.commissionRateCents ?? COMMISSION_CENTS;
+        recordCommissionEvent(entry, commissionCents);
       }
       setRedemptionHistory((prev) =>
         prev.map((item) =>
@@ -5550,6 +5755,20 @@ export default function App() {
         targetId: null,
       });
     }
+  };
+
+  const promptReceiptUpload = (entry) => {
+    Alert.alert("Upload receipt", "Choose an option", [
+      {
+        text: "Take photo",
+        onPress: () => handleUploadReceipt(entry, "camera"),
+      },
+      {
+        text: "Choose from library",
+        onPress: () => handleUploadReceipt(entry, "library"),
+      },
+      { text: "Cancel", style: "cancel" },
+    ]);
   };
 
   const handleOpenOfferEdit = (offer) => {
@@ -8012,6 +8231,91 @@ export default function App() {
                       )}
 
                       <View style={styles.sectionBlock}>
+                        <Text style={styles.sectionTitleAlt}>Payments</Text>
+                        <Text style={styles.sectionBody}>
+                          Commission: {COMMISSION_LABEL} per verified redemption
+                          (receipt uploaded). Billed monthly. Wello covers
+                          processing fees.
+                        </Text>
+                      </View>
+                      <View style={styles.paymentCard}>
+                        <View style={styles.paymentRow}>
+                          <Text style={styles.paymentLabel}>
+                            Stripe account
+                          </Text>
+                          <View
+                            style={[
+                              styles.paymentBadge,
+                              ownerBusiness?.stripeAccountId
+                                ? styles.paymentBadgeActive
+                                : styles.paymentBadgeInactive,
+                            ]}
+                          >
+                            <Text style={styles.paymentBadgeText}>
+                              {ownerBusiness?.stripeAccountId
+                                ? "Connected"
+                                : "Not connected"}
+                            </Text>
+                          </View>
+                        </View>
+                        <View style={styles.paymentRow}>
+                          <Text style={styles.paymentLabel}>
+                            Payment method
+                          </Text>
+                          <View
+                            style={[
+                              styles.paymentBadge,
+                              ownerBusiness?.stripePaymentMethodId
+                                ? styles.paymentBadgeActive
+                                : styles.paymentBadgeInactive,
+                            ]}
+                          >
+                            <Text style={styles.paymentBadgeText}>
+                              {ownerBusiness?.stripePaymentMethodId
+                                ? "On file"
+                                : "Needed"}
+                            </Text>
+                          </View>
+                        </View>
+                        <TouchableOpacity
+                          style={[
+                            styles.primaryButton,
+                            stripeActionStatus.loading &&
+                              styles.primaryButtonDisabled,
+                          ]}
+                          onPress={handleStripeConnect}
+                          disabled={stripeActionStatus.loading}
+                        >
+                          <Text style={styles.primaryButtonText}>
+                            Connect Stripe
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[
+                            styles.secondaryButton,
+                            stripeActionStatus.loading &&
+                              styles.secondaryButtonDisabled,
+                          ]}
+                          onPress={handleStripePaymentSetup}
+                          disabled={stripeActionStatus.loading}
+                        >
+                          <Text style={styles.secondaryButtonText}>
+                            Add payment method
+                          </Text>
+                        </TouchableOpacity>
+                        {stripeActionStatus.error && (
+                          <Text style={styles.formError}>
+                            {stripeActionStatus.error}
+                          </Text>
+                        )}
+                        {stripeActionStatus.success && (
+                          <Text style={styles.formSuccess}>
+                            {stripeActionStatus.success}
+                          </Text>
+                        )}
+                      </View>
+
+                      <View style={styles.sectionBlock}>
                         <Text style={styles.sectionTitleAlt}>
                           Business info
                         </Text>
@@ -9266,7 +9570,7 @@ export default function App() {
                                               styles.receiptUploadButtonDisabled,
                                           ]}
                                           onPress={() =>
-                                            handleUploadReceipt(entry)
+                                            promptReceiptUpload(entry)
                                           }
                                           disabled={isUploadingReceipt}
                                         >
@@ -12086,6 +12390,42 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 6,
+  },
+  paymentCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: "rgba(13, 34, 56, 0.1)",
+    marginBottom: 20,
+  },
+  paymentRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  paymentLabel: {
+    fontSize: 14,
+    fontFamily: "Rubik-Medium",
+    color: COLORS.text,
+  },
+  paymentBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(13, 34, 56, 0.08)",
+  },
+  paymentBadgeActive: {
+    backgroundColor: "rgba(46, 176, 126, 0.15)",
+  },
+  paymentBadgeInactive: {
+    backgroundColor: "rgba(255, 155, 0, 0.12)",
+  },
+  paymentBadgeText: {
+    fontSize: 12,
+    fontFamily: "Rubik-Medium",
+    color: COLORS.text,
   },
   analyticsLabelRow: {
     flexDirection: "row",

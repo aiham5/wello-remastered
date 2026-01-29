@@ -34,7 +34,9 @@
     "react-native-url-polyfill": "^3.0.0"
   },
   "devDependencies": {
+    "@types/react": "~19.1.10",
     "babel-preset-expo": "^54.0.9",
-    "dotenv": "^16.5.0"
+    "dotenv": "^16.5.0",
+    "typescript": "~5.9.2"
   }
 }

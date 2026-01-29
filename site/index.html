@@ -1,0 +1,96 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wello Partners — Commission Billing</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <div class="container">
+        <nav class="nav">
+          <a class="brand" href="/">
+            <img src="/assets/wello-logo.jpeg" alt="Wello logo" />
+            <span>Wello Partners</span>
+          </a>
+          <div class="nav-actions">
+            <span>Business payments only</span>
+            <a class="button secondary" href="mailto:wellopartners@gmail.com">Support</a>
+          </div>
+        </nav>
+
+        <section class="hero">
+          <div>
+            <span class="pill">Verified redemption billing</span>
+            <h1>Commission billing built for Wello partners.</h1>
+            <p class="lead">
+              Wello only charges when a redemption is verified with a receipt.
+              Businesses connect Stripe once, and commission is billed monthly.
+            </p>
+            <div class="cta-row">
+              <a class="button primary" href="#get-started">Get set up in the app</a>
+              <a class="button secondary" href="mailto:wellopartners@gmail.com">Contact support</a>
+            </div>
+          </div>
+          <div class="hero-card">
+            <div class="kicker">What you pay</div>
+            <h2>$1.50 per verified redemption</h2>
+            <p class="lead">
+              Commission only applies to redemptions with a receipt upload.
+              Wello covers processing fees.
+            </p>
+            <div class="grid">
+              <div class="feature">
+                <h3>Monthly billing</h3>
+                <p>We invoice once per month for verified redemptions.</p>
+              </div>
+              <div class="feature">
+                <h3>Secure with Stripe</h3>
+                <p>Your payment method is stored securely by Stripe.</p>
+              </div>
+              <div class="feature">
+                <h3>Receipt verification</h3>
+                <p>No receipt, no commission. It’s that simple.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="get-started" class="steps">
+          <h2>How to get started</h2>
+          <ol>
+            <li>Create a business account in the Wello app.</li>
+            <li>Open Dashboard → Payments and connect your Stripe account.</li>
+            <li>Add a payment method for monthly commission billing.</li>
+            <li>Start getting verified redemptions from Wello customers.</li>
+          </ol>
+        </section>
+
+        <section class="steps" style="margin-top: 24px;">
+          <h2>Need help?</h2>
+          <p class="lead" style="margin-bottom: 12px;">
+            Email our team and we’ll help with onboarding or billing questions.
+          </p>
+          <a class="button primary" href="mailto:wellopartners@gmail.com">
+            wellopartners@gmail.com
+          </a>
+        </section>
+
+        <footer class="footer">
+          <span>© <span id="year"></span> Wello Partners</span>
+          <span>Commission billing for verified redemptions</span>
+        </footer>
+      </div>
+    </div>
+    <script>
+      document.getElementById("year").textContent = new Date().getFullYear();
+    </script>
+  </body>
+</html>
