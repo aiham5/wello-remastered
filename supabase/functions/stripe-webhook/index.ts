@@ -7,6 +7,9 @@ const SUPABASE_SERVICE_ROLE_KEY =
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 const STRIPE_WEBHOOK_SECRET = Deno.env.get("STRIPE_WEBHOOK_SECRET") ?? "";
+const STRIPE_WEBHOOK_TOLERANCE_SECONDS = Number(
+  Deno.env.get("STRIPE_WEBHOOK_TOLERANCE_SECONDS") ?? "300",
+);
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -21,21 +24,56 @@ serve(async (req) => {
     return new Response("Missing server configuration.", { status: 500 });
   }
 
-  const signature = req.headers.get("Stripe-Signature");
-  if (!signature || !STRIPE_WEBHOOK_SECRET) {
-    return new Response("Missing webhook signature.", { status: 400 });
+  const signature =
+    req.headers.get("Stripe-Signature") ??
+    req.headers.get("stripe-signature");
+  const webhookSecrets = STRIPE_WEBHOOK_SECRET.split(",")
+    .map((entry) =>
+      entry
+        .trim()
+        .replace(/\s+/g, "")
+        .replace(/^['"]|['"]$/g, ""),
+    )
+    .filter(Boolean);
+  if (!signature || webhookSecrets.length === 0) {
+    return new Response(
+      JSON.stringify({
+        error: "Missing webhook signature.",
+        signaturePresent: Boolean(signature),
+        secretCount: webhookSecrets.length,
+      }),
+      { status: 400 },
+    );
   }
 
   const body = await req.text();
-  let event: Stripe.Event;
-  try {
-    event = stripe.webhooks.constructEvent(
-      body,
-      signature,
-      STRIPE_WEBHOOK_SECRET,
+  let event: Stripe.Event | null = null;
+  let lastError: unknown = null;
+  for (const secret of webhookSecrets) {
+    try {
+      event = await stripe.webhooks.constructEventAsync(
+        body,
+        signature,
+        secret,
+        Number.isFinite(STRIPE_WEBHOOK_TOLERANCE_SECONDS)
+          ? STRIPE_WEBHOOK_TOLERANCE_SECONDS
+          : undefined,
+      );
+      break;
+    } catch (_error) {
+      // Try next secret.
+      lastError = _error;
+    }
+  }
+  if (!event) {
+    return new Response(
+      JSON.stringify({
+        error: "Invalid signature",
+        secretCount: webhookSecrets.length,
+        invalidReason: lastError?.message ?? null,
+      }),
+      { status: 400 },
     );
-  } catch (_error) {
-    return new Response("Invalid signature", { status: 400 });
   }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
