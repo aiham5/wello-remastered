@@ -706,6 +706,50 @@ const normalizeTagsInput = (value) =>
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean);
 
+const callStripeFunction = async (functionName, payload) => {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return { data: null, error: "Supabase is not configured." };
+  }
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData?.session?.access_token;
+  if (!accessToken) {
+    return { data: null, error: "Sign in again to continue." };
+  }
+    const enrichedPayload = {
+      ...(payload || {}),
+      accessToken,
+    };
+    const response = await fetch(
+      `${SUPABASE_URL}/functions/v1/${functionName}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${accessToken}`,
+          apikey: SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify(enrichedPayload),
+      },
+    );
+  const text = await response.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (error) {
+      data = { raw: text };
+    }
+  }
+  if (!response.ok) {
+    return {
+      data,
+      error: data?.error || `Stripe request failed (${response.status}).`,
+    };
+  }
+  return { data, error: null };
+};
+
 const resolveOfferPoints = (offer) => {
   const rawValue =
     offer?.pointsValue ??
@@ -1877,8 +1921,21 @@ export default function App() {
     [authUserId],
   );
 
+  const resolvedOwnerBusiness = useMemo(() => {
+    if (ownerBusiness) return ownerBusiness;
+    if (!ownerBusinessId) return null;
+    return businesses.find((business) => business.id === ownerBusinessId) || null;
+  }, [ownerBusiness, ownerBusinessId, businesses]);
+
   const handleStripeConnect = useCallback(async () => {
-    if (!ownerBusiness?.id) return;
+    if (!resolvedOwnerBusiness?.id) {
+      setStripeActionStatus({
+        loading: false,
+        error: "Create your business profile first.",
+        success: null,
+      });
+      return;
+    }
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setStripeActionStatus({
         loading: false,
@@ -1888,16 +1945,18 @@ export default function App() {
       return;
     }
     setStripeActionStatus({ loading: true, error: null, success: null });
-    const { data, error } = await supabase.functions.invoke(
+    const { data, error } = await callStripeFunction(
       "stripe-create-account-link",
-      {
-        body: { businessId: ownerBusiness.id },
-      },
+      { businessId: resolvedOwnerBusiness.id },
     );
     if (error || !data?.url) {
+      const errorMessage =
+        typeof error === "string"
+          ? error
+          : error?.message || data?.error || "Unable to start onboarding.";
       setStripeActionStatus({
         loading: false,
-        error: error?.message || data?.error || "Unable to start onboarding.",
+        error: errorMessage,
         success: null,
       });
       return;
@@ -1908,10 +1967,17 @@ export default function App() {
       success: "Stripe onboarding opened.",
     });
     Linking.openURL(data.url).catch(() => null);
-  }, [ownerBusiness?.id]);
+  }, [resolvedOwnerBusiness?.id]);
 
   const handleStripePaymentSetup = useCallback(async () => {
-    if (!ownerBusiness?.id) return;
+    if (!resolvedOwnerBusiness?.id) {
+      setStripeActionStatus({
+        loading: false,
+        error: "Create your business profile first.",
+        success: null,
+      });
+      return;
+    }
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setStripeActionStatus({
         loading: false,
@@ -1921,17 +1987,20 @@ export default function App() {
       return;
     }
     setStripeActionStatus({ loading: true, error: null, success: null });
-    const { data, error } = await supabase.functions.invoke(
+    const { data, error } = await callStripeFunction(
       "stripe-create-setup-session",
-      {
-        body: { businessId: ownerBusiness.id },
-      },
+      { businessId: resolvedOwnerBusiness.id },
     );
     if (error || !data?.url) {
+      const errorMessage =
+        typeof error === "string"
+          ? error
+          : error?.message ||
+            data?.error ||
+            "Unable to open payment setup.";
       setStripeActionStatus({
         loading: false,
-        error:
-          error?.message || data?.error || "Unable to open payment setup.",
+        error: errorMessage,
         success: null,
       });
       return;
@@ -1942,7 +2011,7 @@ export default function App() {
       success: "Payment setup opened.",
     });
     Linking.openURL(data.url).catch(() => null);
-  }, [ownerBusiness?.id]);
+  }, [resolvedOwnerBusiness?.id]);
 
   const trackOfferView = useCallback(
     async (businessId, offerId) => {
@@ -8246,13 +8315,13 @@ export default function App() {
                           <View
                             style={[
                               styles.paymentBadge,
-                              ownerBusiness?.stripeAccountId
+                              resolvedOwnerBusiness?.stripeAccountId
                                 ? styles.paymentBadgeActive
                                 : styles.paymentBadgeInactive,
                             ]}
                           >
                             <Text style={styles.paymentBadgeText}>
-                              {ownerBusiness?.stripeAccountId
+                              {resolvedOwnerBusiness?.stripeAccountId
                                 ? "Connected"
                                 : "Not connected"}
                             </Text>
@@ -8265,13 +8334,13 @@ export default function App() {
                           <View
                             style={[
                               styles.paymentBadge,
-                              ownerBusiness?.stripePaymentMethodId
+                              resolvedOwnerBusiness?.stripePaymentMethodId
                                 ? styles.paymentBadgeActive
                                 : styles.paymentBadgeInactive,
                             ]}
                           >
                             <Text style={styles.paymentBadgeText}>
-                              {ownerBusiness?.stripePaymentMethodId
+                              {resolvedOwnerBusiness?.stripePaymentMethodId
                                 ? "On file"
                                 : "Needed"}
                             </Text>
