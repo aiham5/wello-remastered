@@ -788,6 +788,11 @@ const formatMetricValue = (value) => {
   return text.length ? text : "—";
 };
 
+const formatCurrencyFromCents = (cents) => {
+  const amount = Number.isFinite(Number(cents)) ? Number(cents) : 0;
+  return `$${(amount / 100).toFixed(2)}`;
+};
+
 const openMapsForBusiness = (business) => {
   if (!business) return;
   const latitude =
@@ -1645,6 +1650,17 @@ export default function App() {
     loading: false,
     error: null,
   });
+
+  const [billingMetrics, setBillingMetrics] = useState({
+    monthCents: 0,
+    pendingCents: 0,
+    totalCents: 0,
+    updatedAt: null,
+  });
+  const [billingStatus, setBillingStatus] = useState({
+    loading: false,
+    error: null,
+  });
   const [stripeActionStatus, setStripeActionStatus] = useState({
     loading: false,
     error: null,
@@ -2096,6 +2112,56 @@ export default function App() {
     [authUserId],
   );
 
+
+  const loadBillingMetrics = useCallback(
+    async (businessId, { silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !businessId) return;
+      if (!silent) {
+        setBillingStatus({ loading: true, error: null });
+      }
+      const { data, error } = await supabase
+        .from("commission_events")
+        .select("amount_cents, created_at, status")
+        .eq("business_id", businessId);
+      if (error) {
+        setBillingStatus({
+          loading: false,
+          error: error.message || "Unable to load billing.",
+        });
+        return;
+      }
+      const rows = Array.isArray(data) ? data : [];
+      const monthStart = new Date();
+      monthStart.setDate(1);
+      monthStart.setHours(0, 0, 0, 0);
+      let monthCents = 0;
+      let pendingCents = 0;
+      let totalCents = 0;
+      rows.forEach((row) => {
+        const amount = Number(row?.amount_cents) || 0;
+        totalCents += amount;
+        if (row?.status === "pending") pendingCents += amount;
+        if (row?.created_at && new Date(row.created_at) >= monthStart) {
+          monthCents += amount;
+        }
+      });
+      setBillingMetrics({
+        monthCents,
+        pendingCents,
+        totalCents,
+        updatedAt: Date.now(),
+      });
+      if (!silent) {
+        setBillingStatus({ loading: false, error: null });
+      } else {
+        setBillingStatus((prev) =>
+          prev.error ? prev : { loading: false, error: null },
+        );
+      }
+    },
+    [],
+  );
+
   const loadOwnerAnalytics = useCallback(
     async (businessId, { silent } = {}) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !businessId) return;
@@ -2363,6 +2429,7 @@ export default function App() {
       if (ownerBusiness?.id) {
         loadOwnerOffers(ownerBusiness.id);
         loadOwnerAnalytics(ownerBusiness.id, { silent: true });
+        loadBillingMetrics(ownerBusiness.id, { silent: true });
       }
     }, OFFERS_REFRESH_INTERVAL_MS);
     return () => clearInterval(intervalId);
@@ -2372,6 +2439,7 @@ export default function App() {
     loadBusinessRatings,
     loadOwnerOffers,
     loadOwnerAnalytics,
+    loadBillingMetrics,
     ownerBusiness?.id,
   ]);
 
@@ -2379,12 +2447,14 @@ export default function App() {
     if (!ownerBusiness?.id) return;
     loadOwnerOffers(ownerBusiness.id);
     loadOwnerAnalytics(ownerBusiness.id, { silent: true });
-  }, [ownerBusiness?.id, loadOwnerOffers, loadOwnerAnalytics]);
+    loadBillingMetrics(ownerBusiness.id, { silent: true });
+  }, [ownerBusiness?.id, loadOwnerOffers, loadOwnerAnalytics, loadBillingMetrics]);
 
   useEffect(() => {
     if (activeTab !== "business" || !ownerBusiness?.id) return;
     loadOwnerAnalytics(ownerBusiness.id, { silent: false });
-  }, [activeTab, ownerBusiness?.id, loadOwnerAnalytics]);
+    loadBillingMetrics(ownerBusiness.id, { silent: false });
+  }, [activeTab, ownerBusiness?.id, loadOwnerAnalytics, loadBillingMetrics]);
 
   useEffect(() => {
     if (!viewsModalOpen) return;
@@ -8394,30 +8464,60 @@ export default function App() {
                             </Text>
                           </View>
                         </View>
-                        <View style={styles.paymentRow}>
-                          <Text style={styles.paymentLabel}>
-                            Payment method
-                          </Text>
-                          <View
-                            style={[
-                              styles.paymentBadge,
-                              resolvedOwnerBusiness?.stripePaymentMethodId
-                                ? styles.paymentBadgeActive
-                                : styles.paymentBadgeInactive,
-                            ]}
-                          >
-                            <Text style={styles.paymentBadgeText}>
-                              {resolvedOwnerBusiness?.stripePaymentMethodId
-                                ? "On file"
-                                : "Needed"}
+                          <View style={styles.paymentRow}>
+                            <Text style={styles.paymentLabel}>
+                              Payment method
+                            </Text>
+                            <View
+                              style={[
+                                styles.paymentBadge,
+                                resolvedOwnerBusiness?.stripePaymentMethodId
+                                  ? styles.paymentBadgeActive
+                                  : styles.paymentBadgeInactive,
+                              ]}
+                            >
+                              <Text style={styles.paymentBadgeText}>
+                                {resolvedOwnerBusiness?.stripePaymentMethodId
+                                  ? "On file"
+                                  : "Needed"}
+                              </Text>
+                            </View>
+                          </View>
+                          <View style={styles.paymentRow}>
+                            <Text style={styles.paymentLabel}>
+                              Accrued this month
+                            </Text>
+                            <Text style={styles.paymentAmount}>
+                              {formatCurrencyFromCents(
+                                billingMetrics.monthCents,
+                              )}
                             </Text>
                           </View>
-                        </View>
-                        <TouchableOpacity
-                          style={[
-                            styles.primaryButton,
-                            stripeActionStatus.loading &&
-                              styles.primaryButtonDisabled,
+                          <View style={styles.paymentRow}>
+                            <Text style={styles.paymentLabel}>
+                              Pending charges
+                            </Text>
+                            <Text style={styles.paymentAmount}>
+                              {formatCurrencyFromCents(
+                                billingMetrics.pendingCents,
+                              )}
+                            </Text>
+                          </View>
+                          {billingStatus.loading && (
+                            <Text style={styles.formHint}>
+                              Updating charges...
+                            </Text>
+                          )}
+                          {billingStatus.error && (
+                            <Text style={styles.formError}>
+                              {billingStatus.error}
+                            </Text>
+                          )}
+                          <TouchableOpacity
+                            style={[
+                              styles.primaryButton,
+                              stripeActionStatus.loading &&
+                                styles.primaryButtonDisabled,
                           ]}
                           onPress={handleStripeConnect}
                           disabled={stripeActionStatus.loading}
@@ -12559,6 +12659,11 @@ const styles = StyleSheet.create({
   paymentLabel: {
     fontSize: 14,
     fontFamily: "Rubik-Medium",
+    color: COLORS.text,
+  },
+  paymentAmount: {
+    fontSize: 14,
+    fontFamily: "Rubik-SemiBold",
     color: COLORS.text,
   },
   paymentBadge: {
