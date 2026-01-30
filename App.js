@@ -750,6 +750,17 @@ const callStripeFunction = async (functionName, payload) => {
   return { data, error: null };
 };
 
+const formatStripeError = (error) => {
+  if (!error) return "";
+  const message = String(error);
+  if (message.includes("does not have access to account")) {
+    return "Stripe account mismatch. Please reconnect your Stripe account.";
+  }
+  return message
+    .replace(/sk_(test|live)_[A-Za-z0-9]+/g, "sk_****")
+    .replace(/acct_[A-Za-z0-9]+/g, "acct_****");
+};
+
 const resolveOfferPoints = (offer) => {
   const rawValue =
     offer?.pointsValue ??
@@ -2012,6 +2023,58 @@ export default function App() {
     });
     Linking.openURL(data.url).catch(() => null);
   }, [resolvedOwnerBusiness?.id]);
+
+  const handleStripeManage = useCallback(async () => {
+    if (!resolvedOwnerBusiness?.id) {
+      setStripeActionStatus({
+        loading: false,
+        error: "Create your business profile first.",
+        success: null,
+      });
+      return;
+    }
+    if (!resolvedOwnerBusiness?.stripeAccountId) {
+      setStripeActionStatus({
+        loading: false,
+        error: "Connect Stripe before managing your account.",
+        success: null,
+      });
+      return;
+    }
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setStripeActionStatus({
+        loading: false,
+        error: "Supabase is not configured for Stripe.",
+        success: null,
+      });
+      return;
+    }
+    setStripeActionStatus({ loading: true, error: null, success: null });
+    const { data, error } = await callStripeFunction(
+      "stripe-create-login-link",
+      { businessId: resolvedOwnerBusiness.id },
+    );
+    if (error || !data?.url) {
+      const errorMessage =
+        typeof error === "string"
+          ? error
+          : error?.message ||
+            data?.error ||
+            "Unable to open Stripe dashboard.";
+      setStripeActionStatus({
+        loading: false,
+        error: errorMessage,
+        success: null,
+      });
+      return;
+    }
+    setStripeActionStatus({
+      loading: false,
+      error: null,
+      success: "Stripe dashboard opened.",
+    });
+    Linking.openURL(data.url).catch(() => null);
+  }, [resolvedOwnerBusiness?.id, resolvedOwnerBusiness?.stripeAccountId]);
 
   const trackOfferView = useCallback(
     async (businessId, offerId) => {
@@ -8301,11 +8364,15 @@ export default function App() {
 
                       <View style={styles.sectionBlock}>
                         <Text style={styles.sectionTitleAlt}>Payments</Text>
-                        <Text style={styles.sectionBody}>
-                          Commission: {COMMISSION_LABEL} per verified redemption
-                          (receipt uploaded). Billed monthly. Wello covers
-                          processing fees.
-                        </Text>
+                          <Text style={styles.sectionBody}>
+                            Commission: {COMMISSION_LABEL} per verified redemption
+                            (receipt uploaded). Billed monthly. Wello covers
+                            processing fees.
+                          </Text>
+                          <Text style={styles.sectionBody}>
+                            Billing portal is for payment methods and invoices
+                            (not earnings).
+                          </Text>
                       </View>
                       <View style={styles.paymentCard}>
                         <View style={styles.paymentRow}>
@@ -8359,24 +8426,39 @@ export default function App() {
                             Connect Stripe
                           </Text>
                         </TouchableOpacity>
-                        <TouchableOpacity
-                          style={[
-                            styles.secondaryButton,
-                            stripeActionStatus.loading &&
-                              styles.secondaryButtonDisabled,
-                          ]}
-                          onPress={handleStripePaymentSetup}
-                          disabled={stripeActionStatus.loading}
-                        >
-                          <Text style={styles.secondaryButtonText}>
-                            Add payment method
-                          </Text>
-                        </TouchableOpacity>
-                        {stripeActionStatus.error && (
-                          <Text style={styles.formError}>
-                            {stripeActionStatus.error}
-                          </Text>
-                        )}
+                          <TouchableOpacity
+                            style={[
+                              styles.secondaryButton,
+                              stripeActionStatus.loading &&
+                                styles.secondaryButtonDisabled,
+                            ]}
+                            onPress={handleStripePaymentSetup}
+                            disabled={stripeActionStatus.loading}
+                          >
+                            <Text style={styles.secondaryButtonText}>
+                              Add payment method
+                            </Text>
+                          </TouchableOpacity>
+                          {resolvedOwnerBusiness?.stripeAccountId && (
+                            <TouchableOpacity
+                              style={[
+                                styles.secondaryButton,
+                                stripeActionStatus.loading &&
+                                  styles.secondaryButtonDisabled,
+                              ]}
+                              onPress={handleStripeManage}
+                              disabled={stripeActionStatus.loading}
+                            >
+                              <Text style={styles.secondaryButtonText}>
+                              Billing portal
+                            </Text>
+                          </TouchableOpacity>
+                          )}
+                          {stripeActionStatus.error && (
+                            <Text style={styles.formError}>
+                              {formatStripeError(stripeActionStatus.error)}
+                            </Text>
+                          )}
                         {stripeActionStatus.success && (
                           <Text style={styles.formSuccess}>
                             {stripeActionStatus.success}
