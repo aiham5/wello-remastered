@@ -127,5 +127,95 @@ serve(async (req) => {
       .eq("stripe_account_id", account.id);
   }
 
+  if (
+    event.type === "invoice.created" ||
+    event.type === "invoice.finalized" ||
+    event.type === "invoice.payment_succeeded" ||
+    event.type === "invoice.payment_failed" ||
+    event.type === "invoice.voided"
+  ) {
+    const invoice = event.data.object as Stripe.Invoice;
+    const invoiceId = invoice.id;
+    const customerId = invoice.customer as string | null;
+    const businessIdFromMeta = invoice.metadata?.business_id;
+    let businessId = businessIdFromMeta || null;
+    if (!businessId && customerId) {
+      const { data: business } = await supabase
+        .from("businesses")
+        .select("id")
+        .eq("stripe_customer_id", customerId)
+        .maybeSingle();
+      businessId = business?.id ?? null;
+    }
+
+    if (businessId && invoiceId) {
+      const amountCents =
+        typeof invoice.amount_due === "number"
+          ? invoice.amount_due
+          : typeof invoice.total === "number"
+            ? invoice.total
+            : 0;
+      const periodStart = invoice.metadata?.period_start || null;
+      const periodEnd = invoice.metadata?.period_end || null;
+      await supabase.from("commission_invoices").upsert(
+        {
+          business_id: businessId,
+          stripe_invoice_id: invoiceId,
+          period_start: periodStart,
+          period_end: periodEnd,
+          amount_cents: amountCents,
+          status: invoice.status || "open",
+        },
+        { onConflict: "stripe_invoice_id" },
+      );
+
+      const hasPeriod = Boolean(periodStart && periodEnd);
+      if (event.type === "invoice.payment_succeeded") {
+        const updateQuery = supabase
+          .from("commission_events")
+          .update({ status: "paid" })
+          .eq("business_id", businessId)
+          .eq("status", "invoiced");
+        if (hasPeriod) {
+          await updateQuery
+            .gte("created_at", `${periodStart}T00:00:00.000Z`)
+            .lt("created_at", `${periodEnd}T00:00:00.000Z`);
+        } else {
+          await updateQuery;
+        }
+      }
+
+      if (event.type === "invoice.payment_failed") {
+        const updateQuery = supabase
+          .from("commission_events")
+          .update({ status: "failed" })
+          .eq("business_id", businessId)
+          .eq("status", "invoiced");
+        if (hasPeriod) {
+          await updateQuery
+            .gte("created_at", `${periodStart}T00:00:00.000Z`)
+            .lt("created_at", `${periodEnd}T00:00:00.000Z`);
+        } else {
+          await updateQuery;
+        }
+      }
+
+      if (event.type === "invoice.voided") {
+        const updateQuery = supabase
+          .from("commission_events")
+          .update({ status: "failed" })
+          .eq("business_id", businessId)
+          .eq("status", "invoiced");
+        if (hasPeriod) {
+          await updateQuery
+            .gte("created_at", `${periodStart}T00:00:00.000Z`)
+            .lt("created_at", `${periodEnd}T00:00:00.000Z`);
+        } else {
+          await updateQuery;
+        }
+      }
+    }
+  }
+
   return new Response(JSON.stringify({ received: true }), { status: 200 });
 });
