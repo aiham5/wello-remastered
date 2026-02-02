@@ -115,16 +115,30 @@ serve(async (req) => {
 
   if (event.type === "account.updated") {
     const account = event.data.object as Stripe.Account;
-    await supabase
-      .from("businesses")
-      .update({
-        stripe_charges_enabled: account.charges_enabled ?? false,
-        stripe_payouts_enabled: account.payouts_enabled ?? false,
-        stripe_onboarded_at: account.charges_enabled
-          ? new Date().toISOString()
-          : null,
-      })
-      .eq("stripe_account_id", account.id);
+    const purpose = account.metadata?.purpose;
+    const cashoutUserId = account.metadata?.user_id;
+    if (purpose === "consumer_cashout" && cashoutUserId) {
+      await supabase
+        .from("profiles")
+        .update({
+          stripe_cashout_payouts_enabled: account.payouts_enabled ?? false,
+          stripe_cashout_onboarded_at: account.payouts_enabled
+            ? new Date().toISOString()
+            : null,
+        })
+        .eq("id", cashoutUserId);
+    } else {
+      await supabase
+        .from("businesses")
+        .update({
+          stripe_charges_enabled: account.charges_enabled ?? false,
+          stripe_payouts_enabled: account.payouts_enabled ?? false,
+          stripe_onboarded_at: account.charges_enabled
+            ? new Date().toISOString()
+            : null,
+        })
+        .eq("stripe_account_id", account.id);
+    }
   }
 
   if (

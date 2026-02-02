@@ -8,6 +8,7 @@ import React, {
 import {
   AppState,
   Animated,
+  ActivityIndicator,
   Alert,
   Dimensions,
   FlatList,
@@ -717,6 +718,7 @@ const callStripeFunction = async (functionName, payload) => {
     const enrichedPayload = {
       ...(payload || {}),
       accessToken,
+      access_token: accessToken,
     };
     const response = await fetch(
       `${SUPABASE_URL}/functions/v1/${functionName}`,
@@ -1707,6 +1709,23 @@ export default function App() {
     error: null,
     success: null,
   });
+  const [cashoutStatus, setCashoutStatus] = useState({
+    connected: false,
+    payoutsEnabled: false,
+    detailsSubmitted: false,
+    accountId: null,
+    requirementsDue: [],
+    disabledReason: null,
+  });
+  const [cashoutStatusState, setCashoutStatusState] = useState({
+    loading: false,
+    error: null,
+  });
+  const [cashoutActionStatus, setCashoutActionStatus] = useState({
+    loading: false,
+    error: null,
+    success: null,
+  });
   const [receiptUploadStatus, setReceiptUploadStatus] = useState({
     uploading: false,
     error: null,
@@ -2132,6 +2151,120 @@ export default function App() {
     });
     Linking.openURL(data.url).catch(() => null);
   }, [resolvedOwnerBusiness?.id, resolvedOwnerBusiness?.stripeAccountId]);
+
+  const loadCashoutStatus = useCallback(
+    async ({ silent } = {}) => {
+      if (!isSignedIn) return;
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+      if (!silent) {
+        setCashoutStatusState({ loading: true, error: null });
+      }
+      const { data, error } = await callStripeFunction(
+        "stripe-get-cashout-status",
+        {},
+      );
+      if (error) {
+        setCashoutStatusState({
+          loading: false,
+          error:
+            typeof error === "string"
+              ? error
+              : error?.message || "Unable to load cashout status.",
+        });
+        return;
+      }
+      setCashoutStatus({
+        connected: Boolean(data?.connected),
+        payoutsEnabled: Boolean(data?.payoutsEnabled),
+        detailsSubmitted: Boolean(data?.detailsSubmitted),
+        accountId: data?.accountId || null,
+        requirementsDue: Array.isArray(data?.requirementsDue)
+          ? data.requirementsDue
+          : [],
+        disabledReason: data?.disabledReason || null,
+      });
+      setCashoutStatusState({ loading: false, error: null });
+    },
+    [isSignedIn],
+  );
+
+  const handleCashoutConnect = useCallback(async () => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Supabase is not configured for payouts.",
+        success: null,
+      });
+      return;
+    }
+    setCashoutActionStatus({ loading: true, error: null, success: null });
+    const { data, error } = await callStripeFunction(
+      "stripe-create-cashout-link",
+      {},
+    );
+    if (error || !data?.url) {
+      const errorMessage =
+        typeof error === "string"
+          ? error
+          : error?.message || data?.error || "Unable to start onboarding.";
+      setCashoutActionStatus({
+        loading: false,
+        error: errorMessage,
+        success: null,
+      });
+      return;
+    }
+    setCashoutActionStatus({
+      loading: false,
+      error: null,
+      success: "Stripe onboarding opened.",
+    });
+    Linking.openURL(data.url).catch(() => null);
+  }, []);
+
+  const handleCashoutManage = useCallback(async () => {
+    if (!cashoutStatus.connected) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Link a bank account first.",
+        success: null,
+      });
+      return;
+    }
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Supabase is not configured for payouts.",
+        success: null,
+      });
+      return;
+    }
+    setCashoutActionStatus({ loading: true, error: null, success: null });
+    const { data, error } = await callStripeFunction(
+      "stripe-create-cashout-login-link",
+      {},
+    );
+    if (error || !data?.url) {
+      const errorMessage =
+        typeof error === "string"
+          ? error
+          : error?.message ||
+            data?.error ||
+            "Unable to open Stripe dashboard.";
+      setCashoutActionStatus({
+        loading: false,
+        error: errorMessage,
+        success: null,
+      });
+      return;
+    }
+    setCashoutActionStatus({
+      loading: false,
+      error: null,
+      success: "Stripe dashboard opened.",
+    });
+    Linking.openURL(data.url).catch(() => null);
+  }, [cashoutStatus.connected]);
 
   const trackOfferView = useCallback(
     async (businessId, offerId) => {
@@ -3245,6 +3378,13 @@ export default function App() {
     SUPABASE_URL,
     SUPABASE_ANON_KEY,
   ]);
+
+  useEffect(() => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    if (activeTab === "cashout" && isSignedIn) {
+      loadCashoutStatus({});
+    }
+  }, [activeTab, isSignedIn, loadCashoutStatus, SUPABASE_URL, SUPABASE_ANON_KEY]);
 
   useEffect(() => {
     if (!qrExpandedId) return;
@@ -10034,7 +10174,7 @@ export default function App() {
                             <Text style={styles.sectionTitleAlt}>Cash out</Text>
                             <Text style={styles.sectionBody}>
                               Cashback is earned from verified receipts. Withdrawals
-                              will be available once payouts are enabled.
+                              are available once your bank account is verified.
                             </Text>
                           </View>
                           <View style={styles.pointsCard}>
@@ -10058,7 +10198,7 @@ export default function App() {
                               />
                             </View>
                             <Text style={styles.pointsReward}>
-                              Cash out after payouts launch
+                              Cash out after payouts are enabled
                             </Text>
                           </View>
                           <View style={styles.sectionBlock}>
@@ -10066,22 +10206,101 @@ export default function App() {
                               Bank account
                             </Text>
                             <Text style={styles.sectionBody}>
-                              Link a bank account to receive cashback. We’ll use
+                              Link a bank account to receive cashback. We will use
                               Stripe to verify and send payouts.
                             </Text>
+                            <View style={styles.cashoutStatusRow}>
+                              <View
+                                style={[
+                                  styles.cashoutPill,
+                                  cashoutStatus.connected
+                                    ? styles.cashoutPillActive
+                                    : styles.cashoutPillMuted,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.cashoutPillText,
+                                    cashoutStatus.connected &&
+                                      styles.cashoutPillTextActive,
+                                  ]}
+                                >
+                                  {cashoutStatus.connected
+                                    ? "Linked"
+                                    : "Not linked"}
+                                </Text>
+                              </View>
+                              <View
+                                style={[
+                                  styles.cashoutPill,
+                                  cashoutStatus.payoutsEnabled
+                                    ? styles.cashoutPillActive
+                                    : styles.cashoutPillMuted,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.cashoutPillText,
+                                    cashoutStatus.payoutsEnabled &&
+                                      styles.cashoutPillTextActive,
+                                  ]}
+                                >
+                                  {cashoutStatus.payoutsEnabled
+                                    ? "Payouts ready"
+                                    : cashoutStatus.connected
+                                      ? "Pending verification"
+                                      : "Payouts locked"}
+                                </Text>
+                              </View>
+                            </View>
+                            {cashoutStatusState.loading && (
+                              <View style={styles.cashoutStatusHint}>
+                                <ActivityIndicator
+                                  size="small"
+                                  color={COLORS.muted}
+                                />
+                                <Text style={styles.cashoutStatusText}>
+                                  Checking status...
+                                </Text>
+                              </View>
+                            )}
+                            {cashoutStatusState.error && (
+                              <Text style={styles.cashoutErrorText}>
+                                {cashoutStatusState.error}
+                              </Text>
+                            )}
+                            {cashoutActionStatus.error && (
+                              <Text style={styles.cashoutErrorText}>
+                                {cashoutActionStatus.error}
+                              </Text>
+                            )}
+                            {cashoutActionStatus.success && (
+                              <Text style={styles.cashoutSuccessText}>
+                                {cashoutActionStatus.success}
+                              </Text>
+                            )}
                             <TouchableOpacity
                               style={styles.primaryButton}
-                              onPress={() =>
-                                Alert.alert(
-                                  "Bank payouts",
-                                  "Cashback payouts are coming soon. We'll enable bank linking once Stripe Connect is set up for users.",
-                                )
-                              }
+                              onPress={handleCashoutConnect}
+                              disabled={cashoutActionStatus.loading}
                             >
                               <Text style={styles.primaryButtonText}>
-                                Link bank account
+                                {cashoutStatus.connected
+                                  ? "Update bank account"
+                                  : "Link bank account"}
                               </Text>
                             </TouchableOpacity>
+                            {cashoutStatus.connected && (
+                              <TouchableOpacity
+                                style={styles.secondaryButton}
+                                onPress={handleCashoutManage}
+                                disabled={cashoutActionStatus.loading}
+                              >
+                                <Text style={styles.secondaryButtonText}>
+                                  Manage payouts
+                                </Text>
+                              </TouchableOpacity>
+                            )}
                           </View>
                         </>
                       )}
@@ -13918,6 +14137,59 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontSize: 11,
     color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutStatusRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 12,
+  },
+  cashoutPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#EEF2F7",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+  },
+  cashoutPillActive: {
+    backgroundColor: "#DFF4E9",
+    borderColor: "rgba(20, 83, 45, 0.15)",
+  },
+  cashoutPillMuted: {
+    backgroundColor: "#EEF2F7",
+    borderColor: "rgba(15, 23, 42, 0.08)",
+  },
+  cashoutPillText: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutPillTextActive: {
+    color: COLORS.ink,
+  },
+  cashoutStatusHint: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 10,
+  },
+  cashoutStatusText: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutErrorText: {
+    marginTop: 8,
+    fontSize: 11,
+    color: "#B42318",
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutSuccessText: {
+    marginTop: 8,
+    fontSize: 11,
+    color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
   historyEntry: {

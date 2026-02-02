@@ -25,6 +25,10 @@ alter table public.profiles
   add column if not exists company text;
 alter table public.profiles
   add column if not exists points_balance integer not null default 0;
+alter table public.profiles
+  add column if not exists stripe_cashout_account_id text,
+  add column if not exists stripe_cashout_payouts_enabled boolean not null default false,
+  add column if not exists stripe_cashout_onboarded_at timestamptz;
 
 create table if not exists public.businesses (
   id uuid primary key default gen_random_uuid(),
