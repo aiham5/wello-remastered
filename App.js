@@ -34,7 +34,6 @@ import * as Font from "expo-font";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
-import * as ImageManipulator from "expo-image-manipulator";
 import * as FileSystem from "expo-file-system";
 import { toByteArray } from "base64-js";
 import * as Location from "expo-location";
@@ -781,6 +780,24 @@ const resolveRedemptionPoints = (entry) => {
 
 const resolvePendingPoints = (entry) => resolveOfferPoints(entry?.offer);
 
+const imageManipulatorState = { promise: null, module: null };
+const loadImageManipulator = async () => {
+  if (imageManipulatorState.module) return imageManipulatorState.module;
+  if (!imageManipulatorState.promise) {
+    imageManipulatorState.promise = import("expo-image-manipulator")
+      .then((mod) => {
+        imageManipulatorState.module = mod;
+        return mod;
+      })
+      .catch((error) => {
+        console.warn("Wello image manipulator unavailable:", error?.message || error);
+        imageManipulatorState.module = null;
+        return null;
+      });
+  }
+  return imageManipulatorState.promise;
+};
+
 const formatMetricValue = (value) => {
   if (value === null || value === undefined) return "—";
   if (typeof value === "number") return value.toLocaleString();
@@ -1045,17 +1062,29 @@ const normalizeOfferImage = async (asset) => {
   if (!asset?.uri) {
     return { image: null, error: "Invalid image selection." };
   }
+  const manipulator = await loadImageManipulator();
+  if (!manipulator?.manipulateAsync) {
+    return {
+      image: {
+        uri: asset.uri,
+        mimeType: asset.mimeType || "image/jpeg",
+        fileName: `offer-${Date.now()}.jpg`,
+        base64: asset.base64 || null,
+      },
+      error: null,
+    };
+  }
   try {
     const crop = getCenteredOfferCrop(asset.width, asset.height);
     const actions = crop
       ? [{ crop }, { resize: { width: OFFER_UPLOAD_WIDTH, height: OFFER_UPLOAD_HEIGHT } }]
       : [{ resize: { width: OFFER_UPLOAD_WIDTH, height: OFFER_UPLOAD_HEIGHT } }];
-    const result = await ImageManipulator.manipulateAsync(
+    const result = await manipulator.manipulateAsync(
       asset.uri,
       actions,
       {
         compress: 0.85,
-        format: ImageManipulator.SaveFormat.JPEG,
+        format: manipulator.SaveFormat.JPEG,
         base64: true,
       },
     );
@@ -1080,16 +1109,28 @@ const normalizeReceiptImage = async (asset) => {
   if (!asset?.uri) {
     return { image: null, error: "Invalid image selection." };
   }
+  const manipulator = await loadImageManipulator();
+  if (!manipulator?.manipulateAsync) {
+    return {
+      image: {
+        uri: asset.uri,
+        mimeType: asset.mimeType || "image/jpeg",
+        fileName: `receipt-${Date.now()}.jpg`,
+        base64: asset.base64 || null,
+      },
+      error: null,
+    };
+  }
   try {
     const maxWidth = 1600;
     const resize =
       asset.width && asset.width > maxWidth ? [{ resize: { width: maxWidth } }] : [];
-    const result = await ImageManipulator.manipulateAsync(
+    const result = await manipulator.manipulateAsync(
       asset.uri,
       resize,
       {
         compress: 0.85,
-        format: ImageManipulator.SaveFormat.JPEG,
+        format: manipulator.SaveFormat.JPEG,
         base64: true,
       },
     );
@@ -2873,6 +2914,7 @@ export default function App() {
   const isOwner = accountRole === "business_owner";
   const isStaff = isAdmin || isSupervisor;
   const showHistoryTab = !isOwner && !isStaff;
+  const showCashoutTab = showHistoryTab;
   const roleLabel = isAdmin
     ? "Admin"
     : isSupervisor
@@ -2885,11 +2927,12 @@ export default function App() {
       [
         { key: "discover", label: "Discover", show: true },
         { key: "history", label: "History", show: showHistoryTab },
+        { key: "cashout", label: "Cash out", show: showCashoutTab },
         { key: "business", label: "Dashboard", show: isOwner },
         { key: "admin", label: "Admin", show: isStaff },
         { key: "profile", label: "Profile", show: true },
       ].filter((tab) => tab.show),
-    [isOwner, isStaff, showHistoryTab],
+    [isOwner, isStaff, showHistoryTab, showCashoutTab],
   );
   const navContainerWidth = useMemo(() => {
     const count = visibleTabs.length || 1;
@@ -3241,6 +3284,9 @@ export default function App() {
       setActiveTab("discover");
     }
     if (activeTab === "history" && (isOwner || isStaff)) {
+      setActiveTab("discover");
+    }
+    if (activeTab === "cashout" && (isOwner || isStaff)) {
       setActiveTab("discover");
     }
   }, [activeTab, isOwner, isStaff]);
@@ -9964,6 +10010,82 @@ export default function App() {
                         </>
                       )}
                     </>
+                  ) : activeTab === "cashout" ? (
+                    <>
+                      {!isSignedIn ? (
+                        <View style={styles.authCard}>
+                          <Text style={styles.authTitle}>Cash out</Text>
+                          <Text style={styles.authSubtitle}>
+                            Sign in to link a bank account and withdraw cashback.
+                          </Text>
+                          <TouchableOpacity
+                            style={styles.authPrimaryButton}
+                            onPress={() => {
+                              setAuthView("signin");
+                              setActiveTab("profile");
+                            }}
+                          >
+                            <Text style={styles.authButtonText}>Sign in</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : (
+                        <>
+                          <View style={styles.sectionBlock}>
+                            <Text style={styles.sectionTitleAlt}>Cash out</Text>
+                            <Text style={styles.sectionBody}>
+                              Cashback is earned from verified receipts. Withdrawals
+                              will be available once payouts are enabled.
+                            </Text>
+                          </View>
+                          <View style={styles.pointsCard}>
+                            <View style={styles.pointsHeader}>
+                              <Text style={styles.pointsLabel}>
+                                Cashback balance
+                              </Text>
+                              <Text style={styles.pointsValue}>
+                                {formatCurrencyFromCents(0)}
+                              </Text>
+                            </View>
+                            <Text style={styles.pointsMeta}>
+                              Calculated from verified receipts.
+                            </Text>
+                            <View style={styles.pointsBar}>
+                              <View
+                                style={[
+                                  styles.pointsBarFill,
+                                  { width: "0%" },
+                                ]}
+                              />
+                            </View>
+                            <Text style={styles.pointsReward}>
+                              Cash out after payouts launch
+                            </Text>
+                          </View>
+                          <View style={styles.sectionBlock}>
+                            <Text style={styles.sectionTitleAlt}>
+                              Bank account
+                            </Text>
+                            <Text style={styles.sectionBody}>
+                              Link a bank account to receive cashback. We’ll use
+                              Stripe to verify and send payouts.
+                            </Text>
+                            <TouchableOpacity
+                              style={styles.primaryButton}
+                              onPress={() =>
+                                Alert.alert(
+                                  "Bank payouts",
+                                  "Cashback payouts are coming soon. We'll enable bank linking once Stripe Connect is set up for users.",
+                                )
+                              }
+                            >
+                              <Text style={styles.primaryButtonText}>
+                                Link bank account
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        </>
+                      )}
+                    </>
                   ) : activeTab === "profile" ? (
                     <>
                       {!isSignedIn ? (
@@ -11888,7 +12010,9 @@ const styles = StyleSheet.create({
   },
   navRow: {
     flexDirection: "row",
-    gap: NAV_GAP,
+    ...Platform.select({
+      ios: { gap: NAV_GAP },
+    }),
     paddingHorizontal: 2,
     paddingTop: 6,
     paddingBottom: 2,
@@ -12362,6 +12486,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     position: "relative",
+    ...Platform.select({
+      android: { marginHorizontal: NAV_GAP / 2 },
+    }),
   },
   navPillActive: {
     backgroundColor: COLORS.pine,
@@ -12371,6 +12498,10 @@ const styles = StyleSheet.create({
     fontSize: IS_COMPACT ? 12 : 13,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
+    lineHeight: IS_COMPACT ? 16 : 18,
+    ...Platform.select({
+      android: { includeFontPadding: false },
+    }),
   },
   navPillTextActive: {
     color: COLORS.white,
