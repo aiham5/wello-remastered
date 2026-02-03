@@ -5,12 +5,16 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY =
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
+
+const createSupabase = () =>
+  createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 
 serve(async (req) => {
   if (req.method !== "POST") {
@@ -48,25 +52,17 @@ serve(async (req) => {
         { status: 401 },
       );
     }
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-    const authClient = createClient(
-      SUPABASE_URL,
-      SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY,
-      {
-        global: {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        },
-      },
+    const supabase = createSupabase();
+    const { data: authData, error: authError } = await supabase.auth.getUser(
+      token,
     );
-
-    const { data: authData, error: authError } = await authClient.auth.getUser();
-    if (authError || !authData?.user) {
+    const userId = authData?.user?.id;
+    if (authError || !userId) {
       return new Response(
         JSON.stringify({
           error: "Unauthorized",
-          message: authError?.message || "Unknown auth error",
+          reason: "invalid_token",
+          message: authError?.message,
         }),
         { status: 401 },
       );
@@ -77,7 +73,7 @@ serve(async (req) => {
       .select(
         "stripe_cashout_account_id, stripe_cashout_payouts_enabled, stripe_cashout_onboarded_at",
       )
-      .eq("id", authData.user.id)
+      .eq("id", userId)
       .maybeSingle();
 
     if (profileError || !profile) {
@@ -111,7 +107,7 @@ serve(async (req) => {
           ? new Date().toISOString()
           : null,
       })
-      .eq("id", authData.user.id);
+      .eq("id", userId);
 
     return new Response(
       JSON.stringify({

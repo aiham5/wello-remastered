@@ -706,49 +706,100 @@ const normalizeTagsInput = (value) =>
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean);
 
+const decodeJwtPayloadClient = (token) => {
+  if (!token) return null;
+  const parts = String(token).split(".");
+  if (parts.length < 2) return null;
+  const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+  const padded =
+    base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+  try {
+    const bytes = toByteArray(padded);
+    const json = String.fromCharCode(...bytes);
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+};
+
 const callStripeFunction = async (functionName, payload) => {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    return { data: null, error: "Supabase is not configured." };
+    return { data: null, error: "Supabase is not configured.", debug: null };
   }
   const { data: sessionData } = await supabase.auth.getSession();
-  const accessToken = sessionData?.session?.access_token;
+  let accessToken = sessionData?.session?.access_token;
   if (!accessToken) {
-    return { data: null, error: "Sign in again to continue." };
+    const { data: refreshData } = await supabase.auth.refreshSession();
+    accessToken = refreshData?.session?.access_token;
   }
-    const enrichedPayload = {
-      ...(payload || {}),
-      accessToken,
-      access_token: accessToken,
+  if (!accessToken) {
+    return { data: null, error: "Sign in again to continue.", debug: null };
+  }
+
+  const tokenPayload = decodeJwtPayloadClient(accessToken);
+  const issuer = tokenPayload?.iss || "";
+  const expectedIssuer = SUPABASE_URL
+    ? `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1`
+    : "";
+  if (expectedIssuer && issuer && issuer !== expectedIssuer) {
+    await supabase.auth.signOut();
+    return {
+      data: null,
+      error: "Session belongs to a different project. Please sign in again.",
+      debug: issuer,
     };
+  }
+  const exp = Number(tokenPayload?.exp);
+  if (Number.isFinite(exp) && exp * 1000 < Date.now()) {
+    await supabase.auth.signOut();
+    return {
+      data: null,
+      error: "Session expired. Please sign in again.",
+      debug: null,
+    };
+  }
+
+  const body = {
+    ...(payload || {}),
+    accessToken,
+    access_token: accessToken,
+  };
+
+  const apikeyLooksJwt = String(SUPABASE_ANON_KEY || "").startsWith("eyJ");
+  try {
     const response = await fetch(
       `${SUPABASE_URL}/functions/v1/${functionName}`,
       {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
           Authorization: `Bearer ${accessToken}`,
-          authorization: `Bearer ${accessToken}`,
-          apikey: SUPABASE_ANON_KEY,
+          ...(apikeyLooksJwt ? { apikey: SUPABASE_ANON_KEY } : {}),
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify(enrichedPayload),
+        body: JSON.stringify(body),
       },
     );
-  const text = await response.text();
-  let data = null;
-  if (text) {
+    const rawText = await response.text();
+    let parsed = null;
     try {
-      data = JSON.parse(text);
-    } catch (error) {
-      data = { raw: text };
+      parsed = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      parsed = null;
     }
+    if (!response.ok) {
+      const errorMessage =
+        parsed?.error || parsed?.message || `Stripe request failed (${response.status}).`;
+    const debug = rawText ? rawText : null;
+    return { data: null, error: errorMessage, debug };
   }
-  if (!response.ok) {
+    return { data: parsed ?? null, error: null, debug: null };
+  } catch (error) {
     return {
-      data,
-      error: data?.error || `Stripe request failed (${response.status}).`,
+      data: null,
+      error: error?.message || "Stripe request failed.",
+      debug: null,
     };
   }
-  return { data, error: null };
 };
 
 const formatStripeError = (error) => {
@@ -1726,6 +1777,10 @@ export default function App() {
     error: null,
     success: null,
   });
+  const [cashoutDebug, setCashoutDebug] = useState(null);
+  const [tokenDebugOpen, setTokenDebugOpen] = useState(false);
+  const [tokenDebugInfo, setTokenDebugInfo] = useState(null);
+  const [tokenDebugLoading, setTokenDebugLoading] = useState(false);
   const [receiptUploadStatus, setReceiptUploadStatus] = useState({
     uploading: false,
     error: null,
@@ -2159,7 +2214,10 @@ export default function App() {
       if (!silent) {
         setCashoutStatusState({ loading: true, error: null });
       }
-      const { data, error } = await callStripeFunction(
+      if (!silent) {
+        setCashoutDebug(null);
+      }
+      const { data, error, debug } = await callStripeFunction(
         "stripe-get-cashout-status",
         {},
       );
@@ -2171,6 +2229,9 @@ export default function App() {
               ? error
               : error?.message || "Unable to load cashout status.",
         });
+        if (!silent) {
+          setCashoutDebug(debug);
+        }
         return;
       }
       setCashoutStatus({
@@ -2198,7 +2259,8 @@ export default function App() {
       return;
     }
     setCashoutActionStatus({ loading: true, error: null, success: null });
-    const { data, error } = await callStripeFunction(
+    setCashoutDebug(null);
+    const { data, error, debug } = await callStripeFunction(
       "stripe-create-cashout-link",
       {},
     );
@@ -2212,6 +2274,7 @@ export default function App() {
         error: errorMessage,
         success: null,
       });
+      setCashoutDebug(debug || data?.error || null);
       return;
     }
     setCashoutActionStatus({
@@ -2240,7 +2303,8 @@ export default function App() {
       return;
     }
     setCashoutActionStatus({ loading: true, error: null, success: null });
-    const { data, error } = await callStripeFunction(
+    setCashoutDebug(null);
+    const { data, error, debug } = await callStripeFunction(
       "stripe-create-cashout-login-link",
       {},
     );
@@ -2256,6 +2320,7 @@ export default function App() {
         error: errorMessage,
         success: null,
       });
+      setCashoutDebug(debug || data?.error || null);
       return;
     }
     setCashoutActionStatus({
@@ -2265,6 +2330,70 @@ export default function App() {
     });
     Linking.openURL(data.url).catch(() => null);
   }, [cashoutStatus.connected]);
+
+  const refreshTokenDebug = useCallback(async () => {
+    setTokenDebugLoading(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const session = sessionData?.session || null;
+      const accessToken = session?.access_token || "";
+      const payload = decodeJwtPayloadClient(accessToken);
+      const expectedIssuer = SUPABASE_URL
+        ? `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1`
+        : "";
+      let userCheck = { ok: false, error: "no_access_token", id: null };
+      if (accessToken) {
+        const { data: userData, error: userError } =
+          await supabase.auth.getUser(accessToken);
+        userCheck = {
+          ok: Boolean(userData?.user?.id) && !userError,
+          error: userError?.message || null,
+          id: userData?.user?.id || null,
+        };
+      }
+      setTokenDebugInfo({
+        hasSession: Boolean(session),
+        accessTokenPreview: accessToken
+          ? `${accessToken.slice(0, 6)}…${accessToken.slice(-6)}`
+          : "none",
+        accessTokenLength: accessToken.length,
+        apikeyPreview: SUPABASE_ANON_KEY
+          ? `${SUPABASE_ANON_KEY.slice(0, 6)}…${SUPABASE_ANON_KEY.slice(-6)}`
+          : "none",
+        apikeyLength: SUPABASE_ANON_KEY ? SUPABASE_ANON_KEY.length : 0,
+        apikeyLooksJwt: String(SUPABASE_ANON_KEY || "").startsWith("eyJ"),
+        issuer: payload?.iss || null,
+        expectedIssuer,
+        exp: payload?.exp ? new Date(payload.exp * 1000).toISOString() : null,
+        now: new Date().toISOString(),
+        sub: payload?.sub || null,
+        role: payload?.role || null,
+        email: payload?.email || null,
+        userCheck,
+        expiresInSeconds: payload?.exp
+          ? Math.round(payload.exp - Date.now() / 1000)
+          : null,
+      });
+    } catch (error) {
+      setTokenDebugInfo({
+        hasSession: false,
+        accessTokenPreview: "none",
+        accessTokenLength: 0,
+        issuer: null,
+        expectedIssuer: SUPABASE_URL
+          ? `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1`
+          : "",
+        exp: null,
+        now: new Date().toISOString(),
+        sub: null,
+        role: null,
+        email: null,
+        userCheck: { ok: false, error: error?.message || "error", id: null },
+        expiresInSeconds: null,
+      });
+    }
+    setTokenDebugLoading(false);
+  }, []);
 
   const trackOfferView = useCallback(
     async (businessId, offerId) => {
@@ -10274,6 +10403,89 @@ export default function App() {
                                 {cashoutActionStatus.error}
                               </Text>
                             )}
+                            {cashoutDebug && (
+                              <Text style={styles.cashoutDebugText}>
+                                {cashoutDebug}
+                              </Text>
+                            )}
+                            <TouchableOpacity
+                              onPress={() => {
+                                setTokenDebugOpen((prev) => !prev);
+                                if (!tokenDebugOpen) {
+                                  refreshTokenDebug();
+                                }
+                              }}
+                              style={styles.cashoutDebugButton}
+                            >
+                              <Text style={styles.cashoutDebugButtonText}>
+                                {tokenDebugOpen
+                                  ? "Hide token diagnostics"
+                                  : "Show token diagnostics"}
+                              </Text>
+                            </TouchableOpacity>
+                            {tokenDebugOpen && (
+                              <View style={styles.cashoutDebugCard}>
+                                {tokenDebugLoading ? (
+                                  <Text style={styles.cashoutDebugText}>
+                                    Loading token diagnostics…
+                                  </Text>
+                                ) : (
+                                  <View>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Session:{" "}
+                                      {tokenDebugInfo?.hasSession
+                                        ? "yes"
+                                        : "no"}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Token: {tokenDebugInfo?.accessTokenPreview} ·{" "}
+                                      len {tokenDebugInfo?.accessTokenLength}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Apikey: {tokenDebugInfo?.apikeyPreview} · len{" "}
+                                      {tokenDebugInfo?.apikeyLength} · jwt{" "}
+                                      {tokenDebugInfo?.apikeyLooksJwt ? "yes" : "no"}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Issuer: {tokenDebugInfo?.issuer || "--"}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Expected:{" "}
+                                      {tokenDebugInfo?.expectedIssuer || "--"}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Exp: {tokenDebugInfo?.exp || "--"}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Now: {tokenDebugInfo?.now || "--"}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Expires in:{" "}
+                                      {Number.isFinite(
+                                        tokenDebugInfo?.expiresInSeconds,
+                                      )
+                                        ? `${tokenDebugInfo.expiresInSeconds}s`
+                                        : "--"}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Sub: {tokenDebugInfo?.sub || "--"}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Role: {tokenDebugInfo?.role || "--"}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Email: {tokenDebugInfo?.email || "--"}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      getUser:{" "}
+                                      {tokenDebugInfo?.userCheck?.ok
+                                        ? `ok (${tokenDebugInfo.userCheck.id})`
+                                        : `error (${tokenDebugInfo?.userCheck?.error || "unknown"})`}
+                                    </Text>
+                                  </View>
+                                )}
+                              </View>
+                            )}
                             {cashoutActionStatus.success && (
                               <Text style={styles.cashoutSuccessText}>
                                 {cashoutActionStatus.success}
@@ -14185,6 +14397,35 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#B42318",
     fontFamily: FONT_MEDIUM,
+  },
+  cashoutDebugText: {
+    marginTop: 6,
+    fontSize: 10,
+    color: "#7A1D12",
+    fontFamily: FONT_TEXT,
+  },
+  cashoutDebugButton: {
+    marginTop: 10,
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.18)",
+    backgroundColor: "#F8FAFC",
+  },
+  cashoutDebugButtonText: {
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutDebugCard: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
   },
   cashoutSuccessText: {
     marginTop: 8,
