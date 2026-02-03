@@ -5,6 +5,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 export const config = { verify_jwt: false };
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY =
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
@@ -64,10 +65,11 @@ serve(async (req) => {
         { status: 401 },
       );
     }
+    const authApiKey = SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY;
     const authResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
       headers: {
         Authorization: `Bearer ${token}`,
-        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        apikey: authApiKey,
       },
     });
     if (!authResponse.ok) {
