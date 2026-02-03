@@ -5,6 +5,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY =
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 const CONNECT_REFRESH_URL =
   Deno.env.get("STRIPE_CONNECT_REFRESH_URL") ?? "";
@@ -57,15 +58,39 @@ serve(async (req) => {
       ? authHeader.slice(7)
       : authHeader;
     const token = String(headerToken || bodyAccessToken || "").trim();
+    if (!token) {
+      return new Response(
+        JSON.stringify({
+          error: "Unauthorized",
+          reason: "missing_token",
+          hasAuthHeader: Boolean(headerToken),
+          hasBodyToken: Boolean(bodyAccessToken),
+        }),
+        { status: 401 },
+      );
+    }
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const authClient = createClient(
+      SUPABASE_URL,
+      SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY,
+      {
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      },
+    );
 
-    const { data: authData, error: authError } = token
-      ? await supabase.auth.getUser(token)
-      : { data: null, error: new Error("Missing auth token.") };
+    const { data: authData, error: authError } = await authClient.auth.getUser();
     if (authError || !authData?.user) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-      });
+      return new Response(
+        JSON.stringify({
+          error: "Unauthorized",
+          message: authError?.message || "Unknown auth error",
+        }),
+        { status: 401 },
+      );
     }
 
     const { data: profile, error: profileError } = await supabase
