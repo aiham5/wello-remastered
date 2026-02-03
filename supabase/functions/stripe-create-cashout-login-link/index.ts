@@ -8,6 +8,10 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY =
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
+const CONNECT_REFRESH_URL =
+  Deno.env.get("STRIPE_CONNECT_REFRESH_URL") ?? "";
+const CONNECT_RETURN_URL =
+  Deno.env.get("STRIPE_CONNECT_RETURN_URL") ?? "";
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -23,7 +27,13 @@ serve(async (req) => {
     return new Response("Method not allowed", { status: 405 });
   }
 
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !STRIPE_SECRET_KEY) {
+  if (
+    !SUPABASE_URL ||
+    !SUPABASE_SERVICE_ROLE_KEY ||
+    !STRIPE_SECRET_KEY ||
+    !CONNECT_REFRESH_URL ||
+    !CONNECT_RETURN_URL
+  ) {
     return new Response("Missing server configuration.", { status: 500 });
   }
 
@@ -54,21 +64,36 @@ serve(async (req) => {
         { status: 401 },
       );
     }
-    const supabase = createSupabase();
-    const { data: authData, error: authError } = await supabase.auth.getUser(
-      token,
-    );
-    const userId = authData?.user?.id;
-    if (authError || !userId) {
+    const authResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+      },
+    });
+    if (!authResponse.ok) {
+      const authErrorBody = await authResponse.text();
       return new Response(
         JSON.stringify({
           error: "Unauthorized",
           reason: "invalid_token",
-          message: authError?.message,
+          message: authErrorBody || authResponse.statusText,
         }),
         { status: 401 },
       );
     }
+    const authData = await authResponse.json();
+    const userId = authData?.id;
+    if (!userId) {
+      return new Response(
+        JSON.stringify({
+          error: "Unauthorized",
+          reason: "missing_sub",
+        }),
+        { status: 401 },
+      );
+    }
+
+    const supabase = createSupabase();
 
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
@@ -90,8 +115,16 @@ serve(async (req) => {
       );
     }
 
-    const loginLink = await stripe.accounts.createLoginLink(accountId);
-    return new Response(JSON.stringify({ url: loginLink.url }), { status: 200 });
+    const accountLink = await stripe.accountLinks.create({
+      account: accountId,
+      refresh_url: CONNECT_REFRESH_URL,
+      return_url: CONNECT_RETURN_URL,
+      type: "account_onboarding",
+      collect: "currently_due",
+    });
+    return new Response(JSON.stringify({ url: accountLink.url }), {
+      status: 200,
+    });
   } catch (error) {
     console.error("stripe-create-cashout-login-link failed", error);
     return new Response(

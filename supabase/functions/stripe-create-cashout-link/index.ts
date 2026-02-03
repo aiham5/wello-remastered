@@ -76,21 +76,36 @@ serve(async (req) => {
       );
     }
 
-    const supabase = createSupabase();
-    const { data: authData, error: authError } = await supabase.auth.getUser(
-      token,
-    );
-    const userId = authData?.user?.id;
-    if (authError || !userId) {
+    const authResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+      },
+    });
+    if (!authResponse.ok) {
+      const authErrorBody = await authResponse.text();
       return new Response(
         JSON.stringify({
           error: "Unauthorized",
           reason: "invalid_token",
-          message: authError?.message,
+          message: authErrorBody || authResponse.statusText,
         }),
         { status: 401 },
       );
     }
+    const authData = await authResponse.json();
+    const userId = authData?.id;
+    if (!userId) {
+      return new Response(
+        JSON.stringify({
+          error: "Unauthorized",
+          reason: "missing_sub",
+        }),
+        { status: 401 },
+      );
+    }
+
+    const supabase = createSupabase();
 
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
@@ -109,7 +124,7 @@ serve(async (req) => {
       const account = await stripe.accounts.create({
         type: "express",
         country: "US",
-        email: profile.email || authData?.user?.email || undefined,
+        default_currency: "usd",
         business_type: "individual",
         metadata: {
           purpose: "consumer_cashout",
@@ -131,6 +146,7 @@ serve(async (req) => {
       refresh_url: CONNECT_REFRESH_URL,
       return_url: CONNECT_RETURN_URL,
       type: "account_onboarding",
+      collect: "currently_due",
     });
 
     return new Response(JSON.stringify({ url: accountLink.url, accountId }), {

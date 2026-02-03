@@ -54,21 +54,36 @@ serve(async (req) => {
         { status: 401 },
       );
     }
-    const supabase = createSupabase();
-    const { data: authData, error: authError } = await supabase.auth.getUser(
-      token,
-    );
-    const userId = authData?.user?.id;
-    if (authError || !userId) {
+    const authResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+      },
+    });
+    if (!authResponse.ok) {
+      const authErrorBody = await authResponse.text();
       return new Response(
         JSON.stringify({
           error: "Unauthorized",
           reason: "invalid_token",
-          message: authError?.message,
+          message: authErrorBody || authResponse.statusText,
         }),
         { status: 401 },
       );
     }
+    const authData = await authResponse.json();
+    const userId = authData?.id;
+    if (!userId) {
+      return new Response(
+        JSON.stringify({
+          error: "Unauthorized",
+          reason: "missing_sub",
+        }),
+        { status: 401 },
+      );
+    }
+
+    const supabase = createSupabase();
 
     const { data: profile, error: profileError } = await supabase
       .from("profiles")

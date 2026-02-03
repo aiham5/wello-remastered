@@ -765,26 +765,19 @@ const callStripeFunction = async (functionName, payload) => {
     access_token: accessToken,
   };
 
-  const apikeyLooksJwt = String(SUPABASE_ANON_KEY || "").startsWith("eyJ");
   try {
-    const response = await fetch(
-      `${SUPABASE_URL}/functions/v1/${functionName}`,
-      {
-        method: "POST",
-        headers: {
-          ...(apikeyLooksJwt
-            ? {
-                Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-                apikey: SUPABASE_ANON_KEY,
-              }
-            : {
-                Authorization: `Bearer ${accessToken}`,
-              }),
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
+    const url = `${SUPABASE_URL}/functions/v1/${functionName}?apikey=${encodeURIComponent(
+      SUPABASE_ANON_KEY,
+    )}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        apikey: SUPABASE_ANON_KEY,
+        "Content-Type": "application/json",
       },
-    );
+      body: JSON.stringify(body),
+    });
     const rawText = await response.text();
     let parsed = null;
     try {
@@ -794,10 +787,12 @@ const callStripeFunction = async (functionName, payload) => {
     }
     if (!response.ok) {
       const errorMessage =
-        parsed?.error || parsed?.message || `Stripe request failed (${response.status}).`;
-    const debug = rawText ? rawText : null;
-    return { data: null, error: errorMessage, debug };
-  }
+        parsed?.error ||
+        parsed?.message ||
+        `Stripe request failed (${response.status}).`;
+      const debug = rawText || null;
+      return { data: null, error: errorMessage, debug };
+    }
     return { data: parsed ?? null, error: null, debug: null };
   } catch (error) {
     return {
@@ -2360,15 +2355,15 @@ export default function App() {
       setTokenDebugInfo({
         hasSession: Boolean(session),
         accessTokenPreview: accessToken
-          ? `${accessToken.slice(0, 6)}…${accessToken.slice(-6)}`
+          ? `${accessToken.slice(0, 6)}...${accessToken.slice(-6)}`
           : "none",
         accessTokenLength: accessToken.length,
         apikeyPreview: SUPABASE_ANON_KEY
-          ? `${SUPABASE_ANON_KEY.slice(0, 6)}…${SUPABASE_ANON_KEY.slice(-6)}`
+          ? `${SUPABASE_ANON_KEY.slice(0, 6)}...${SUPABASE_ANON_KEY.slice(-6)}`
           : "none",
         apikeyLength: SUPABASE_ANON_KEY ? SUPABASE_ANON_KEY.length : 0,
         apikeyLooksJwt: String(SUPABASE_ANON_KEY || "").startsWith("eyJ"),
-        authHeaderMode: apikeyLooksJwt ? "anon" : "user",
+        authHeaderMode: "user",
         issuer: payload?.iss || null,
         expectedIssuer,
         exp: payload?.exp ? new Date(payload.exp * 1000).toISOString() : null,
@@ -10309,8 +10304,8 @@ export default function App() {
                           <View style={styles.sectionBlock}>
                             <Text style={styles.sectionTitleAlt}>Cash out</Text>
                             <Text style={styles.sectionBody}>
-                              Cashback is earned from verified receipts. Withdrawals
-                              are available once your bank account is verified.
+                              Withdraw cashback earned from verified receipts.
+                              Payouts unlock after bank verification.
                             </Text>
                           </View>
                           <View style={styles.pointsCard}>
@@ -10323,18 +10318,7 @@ export default function App() {
                               </Text>
                             </View>
                             <Text style={styles.pointsMeta}>
-                              Calculated from verified receipts.
-                            </Text>
-                            <View style={styles.pointsBar}>
-                              <View
-                                style={[
-                                  styles.pointsBarFill,
-                                  { width: "0%" },
-                                ]}
-                              />
-                            </View>
-                            <Text style={styles.pointsReward}>
-                              Cash out after payouts are enabled
+                              Verified receipts only.
                             </Text>
                           </View>
                           <View style={styles.sectionBlock}>
@@ -10342,8 +10326,7 @@ export default function App() {
                               Bank account
                             </Text>
                             <Text style={styles.sectionBody}>
-                              Link a bank account to receive cashback. We will use
-                              Stripe to verify and send payouts.
+                              Link a bank account to receive cashback payouts.
                             </Text>
                             <View style={styles.cashoutStatusRow}>
                               <View
@@ -10415,43 +10398,40 @@ export default function App() {
                                 {cashoutDebug}
                               </Text>
                             )}
-                            <TouchableOpacity
-                              onPress={() => {
-                                setTokenDebugOpen((prev) => !prev);
-                                if (!tokenDebugOpen) {
-                                  refreshTokenDebug();
-                                }
-                              }}
-                              style={styles.cashoutDebugButton}
-                            >
-                              <Text style={styles.cashoutDebugButtonText}>
-                                {tokenDebugOpen
-                                  ? "Hide token diagnostics"
-                                  : "Show token diagnostics"}
-                              </Text>
-                            </TouchableOpacity>
+                            {(cashoutActionStatus.error ||
+                              cashoutStatusState.error) && (
+                              <TouchableOpacity
+                                onPress={() => {
+                                  setTokenDebugOpen((prev) => !prev);
+                                  if (!tokenDebugOpen) {
+                                    refreshTokenDebug();
+                                  }
+                                }}
+                                style={styles.cashoutDebugButton}
+                              >
+                                <Text style={styles.cashoutDebugButtonText}>
+                                  {tokenDebugOpen
+                                    ? "Hide diagnostics"
+                                    : "Show diagnostics"}
+                                </Text>
+                              </TouchableOpacity>
+                            )}
                             {tokenDebugOpen && (
                               <View style={styles.cashoutDebugCard}>
                                 {tokenDebugLoading ? (
                                   <Text style={styles.cashoutDebugText}>
-                                    Loading token diagnostics…
+                                    Loading diagnostics...
                                   </Text>
                                 ) : (
                                   <View>
                                     <Text style={styles.cashoutDebugText}>
-                                      Session:{" "}
-                                      {tokenDebugInfo?.hasSession
-                                        ? "yes"
-                                        : "no"}
+                                      Session: {tokenDebugInfo?.hasSession ? "yes" : "no"}
                                     </Text>
                                     <Text style={styles.cashoutDebugText}>
-                                      Token: {tokenDebugInfo?.accessTokenPreview} ·{" "}
-                                      len {tokenDebugInfo?.accessTokenLength}
+                                      Token: {tokenDebugInfo?.accessTokenPreview} - len {tokenDebugInfo?.accessTokenLength}
                                     </Text>
                                     <Text style={styles.cashoutDebugText}>
-                                      Apikey: {tokenDebugInfo?.apikeyPreview} · len{" "}
-                                      {tokenDebugInfo?.apikeyLength} · jwt{" "}
-                                      {tokenDebugInfo?.apikeyLooksJwt ? "yes" : "no"}
+                                      Apikey: {tokenDebugInfo?.apikeyPreview} - len {tokenDebugInfo?.apikeyLength} - jwt {tokenDebugInfo?.apikeyLooksJwt ? "yes" : "no"}
                                     </Text>
                                     <Text style={styles.cashoutDebugText}>
                                       Auth header: {tokenDebugInfo?.authHeaderMode || "--"}
@@ -10460,37 +10440,16 @@ export default function App() {
                                       Issuer: {tokenDebugInfo?.issuer || "--"}
                                     </Text>
                                     <Text style={styles.cashoutDebugText}>
-                                      Expected:{" "}
-                                      {tokenDebugInfo?.expectedIssuer || "--"}
+                                      Expected: {tokenDebugInfo?.expectedIssuer || "--"}
                                     </Text>
                                     <Text style={styles.cashoutDebugText}>
-                                      Exp: {tokenDebugInfo?.exp || "--"}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      Now: {tokenDebugInfo?.now || "--"}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      Expires in:{" "}
-                                      {Number.isFinite(
-                                        tokenDebugInfo?.expiresInSeconds,
-                                      )
-                                        ? `${tokenDebugInfo.expiresInSeconds}s`
-                                        : "--"}
+                                      Expires in: {Number.isFinite(tokenDebugInfo?.expiresInSeconds) ? `${tokenDebugInfo.expiresInSeconds}s` : "--"}
                                     </Text>
                                     <Text style={styles.cashoutDebugText}>
                                       Sub: {tokenDebugInfo?.sub || "--"}
                                     </Text>
                                     <Text style={styles.cashoutDebugText}>
-                                      Role: {tokenDebugInfo?.role || "--"}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      Email: {tokenDebugInfo?.email || "--"}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      getUser:{" "}
-                                      {tokenDebugInfo?.userCheck?.ok
-                                        ? `ok (${tokenDebugInfo.userCheck.id})`
-                                        : `error (${tokenDebugInfo?.userCheck?.error || "unknown"})`}
+                                      getUser: {tokenDebugInfo?.userCheck?.ok ? `ok (${tokenDebugInfo.userCheck.id})` : `error (${tokenDebugInfo?.userCheck?.error || "unknown"})`}
                                     </Text>
                                   </View>
                                 )}
@@ -10501,28 +10460,30 @@ export default function App() {
                                 {cashoutActionStatus.success}
                               </Text>
                             )}
-                            <TouchableOpacity
-                              style={styles.primaryButton}
-                              onPress={handleCashoutConnect}
-                              disabled={cashoutActionStatus.loading}
-                            >
-                              <Text style={styles.primaryButtonText}>
-                                {cashoutStatus.connected
-                                  ? "Update bank account"
-                                  : "Link bank account"}
-                              </Text>
-                            </TouchableOpacity>
-                            {cashoutStatus.connected && (
+                            <View style={styles.cashoutButtonStack}>
                               <TouchableOpacity
-                                style={styles.secondaryButton}
-                                onPress={handleCashoutManage}
+                                style={styles.primaryButton}
+                                onPress={handleCashoutConnect}
                                 disabled={cashoutActionStatus.loading}
                               >
-                                <Text style={styles.secondaryButtonText}>
-                                  Manage payouts
+                                <Text style={styles.primaryButtonText}>
+                                  {cashoutStatus.connected
+                                    ? "Update bank account"
+                                    : "Link bank account"}
                                 </Text>
                               </TouchableOpacity>
-                            )}
+                              {cashoutStatus.connected && (
+                                <TouchableOpacity
+                                  style={styles.secondaryButton}
+                                  onPress={handleCashoutManage}
+                                  disabled={cashoutActionStatus.loading}
+                                >
+                                  <Text style={styles.secondaryButtonText}>
+                                    Update payout details
+                                  </Text>
+                                </TouchableOpacity>
+                              )}
+                            </View>
                           </View>
                         </>
                       )}
@@ -14442,6 +14403,10 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
+  },
+  cashoutButtonStack: {
+    marginTop: 14,
+    gap: 10,
   },
   historyEntry: {
     padding: 10,
