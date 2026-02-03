@@ -772,8 +772,14 @@ const callStripeFunction = async (functionName, payload) => {
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${accessToken}`,
-          ...(apikeyLooksJwt ? { apikey: SUPABASE_ANON_KEY } : {}),
+          ...(apikeyLooksJwt
+            ? {
+                Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+                apikey: SUPABASE_ANON_KEY,
+              }
+            : {
+                Authorization: `Bearer ${accessToken}`,
+              }),
           "Content-Type": "application/json",
         },
         body: JSON.stringify(body),
@@ -2362,6 +2368,7 @@ export default function App() {
           : "none",
         apikeyLength: SUPABASE_ANON_KEY ? SUPABASE_ANON_KEY.length : 0,
         apikeyLooksJwt: String(SUPABASE_ANON_KEY || "").startsWith("eyJ"),
+        authHeaderMode: apikeyLooksJwt ? "anon" : "user",
         issuer: payload?.iss || null,
         expectedIssuer,
         exp: payload?.exp ? new Date(payload.exp * 1000).toISOString() : null,
@@ -10445,6 +10452,9 @@ export default function App() {
                                       Apikey: {tokenDebugInfo?.apikeyPreview} · len{" "}
                                       {tokenDebugInfo?.apikeyLength} · jwt{" "}
                                       {tokenDebugInfo?.apikeyLooksJwt ? "yes" : "no"}
+                                    </Text>
+                                    <Text style={styles.cashoutDebugText}>
+                                      Auth header: {tokenDebugInfo?.authHeaderMode || "--"}
                                     </Text>
                                     <Text style={styles.cashoutDebugText}>
                                       Issuer: {tokenDebugInfo?.issuer || "--"}

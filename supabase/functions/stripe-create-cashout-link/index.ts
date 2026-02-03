@@ -2,6 +2,8 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import Stripe from "https://esm.sh/stripe@14.25.0?target=deno";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+export const config = { verify_jwt: false };
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY =
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -61,7 +63,7 @@ serve(async (req) => {
     const headerToken = authHeader.startsWith("Bearer ")
       ? authHeader.slice(7)
       : authHeader;
-    const token = String(headerToken || bodyAccessToken || "").trim();
+    const token = String(bodyAccessToken || headerToken || "").trim();
     if (!token) {
       return new Response(
         JSON.stringify({
