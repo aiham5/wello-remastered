@@ -521,7 +521,7 @@ const saveReceipt = async (options = {}) => {
     const rate = Number(ui.filterRate.value || state.defaultRate) / 100;
     commissionCents = Math.round(totalCents * rate);
   }
-  const status = options.status || ui.detailStatusSelect.value;
+  let status = options.status || ui.detailStatusSelect.value;
   const notes = ui.detailNotes.value || null;
   let user = null;
   try {
@@ -529,6 +529,15 @@ const saveReceipt = async (options = {}) => {
     user = userResult?.data?.user || null;
   } catch (error) {
     console.warn("getUser failed", error);
+  }
+
+  if (
+    status === "pending" &&
+    totalCents != null &&
+    commissionCents != null &&
+    commissionCents > 0
+  ) {
+    status = "verified";
   }
 
   const updates = {
