@@ -2,3 +2,4 @@
 /stripe/refresh  /stripe/refresh/index.html  200
 /stripe/success  /stripe/success/index.html  200
 /stripe/cancel   /stripe/cancel/index.html   200
+/admin          /admin.html                 200

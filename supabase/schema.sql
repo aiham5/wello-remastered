@@ -154,6 +154,24 @@ create table if not exists public.receipt_uploads (
   created_at timestamptz not null default now()
 );
 
+alter table public.receipt_uploads
+  add column if not exists receipt_total_cents integer,
+  add column if not exists commission_due_cents integer,
+  add column if not exists review_status text,
+  add column if not exists review_notes text,
+  add column if not exists reviewed_by uuid references auth.users on delete set null,
+  add column if not exists reviewed_at timestamptz;
+
+alter table public.receipt_uploads
+  alter column review_status set default 'pending';
+
+alter table public.receipt_uploads
+  drop constraint if exists receipt_uploads_review_status_check;
+
+alter table public.receipt_uploads
+  add constraint receipt_uploads_review_status_check
+  check (review_status in ('pending', 'verified', 'rejected'));
+
 create table if not exists public.commission_events (
   id uuid primary key default gen_random_uuid(),
   business_id uuid not null references public.businesses on delete cascade,
@@ -615,6 +633,10 @@ create policy "Users can read own redemptions"
 on public.redemptions for select
 using (auth.uid() = scanned_by);
 
+create policy "Staff can read redemptions"
+on public.redemptions for select
+using (public.is_staff());
+
 create policy "Users can create redemptions"
 on public.redemptions for insert
 with check (auth.uid() is not null and scanned_by = auth.uid());
@@ -727,6 +749,15 @@ using (
     select owner_id from public.businesses where id = business_id
   )
 );
+
+create policy "Staff can read receipts"
+on public.receipt_uploads for select
+using (public.is_staff());
+
+create policy "Staff can update receipts"
+on public.receipt_uploads for update
+using (public.is_staff())
+with check (public.is_staff());
 
 create policy "Users can create commission events"
 on public.commission_events for insert
