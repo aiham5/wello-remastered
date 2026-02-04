@@ -1,6 +1,7 @@
 const config = window.WELLO_CONFIG || {};
 const supabaseUrl = config.supabaseUrl || "";
 const supabaseAnonKey = config.supabaseAnonKey || "";
+const supabaseLegacyAnonKey = config.supabaseLegacyAnonKey || "";
 
 const ui = {
   authPanel: document.getElementById("auth-panel"),
@@ -103,8 +104,8 @@ const callR2Presign = async ({ action, key, accessToken }) => {
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${supabaseAnonKey}`,
-        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${supabaseLegacyAnonKey || accessToken}`,
+        apikey: supabaseLegacyAnonKey || supabaseAnonKey,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ action, key, accessToken }),
