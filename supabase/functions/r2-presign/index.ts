@@ -128,9 +128,22 @@ const createPresignedUrl = async (
   return `${endpoint}${canonicalUri}?${finalQuery}`;
 };
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, apikey, content-type, x-client-info",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
 serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { status: 200, headers: corsHeaders });
+  }
   if (req.method !== "POST") {
-    return new Response("Method not allowed", { status: 405 });
+    return new Response("Method not allowed", {
+      status: 405,
+      headers: corsHeaders,
+    });
   }
 
   if (
@@ -143,7 +156,7 @@ serve(async (req) => {
   ) {
     return new Response(
       JSON.stringify({ error: "Missing R2 configuration." }),
-      { status: 500 },
+      { status: 500, headers: corsHeaders },
     );
   }
 
@@ -166,7 +179,7 @@ serve(async (req) => {
     if (!token) {
       return new Response(
         JSON.stringify({ error: "Unauthorized", reason: "missing_token" }),
-        { status: 401 },
+        { status: 401, headers: corsHeaders },
       );
     }
     const supabaseAuth = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -196,7 +209,7 @@ serve(async (req) => {
             exp: payload?.exp || null,
           },
         }),
-        { status: 401 },
+        { status: 401, headers: corsHeaders },
       );
     }
     const action = String(body?.action || "").toLowerCase();
@@ -204,7 +217,7 @@ serve(async (req) => {
     if (!key || key.includes("..") || key.startsWith("/")) {
       return new Response(
         JSON.stringify({ error: "Invalid object key." }),
-        { status: 400 },
+        { status: 400, headers: corsHeaders },
       );
     }
     const expiresInRaw = Number(body?.expiresIn);
@@ -217,7 +230,7 @@ serve(async (req) => {
     if (!["upload", "download"].includes(action)) {
       return new Response(
         JSON.stringify({ error: "Invalid action." }),
-        { status: 400 },
+        { status: 400, headers: corsHeaders },
       );
     }
 
@@ -230,12 +243,15 @@ serve(async (req) => {
         method,
         expiresIn,
       }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json", ...corsHeaders },
+      },
     );
   } catch (error) {
     return new Response(
       JSON.stringify({ error: error?.message || "Unable to sign URL." }),
-      { status: 500 },
+      { status: 500, headers: corsHeaders },
     );
   }
 });
