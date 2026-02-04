@@ -48,7 +48,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
     "Missing Supabase credentials. Set them in admin-config.js.";
 }
 
-const supabase =
+const supabaseClient =
   supabaseUrl && supabaseAnonKey
     ? window.supabase.createClient(supabaseUrl, supabaseAnonKey, {
         auth: {
@@ -135,19 +135,19 @@ const resetDetail = () => {
 };
 
 const requireStaff = async () => {
-  if (!supabase) return false;
+  if (!supabaseClient) return false;
   const {
     data: { user },
-  } = await supabase.auth.getUser();
+  } = await supabaseClient.auth.getUser();
   if (!user) return false;
-  const { data, error } = await supabase
+  const { data, error } = await supabaseClient
     .from("profiles")
     .select("id, role, full_name, email")
     .eq("id", user.id)
     .maybeSingle();
   if (error || !data) {
     setAuthError(error?.message || "Unable to verify admin access.");
-    await supabase.auth.signOut();
+    await supabaseClient.auth.signOut();
     return false;
   }
   if (!["admin", "supervisor"].includes(data.role)) {
@@ -161,8 +161,8 @@ const requireStaff = async () => {
 };
 
 const loadBusinesses = async () => {
-  if (!supabase) return;
-  const { data, error } = await supabase
+  if (!supabaseClient) return;
+  const { data, error } = await supabaseClient
     .from("businesses")
     .select("id, name")
     .order("name");
@@ -180,8 +180,8 @@ const loadBusinesses = async () => {
 };
 
 const loadReceipts = async () => {
-  if (!supabase) return;
-  const { data, error } = await supabase
+  if (!supabaseClient) return;
+  const { data, error } = await supabaseClient
     .from("receipt_uploads")
     .select(
       [
@@ -293,12 +293,12 @@ const selectReceipt = async (receiptId) => {
 
 const loadReceiptImage = async (receipt) => {
   ui.detailImage.removeAttribute("src");
-  if (!receipt?.storage_path || !supabase) return;
+  if (!receipt?.storage_path || !supabaseClient) return;
   try {
     const {
       data: { session },
-    } = await supabase.auth.getSession();
-    const { data, error } = await supabase.functions.invoke("r2-presign", {
+    } = await supabaseClient.auth.getSession();
+    const { data, error } = await supabaseClient.functions.invoke("r2-presign", {
       body: {
         action: "download",
         key: receipt.storage_path,
@@ -392,7 +392,7 @@ const renderActivitySummary = () => {
 
 const saveReceipt = async (options = {}) => {
   const receipt = state.selected;
-  if (!receipt || !supabase) return;
+  if (!receipt || !supabaseClient) return;
   setDetailError("");
   const totalCents = parseMoneyToCents(ui.detailTotal.value);
   let commissionCents = parseMoneyToCents(ui.detailCommission.value);
@@ -404,7 +404,7 @@ const saveReceipt = async (options = {}) => {
   const notes = ui.detailNotes.value || null;
   const {
     data: { user },
-  } = await supabase.auth.getUser();
+  } = await supabaseClient.auth.getUser();
 
   const updates = {
     receipt_total_cents: totalCents,
@@ -415,7 +415,7 @@ const saveReceipt = async (options = {}) => {
     reviewed_by: user?.id || null,
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await supabaseClient
     .from("receipt_uploads")
     .update(updates)
     .eq("id", receipt.id)
@@ -481,7 +481,7 @@ const exportCsv = () => {
 const attachListeners = () => {
   ui.signIn.addEventListener("click", async () => {
     setAuthError("");
-    if (!supabase) {
+    if (!supabaseClient) {
       setAuthError("Supabase is not configured.");
       return;
     }
@@ -493,7 +493,7 @@ const attachListeners = () => {
     }
     ui.signIn.disabled = true;
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { error } = await supabaseClient.auth.signInWithPassword({
         email,
         password,
       });
@@ -507,8 +507,8 @@ const attachListeners = () => {
   });
 
   ui.signOut.addEventListener("click", async () => {
-    if (!supabase) return;
-    await supabase.auth.signOut({ scope: "local" });
+    if (!supabaseClient) return;
+    await supabaseClient.auth.signOut({ scope: "local" });
     ui.adminUser.textContent = "Not signed in";
   });
 
@@ -533,7 +533,7 @@ const attachListeners = () => {
 };
 
 const init = async () => {
-  if (!supabase) {
+  if (!supabaseClient) {
     setAuthUI(false);
     return;
   }
@@ -541,7 +541,7 @@ const init = async () => {
   ui.filterRate.value = state.defaultRate.toFixed(2);
   const {
     data: { session },
-  } = await supabase.auth.getSession();
+  } = await supabaseClient.auth.getSession();
   state.session = session;
   if (session?.user) {
     const ok = await requireStaff();
@@ -554,7 +554,7 @@ const init = async () => {
     setAuthUI(false);
   }
 
-  supabase.auth.onAuthStateChange(async (_event, session) => {
+  supabaseClient.auth.onAuthStateChange(async (_event, session) => {
     state.session = session;
     if (session?.user) {
       const ok = await requireStaff();
