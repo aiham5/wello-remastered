@@ -103,6 +103,7 @@ const callR2Presign = async ({ action, key, accessToken }) => {
     {
       method: "POST",
       headers: {
+        Authorization: `Bearer ${supabaseAnonKey}`,
         apikey: supabaseAnonKey,
         "Content-Type": "application/json",
       },
