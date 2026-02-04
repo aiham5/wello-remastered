@@ -29,6 +29,12 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import {
+  GestureHandlerRootView,
+  PanGestureHandler,
+  PinchGestureHandler,
+  State as GestureState,
+} from "react-native-gesture-handler";
 import MapView, { Marker } from "react-native-maps";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Font from "expo-font";
@@ -112,8 +118,8 @@ const TIME_SELECT_MIN = IS_COMPACT ? 80 : 96;
 const TIME_MERIDIEM_WIDTH = IS_COMPACT ? 68 : 80;
 const OFFERS_REFRESH_INTERVAL_MS = 1000 * 60 * 2;
 const REFRESH_MIN_INTERVAL_MS = 1000 * 15;
-const DEFAULT_OFFER_POINTS = 50;
-const POINT_MILESTONES = [200, 500, 1000];
+const RECEIPT_PREVIEW_HEIGHT = Math.min(SCREEN_HEIGHT * 0.72, 680);
+const RECEIPT_PREVIEW_WIDTH = Math.min(SCREEN_WIDTH - 40, 520);
 const TIME_OPTIONS = [
   "12:00",
   "12:30",
@@ -414,7 +420,6 @@ const OFFER_SEEDS = BUSINESSES.flatMap((business, index) => [
     description: "Tap to redeem this in-store offer.",
     offerType: "discount",
     imageUrl: "",
-    pointsValue: DEFAULT_OFFER_POINTS,
     active: true,
     approvalStatus: "approved",
     createdAt: daysAgo(index + 1),
@@ -512,9 +517,6 @@ const mapSupabaseOffer = (row) => ({
   description: row.description || "",
   offerType: row.offer_type || "",
   imageUrl: row.image_url || "",
-  pointsValue: Number.isFinite(Number(row.points_value))
-    ? Number(row.points_value)
-    : null,
   active: row.active ?? true,
   approvalStatus: row.approval_status || "approved",
   createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
@@ -528,9 +530,6 @@ const mapSupabaseRedemption = (row) => ({
   offerId: row.offer_id || null,
   offer: row.offer || null,
   business: row.business || null,
-  pointsAwarded: Number.isFinite(Number(row.points_awarded))
-    ? Number(row.points_awarded)
-    : null,
   receipt: (() => {
     const receipt = Array.isArray(row.receipt_uploads)
       ? row.receipt_uploads[0]
@@ -713,6 +712,9 @@ const normalizeTagsInput = (value) =>
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean);
 
+const clampValue = (value, min, max) =>
+  Math.min(max, Math.max(min, value));
+
 const decodeJwtPayloadClient = (token) => {
   if (!token) return null;
   const parts = String(token).split(".");
@@ -737,6 +739,23 @@ const withTimeout = (promise, ms, label) =>
     ),
   ]);
 
+const safeLocalSignOut = async () => {
+  try {
+    await clearSupabaseSession();
+  } catch (error) {
+    console.warn("Failed to clear Supabase session", error?.message);
+  }
+  try {
+    await withTimeout(
+      supabase.auth.signOut({ scope: "local" }),
+      8000,
+      "signOut",
+    );
+  } catch (error) {
+    console.warn("Supabase signOut failed", error?.message);
+  }
+};
+
 const callStripeFunction = async (functionName, payload) => {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return { data: null, error: "Supabase is not configured.", status: null };
@@ -758,7 +777,7 @@ const callStripeFunction = async (functionName, payload) => {
     ? `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1`
     : "";
   if (expectedIssuer && issuer && issuer !== expectedIssuer) {
-    await supabase.auth.signOut();
+    await safeLocalSignOut();
     return {
       data: null,
       error: "Session belongs to a different project. Please sign in again.",
@@ -767,7 +786,7 @@ const callStripeFunction = async (functionName, payload) => {
   }
   const exp = Number(tokenPayload?.exp);
   if (Number.isFinite(exp) && exp * 1000 < Date.now()) {
-    await supabase.auth.signOut();
+    await safeLocalSignOut();
     return {
       data: null,
       error: "Session expired. Please sign in again.",
@@ -861,6 +880,119 @@ const callStripeFunction = async (functionName, payload) => {
   }
 };
 
+const callR2Presign = async (payload) => {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return { data: null, error: "Supabase is not configured.", status: null };
+  }
+  const refreshResult = refreshSupabaseClient();
+  if (!refreshResult.ok) {
+    return { data: null, error: refreshResult.error, status: null };
+  }
+  let tokenResult = await getAccessTokenWithFallback(6000);
+  let accessToken = tokenResult.accessToken;
+  if (!accessToken) {
+    return { data: null, error: "Sign in again to continue.", status: null };
+  }
+  const tokenPayload = decodeJwtPayloadClient(accessToken);
+  const expectedIssuer = SUPABASE_URL
+    ? `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1`
+    : "";
+  const exp = Number(tokenPayload?.exp);
+  const isExpired = Number.isFinite(exp) && exp * 1000 < Date.now();
+  const issuerMismatch =
+    expectedIssuer && tokenPayload?.iss && tokenPayload.iss !== expectedIssuer;
+  if (isExpired || issuerMismatch) {
+    const refreshed = await refreshAccessTokenWithRefreshToken(6000, {
+      persist: false,
+    });
+    if (refreshed?.accessToken) {
+      accessToken = refreshed.accessToken;
+      tokenResult = refreshed;
+    }
+  }
+  try {
+    console.log("R2 presign request", {
+      action: payload?.action,
+      key: payload?.key,
+    });
+    const runFetch = async (token, authHeaderToken = token) => {
+      const response = await fetch(
+        `${SUPABASE_URL}/functions/v1/r2-presign?apikey=${encodeURIComponent(
+          SUPABASE_ANON_KEY,
+        )}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${authHeaderToken}`,
+            apikey: SUPABASE_ANON_KEY,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            ...(payload || {}),
+            accessToken: token,
+          }),
+        },
+      );
+      const rawText = await response.text();
+      let parsed = null;
+      try {
+        parsed = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        parsed = null;
+      }
+      return { ok: response.ok, status: response.status, parsed, rawText };
+    };
+
+    let attempt = await runFetch(accessToken);
+    const rawLower = String(attempt.rawText || "").toLowerCase();
+    const isAuthError =
+      attempt.status === 401 ||
+      rawLower.includes("invalid jwt") ||
+      rawLower.includes("jwt expired") ||
+      rawLower.includes("unauthorized");
+    if (!attempt.ok && isAuthError) {
+      const refreshed = await refreshAccessTokenWithRefreshToken(6000, {
+        persist: false,
+      });
+      if (refreshed?.accessToken) {
+        accessToken = refreshed.accessToken;
+        attempt = await runFetch(refreshed.accessToken);
+      }
+    }
+    if (!attempt.ok && isAuthError && SUPABASE_ANON_KEY) {
+      attempt = await runFetch(accessToken, SUPABASE_ANON_KEY);
+    }
+    if (!attempt.ok) {
+      console.warn("R2 presign failed", {
+        status: attempt.status,
+        message: attempt.parsed?.error || attempt.parsed?.message,
+        raw: attempt.rawText,
+      });
+      return {
+        data: null,
+        error:
+          attempt.parsed?.error ||
+          attempt.parsed?.message ||
+          attempt.rawText ||
+          "Unable to sign receipt URL.",
+        status: attempt.status || null,
+      };
+    }
+    console.log("R2 presign success", {
+      action: payload?.action,
+      key: payload?.key,
+    });
+    return { data: attempt.parsed, error: null, status: attempt.status };
+  } catch (error) {
+    console.warn("R2 presign exception", error?.message);
+    return {
+      data: null,
+      error: error?.message || "Unable to sign receipt URL.",
+      status: null,
+    };
+  }
+};
+
 const formatStripeError = (error) => {
   if (!error) return "";
   const message = String(error);
@@ -872,25 +1004,6 @@ const formatStripeError = (error) => {
     .replace(/acct_[A-Za-z0-9]+/g, "acct_****");
 };
 
-const resolveOfferPoints = (offer) => {
-  const rawValue =
-    offer?.pointsValue ??
-    offer?.points_value ??
-    offer?.points ??
-    offer?.points_awarded ??
-    null;
-  const numeric = Number(rawValue);
-  if (Number.isFinite(numeric) && numeric > 0) return Math.round(numeric);
-  return DEFAULT_OFFER_POINTS;
-};
-
-const resolveRedemptionPoints = (entry) => {
-  const direct = Number(entry?.pointsAwarded);
-  if (Number.isFinite(direct) && direct > 0) return Math.round(direct);
-  return 0;
-};
-
-const resolvePendingPoints = (entry) => resolveOfferPoints(entry?.offer);
 
 const imageManipulatorState = { promise: null, module: null };
 const loadImageManipulator = async () => {
@@ -1129,7 +1242,7 @@ function getBusinessQrCode(business) {
 }
 
 const OFFER_IMAGE_BUCKET = "offer-images";
-const RECEIPT_IMAGE_BUCKET = "receipt-images";
+const LEGACY_RECEIPT_BUCKET = "receipt-images";
 const RECEIPT_UPLOAD_WINDOW_MS = 1000 * 60 * 60 * 24;
 const RECEIPT_URL_TTL_SECONDS = 60 * 60;
 
@@ -1329,7 +1442,7 @@ const uploadReceiptImage = async (image, businessId, redemptionId) => {
   const cleanedName = rawName.split("?")[0];
   const extension = cleanedName.split(".").pop()?.toLowerCase() || "jpg";
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
-  const filePath = `${safeBusinessId}/${safeRedemptionId}/${fileName}`;
+  const filePath = `receipts/${safeBusinessId}/${safeRedemptionId}/${fileName}`;
 
   try {
     const contentType =
@@ -1347,32 +1460,177 @@ const uploadReceiptImage = async (image, businessId, redemptionId) => {
     if (!base64) {
       return { path: null, error: "Unable to read image data." };
     }
+    const { data: signData, error: signError, status: signStatus } =
+      await callR2Presign({
+      action: "upload",
+      key: filePath,
+      contentType,
+    });
+    if (signError || !signData?.signedUrl) {
+      return {
+        path: null,
+        error: signError || "Unable to authorize receipt upload.",
+        debug: `presign upload failed (${signStatus ?? "no-status"}): ${
+          signError || "unknown"
+        }`,
+      };
+    }
     const normalizedBase64 = base64.includes(",")
       ? base64.split(",")[1]
       : base64;
     const data = toByteArray(normalizedBase64);
-    const { error } = await supabase.storage
-      .from(RECEIPT_IMAGE_BUCKET)
-      .upload(filePath, data, {
-        contentType,
-        upsert: false,
-      });
-    if (error) {
-      return { path: null, error: error.message || "Upload failed." };
+    const uploadResponse = await fetch(signData.signedUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": contentType,
+      },
+      body: data,
+    });
+    if (!uploadResponse.ok) {
+      return {
+        path: null,
+        error: "Upload failed.",
+        debug: `r2 upload failed (${uploadResponse.status})`,
+      };
     }
     return { path: filePath, error: null };
   } catch (error) {
-    return { path: null, error: error?.message || "Upload failed." };
+    return {
+      path: null,
+      error: error?.message || "Upload failed.",
+      debug: error?.message || "upload_exception",
+    };
   }
 };
 
 const createReceiptSignedUrl = async (path) => {
-  if (!path || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
-  const { data, error } = await supabase.storage
-    .from(RECEIPT_IMAGE_BUCKET)
-    .createSignedUrl(path, RECEIPT_URL_TTL_SECONDS);
-  if (error) return null;
-  return data?.signedUrl || null;
+  if (!path) return null;
+  const { data, error } = await callR2Presign({
+    action: "download",
+    key: path,
+  });
+  if (!error && data?.signedUrl) {
+    return data.signedUrl;
+  }
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  try {
+    const { data: legacyData } = await supabase.storage
+      .from(LEGACY_RECEIPT_BUCKET)
+      .createSignedUrl(path, RECEIPT_URL_TTL_SECONDS);
+    return legacyData?.signedUrl || null;
+  } catch {
+    return null;
+  }
+};
+
+const insertReceiptUploadRecord = async ({
+  redemptionId,
+  businessId,
+  userId,
+  storagePath,
+}) => {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return { data: null, error: "Supabase is not configured." };
+  }
+  try {
+    let tokenResult = await getAccessTokenWithFallback(6000);
+    let accessToken = tokenResult.accessToken;
+    if (!accessToken) {
+      const refreshed = await refreshAccessTokenWithRefreshToken(6000, {
+        persist: false,
+      });
+      accessToken = refreshed?.accessToken || "";
+    }
+    if (!accessToken) {
+      return { data: null, error: "Sign in again to continue." };
+    }
+
+    const payload = {
+      redemption_id: redemptionId,
+      business_id: businessId,
+      user_id: userId,
+      storage_path: storagePath,
+    };
+    const insertUrl = `${SUPABASE_URL}/rest/v1/receipt_uploads`;
+    const insertResponse = await withTimeout(
+      fetch(insertUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          apikey: SUPABASE_ANON_KEY,
+          "Content-Type": "application/json",
+          Prefer: "return=representation",
+        },
+        body: JSON.stringify(payload),
+      }),
+      12000,
+      "receipt_insert",
+    );
+    const rawText = await insertResponse.text();
+    let parsed = null;
+    try {
+      parsed = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      parsed = null;
+    }
+    if (insertResponse.ok) {
+      const row = Array.isArray(parsed) ? parsed[0] : parsed;
+      return { data: row, error: null, status: insertResponse.status };
+    }
+
+    const message =
+      parsed?.message ||
+      parsed?.error ||
+      rawText ||
+      `Unable to save receipt (${insertResponse.status}).`;
+    const lowered = String(message).toLowerCase();
+    if (
+      insertResponse.status === 409 ||
+      lowered.includes("duplicate") ||
+      lowered.includes("unique")
+    ) {
+      const lookupUrl = `${SUPABASE_URL}/rest/v1/receipt_uploads?redemption_id=eq.${encodeURIComponent(
+        redemptionId,
+      )}&select=id,uploaded_at,storage_path`;
+      const lookupResponse = await withTimeout(
+        fetch(lookupUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            apikey: SUPABASE_ANON_KEY,
+          },
+        }),
+        12000,
+        "receipt_lookup",
+      );
+      const lookupRaw = await lookupResponse.text();
+      let lookupParsed = null;
+      try {
+        lookupParsed = lookupRaw ? JSON.parse(lookupRaw) : null;
+      } catch {
+        lookupParsed = null;
+      }
+      if (
+        lookupResponse.ok &&
+        Array.isArray(lookupParsed) &&
+        lookupParsed[0]
+      ) {
+        return {
+          data: lookupParsed[0],
+          error: null,
+          status: lookupResponse.status,
+          duplicate: true,
+        };
+      }
+    }
+
+    return { data: null, error: message, status: insertResponse.status };
+  } catch (error) {
+    return {
+      data: null,
+      error: error?.message || "Unable to save receipt.",
+      status: null,
+    };
+  }
 };
 
 const getOfferImagePath = (url) => {
@@ -1423,7 +1681,6 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
   const offerTypeLabel = item.offerType
     ? normalizeOfferType(item.offerType)
     : "Offer";
-  const offerPoints = resolveOfferPoints(item);
   const hoursValue = item.hours || item.business?.hours || "";
   const openFromHours = isBusinessOpenNow(hoursValue);
   const isOpen =
@@ -1488,9 +1745,7 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
             </Text>
           </TouchableOpacity>
           <View style={styles.cardMetaRow}>
-            <Text style={styles.cardMeta}>
-              {offerTypeLabel} · {offerPoints} pts
-            </Text>
+            <Text style={styles.cardMeta}>{offerTypeLabel}</Text>
             <Text style={styles.cardMeta}>
               {ratingLabel ? `Rating ${ratingLabel}` : "Not rated yet"}
             </Text>
@@ -1604,7 +1859,6 @@ export default function App() {
   const [profileEmail, setProfileEmail] = useState("");
   const [profilePhone, setProfilePhone] = useState("");
   const [profileCompany, setProfileCompany] = useState("");
-  const [profilePoints, setProfilePoints] = useState(null);
   const [profileMessage, setProfileMessage] = useState(null);
   const [accountRole, setAccountRole] = useState("consumer");
   const [authUserId, setAuthUserId] = useState(null);
@@ -1841,6 +2095,7 @@ export default function App() {
     error: null,
     targetId: null,
   });
+  const [receiptDebug, setReceiptDebug] = useState(null);
   const [businessReceiptStatus, setBusinessReceiptStatus] = useState({
     loading: false,
     error: null,
@@ -1875,6 +2130,23 @@ export default function App() {
   const translateY = useRef(new Animated.Value(COLLAPSED_Y)).current;
   const translateYRef = useRef(COLLAPSED_Y);
   const dragStart = useRef(COLLAPSED_Y);
+  const receiptPinchScale = useRef(new Animated.Value(1)).current;
+  const receiptBaseScale = useRef(new Animated.Value(1)).current;
+  const receiptPanX = useRef(new Animated.Value(0)).current;
+  const receiptPanY = useRef(new Animated.Value(0)).current;
+  const receiptBaseX = useRef(new Animated.Value(0)).current;
+  const receiptBaseY = useRef(new Animated.Value(0)).current;
+  const receiptBaseScaleValue = useRef(1);
+  const receiptBaseXValue = useRef(0);
+  const receiptBaseYValue = useRef(0);
+  const receiptPinchRef = useRef(null);
+  const receiptPanRef = useRef(null);
+  const receiptScale = Animated.multiply(
+    receiptBaseScale,
+    receiptPinchScale,
+  );
+  const receiptTranslateX = Animated.add(receiptBaseX, receiptPanX);
+  const receiptTranslateY = Animated.add(receiptBaseY, receiptPanY);
 
   const hydrateProfile = useCallback(async (user, roleOverride = null) => {
     if (!user) return "consumer";
@@ -1886,7 +2158,7 @@ export default function App() {
     const fallbackName = formatDisplayName(email);
     const { data, error } = await supabase
       .from("profiles")
-      .select("full_name, email, role, phone, company, points_balance")
+      .select("full_name, email, role, phone, company")
       .eq("id", user.id)
       .maybeSingle();
     if (error) {
@@ -1907,9 +2179,6 @@ export default function App() {
     const profileEmailValue = data?.email || email;
     const profilePhoneValue = data?.phone || metadataPhone || "";
     const profileCompanyValue = data?.company || metadataCompany || "";
-    const profilePointsValue = Number.isFinite(Number(data?.points_balance))
-      ? Number(data.points_balance)
-      : 0;
 
     if (!data || roleOverride) {
       const { error: upsertError } = await supabase.from("profiles").upsert({
@@ -1930,7 +2199,6 @@ export default function App() {
     setProfileEmail(profileEmailValue);
     setProfilePhone(profilePhoneValue);
     setProfileCompany(profileCompanyValue);
-    setProfilePoints(profilePointsValue);
     setAuthBusinessDraft(metadataDraft);
     setAccountRole(nextRole);
     return nextRole;
@@ -1969,23 +2237,13 @@ export default function App() {
     setProfileName("");
     setProfilePhone("");
     setProfileCompany("");
-    setProfilePoints(null);
     setAuthBusinessDraft(null);
     setOwnerBusinessId(null);
   }, []);
 
   const forceSignOut = useCallback(
     async (reason) => {
-      try {
-        await clearSupabaseSession();
-      } catch (error) {
-        console.warn("Failed to clear Supabase session", error?.message);
-      }
-      try {
-        await withTimeout(supabase.auth.signOut(), 5000, "signOut");
-      } catch (error) {
-        console.warn("Supabase signOut failed", error?.message);
-      }
+      await safeLocalSignOut();
       resetAuthState();
       if (reason) {
         setCashoutStatusState({ loading: false, error: reason });
@@ -1996,6 +2254,9 @@ export default function App() {
 
   useEffect(() => {
     let isMounted = true;
+    const safetyTimer = setTimeout(() => {
+      if (isMounted) setSessionReady(true);
+    }, 4000);
     const loadSession = async () => {
       try {
         const refreshResult = refreshSupabaseClient();
@@ -2021,6 +2282,7 @@ export default function App() {
         }
       } finally {
         if (isMounted) setSessionReady(true);
+        clearTimeout(safetyTimer);
       }
     };
     loadSession();
@@ -2038,6 +2300,7 @@ export default function App() {
       : null;
     return () => {
       isMounted = false;
+      clearTimeout(safetyTimer);
       authListener?.data?.subscription?.unsubscribe();
     };
   }, [hydrateProfile, resetAuthState]);
@@ -2111,47 +2374,6 @@ export default function App() {
     return Component;
   }, []);
 
-  const refreshProfilePoints = useCallback(async () => {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !authUserId) return;
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("points_balance")
-      .eq("id", authUserId)
-      .maybeSingle();
-    if (error) {
-      return;
-    }
-    const pointsValue = Number.isFinite(Number(data?.points_balance))
-      ? Number(data.points_balance)
-      : 0;
-    setProfilePoints(pointsValue);
-  }, [authUserId]);
-
-  const incrementProfilePoints = useCallback(
-    async (delta) => {
-      if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !authUserId) return false;
-      const amount = Number(delta);
-      if (!Number.isFinite(amount) || amount <= 0) return false;
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("points_balance")
-        .eq("id", authUserId)
-        .maybeSingle();
-      if (error) return false;
-      const current = Number.isFinite(Number(data?.points_balance))
-        ? Number(data.points_balance)
-        : 0;
-      const next = current + amount;
-      const { error: updateError } = await supabase
-        .from("profiles")
-        .update({ points_balance: next })
-        .eq("id", authUserId);
-      if (updateError) return false;
-      setProfilePoints(next);
-      return true;
-    },
-    [authUserId],
-  );
 
   const resolvedOwnerBusiness = useMemo(() => {
     if (ownerBusiness) return ownerBusiness;
@@ -2460,6 +2682,23 @@ export default function App() {
     Linking.openURL(data.url).catch(() => null);
   }, [cashoutStatus.connected]);
 
+  useEffect(() => {
+    const scaleSub = receiptBaseScale.addListener(({ value }) => {
+      receiptBaseScaleValue.current = value;
+    });
+    const xSub = receiptBaseX.addListener(({ value }) => {
+      receiptBaseXValue.current = value;
+    });
+    const ySub = receiptBaseY.addListener(({ value }) => {
+      receiptBaseYValue.current = value;
+    });
+    return () => {
+      receiptBaseScale.removeListener(scaleSub);
+      receiptBaseX.removeListener(xSub);
+      receiptBaseY.removeListener(ySub);
+    };
+  }, [receiptBaseScale, receiptBaseX, receiptBaseY]);
+
   const trackOfferView = useCallback(
     async (businessId, offerId) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
@@ -2662,11 +2901,6 @@ export default function App() {
     },
     [ownerBusiness?.id, ownerBusinessId, ownerOffers],
   );
-
-  useEffect(() => {
-    if (!authUserId) return;
-    refreshProfilePoints();
-  }, [authUserId, refreshProfilePoints]);
 
   const mergeBusinesses = useCallback((nextBusinesses) => {
     setBusinesses((prev) => {
@@ -3078,7 +3312,6 @@ export default function App() {
           offerTitle,
           offerDescription,
           offerType,
-          pointsValue: offer.pointsValue ?? offer.points_value ?? null,
           distance: business.distance || "--",
           rating: Number.isFinite(business.rating) ? business.rating : null,
           tags: business.tags || [],
@@ -3351,41 +3584,6 @@ export default function App() {
     return map;
   }, [redemptionHistory]);
 
-  const totalPoints = useMemo(
-    () =>
-      redemptionHistory.reduce(
-        (sum, entry) => sum + resolveRedemptionPoints(entry),
-        0,
-      ),
-    [redemptionHistory],
-  );
-  const pointsBalance =
-    profilePoints === null ? totalPoints : profilePoints;
-  const pointsProgress = useMemo(() => {
-    const milestones = POINT_MILESTONES.slice().sort((a, b) => a - b);
-    const lastMilestone = milestones[milestones.length - 1] || 0;
-    const nextMilestone =
-      milestones.find((milestone) => pointsBalance < milestone) ||
-      lastMilestone;
-    const nextIndex = milestones.indexOf(nextMilestone);
-    const prevMilestone = nextIndex > 0 ? milestones[nextIndex - 1] : 0;
-    const range = Math.max(1, nextMilestone - prevMilestone);
-    const progress = Math.min(
-      1,
-      Math.max(0, (pointsBalance - prevMilestone) / range),
-    );
-    const label =
-      pointsBalance >= lastMilestone
-        ? "All milestones unlocked"
-        : `Next milestone at ${nextMilestone} pts`;
-    return {
-      progress,
-      label,
-      nextMilestone,
-      prevMilestone,
-    };
-  }, [pointsBalance]);
-
   const isReceiptWindowOpen = (entry) => {
     if (!entry?.createdAt) return false;
     return Date.now() - entry.createdAt <= RECEIPT_UPLOAD_WINDOW_MS;
@@ -3421,8 +3619,7 @@ export default function App() {
       group.pendingCount = hasReview ? 0 : group.pendingEntries.length;
       group.receiptPendingCount = group.entries.reduce((total, entry) => {
         const hasReceipt = Boolean(entry.receipt?.id);
-        const hasPoints = resolveRedemptionPoints(entry) > 0;
-        if (!hasReceipt && !hasPoints && isReceiptWindowOpen(entry)) {
+        if (!hasReceipt && isReceiptWindowOpen(entry)) {
           return total + 1;
         }
         return total;
@@ -3502,8 +3699,7 @@ export default function App() {
     () =>
       redemptionHistory.reduce((total, entry) => {
         const hasReceipt = Boolean(entry.receipt?.id);
-        const hasPoints = resolveRedemptionPoints(entry) > 0;
-        if (!hasReceipt && !hasPoints && isReceiptWindowOpen(entry)) {
+        if (!hasReceipt && isReceiptWindowOpen(entry)) {
           return total + 1;
         }
         return total;
@@ -3962,10 +4158,14 @@ export default function App() {
     setSignInError(null);
     try {
       const email = signInEmail.trim().toLowerCase();
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password: signInPassword,
-      });
+      const { data, error } = await withTimeout(
+        supabase.auth.signInWithPassword({
+          email,
+          password: signInPassword,
+        }),
+        12000,
+        "signIn",
+      );
       if (error) {
         setSignInError(error.message || "Unable to sign in.");
         return;
@@ -3977,6 +4177,8 @@ export default function App() {
       await hydrateProfile(data.user, null);
       setIsSignedIn(true);
       setSignInPassword("");
+    } catch (error) {
+      setSignInError(error?.message || "Sign in timed out. Try again.");
     } finally {
       setAuthBusy(false);
     }
@@ -4263,8 +4465,8 @@ export default function App() {
     }
   };
 
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
+  const handleSignOut = () => {
+    void forceSignOut();
     setIsSignedIn(false);
     setSignInPassword("");
     setSignUpPassword("");
@@ -4276,7 +4478,6 @@ export default function App() {
     setProfileEmail("");
     setProfilePhone("");
     setProfileCompany("");
-    setProfilePoints(null);
     viewedOfferIdsRef.current = new Set();
     setAuthBusinessDraft(null);
     setSignInError(null);
@@ -4559,7 +4760,6 @@ export default function App() {
     setReviewBusy(false);
     closeReviewModal();
     loadUserReviews({ silent: true });
-    refreshProfilePoints();
     if (entry.businessId) {
       loadBusinessReviews(entry.businessId, { silent: true });
     }
@@ -5670,7 +5870,6 @@ export default function App() {
             "description",
             "offer_type",
             "image_url",
-            "points_value",
             "active",
             "approval_status",
             "created_at",
@@ -5751,7 +5950,6 @@ export default function App() {
             "description",
             "offer_type",
             "image_url",
-            "points_value",
             "active",
             "approval_status",
             "created_at",
@@ -5846,7 +6044,6 @@ export default function App() {
             "description",
             "offer_type",
             "image_url",
-            "points_value",
             "active",
             "approval_status",
             "created_at",
@@ -5881,7 +6078,6 @@ export default function App() {
             "description",
             "offer_type",
             "image_url",
-            "points_value",
             "active",
             "approval_status",
             "created_at",
@@ -5914,7 +6110,6 @@ export default function App() {
           "description",
           "offer_type",
           "image_url",
-          "points_value",
           "active",
           "approval_status",
           "created_at",
@@ -6176,6 +6371,7 @@ export default function App() {
 
   const handleUploadReceipt = async (entry, source = "library") => {
     if (!entry?.id || !entry.businessId) return;
+    setReceiptDebug(null);
     setReceiptUploadStatus((prev) => ({ ...prev, error: null }));
     if (
       !ensureSupabaseReady((message) =>
@@ -6261,12 +6457,15 @@ export default function App() {
         error: null,
         targetId: entry.id,
       });
-      const { path, error } = await uploadReceiptImage(
+      const { path, error, debug } = await uploadReceiptImage(
         normalized.image,
         entry.businessId,
         entry.id,
       );
       if (error || !path) {
+        if (debug) {
+          setReceiptDebug(debug);
+        }
         setReceiptUploadStatus({
           uploading: false,
           error: error || "Unable to upload receipt.",
@@ -6274,48 +6473,38 @@ export default function App() {
         });
         return;
       }
-      const { data, error: insertError } = await supabase
-        .from("receipt_uploads")
-        .insert({
-          redemption_id: entry.id,
-          business_id: entry.businessId,
-          user_id: authUserId,
-          storage_path: path,
-        })
-        .select("id, uploaded_at, storage_path")
-        .maybeSingle();
+      const {
+        data,
+        error: insertError,
+        status: insertStatus,
+      } = await insertReceiptUploadRecord({
+        redemptionId: entry.id,
+        businessId: entry.businessId,
+        userId: authUserId,
+        storagePath: path,
+      });
       if (insertError || !data) {
+        if (insertError) {
+          setReceiptDebug(
+            `receipt insert failed (${insertStatus ?? "no-status"}): ${insertError}`,
+          );
+        }
         setReceiptUploadStatus({
           uploading: false,
-          error: insertError?.message || "Unable to save receipt.",
+          error: insertError || "Unable to save receipt.",
           targetId: null,
         });
         return;
       }
-      const pointsValue = resolvePendingPoints(entry);
-      const hadPoints = Number(entry.pointsAwarded) > 0;
-      const { error: updateError } = await supabase
-        .from("redemptions")
-        .update({ points_awarded: pointsValue })
-        .eq("id", entry.id);
-      if (updateError) {
-        console.warn("Wello receipt points update failed:", updateError.message);
-      } else if (!hadPoints) {
-        const updated = await incrementProfilePoints(pointsValue);
-        if (!updated) {
-          refreshProfilePoints();
-        }
-        const commissionCents =
-          businesses.find((business) => business.id === entry.businessId)
-            ?.commissionRateCents ?? COMMISSION_CENTS;
-        recordCommissionEvent(entry, commissionCents);
-      }
+      const commissionCents =
+        businesses.find((business) => business.id === entry.businessId)
+          ?.commissionRateCents ?? COMMISSION_CENTS;
+      recordCommissionEvent(entry, commissionCents);
       setRedemptionHistory((prev) =>
         prev.map((item) =>
           item.id === entry.id
             ? {
                 ...item,
-                pointsAwarded: updateError ? item.pointsAwarded : pointsValue,
                 receipt: {
                   id: String(data.id),
                   storagePath: data.storage_path || "",
@@ -6329,9 +6518,7 @@ export default function App() {
       );
       setReceiptUploadStatus({
         uploading: false,
-        error: updateError
-          ? "Receipt saved, but points could not be awarded yet."
-          : null,
+        error: null,
         targetId: null,
       });
       loadRedemptions({ silent: true });
@@ -6423,7 +6610,6 @@ export default function App() {
             "description",
             "offer_type",
             "image_url",
-            "points_value",
             "active",
             "approval_status",
             "created_at",
@@ -6446,6 +6632,12 @@ export default function App() {
 
   const handleOpenReceiptPreview = async (receipt, offerTitle) => {
     if (!receipt) return;
+    receiptBaseScale.setValue(1);
+    receiptPinchScale.setValue(1);
+    receiptBaseX.setValue(0);
+    receiptBaseY.setValue(0);
+    receiptPanX.setValue(0);
+    receiptPanY.setValue(0);
     const title = offerTitle || receipt.offerTitle || "Receipt";
     setReceiptPreview({
       uri: "",
@@ -6459,6 +6651,33 @@ export default function App() {
       signedUrl = await createReceiptSignedUrl(receipt.storagePath);
     }
     const finalUrl = signedUrl || receipt.imageUrl || "";
+    if (!finalUrl) {
+      setReceiptDebug("receipt preview missing signed url");
+    }
+    if (finalUrl) {
+      try {
+        const ok = await Image.prefetch(finalUrl);
+        if (!ok) {
+          setReceiptPreview({
+            uri: "",
+            title,
+            timestamp: receipt.uploadedAt,
+            loading: false,
+            error: "Unable to load receipt image.",
+          });
+          return;
+        }
+      } catch (_error) {
+        setReceiptPreview({
+          uri: "",
+          title,
+          timestamp: receipt.uploadedAt,
+          loading: false,
+          error: "Unable to load receipt image.",
+        });
+        return;
+      }
+    }
     setReceiptPreview({
       uri: finalUrl,
       title,
@@ -6467,6 +6686,72 @@ export default function App() {
       error: finalUrl ? null : "Unable to load receipt image.",
     });
   };
+
+  const onReceiptPinchEvent = Animated.event(
+    [{ nativeEvent: { scale: receiptPinchScale } }],
+    { useNativeDriver: true },
+  );
+
+  const onReceiptPanEvent = Animated.event(
+    [
+      {
+        nativeEvent: {
+          translationX: receiptPanX,
+          translationY: receiptPanY,
+        },
+      },
+    ],
+    { useNativeDriver: true },
+  );
+
+  const onReceiptPinchStateChange = useCallback(
+    (event) => {
+      if (event.nativeEvent.oldState === GestureState.ACTIVE) {
+        const next = Math.max(
+          1,
+          Math.min(4, receiptBaseScaleValue.current * event.nativeEvent.scale),
+        );
+        receiptBaseScale.setValue(next);
+        receiptPinchScale.setValue(1);
+        const maxX =
+          (RECEIPT_PREVIEW_WIDTH * next - RECEIPT_PREVIEW_WIDTH) / 2;
+        const maxY =
+          (RECEIPT_PREVIEW_HEIGHT * next - RECEIPT_PREVIEW_HEIGHT) / 2;
+        const clampedX = clampValue(receiptBaseXValue.current, -maxX, maxX);
+        const clampedY = clampValue(receiptBaseYValue.current, -maxY, maxY);
+        receiptBaseX.setValue(clampedX);
+        receiptBaseY.setValue(clampedY);
+      }
+    },
+    [receiptBaseScale, receiptPinchScale, receiptBaseX, receiptBaseY],
+  );
+
+  const onReceiptPanStateChange = useCallback(
+    (event) => {
+      if (event.nativeEvent.oldState === GestureState.ACTIVE) {
+        const scale = receiptBaseScaleValue.current;
+        const maxX =
+          (RECEIPT_PREVIEW_WIDTH * scale - RECEIPT_PREVIEW_WIDTH) / 2;
+        const maxY =
+          (RECEIPT_PREVIEW_HEIGHT * scale - RECEIPT_PREVIEW_HEIGHT) / 2;
+        const nextX = clampValue(
+          receiptBaseXValue.current + event.nativeEvent.translationX,
+          -maxX,
+          maxX,
+        );
+        const nextY = clampValue(
+          receiptBaseYValue.current + event.nativeEvent.translationY,
+          -maxY,
+          maxY,
+        );
+        receiptBaseX.setValue(nextX);
+        receiptBaseY.setValue(nextY);
+        receiptPanX.setValue(0);
+        receiptPanY.setValue(0);
+      }
+    },
+    [receiptBaseX, receiptBaseY, receiptPanX, receiptPanY],
+  );
 
   const handleCreateOffer = async () => {
     if (!ownerBusiness) {
@@ -6654,9 +6939,8 @@ export default function App() {
             "id",
             "business_id",
             "offer_id",
-            "points_awarded",
             "created_at",
-            "offer:offers (id, title, description, offer_type, image_url, points_value)",
+            "offer:offers (id, title, description, offer_type, image_url)",
             "business:businesses (id, name, category_key, category_label)",
             "receipt_uploads (id, uploaded_at, storage_path)",
           ].join(","),
@@ -6804,7 +7088,6 @@ export default function App() {
             "description",
             "offer_type",
             "image_url",
-            "points_value",
             "active",
             "approval_status",
             "created_at",
@@ -6864,6 +7147,7 @@ export default function App() {
         .eq("business_id", businessId)
         .order("uploaded_at", { ascending: false });
       if (error) {
+        setReceiptDebug(`load receipts failed: ${error.message || "unknown"}`);
         if (!silent) {
           setBusinessReceiptStatus({
             loading: false,
@@ -6924,9 +7208,8 @@ export default function App() {
             "id",
             "business_id",
             "offer_id",
-            "points_awarded",
             "created_at",
-            "offer:offers (id, title, description, offer_type, image_url, points_value)",
+            "offer:offers (id, title, description, offer_type, image_url)",
             "receipt_uploads (id, uploaded_at, storage_path)",
           ].join(","),
         )
@@ -7288,8 +7571,9 @@ export default function App() {
   }
 
   return (
-    <SafeAreaProvider>
-      <SafeAreaView style={styles.screen}>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.screen}>
         <StatusBar
           barStyle="dark-content"
           translucent
@@ -7798,7 +8082,6 @@ export default function App() {
                             business: businessDetail,
                             offerTitle: offer.title || offer.offer || businessDetail.offer,
                             offerType: offer.offerType || offer.offer_type,
-                            pointsValue: offer.pointsValue ?? offer.points_value ?? null,
                             tags: businessDetail.tags,
                           })
                         }
@@ -7897,6 +8180,7 @@ export default function App() {
                     setReceiptsModalOpen(false);
                     setReceiptPreview(null);
                   }}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
                   <Ionicons name="close" size={18} color={COLORS.ink} />
                 </TouchableOpacity>
@@ -7916,6 +8200,9 @@ export default function App() {
                   <Text style={styles.formError}>
                     {businessRedemptionStatus.error}
                   </Text>
+                )}
+                {receiptDebug && (
+                  <Text style={styles.cashoutErrorText}>{receiptDebug}</Text>
                 )}
 
                 {businessReceiptStatus.loading ||
@@ -8109,6 +8396,105 @@ export default function App() {
                   </View>
                 )}
               </ScrollView>
+              {receiptPreview && (
+                <View style={styles.receiptPreviewOverlay}>
+                  <View style={styles.receiptPreviewCard}>
+                    <View style={styles.receiptPreviewHeader}>
+                      <View>
+                        <Text style={styles.receiptPreviewTitle}>
+                          {receiptPreview?.title || "Receipt"}
+                        </Text>
+                        {receiptPreview?.timestamp ? (
+                          <Text style={styles.receiptPreviewMeta}>
+                            Uploaded{" "}
+                            {formatHistoryTimestamp(receiptPreview.timestamp)}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <TouchableOpacity
+                        style={styles.receiptsClose}
+                        onPress={() => setReceiptPreview(null)}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      >
+                        <Ionicons name="close" size={18} color={COLORS.ink} />
+                      </TouchableOpacity>
+                    </View>
+                    {receiptPreview?.loading ? (
+                      <View style={styles.receiptPreviewPlaceholder}>
+                        <Ionicons
+                          name="time-outline"
+                          size={18}
+                          color={COLORS.muted}
+                        />
+                        <Text style={styles.receiptPreviewPlaceholderText}>
+                          Loading receipt...
+                        </Text>
+                      </View>
+                    ) : receiptPreview?.uri ? (
+                      <PinchGestureHandler
+                        ref={receiptPinchRef}
+                        simultaneousHandlers={receiptPanRef}
+                        onGestureEvent={onReceiptPinchEvent}
+                        onHandlerStateChange={onReceiptPinchStateChange}
+                      >
+                        <Animated.View style={styles.receiptZoomWrap}>
+                          <PanGestureHandler
+                            ref={receiptPanRef}
+                            simultaneousHandlers={receiptPinchRef}
+                            onGestureEvent={onReceiptPanEvent}
+                            onHandlerStateChange={onReceiptPanStateChange}
+                            minPointers={1}
+                            maxPointers={1}
+                          >
+                            <Animated.View
+                              style={[
+                                styles.receiptPreviewImageWrap,
+                                {
+                                  transform: [
+                                    { scale: receiptScale },
+                                    { translateX: receiptTranslateX },
+                                    { translateY: receiptTranslateY },
+                                  ],
+                                },
+                              ]}
+                            >
+                              <Image
+                                source={{ uri: receiptPreview.uri }}
+                                style={styles.receiptPreviewImage}
+                                resizeMode="contain"
+                                onError={() =>
+                                  setReceiptPreview((prev) =>
+                                    prev
+                                      ? {
+                                          ...prev,
+                                          uri: "",
+                                          error:
+                                            "Unable to load receipt image.",
+                                        }
+                                      : prev,
+                                  )
+                                }
+                              />
+                            </Animated.View>
+                          </PanGestureHandler>
+                        </Animated.View>
+                      </PinchGestureHandler>
+                    ) : (
+                      <View style={styles.receiptPreviewPlaceholder}>
+                        <Ionicons
+                          name="image-outline"
+                          size={18}
+                          color={COLORS.muted}
+                        />
+                        <Text style={styles.receiptPreviewPlaceholderText}>
+                          {receiptPreview?.error ||
+                            "Receipt image unavailable."}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              )}
             </SafeAreaView>
           </Modal>
 
@@ -8288,7 +8674,6 @@ export default function App() {
                       const offerTypeLabel = offer.offerType
                         ? normalizeOfferType(offer.offerType)
                         : "Offer";
-                      const pointsValue = resolveOfferPoints(offer);
                       const canEdit = offer.approvalStatus !== "pending";
                       return (
                         <View
@@ -8359,9 +8744,6 @@ export default function App() {
                                 <Text style={styles.detailOfferMeta}>
                                   {offerTypeLabel}
                                 </Text>
-                                <Text style={styles.detailOfferMeta}>
-                                  {pointsValue} pts
-                                </Text>
                               </View>
                               <View style={styles.offerActionsRow}>
                                 <TouchableOpacity
@@ -8406,67 +8788,6 @@ export default function App() {
 
           <Modal
             transparent
-            visible={Boolean(receiptPreview)}
-            animationType="fade"
-            presentationStyle="overFullScreen"
-            statusBarTranslucent
-          >
-            <View style={styles.receiptPreviewOverlay}>
-              <View style={styles.receiptPreviewCard}>
-                <View style={styles.receiptPreviewHeader}>
-                  <View>
-                    <Text style={styles.receiptPreviewTitle}>
-                      {receiptPreview?.title || "Receipt"}
-                    </Text>
-                    {receiptPreview?.timestamp ? (
-                      <Text style={styles.receiptPreviewMeta}>
-                        Uploaded{" "}
-                        {formatHistoryTimestamp(receiptPreview.timestamp)}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <TouchableOpacity
-                    style={styles.receiptsClose}
-                    onPress={() => setReceiptPreview(null)}
-                  >
-                    <Ionicons name="close" size={18} color={COLORS.ink} />
-                  </TouchableOpacity>
-                </View>
-                {receiptPreview?.loading ? (
-                  <View style={styles.receiptPreviewPlaceholder}>
-                    <Ionicons
-                      name="time-outline"
-                      size={18}
-                      color={COLORS.muted}
-                    />
-                    <Text style={styles.receiptPreviewPlaceholderText}>
-                      Loading receipt...
-                    </Text>
-                  </View>
-                ) : receiptPreview?.uri ? (
-                  <Image
-                    source={{ uri: receiptPreview.uri }}
-                    style={styles.receiptPreviewImage}
-                    resizeMode="contain"
-                  />
-                ) : (
-                  <View style={styles.receiptPreviewPlaceholder}>
-                    <Ionicons
-                      name="image-outline"
-                      size={18}
-                      color={COLORS.muted}
-                    />
-                    <Text style={styles.receiptPreviewPlaceholderText}>
-                      {receiptPreview?.error || "Receipt image unavailable."}
-                    </Text>
-                  </View>
-                )}
-              </View>
-            </View>
-          </Modal>
-
-          <Modal
-            transparent
             visible={receiptNoticeOpen}
             animationType="fade"
             presentationStyle="overFullScreen"
@@ -8476,8 +8797,8 @@ export default function App() {
               <View style={styles.noticeCard}>
                 <Text style={styles.noticeTitle}>Receipts needed</Text>
                 <Text style={styles.noticeBody}>
-                  Upload receipts within 24 hours of redeeming offers to earn
-                  points.
+                  Upload receipts within 24 hours of redeeming offers to verify
+                  them.
                 </Text>
                 <View style={styles.noticeActions}>
                   <TouchableOpacity
@@ -10035,33 +10356,6 @@ export default function App() {
                               you can leave a review.
                             </Text>
                           </View>
-                          <View style={styles.pointsCard}>
-                            <View style={styles.pointsHeader}>
-                              <Text style={styles.pointsLabel}>Points</Text>
-                              <Text style={styles.pointsValue}>
-                                {pointsBalance.toLocaleString()}
-                              </Text>
-                            </View>
-                            <Text style={styles.pointsMeta}>
-                              {pointsProgress.label}
-                            </Text>
-                            <View style={styles.pointsBar}>
-                              <View
-                                style={[
-                                  styles.pointsBarFill,
-                                  {
-                                    width: `${Math.round(
-                                      pointsProgress.progress * 100,
-                                    )}%`,
-                                  },
-                                ]}
-                              />
-                            </View>
-                            <Text style={styles.pointsReward}>
-                              Reward: Milestone
-                            </Text>
-                          </View>
-
                           {redemptionStatus.error && (
                             <Text style={styles.formError}>
                               {redemptionStatus.error}
@@ -10072,14 +10366,19 @@ export default function App() {
                               {receiptUploadStatus.error}
                             </Text>
                           )}
+                          {receiptDebug && (
+                            <Text style={styles.cashoutErrorText}>
+                              {receiptDebug}
+                            </Text>
+                          )}
                           {pendingReceiptCount > 0 && (
                             <View style={styles.receiptNoticeCard}>
                               <Text style={styles.receiptNoticeTitle}>
                                 Receipts needed
                               </Text>
                               <Text style={styles.receiptNoticeBody}>
-                                Upload your receipts within 24 hours to earn
-                                points on recent redemptions.
+                                Upload your receipts within 24 hours to verify
+                                your recent redemptions.
                               </Text>
                             </View>
                           )}
@@ -10120,11 +10419,6 @@ export default function App() {
                                     entry.offer?.title || "Redeemed offer";
                                   const offerDescription =
                                     entry.offer?.description || "";
-                                  const pointsAwarded =
-                                    resolveRedemptionPoints(entry);
-                                  const pendingPoints = pointsAwarded
-                                    ? 0
-                                    : resolvePendingPoints(entry);
                                   const hasReceipt = Boolean(
                                     entry.receipt?.id,
                                   );
@@ -10134,7 +10428,7 @@ export default function App() {
                                     receiptUploadStatus.uploading &&
                                     receiptUploadStatus.targetId === entry.id;
                                   const needsReceipt =
-                                    !hasReceipt && !pointsAwarded;
+                                    !hasReceipt;
                                   return (
                                     <View
                                       key={entry.id}
@@ -10153,17 +10447,6 @@ export default function App() {
                                               entry.createdAt,
                                             )}
                                           </Text>
-                                          <Text
-                                            style={[
-                                              styles.historyEntryPoints,
-                                              !pointsAwarded &&
-                                                styles.historyEntryPointsPending,
-                                            ]}
-                                          >
-                                            {pointsAwarded
-                                              ? `+${pointsAwarded} pts`
-                                              : `Pending ${pendingPoints} pts`}
-                                          </Text>
                                         </View>
                                       </View>
                                       {!hasReview &&
@@ -10179,7 +10462,7 @@ export default function App() {
                                           style={styles.historyEntryPending}
                                         >
                                           {receiptWindowOpen
-                                            ? "Receipt needed within 24 hours to earn points."
+                                            ? "Receipt needed within 24 hours to verify."
                                             : "Receipt window expired."}
                                         </Text>
                                       )}
@@ -12084,8 +12367,9 @@ export default function App() {
             )}
           </Animated.View>
         </View>
-      </SafeAreaView>
-    </SafeAreaProvider>
+        </SafeAreaView>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -12745,6 +13029,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     gap: 12,
+    paddingTop: Platform.OS === "ios" ? 8 : 0,
   },
   receiptsTitle: {
     fontSize: 16,
@@ -14100,7 +14385,12 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
   },
   receiptPreviewOverlay: {
-    flex: 1,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 50,
     backgroundColor: "rgba(15, 23, 42, 0.7)",
     justifyContent: "center",
     padding: 20,
@@ -14111,6 +14401,9 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
+    width: "100%",
+    maxWidth: 520,
+    alignSelf: "center",
   },
   receiptPreviewHeader: {
     flexDirection: "row",
@@ -14132,13 +14425,26 @@ const styles = StyleSheet.create({
   },
   receiptPreviewImage: {
     width: "100%",
-    height: 360,
+    height: "100%",
+    backgroundColor: "#EFF3F8",
+  },
+  receiptZoomWrap: {
+    width: RECEIPT_PREVIEW_WIDTH,
+    height: RECEIPT_PREVIEW_HEIGHT,
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "center",
+  },
+  receiptPreviewImageWrap: {
+    width: RECEIPT_PREVIEW_WIDTH,
+    height: RECEIPT_PREVIEW_HEIGHT,
     borderRadius: 12,
+    overflow: "hidden",
     backgroundColor: "#EFF3F8",
   },
   receiptPreviewPlaceholder: {
-    width: "100%",
-    height: 260,
+    width: RECEIPT_PREVIEW_WIDTH,
+    height: RECEIPT_PREVIEW_HEIGHT,
     borderRadius: 12,
     backgroundColor: "#EFF3F8",
     alignItems: "center",
@@ -14308,26 +14614,6 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
-  pointsBar: {
-    marginTop: 8,
-    height: 8,
-    borderRadius: 999,
-    backgroundColor: "#E4E9F0",
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-  },
-  pointsBarFill: {
-    height: "100%",
-    borderRadius: 999,
-    backgroundColor: COLORS.pine,
-  },
-  pointsReward: {
-    marginTop: 8,
-    fontSize: 11,
-    color: COLORS.ink,
-    fontFamily: FONT_MEDIUM,
-  },
   cashoutStatusRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -14412,14 +14698,6 @@ const styles = StyleSheet.create({
   historyEntryMeta: {
     alignItems: "flex-end",
     gap: 4,
-  },
-  historyEntryPoints: {
-    fontSize: 10,
-    color: COLORS.pine,
-    fontFamily: FONT_MEDIUM,
-  },
-  historyEntryPointsPending: {
-    color: COLORS.muted,
   },
   historyEntryPending: {
     fontSize: 10,
