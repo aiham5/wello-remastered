@@ -334,18 +334,34 @@ const loadReceiptImage = async (receipt) => {
   ui.detailImage.removeAttribute("src");
   if (!receipt?.storage_path || !supabaseClient) return;
   try {
-    const {
-      data: { session },
-    } = await supabaseClient.auth.getSession();
+    let session = state.session;
+    if (!session?.access_token) {
+      const refresh = await supabaseClient.auth.refreshSession();
+      session = refresh?.data?.session || null;
+      state.session = session;
+    }
     if (!session?.access_token) {
       setDetailError("Session missing. Please sign in again.");
       return;
     }
-    const { data, error } = await callR2Presign({
+    let result = await callR2Presign({
       action: "download",
       key: receipt.storage_path,
       accessToken: session.access_token,
     });
+    if (result.error) {
+      const refresh = await supabaseClient.auth.refreshSession();
+      const nextSession = refresh?.data?.session || null;
+      if (nextSession?.access_token) {
+        state.session = nextSession;
+        result = await callR2Presign({
+          action: "download",
+          key: receipt.storage_path,
+          accessToken: nextSession.access_token,
+        });
+      }
+    }
+    const { data, error } = result;
     if (error || !data?.signedUrl) {
       setDetailError(error?.message || "Unable to load receipt image.");
       return;
@@ -534,13 +550,16 @@ const attachListeners = () => {
     }
     ui.signIn.disabled = true;
     try {
-      const { error } = await supabaseClient.auth.signInWithPassword({
+      const { data, error } = await supabaseClient.auth.signInWithPassword({
         email,
         password,
       });
       if (error) {
         setAuthError(error.message || "Unable to sign in.");
         return;
+      }
+      if (data?.session) {
+        state.session = data.session;
       }
     } finally {
       ui.signIn.disabled = false;
