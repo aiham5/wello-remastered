@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wello Admin — Receipts</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="admin">
+    <div class="page">
+      <div class="container admin-container">
+        <nav class="nav">
+          <a class="brand" href="/">
+            <img src="/assets/wello-logo.jpeg" alt="Wello logo" />
+            <span>Wello Admin</span>
+          </a>
+          <div class="nav-actions">
+            <span id="admin-user">Not signed in</span>
+            <button class="button secondary is-hidden" id="sign-out">
+              Sign out
+            </button>
+          </div>
+        </nav>
+
+        <section id="auth-panel" class="card-simple admin-auth">
+          <span class="pill">Secure access</span>
+          <h2>Admin receipts dashboard</h2>
+          <p>
+            Sign in with your Wello admin account to review receipts, calculate
+            totals, and manage commissions.
+          </p>
+          <div class="form-grid">
+            <label class="field">
+              <span>Email</span>
+              <input id="auth-email" type="email" autocomplete="email" />
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <input
+                id="auth-password"
+                type="password"
+                autocomplete="current-password"
+              />
+            </label>
+          </div>
+          <div class="cta-row">
+            <button class="button primary" id="sign-in">Sign in</button>
+          </div>
+          <p class="notice" id="auth-error"></p>
+        </section>
+
+        <section id="admin-panel" class="admin-panel is-hidden">
+          <div class="dashboard-header">
+            <div>
+              <span class="pill">Receipts & commissions</span>
+              <h1>Receipt review workspace</h1>
+              <p class="lead">
+                Validate receipt uploads, enter totals, and calculate commission
+                due per business.
+              </p>
+            </div>
+            <div class="dashboard-actions">
+              <button class="button secondary" id="refresh-data">
+                Refresh data
+              </button>
+            </div>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">Pending receipts</div>
+              <div class="stat-value" id="stat-pending">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Verified receipts</div>
+              <div class="stat-value" id="stat-verified">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Gross receipt total</div>
+              <div class="stat-value" id="stat-gross">$0.00</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Commission due</div>
+              <div class="stat-value" id="stat-commission">$0.00</div>
+            </div>
+          </div>
+
+          <div class="filters-card">
+            <div class="filters-grid">
+              <label class="field">
+                <span>Search</span>
+                <input
+                  id="filter-search"
+                  type="search"
+                  placeholder="Business, offer, redemption id..."
+                />
+              </label>
+              <label class="field">
+                <span>Status</span>
+                <select id="filter-status">
+                  <option value="all">All</option>
+                  <option value="pending">Pending</option>
+                  <option value="verified">Verified</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Business</span>
+                <select id="filter-business">
+                  <option value="all">All businesses</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>From</span>
+                <input id="filter-start" type="date" />
+              </label>
+              <label class="field">
+                <span>To</span>
+                <input id="filter-end" type="date" />
+              </label>
+              <label class="field">
+                <span>Default commission rate (%)</span>
+                <input id="filter-rate" type="number" min="0" step="0.25" />
+              </label>
+            </div>
+          </div>
+
+          <div class="receipts-layout">
+            <div class="table-card">
+              <div class="table-header">
+                <div>
+                  <h3>Receipt uploads</h3>
+                  <p class="notice" id="receipts-meta"></p>
+                </div>
+                <div class="table-actions">
+                  <button class="button secondary" id="export-csv">
+                    Export CSV
+                  </button>
+                </div>
+              </div>
+              <div class="table-scroll">
+                <table class="receipt-table">
+                  <thead>
+                    <tr>
+                      <th>Business</th>
+                      <th>Offer</th>
+                      <th>Uploaded</th>
+                      <th>Total</th>
+                      <th>Commission</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="receipts-body"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <aside class="detail-card" id="receipt-detail">
+              <div class="detail-empty" id="detail-empty">
+                Select a receipt to review.
+              </div>
+              <div class="detail-content is-hidden" id="detail-content">
+                <div class="detail-header">
+                  <div>
+                    <h3 id="detail-title">Receipt</h3>
+                    <p class="notice" id="detail-subtitle"></p>
+                  </div>
+                  <span class="status-pill" id="detail-status">Pending</span>
+                </div>
+                <div class="detail-image">
+                  <img id="detail-image" alt="Receipt preview" />
+                  <div class="detail-image-actions">
+                    <button class="button secondary" id="detail-open">
+                      Open image
+                    </button>
+                  </div>
+                </div>
+                <div class="detail-form">
+                  <label class="field">
+                    <span>Receipt total ($)</span>
+                    <input id="detail-total" type="number" step="0.01" />
+                  </label>
+                  <label class="field">
+                    <span>Commission due ($)</span>
+                    <input id="detail-commission" type="number" step="0.01" />
+                  </label>
+                  <label class="field">
+                    <span>Status</span>
+                    <select id="detail-status-select">
+                      <option value="pending">Pending</option>
+                      <option value="verified">Verified</option>
+                      <option value="rejected">Rejected</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Notes</span>
+                    <textarea id="detail-notes" rows="3"></textarea>
+                  </label>
+                </div>
+                <div class="cta-row">
+                  <button class="button primary" id="detail-save">
+                    Save review
+                  </button>
+                  <button class="button secondary" id="detail-verify">
+                    Mark verified
+                  </button>
+                </div>
+                <p class="notice" id="detail-error"></p>
+              </div>
+            </aside>
+          </div>
+
+          <div class="summary-grid">
+            <div class="summary-card">
+              <h3>Business totals</h3>
+              <div class="summary-list" id="business-summary"></div>
+            </div>
+            <div class="summary-card">
+              <h3>Recent activity</h3>
+              <div class="summary-list" id="activity-summary"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script src="/admin-config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="/admin.js" defer></script>
+  </body>
+</html>
