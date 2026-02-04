@@ -103,7 +103,6 @@ const callR2Presign = async ({ action, key, accessToken }) => {
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
         apikey: supabaseAnonKey,
         "Content-Type": "application/json",
       },
@@ -118,6 +117,7 @@ const callR2Presign = async ({ action, key, accessToken }) => {
     parsed = null;
   }
   if (!response.ok) {
+    console.warn("r2-presign failed", { status: response.status, raw });
     return {
       data: null,
       error:
