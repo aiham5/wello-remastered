@@ -91,6 +91,45 @@ const formatDateTime = (value) => {
   })}`;
 };
 
+const callR2Presign = async ({ action, key, accessToken }) => {
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return { data: null, error: "Supabase is not configured." };
+  }
+  if (!accessToken) {
+    return { data: null, error: "Missing access token." };
+  }
+  const response = await fetch(
+    `${supabaseUrl.replace(/\/+$/, "")}/functions/v1/r2-presign`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        apikey: supabaseAnonKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action, key, accessToken }),
+    },
+  );
+  const raw = await response.text();
+  let parsed = null;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    parsed = null;
+  }
+  if (!response.ok) {
+    return {
+      data: null,
+      error:
+        parsed?.error ||
+        parsed?.message ||
+        raw ||
+        `R2 presign failed (${response.status}).`,
+    };
+  }
+  return { data: parsed, error: null };
+};
+
 const parseMoneyToCents = (value) => {
   if (!value) return null;
   const parsed = Number(value);
@@ -298,12 +337,14 @@ const loadReceiptImage = async (receipt) => {
     const {
       data: { session },
     } = await supabaseClient.auth.getSession();
-    const { data, error } = await supabaseClient.functions.invoke("r2-presign", {
-      body: {
-        action: "download",
-        key: receipt.storage_path,
-        accessToken: session?.access_token || "",
-      },
+    if (!session?.access_token) {
+      setDetailError("Session missing. Please sign in again.");
+      return;
+    }
+    const { data, error } = await callR2Presign({
+      action: "download",
+      key: receipt.storage_path,
+      accessToken: session.access_token,
     });
     if (error || !data?.signedUrl) {
       setDetailError(error?.message || "Unable to load receipt image.");
