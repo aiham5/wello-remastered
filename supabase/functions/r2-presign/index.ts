@@ -1,4 +1,3 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 export const config = { verify_jwt: false };
@@ -12,6 +11,10 @@ const SUPABASE_URL =
 const SUPABASE_ANON_KEY =
   Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
   Deno.env.get("SUPABASE_ANON_KEY") ??
+  "";
+const SUPABASE_SERVICE_ROLE_KEY =
+  Deno.env.get("EDGE_SUPABASE_SERVICE_ROLE_KEY") ??
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
   "";
 
 const encoder = new TextEncoder();
@@ -152,7 +155,7 @@ serve(async (req) => {
     !R2_ACCESS_KEY_ID ||
     !R2_SECRET_ACCESS_KEY ||
     !SUPABASE_URL ||
-    !SUPABASE_ANON_KEY
+    (!SUPABASE_ANON_KEY && !SUPABASE_SERVICE_ROLE_KEY)
   ) {
     return new Response(
       JSON.stringify({ error: "Missing R2 configuration." }),
@@ -163,6 +166,8 @@ serve(async (req) => {
   try {
     const authHeader =
       req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
+    const incomingApiKey =
+      req.headers.get("apikey") ?? req.headers.get("Apikey") ?? "";
     const body = await req.json().catch(() => ({}));
     const bodyAccessToken =
       typeof body?.accessToken === "string"
@@ -182,12 +187,19 @@ serve(async (req) => {
         { status: 401, headers: corsHeaders },
       );
     }
-    const supabaseAuth = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-    const { data: userData, error: userError } =
-      await supabaseAuth.auth.getUser(token);
-    if (userError || !userData?.user?.id) {
+    const authKey =
+      SUPABASE_SERVICE_ROLE_KEY || incomingApiKey || SUPABASE_ANON_KEY;
+    const userResponse = await fetch(
+      `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1/user`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          apikey: authKey,
+        },
+      },
+    );
+    if (!userResponse.ok) {
+      const raw = await userResponse.text();
       const payload = (() => {
         try {
           const part = token.split(".")[1];
@@ -202,11 +214,13 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({
           error: "Invalid JWT",
-          reason: userError?.message || null,
+          reason: raw || `auth_status_${userResponse.status}`,
           debug: {
-            issuer: payload?.iss || null,
-            sub: payload?.sub || null,
-            exp: payload?.exp || null,
+            authKeyPrefix: authKey ? authKey.slice(0, 16) : null,
+            hasAuthHeader: Boolean(authHeader),
+            tokenIssuer: payload?.iss || null,
+            tokenSub: payload?.sub || null,
+            tokenExp: payload?.exp || null,
           },
         }),
         { status: 401, headers: corsHeaders },

@@ -42,6 +42,9 @@ const ui = {
   detailError: document.getElementById("detail-error"),
   businessSummary: document.getElementById("business-summary"),
   activitySummary: document.getElementById("activity-summary"),
+  imageModal: document.getElementById("image-modal"),
+  imageModalImg: document.getElementById("image-modal-img"),
+  imageModalClose: document.getElementById("image-modal-close"),
 };
 
 if (!supabaseUrl || !supabaseAnonKey) {
@@ -146,6 +149,19 @@ const updateStatusPill = (el, status) => {
   el.classList.add(normalized);
 };
 
+const openImageModal = (src) => {
+  if (!src) return;
+  ui.imageModalImg.src = src;
+  ui.imageModal.classList.remove("is-hidden");
+  document.body.classList.add("modal-open");
+};
+
+const closeImageModal = () => {
+  ui.imageModal.classList.add("is-hidden");
+  ui.imageModalImg.removeAttribute("src");
+  document.body.classList.remove("modal-open");
+};
+
 const setAuthUI = (isSignedIn) => {
   ui.authPanel.classList.toggle("is-hidden", isSignedIn);
   ui.adminPanel.classList.toggle("is-hidden", !isSignedIn);
@@ -165,6 +181,7 @@ const resetDetail = () => {
   ui.detailContent.classList.add("is-hidden");
   ui.detailEmpty.classList.remove("is-hidden");
   ui.detailImage.removeAttribute("src");
+  ui.detailOpen.disabled = true;
   ui.detailTitle.textContent = "Receipt";
   ui.detailSubtitle.textContent = "";
   updateStatusPill(ui.detailStatus, "pending");
@@ -309,6 +326,7 @@ const renderReceipts = () => {
 const selectReceipt = async (receiptId) => {
   const receipt = state.receipts.find((item) => item.id === receiptId);
   if (!receipt) return;
+  closeImageModal();
   state.selected = receipt;
   ui.detailEmpty.classList.add("is-hidden");
   ui.detailContent.classList.remove("is-hidden");
@@ -334,6 +352,7 @@ const selectReceipt = async (receiptId) => {
 
 const loadReceiptImage = async (receipt) => {
   ui.detailImage.removeAttribute("src");
+  ui.detailOpen.disabled = true;
   if (!receipt?.storage_path || !supabaseClient) return;
   try {
     let session = state.session;
@@ -369,7 +388,7 @@ const loadReceiptImage = async (receipt) => {
       return;
     }
     ui.detailImage.src = data.signedUrl;
-    ui.detailOpen.onclick = () => window.open(data.signedUrl, "_blank");
+    ui.detailOpen.disabled = false;
   } catch (error) {
     setDetailError(error?.message || "Unable to load receipt image.");
   }
@@ -451,8 +470,14 @@ const renderActivitySummary = () => {
 
 const saveReceipt = async (options = {}) => {
   const receipt = state.selected;
-  if (!receipt || !supabaseClient) return;
+  if (!receipt || !supabaseClient) {
+    setDetailError("Missing receipt or Supabase client.");
+    return;
+  }
   setDetailError("");
+  ui.detailSave.disabled = true;
+  ui.detailVerify.disabled = true;
+  setDetailError("Saving...");
   const totalCents = parseMoneyToCents(ui.detailTotal.value);
   let commissionCents = parseMoneyToCents(ui.detailCommission.value);
   if (commissionCents == null && totalCents != null) {
@@ -461,9 +486,13 @@ const saveReceipt = async (options = {}) => {
   }
   const status = options.status || ui.detailStatusSelect.value;
   const notes = ui.detailNotes.value || null;
-  const {
-    data: { user },
-  } = await supabaseClient.auth.getUser();
+  let user = null;
+  try {
+    const userResult = await supabaseClient.auth.getUser();
+    user = userResult?.data?.user || null;
+  } catch (error) {
+    console.warn("getUser failed", error);
+  }
 
   const updates = {
     receipt_total_cents: totalCents,
@@ -474,30 +503,42 @@ const saveReceipt = async (options = {}) => {
     reviewed_by: user?.id || null,
   };
 
-  const { data, error } = await supabaseClient
-    .from("receipt_uploads")
-    .update(updates)
-    .eq("id", receipt.id)
-    .select(
-      [
-        "id",
-        "storage_path",
-        "uploaded_at",
-        "receipt_total_cents",
-        "commission_due_cents",
-        "review_status",
-        "review_notes",
-        "reviewed_at",
-        "business:businesses (id, name)",
-        "redemption:redemptions (id, created_at, offer:offers (id, title))",
-      ].join(","),
-    )
-    .maybeSingle();
+  console.log("Saving receipt review", { receiptId: receipt.id, updates });
+  let data = null;
+  let error = null;
+  try {
+    const result = await supabaseClient
+      .from("receipt_uploads")
+      .update(updates)
+      .eq("id", receipt.id)
+      .select(
+        [
+          "id",
+          "storage_path",
+          "uploaded_at",
+          "receipt_total_cents",
+          "commission_due_cents",
+          "review_status",
+          "review_notes",
+          "reviewed_at",
+          "business:businesses (id, name)",
+          "redemption:redemptions (id, created_at, offer:offers (id, title))",
+        ].join(","),
+      )
+      .maybeSingle();
+    data = result?.data || null;
+    error = result?.error || null;
+  } catch (err) {
+    error = err;
+  }
 
   if (error || !data) {
     setDetailError(error?.message || "Unable to save receipt review.");
+    ui.detailSave.disabled = false;
+    ui.detailVerify.disabled = false;
     return;
   }
+  console.log("Receipt review saved", data);
 
   state.receipts = state.receipts.map((item) =>
     item.id === receipt.id ? data : item,
@@ -505,6 +546,10 @@ const saveReceipt = async (options = {}) => {
   state.selected = data;
   applyFilters();
   selectReceipt(data.id);
+  setDetailError("Saved.");
+  setTimeout(() => setDetailError(""), 2000);
+  ui.detailSave.disabled = false;
+  ui.detailVerify.disabled = false;
 };
 
 const exportCsv = () => {
@@ -587,11 +632,38 @@ const attachListeners = () => {
     state.defaultRate = Number(ui.filterRate.value) || state.defaultRate;
   });
 
+  ui.detailTotal.addEventListener("input", () => {
+    const totalCents = parseMoneyToCents(ui.detailTotal.value);
+    if (totalCents == null) {
+      ui.detailCommission.value = "";
+      return;
+    }
+    const rate = (Number(ui.filterRate.value) || state.defaultRate) / 100;
+    const commissionCents = Math.round(totalCents * rate);
+    ui.detailCommission.value = (commissionCents / 100).toFixed(2);
+  });
+
   ui.detailSave.addEventListener("click", () => saveReceipt());
   ui.detailVerify.addEventListener("click", () =>
     saveReceipt({ status: "verified" }),
   );
   ui.exportCsv.addEventListener("click", exportCsv);
+
+  ui.detailOpen.addEventListener("click", () => {
+    openImageModal(ui.detailImage.src);
+  });
+
+  ui.imageModalClose.addEventListener("click", closeImageModal);
+  ui.imageModal.addEventListener("click", (event) => {
+    if (event.target === ui.imageModal) {
+      closeImageModal();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !ui.imageModal.classList.contains("is-hidden")) {
+      closeImageModal();
+    }
+  });
 };
 
 const init = async () => {
