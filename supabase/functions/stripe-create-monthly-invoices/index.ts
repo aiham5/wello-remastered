@@ -2,9 +2,12 @@
 import Stripe from "https://esm.sh/stripe@14.25.0?target=deno";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SUPABASE_URL =
+  Deno.env.get("EDGE_SUPABASE_URL") ?? Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY =
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  Deno.env.get("EDGE_SERVICE_ROLE_KEY") ??
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
+  "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });

@@ -42,7 +42,14 @@ import QRCode from "qrcode";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
-import { supabase } from "./lib/supabase";
+import {
+  supabase,
+  refreshSupabaseClient,
+  getAccessTokenWithFallback,
+  refreshAccessTokenWithRefreshToken,
+  clearSupabaseSession,
+} from "./lib/supabase";
+import { getEnv } from "./lib/env";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 Notifications.setNotificationHandler({
@@ -86,9 +93,9 @@ const COMMISSION_CENTS = 150;
 const COMMISSION_LABEL = "$1.50";
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
-const GOOGLE_PLACES_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+const GOOGLE_PLACES_KEY = getEnv("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY");
+const SUPABASE_URL = getEnv("EXPO_PUBLIC_SUPABASE_URL");
+const SUPABASE_ANON_KEY = getEnv("EXPO_PUBLIC_SUPABASE_ANON_KEY");
 const ANDROID_MARKER_SIZE = 34;
 const ANDROID_MARKER_SELECTED_SIZE = 44;
 const CONFETTI_PIECES = 20;
@@ -722,18 +729,27 @@ const decodeJwtPayloadClient = (token) => {
   }
 };
 
+const withTimeout = (promise, ms, label) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timeout`)), ms),
+    ),
+  ]);
+
 const callStripeFunction = async (functionName, payload) => {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    return { data: null, error: "Supabase is not configured.", debug: null };
+    return { data: null, error: "Supabase is not configured.", status: null };
   }
-  const { data: sessionData } = await supabase.auth.getSession();
-  let accessToken = sessionData?.session?.access_token;
-  if (!accessToken) {
-    const { data: refreshData } = await supabase.auth.refreshSession();
-    accessToken = refreshData?.session?.access_token;
+  const refreshResult = refreshSupabaseClient();
+  if (!refreshResult.ok) {
+    return { data: null, error: refreshResult.error, status: null };
   }
+
+  const tokenResult = await getAccessTokenWithFallback(6000);
+  let accessToken = tokenResult.accessToken;
   if (!accessToken) {
-    return { data: null, error: "Sign in again to continue.", debug: null };
+    return { data: null, error: "Sign in again to continue.", status: null };
   }
 
   const tokenPayload = decodeJwtPayloadClient(accessToken);
@@ -746,7 +762,7 @@ const callStripeFunction = async (functionName, payload) => {
     return {
       data: null,
       error: "Session belongs to a different project. Please sign in again.",
-      debug: issuer,
+      status: null,
     };
   }
   const exp = Number(tokenPayload?.exp);
@@ -755,29 +771,38 @@ const callStripeFunction = async (functionName, payload) => {
     return {
       data: null,
       error: "Session expired. Please sign in again.",
-      debug: null,
+      status: null,
     };
   }
 
-  const body = {
-    ...(payload || {}),
-    accessToken,
-    access_token: accessToken,
-  };
-
-  try {
+  const runRequest = async (token) => {
+    const startTime = Date.now();
+    const body = {
+      ...(payload || {}),
+      accessToken: token,
+      access_token: token,
+    };
+    const isStripeFunction = functionName.startsWith("stripe-");
     const url = `${SUPABASE_URL}/functions/v1/${functionName}?apikey=${encodeURIComponent(
       SUPABASE_ANON_KEY,
     )}`;
-    const response = await fetch(url, {
+    const authHeaderValue = isStripeFunction
+      ? `Bearer ${SUPABASE_ANON_KEY}`
+      : `Bearer ${token}`;
+    let response;
+    const fetchPromise = fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: authHeaderValue,
         apikey: SUPABASE_ANON_KEY,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
     });
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("timeout")), 12000),
+    );
+    response = await Promise.race([fetchPromise, timeoutPromise]);
     const rawText = await response.text();
     let parsed = null;
     try {
@@ -785,20 +810,53 @@ const callStripeFunction = async (functionName, payload) => {
     } catch {
       parsed = null;
     }
-    if (!response.ok) {
-      const errorMessage =
-        parsed?.error ||
-        parsed?.message ||
-        `Stripe request failed (${response.status}).`;
-      const debug = rawText || null;
-      return { data: null, error: errorMessage, debug };
+    const errorMessage =
+      parsed?.error ||
+      parsed?.message ||
+      `Stripe request failed (${response.status}).`;
+    return {
+      ok: response.ok,
+      status: response.status,
+      parsed,
+      rawText,
+      errorMessage,
+      durationMs: Date.now() - startTime,
+    };
+  };
+
+  try {
+    let attempt = await runRequest(accessToken);
+    const rawTextLower = String(attempt.rawText || "").toLowerCase();
+    const isInvalidJwt =
+      attempt.status === 401 &&
+      (rawTextLower.includes("invalid jwt") ||
+        String(attempt.parsed?.message || "")
+          .toLowerCase()
+          .includes("invalid jwt"));
+
+    if (!attempt.ok && isInvalidJwt) {
+      try {
+        const refreshResult = await refreshAccessTokenWithRefreshToken(6000);
+        const refreshedToken = refreshResult?.accessToken || "";
+        if (refreshedToken) {
+          attempt = await runRequest(refreshedToken);
+        }
+      } catch (_error) {}
     }
-    return { data: parsed ?? null, error: null, debug: null };
+
+    if (!attempt.ok) {
+      return {
+        data: null,
+        error: attempt.errorMessage,
+        status: attempt.status,
+      };
+    }
+    return { data: attempt.parsed ?? null, error: null, status: attempt.status };
   } catch (error) {
     return {
       data: null,
       error: error?.message || "Stripe request failed.",
-      debug: null,
+      status: null,
     };
   }
 };
@@ -1778,10 +1836,6 @@ export default function App() {
     error: null,
     success: null,
   });
-  const [cashoutDebug, setCashoutDebug] = useState(null);
-  const [tokenDebugOpen, setTokenDebugOpen] = useState(false);
-  const [tokenDebugInfo, setTokenDebugInfo] = useState(null);
-  const [tokenDebugLoading, setTokenDebugLoading] = useState(false);
   const [receiptUploadStatus, setReceiptUploadStatus] = useState({
     uploading: false,
     error: null,
@@ -1879,11 +1933,6 @@ export default function App() {
     setProfilePoints(profilePointsValue);
     setAuthBusinessDraft(metadataDraft);
     setAccountRole(nextRole);
-    console.log("Wello role hydrate:", {
-      email: profileEmailValue,
-      role: nextRole,
-      profileFound: Boolean(data),
-    });
     return nextRole;
   }, []);
 
@@ -1911,47 +1960,87 @@ export default function App() {
     };
   }, []);
 
+  const resetAuthState = useCallback(() => {
+    setIsSignedIn(false);
+    setAccountRole("consumer");
+    setAuthUserId(null);
+    setAuthEmail("");
+    setProfileEmail("");
+    setProfileName("");
+    setProfilePhone("");
+    setProfileCompany("");
+    setProfilePoints(null);
+    setAuthBusinessDraft(null);
+    setOwnerBusinessId(null);
+  }, []);
+
+  const forceSignOut = useCallback(
+    async (reason) => {
+      try {
+        await clearSupabaseSession();
+      } catch (error) {
+        console.warn("Failed to clear Supabase session", error?.message);
+      }
+      try {
+        await withTimeout(supabase.auth.signOut(), 5000, "signOut");
+      } catch (error) {
+        console.warn("Supabase signOut failed", error?.message);
+      }
+      resetAuthState();
+      if (reason) {
+        setCashoutStatusState({ loading: false, error: reason });
+      }
+    },
+    [resetAuthState],
+  );
+
   useEffect(() => {
     let isMounted = true;
     const loadSession = async () => {
       try {
-        const { data } = await supabase.auth.getSession();
-        const session = data?.session;
+        const refreshResult = refreshSupabaseClient();
+        if (!refreshResult.ok) {
+          if (isMounted) {
+            resetAuthState();
+            setSessionReady(true);
+          }
+          return;
+        }
+        const tokenResult = await getAccessTokenWithFallback(8000);
+        const session = tokenResult.session;
         if (!isMounted) return;
         if (session?.user) {
           await hydrateProfile(session.user);
           setIsSignedIn(true);
         } else {
-          setIsSignedIn(false);
-          setAccountRole("consumer");
+          resetAuthState();
         }
       } catch (error) {
         if (isMounted) {
-          setIsSignedIn(false);
-          setAccountRole("consumer");
+          resetAuthState();
         }
       } finally {
         if (isMounted) setSessionReady(true);
       }
     };
     loadSession();
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        if (!isMounted) return;
-        if (session?.user) {
-          await hydrateProfile(session.user);
-          setIsSignedIn(true);
-        } else {
-          setIsSignedIn(false);
-          setAccountRole("consumer");
-        }
-      },
-    );
+    const refreshResult = refreshSupabaseClient();
+    const authListener = refreshResult.ok
+      ? supabase.auth.onAuthStateChange(async (_event, session) => {
+          if (!isMounted) return;
+          if (session?.user) {
+            await hydrateProfile(session.user);
+            setIsSignedIn(true);
+          } else {
+            resetAuthState();
+          }
+        })
+      : null;
     return () => {
       isMounted = false;
-      authListener?.subscription?.unsubscribe();
+      authListener?.data?.subscription?.unsubscribe();
     };
-  }, [hydrateProfile]);
+  }, [hydrateProfile, resetAuthState]);
 
   useEffect(() => {
     let isMounted = true;
@@ -2215,13 +2304,27 @@ export default function App() {
       if (!silent) {
         setCashoutStatusState({ loading: true, error: null });
       }
-      if (!silent) {
-        setCashoutDebug(null);
-      }
-      const { data, error, debug } = await callStripeFunction(
+      const { data, error, status } = await callStripeFunction(
         "stripe-get-cashout-status",
         {},
       );
+      const errorText = String(error || "").toLowerCase();
+      const isAuthFailure =
+        status === 401 ||
+        errorText.includes("invalid jwt") ||
+        errorText.includes("jwt expired") ||
+        errorText.includes("unauthorized") ||
+        errorText.includes("missing authorization") ||
+        errorText.includes("401");
+      if (error && isAuthFailure) {
+        if (!silent) {
+          setCashoutStatusState({
+            loading: false,
+            error: "Session invalid. Please sign in again.",
+          });
+        }
+        return;
+      }
       if (error) {
         setCashoutStatusState({
           loading: false,
@@ -2230,9 +2333,6 @@ export default function App() {
               ? error
               : error?.message || "Unable to load cashout status.",
         });
-        if (!silent) {
-          setCashoutDebug(debug);
-        }
         return;
       }
       setCashoutStatus({
@@ -2260,11 +2360,26 @@ export default function App() {
       return;
     }
     setCashoutActionStatus({ loading: true, error: null, success: null });
-    setCashoutDebug(null);
-    const { data, error, debug } = await callStripeFunction(
+    const { data, error, status } = await callStripeFunction(
       "stripe-create-cashout-link",
       {},
     );
+    const errorText = String(error || "").toLowerCase();
+    const isAuthFailure =
+      status === 401 ||
+      errorText.includes("invalid jwt") ||
+      errorText.includes("jwt expired") ||
+      errorText.includes("unauthorized") ||
+      errorText.includes("missing authorization") ||
+      errorText.includes("401");
+    if (error && isAuthFailure) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Session invalid. Please sign in again.",
+        success: null,
+      });
+      return;
+    }
     if (error || !data?.url) {
       const errorMessage =
         typeof error === "string"
@@ -2275,7 +2390,6 @@ export default function App() {
         error: errorMessage,
         success: null,
       });
-      setCashoutDebug(debug || data?.error || null);
       return;
     }
     setCashoutActionStatus({
@@ -2304,11 +2418,26 @@ export default function App() {
       return;
     }
     setCashoutActionStatus({ loading: true, error: null, success: null });
-    setCashoutDebug(null);
-    const { data, error, debug } = await callStripeFunction(
+    const { data, error, status } = await callStripeFunction(
       "stripe-create-cashout-login-link",
       {},
     );
+    const errorText = String(error || "").toLowerCase();
+    const isAuthFailure =
+      status === 401 ||
+      errorText.includes("invalid jwt") ||
+      errorText.includes("jwt expired") ||
+      errorText.includes("unauthorized") ||
+      errorText.includes("missing authorization") ||
+      errorText.includes("401");
+    if (error && isAuthFailure) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Session invalid. Please sign in again.",
+        success: null,
+      });
+      return;
+    }
     if (error || !data?.url) {
       const errorMessage =
         typeof error === "string"
@@ -2321,7 +2450,6 @@ export default function App() {
         error: errorMessage,
         success: null,
       });
-      setCashoutDebug(debug || data?.error || null);
       return;
     }
     setCashoutActionStatus({
@@ -2331,71 +2459,6 @@ export default function App() {
     });
     Linking.openURL(data.url).catch(() => null);
   }, [cashoutStatus.connected]);
-
-  const refreshTokenDebug = useCallback(async () => {
-    setTokenDebugLoading(true);
-    try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const session = sessionData?.session || null;
-      const accessToken = session?.access_token || "";
-      const payload = decodeJwtPayloadClient(accessToken);
-      const expectedIssuer = SUPABASE_URL
-        ? `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1`
-        : "";
-      let userCheck = { ok: false, error: "no_access_token", id: null };
-      if (accessToken) {
-        const { data: userData, error: userError } =
-          await supabase.auth.getUser(accessToken);
-        userCheck = {
-          ok: Boolean(userData?.user?.id) && !userError,
-          error: userError?.message || null,
-          id: userData?.user?.id || null,
-        };
-      }
-      setTokenDebugInfo({
-        hasSession: Boolean(session),
-        accessTokenPreview: accessToken
-          ? `${accessToken.slice(0, 6)}...${accessToken.slice(-6)}`
-          : "none",
-        accessTokenLength: accessToken.length,
-        apikeyPreview: SUPABASE_ANON_KEY
-          ? `${SUPABASE_ANON_KEY.slice(0, 6)}...${SUPABASE_ANON_KEY.slice(-6)}`
-          : "none",
-        apikeyLength: SUPABASE_ANON_KEY ? SUPABASE_ANON_KEY.length : 0,
-        apikeyLooksJwt: String(SUPABASE_ANON_KEY || "").startsWith("eyJ"),
-        authHeaderMode: "user",
-        issuer: payload?.iss || null,
-        expectedIssuer,
-        exp: payload?.exp ? new Date(payload.exp * 1000).toISOString() : null,
-        now: new Date().toISOString(),
-        sub: payload?.sub || null,
-        role: payload?.role || null,
-        email: payload?.email || null,
-        userCheck,
-        expiresInSeconds: payload?.exp
-          ? Math.round(payload.exp - Date.now() / 1000)
-          : null,
-      });
-    } catch (error) {
-      setTokenDebugInfo({
-        hasSession: false,
-        accessTokenPreview: "none",
-        accessTokenLength: 0,
-        issuer: null,
-        expectedIssuer: SUPABASE_URL
-          ? `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1`
-          : "",
-        exp: null,
-        now: new Date().toISOString(),
-        sub: null,
-        role: null,
-        email: null,
-        userCheck: { ok: false, error: error?.message || "error", id: null },
-        expiresInSeconds: null,
-      });
-    }
-    setTokenDebugLoading(false);
-  }, []);
 
   const trackOfferView = useCallback(
     async (businessId, offerId) => {
@@ -3737,6 +3800,11 @@ export default function App() {
   const ensureSupabaseReady = (setError) => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setError("Supabase is not configured yet.");
+      return false;
+    }
+    const refreshResult = refreshSupabaseClient();
+    if (!refreshResult.ok) {
+      setError(refreshResult.error || "Supabase is not ready yet.");
       return false;
     }
     return true;
@@ -10393,68 +10461,6 @@ export default function App() {
                                 {cashoutActionStatus.error}
                               </Text>
                             )}
-                            {cashoutDebug && (
-                              <Text style={styles.cashoutDebugText}>
-                                {cashoutDebug}
-                              </Text>
-                            )}
-                            {(cashoutActionStatus.error ||
-                              cashoutStatusState.error) && (
-                              <TouchableOpacity
-                                onPress={() => {
-                                  setTokenDebugOpen((prev) => !prev);
-                                  if (!tokenDebugOpen) {
-                                    refreshTokenDebug();
-                                  }
-                                }}
-                                style={styles.cashoutDebugButton}
-                              >
-                                <Text style={styles.cashoutDebugButtonText}>
-                                  {tokenDebugOpen
-                                    ? "Hide diagnostics"
-                                    : "Show diagnostics"}
-                                </Text>
-                              </TouchableOpacity>
-                            )}
-                            {tokenDebugOpen && (
-                              <View style={styles.cashoutDebugCard}>
-                                {tokenDebugLoading ? (
-                                  <Text style={styles.cashoutDebugText}>
-                                    Loading diagnostics...
-                                  </Text>
-                                ) : (
-                                  <View>
-                                    <Text style={styles.cashoutDebugText}>
-                                      Session: {tokenDebugInfo?.hasSession ? "yes" : "no"}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      Token: {tokenDebugInfo?.accessTokenPreview} - len {tokenDebugInfo?.accessTokenLength}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      Apikey: {tokenDebugInfo?.apikeyPreview} - len {tokenDebugInfo?.apikeyLength} - jwt {tokenDebugInfo?.apikeyLooksJwt ? "yes" : "no"}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      Auth header: {tokenDebugInfo?.authHeaderMode || "--"}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      Issuer: {tokenDebugInfo?.issuer || "--"}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      Expected: {tokenDebugInfo?.expectedIssuer || "--"}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      Expires in: {Number.isFinite(tokenDebugInfo?.expiresInSeconds) ? `${tokenDebugInfo.expiresInSeconds}s` : "--"}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      Sub: {tokenDebugInfo?.sub || "--"}
-                                    </Text>
-                                    <Text style={styles.cashoutDebugText}>
-                                      getUser: {tokenDebugInfo?.userCheck?.ok ? `ok (${tokenDebugInfo.userCheck.id})` : `error (${tokenDebugInfo?.userCheck?.error || "unknown"})`}
-                                    </Text>
-                                  </View>
-                                )}
-                              </View>
-                            )}
                             {cashoutActionStatus.success && (
                               <Text style={styles.cashoutSuccessText}>
                                 {cashoutActionStatus.success}
@@ -14368,35 +14374,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#B42318",
     fontFamily: FONT_MEDIUM,
-  },
-  cashoutDebugText: {
-    marginTop: 6,
-    fontSize: 10,
-    color: "#7A1D12",
-    fontFamily: FONT_TEXT,
-  },
-  cashoutDebugButton: {
-    marginTop: 10,
-    alignSelf: "flex-start",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.18)",
-    backgroundColor: "#F8FAFC",
-  },
-  cashoutDebugButtonText: {
-    fontSize: 11,
-    color: COLORS.ink,
-    fontFamily: FONT_MEDIUM,
-  },
-  cashoutDebugCard: {
-    marginTop: 10,
-    padding: 10,
-    borderRadius: 12,
-    backgroundColor: "#F1F5F9",
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
   },
   cashoutSuccessText: {
     marginTop: 8,

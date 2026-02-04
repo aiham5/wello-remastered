@@ -4,10 +4,16 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 export const config = { verify_jwt: false };
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+const SUPABASE_URL =
+  Deno.env.get("EDGE_SUPABASE_URL") ?? Deno.env.get("SUPABASE_URL") ?? "";
+const SUPABASE_ANON_KEY =
+  Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
+  Deno.env.get("SUPABASE_ANON_KEY") ??
+  "";
 const SUPABASE_SERVICE_ROLE_KEY =
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  Deno.env.get("EDGE_SERVICE_ROLE_KEY") ??
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
+  "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, {
@@ -19,12 +25,48 @@ const createSupabase = () =>
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
+const createSupabaseAuth = () =>
+  createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+const decodeJwtPayload = (token: string) => {
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return null;
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    const json = atob(padded);
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+};
+
+const decodeJwtHeader = (token: string) => {
+  try {
+    const header = token.split(".")[0];
+    if (!header) return null;
+    const base64 = header.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    const json = atob(padded);
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+};
+
 serve(async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
   }
 
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !STRIPE_SECRET_KEY) {
+  if (
+    !SUPABASE_URL ||
+    !SUPABASE_ANON_KEY ||
+    !SUPABASE_SERVICE_ROLE_KEY ||
+    !STRIPE_SECRET_KEY
+  ) {
     return new Response("Missing server configuration.", { status: 500 });
   }
 
@@ -55,26 +97,52 @@ serve(async (req) => {
         { status: 401 },
       );
     }
-    const authApiKey = SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY;
-    const authResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        apikey: authApiKey,
-      },
-    });
-    if (!authResponse.ok) {
-      const authErrorBody = await authResponse.text();
+    const tokenPayload = decodeJwtPayload(token) || {};
+    const tokenHeader = decodeJwtHeader(token) || {};
+    const expectedIssuer = `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1`;
+    if (tokenPayload?.iss && tokenPayload.iss !== expectedIssuer) {
       return new Response(
         JSON.stringify({
           error: "Unauthorized",
-          reason: "invalid_token",
-          message: authErrorBody || authResponse.statusText,
+          reason: "project_mismatch",
+          message: "Session belongs to a different Supabase project.",
+          debug: {
+            supabaseUrl: SUPABASE_URL,
+            expectedIssuer,
+            tokenIssuer: tokenPayload?.iss || null,
+            tokenAud: tokenPayload?.aud || null,
+            tokenSub: tokenPayload?.sub || null,
+            tokenKid: tokenHeader?.kid || null,
+            tokenAlg: tokenHeader?.alg || null,
+          },
         }),
         { status: 401 },
       );
     }
-    const authData = await authResponse.json();
-    const userId = authData?.id;
+
+    const supabaseAuth = createSupabaseAuth();
+    const { data: authData, error: authError } =
+      await supabaseAuth.auth.getUser(token);
+    if (authError || !authData?.user?.id) {
+      return new Response(
+        JSON.stringify({
+          error: "Unauthorized",
+          reason: "invalid_token",
+          message: authError?.message || "Invalid JWT",
+          debug: {
+            supabaseUrl: SUPABASE_URL,
+            expectedIssuer,
+            tokenIssuer: tokenPayload?.iss || null,
+            tokenAud: tokenPayload?.aud || null,
+            tokenSub: tokenPayload?.sub || null,
+            tokenKid: tokenHeader?.kid || null,
+            tokenAlg: tokenHeader?.alg || null,
+          },
+        }),
+        { status: 401 },
+      );
+    }
+    const userId = authData.user.id;
     if (!userId) {
       return new Response(
         JSON.stringify({
@@ -86,7 +154,6 @@ serve(async (req) => {
     }
 
     const supabase = createSupabase();
-
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select(
