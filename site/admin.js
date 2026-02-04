@@ -71,6 +71,11 @@ const state = {
   selected: null,
   defaultRate: 10,
 };
+const refreshState = {
+  inFlight: false,
+  timer: null,
+};
+const AUTO_REFRESH_MS = 30000;
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -263,6 +268,38 @@ const loadReceipts = async () => {
   }
   state.receipts = data || [];
   applyFilters();
+};
+
+const refreshAll = async ({ silent } = {}) => {
+  if (!supabaseClient || !state.session?.user) return;
+  if (refreshState.inFlight) return;
+  refreshState.inFlight = true;
+  if (!silent) {
+    ui.receiptsMeta.textContent = "Refreshing...";
+  }
+  try {
+    await Promise.all([loadBusinesses(), loadReceipts()]);
+    if (state.selected?.id) {
+      selectReceipt(state.selected.id);
+    }
+  } finally {
+    refreshState.inFlight = false;
+  }
+};
+
+const startAutoRefresh = () => {
+  if (refreshState.timer) return;
+  refreshState.timer = setInterval(() => {
+    if (document.hidden) return;
+    refreshAll({ silent: true });
+  }, AUTO_REFRESH_MS);
+};
+
+const stopAutoRefresh = () => {
+  if (refreshState.timer) {
+    clearInterval(refreshState.timer);
+    refreshState.timer = null;
+  }
 };
 
 const applyFilters = () => {
@@ -620,7 +657,7 @@ const attachListeners = () => {
   });
 
   ui.refresh.addEventListener("click", async () => {
-    await loadReceipts();
+    await refreshAll({ silent: false });
   });
 
   ui.filterSearch.addEventListener("input", applyFilters);
@@ -681,8 +718,8 @@ const init = async () => {
     const ok = await requireStaff();
     if (ok) {
       setAuthUI(true);
-      await loadBusinesses();
-      await loadReceipts();
+      await refreshAll({ silent: true });
+      startAutoRefresh();
     }
   } else {
     setAuthUI(false);
@@ -694,12 +731,19 @@ const init = async () => {
       const ok = await requireStaff();
       if (ok) {
         setAuthUI(true);
-        await loadBusinesses();
-        await loadReceipts();
+        await refreshAll({ silent: true });
+        startAutoRefresh();
       }
     } else {
       setAuthUI(false);
       resetDetail();
+      stopAutoRefresh();
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      refreshAll({ silent: true });
     }
   });
 };

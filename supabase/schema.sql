@@ -337,6 +337,49 @@ begin
 end;
 $$;
 
+create or replace function public.sync_commission_event()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.review_status = 'verified'
+     and new.commission_due_cents is not null
+     and new.commission_due_cents > 0 then
+    insert into public.commission_events (
+      business_id,
+      redemption_id,
+      user_id,
+      amount_cents,
+      status
+    )
+    values (
+      new.business_id,
+      new.redemption_id,
+      new.user_id,
+      new.commission_due_cents,
+      'pending'
+    )
+    on conflict (redemption_id) do update
+      set amount_cents = excluded.amount_cents,
+          business_id = excluded.business_id,
+          user_id = excluded.user_id,
+          status = case
+            when commission_events.status in ('invoiced', 'paid')
+              then commission_events.status
+            else 'pending'
+          end;
+  else
+    update public.commission_events
+      set status = 'failed'
+      where redemption_id = new.redemption_id
+        and status = 'pending';
+  end if;
+  return new;
+end;
+$$;
+
 create or replace function public.is_admin()
 returns boolean
 language sql
@@ -391,6 +434,11 @@ drop trigger if exists award_points_on_review on public.reviews;
 create trigger award_points_on_review
 after insert on public.reviews
 for each row execute function public.award_points_on_review();
+
+drop trigger if exists sync_commission_event on public.receipt_uploads;
+create trigger sync_commission_event
+after update of review_status, commission_due_cents on public.receipt_uploads
+for each row execute function public.sync_commission_event();
 
 -- Row level security (RLS)
 alter table public.profiles enable row level security;

@@ -95,8 +95,7 @@ const SCANNER_CARD_WIDTH = Math.max(280, SCREEN_WIDTH - 40);
 const SCANNER_CARD_HEIGHT = SCANNER_FRAME + (IS_COMPACT ? 160 : 180);
 const REDEEM_RADIUS_METERS = 150;
 const REDEEM_BLOCKED_MESSAGE = "You need to be in store to redeem.";
-const COMMISSION_CENTS = 150;
-const COMMISSION_LABEL = "$1.50";
+const COMMISSION_RATE_PERCENT = 10;
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
 const GOOGLE_PLACES_KEY = getEnv("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY");
@@ -504,7 +503,7 @@ const mapSupabaseBusiness = (row, index) => {
       : null,
     commissionRateCents: Number.isFinite(Number(row.commission_rate_cents))
       ? Number(row.commission_rate_cents)
-      : COMMISSION_CENTS,
+      : 0,
     commissionEnabled: row.commission_enabled ?? true,
     source: "supabase",
   };
@@ -2062,6 +2061,9 @@ export default function App() {
     monthCents: 0,
     pendingCents: 0,
     totalCents: 0,
+    paidCents: 0,
+    verifiedGrossCents: 0,
+    verifiedMonthCents: 0,
     updatedAt: null,
   });
   const [billingStatus, setBillingStatus] = useState({
@@ -2726,36 +2728,68 @@ export default function App() {
       if (!silent) {
         setBillingStatus({ loading: true, error: null });
       }
-      const { data, error } = await supabase
-        .from("commission_events")
-        .select("amount_cents, created_at, status")
-        .eq("business_id", businessId);
-      if (error) {
+      const [eventsResult, receiptsResult] = await Promise.all([
+        supabase
+          .from("commission_events")
+          .select("amount_cents, created_at, status")
+          .eq("business_id", businessId),
+        supabase
+          .from("receipt_uploads")
+          .select("receipt_total_cents, reviewed_at, uploaded_at")
+          .eq("business_id", businessId)
+          .eq("review_status", "verified"),
+      ]);
+      if (eventsResult.error) {
         setBillingStatus({
           loading: false,
-          error: error.message || "Unable to load billing.",
+          error: eventsResult.error.message || "Unable to load billing.",
         });
         return;
       }
-      const rows = Array.isArray(data) ? data : [];
+      if (receiptsResult.error) {
+        setBillingStatus({
+          loading: false,
+          error: receiptsResult.error.message || "Unable to load receipts.",
+        });
+        return;
+      }
+      const rows = Array.isArray(eventsResult.data) ? eventsResult.data : [];
+      const receiptRows = Array.isArray(receiptsResult.data)
+        ? receiptsResult.data
+        : [];
       const monthStart = new Date();
       monthStart.setDate(1);
       monthStart.setHours(0, 0, 0, 0);
       let monthCents = 0;
       let pendingCents = 0;
       let totalCents = 0;
+      let paidCents = 0;
       rows.forEach((row) => {
         const amount = Number(row?.amount_cents) || 0;
         totalCents += amount;
         if (row?.status === "pending") pendingCents += amount;
+        if (row?.status === "paid") paidCents += amount;
         if (row?.created_at && new Date(row.created_at) >= monthStart) {
           monthCents += amount;
+        }
+      });
+      let verifiedGrossCents = 0;
+      let verifiedMonthCents = 0;
+      receiptRows.forEach((row) => {
+        const amount = Number(row?.receipt_total_cents) || 0;
+        verifiedGrossCents += amount;
+        const stamp = row?.reviewed_at || row?.uploaded_at;
+        if (stamp && new Date(stamp) >= monthStart) {
+          verifiedMonthCents += amount;
         }
       });
       setBillingMetrics({
         monthCents,
         pendingCents,
         totalCents,
+        paidCents,
+        verifiedGrossCents,
+        verifiedMonthCents,
         updatedAt: Date.now(),
       });
       if (!silent) {
@@ -6352,23 +6386,6 @@ export default function App() {
     }
   };
 
-  const recordCommissionEvent = async (entry, amountCents) => {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
-    if (!entry?.id || !entry.businessId || !authUserId) return;
-    const value = Number(amountCents);
-    if (!Number.isFinite(value) || value <= 0) return;
-    const { error } = await supabase.from("commission_events").insert({
-      business_id: entry.businessId,
-      redemption_id: entry.id,
-      user_id: authUserId,
-      amount_cents: Math.round(value),
-      status: "pending",
-    });
-    if (error) {
-      console.warn("Wello commission event insert failed:", error.message);
-    }
-  };
-
   const handleUploadReceipt = async (entry, source = "library") => {
     if (!entry?.id || !entry.businessId) return;
     setReceiptDebug(null);
@@ -6496,10 +6513,6 @@ export default function App() {
         });
         return;
       }
-      const commissionCents =
-        businesses.find((business) => business.id === entry.businessId)
-          ?.commissionRateCents ?? COMMISSION_CENTS;
-      recordCommissionEvent(entry, commissionCents);
       setRedemptionHistory((prev) =>
         prev.map((item) =>
           item.id === entry.id
@@ -9140,10 +9153,10 @@ export default function App() {
 
                       <View style={styles.sectionBlock}>
                         <Text style={styles.sectionTitleAlt}>Payments</Text>
-                          <Text style={styles.sectionBody}>
-                            Commission: {COMMISSION_LABEL} per verified redemption
-                            (receipt uploaded). Billed monthly. Wello covers
-                            processing fees.
+                        <Text style={styles.sectionBody}>
+                            Commission: {COMMISSION_RATE_PERCENT}% of each
+                            verified receipt total. Billed monthly. Wello
+                            covers processing fees.
                           </Text>
                           <Text style={styles.sectionBody}>
                             Billing portal is for payment methods and invoices
@@ -9191,11 +9204,41 @@ export default function App() {
                           </View>
                           <View style={styles.paymentRow}>
                             <Text style={styles.paymentLabel}>
-                              Accrued this month
+                              Verified sales (this month)
+                            </Text>
+                            <Text style={styles.paymentAmount}>
+                              {formatCurrencyFromCents(
+                                billingMetrics.verifiedMonthCents,
+                              )}
+                            </Text>
+                          </View>
+                          <View style={styles.paymentRow}>
+                            <Text style={styles.paymentLabel}>
+                              Verified sales (total)
+                            </Text>
+                            <Text style={styles.paymentAmount}>
+                              {formatCurrencyFromCents(
+                                billingMetrics.verifiedGrossCents,
+                              )}
+                            </Text>
+                          </View>
+                          <View style={styles.paymentRow}>
+                            <Text style={styles.paymentLabel}>
+                              Commission accrued this month
                             </Text>
                             <Text style={styles.paymentAmount}>
                               {formatCurrencyFromCents(
                                 billingMetrics.monthCents,
+                              )}
+                            </Text>
+                          </View>
+                          <View style={styles.paymentRow}>
+                            <Text style={styles.paymentLabel}>
+                              Commission paid
+                            </Text>
+                            <Text style={styles.paymentAmount}>
+                              {formatCurrencyFromCents(
+                                billingMetrics.paidCents,
                               )}
                             </Text>
                           </View>
