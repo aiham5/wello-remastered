@@ -156,6 +156,7 @@ const liveState = {
 const AUTO_REFRESH_MS = 30000;
 const LIVE_DEBOUNCE_MS = 1200;
 const CASHBACK_RATE = 0.05;
+const REQUEST_TIMEOUT_MS = 15000;
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -180,6 +181,21 @@ const formatDateTime = (value) => {
   })}`;
 };
 
+const withTimeout = (promise, ms, label) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      const id = setTimeout(() => {
+        clearTimeout(id);
+        const error = new Error(
+          `${label || "Request"} timed out after ${ms}ms`,
+        );
+        error.name = "TimeoutError";
+        reject(error);
+      }, ms);
+    }),
+  ]);
+
 const callR2Presign = async ({ action, key, accessToken }) => {
   if (!supabaseClient) {
     return { data: null, error: "Supabase is not configured." };
@@ -188,12 +204,16 @@ const callR2Presign = async ({ action, key, accessToken }) => {
     return { data: null, error: "Missing access token." };
   }
   logDebug("r2-presign request", { action, key });
-  const response = await supabaseClient.functions.invoke("r2-presign", {
-    body: { action, key },
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
+  const response = await withTimeout(
+    supabaseClient.functions.invoke("r2-presign", {
+      body: { action, key },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }),
+    REQUEST_TIMEOUT_MS,
+    "r2-presign",
+  );
   if (!response?.error) {
     let parsedData = response?.data ?? null;
     if (typeof parsedData === "string") {
@@ -352,10 +372,19 @@ const loadBusinesses = async () => {
   if (!supabaseClient) return;
   const selectedFilter = ui.filterBusiness.value;
   const selectedTest = ui.testBusiness ? ui.testBusiness.value : "";
-  const { data, error } = await supabaseClient
-    .from("businesses")
-    .select("id, name")
-    .order("name");
+  let data = null;
+  let error = null;
+  try {
+    const result = await withTimeout(
+      supabaseClient.from("businesses").select("id, name").order("name"),
+      REQUEST_TIMEOUT_MS,
+      "loadBusinesses",
+    );
+    data = result?.data ?? null;
+    error = result?.error ?? null;
+  } catch (err) {
+    error = err;
+  }
   if (error) {
     logDebug("loadBusinesses error", { message: error.message });
     return;
@@ -387,24 +416,36 @@ const loadBusinesses = async () => {
 
 const loadReceipts = async () => {
   if (!supabaseClient) return;
-  const { data, error } = await supabaseClient
-    .from("receipt_uploads")
-    .select(
-      [
-        "id",
-        "storage_path",
-        "uploaded_at",
-        "receipt_total_cents",
-        "commission_due_cents",
-        "review_status",
-        "review_notes",
-        "reviewed_at",
-        "business:businesses (id, name)",
-        "redemption:redemptions (id, created_at, offer:offers (id, title))",
-      ].join(","),
-    )
-    .order("uploaded_at", { ascending: false })
-    .limit(400);
+  let data = null;
+  let error = null;
+  try {
+    const result = await withTimeout(
+      supabaseClient
+        .from("receipt_uploads")
+        .select(
+          [
+            "id",
+            "storage_path",
+            "uploaded_at",
+            "receipt_total_cents",
+            "commission_due_cents",
+            "review_status",
+            "review_notes",
+            "reviewed_at",
+            "business:businesses (id, name)",
+            "redemption:redemptions (id, created_at, offer:offers (id, title))",
+          ].join(","),
+        )
+        .order("uploaded_at", { ascending: false })
+        .limit(400),
+      REQUEST_TIMEOUT_MS,
+      "loadReceipts",
+    );
+    data = result?.data ?? null;
+    error = result?.error ?? null;
+  } catch (err) {
+    error = err;
+  }
   if (error) {
     ui.receiptsMeta.textContent = error.message || "Unable to load receipts.";
     logDebug("loadReceipts error", { message: error.message });
@@ -439,12 +480,14 @@ const startAutoRefresh = () => {
     if (document.hidden) return;
     refreshAll({ silent: true });
   }, AUTO_REFRESH_MS);
+  logDebug("auto refresh started", { intervalMs: AUTO_REFRESH_MS });
 };
 
 const stopAutoRefresh = () => {
   if (refreshState.timer) {
     clearInterval(refreshState.timer);
     refreshState.timer = null;
+    logDebug("auto refresh stopped");
   }
 };
 
@@ -764,18 +807,22 @@ const runTestInvoice = async ({ businessId, period }) => {
     return null;
   }
 
-  const response = await supabaseClient.functions.invoke(
+  const response = await withTimeout(
+    supabaseClient.functions.invoke(
+      "admin-run-monthly-invoices",
+      {
+        body: {
+          businessId,
+          periodStart: period.start.toISOString(),
+          periodEnd: period.end.toISOString(),
+        },
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      },
+    ),
+    REQUEST_TIMEOUT_MS,
     "admin-run-monthly-invoices",
-    {
-      body: {
-        businessId,
-        periodStart: period.start.toISOString(),
-        periodEnd: period.end.toISOString(),
-      },
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-      },
-    },
   );
 
   if (!response?.error) {
@@ -825,18 +872,22 @@ const addCommissionToStripe = async ({
     return { error: "Session missing. Please sign in again." };
   }
 
-  const response = await supabaseClient.functions.invoke(
+  const response = await withTimeout(
+    supabaseClient.functions.invoke(
+      "admin-add-commission-to-stripe",
+      {
+        body: {
+          businessId,
+          redemptionId,
+          eventDate: eventDate || null,
+        },
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      },
+    ),
+    REQUEST_TIMEOUT_MS,
     "admin-add-commission-to-stripe",
-    {
-      body: {
-        businessId,
-        redemptionId,
-        eventDate: eventDate || null,
-      },
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-      },
-    },
   );
 
   if (!response?.error) {
@@ -906,19 +957,23 @@ const createTestEvent = async () => {
       setTestStatus("Session missing. Please sign in again.", true);
       return;
     }
-    const response = await supabaseClient.functions.invoke(
+    const response = await withTimeout(
+      supabaseClient.functions.invoke(
+        "admin-create-test-commission",
+        {
+          body: {
+            businessId,
+            amountCents,
+            eventDate,
+            redemptionId: redemptionId || null,
+          },
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        },
+      ),
+      REQUEST_TIMEOUT_MS,
       "admin-create-test-commission",
-      {
-        body: {
-          businessId,
-          amountCents,
-          eventDate,
-          redemptionId: redemptionId || null,
-        },
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
-      },
     );
     if (!response?.error) {
       const redemptionIdResult =
@@ -1076,25 +1131,29 @@ const saveReceipt = async (options = {}) => {
   let data = null;
   let error = null;
   try {
-    const result = await supabaseClient
-      .from("receipt_uploads")
-      .update(updates)
-      .eq("id", receipt.id)
-      .select(
-        [
-          "id",
-          "storage_path",
-          "uploaded_at",
-          "receipt_total_cents",
-          "commission_due_cents",
-          "review_status",
-          "review_notes",
-          "reviewed_at",
-          "business:businesses (id, name)",
-          "redemption:redemptions (id, created_at, offer:offers (id, title))",
-        ].join(","),
-      )
-      .maybeSingle();
+    const result = await withTimeout(
+      supabaseClient
+        .from("receipt_uploads")
+        .update(updates)
+        .eq("id", receipt.id)
+        .select(
+          [
+            "id",
+            "storage_path",
+            "uploaded_at",
+            "receipt_total_cents",
+            "commission_due_cents",
+            "review_status",
+            "review_notes",
+            "reviewed_at",
+            "business:businesses (id, name)",
+            "redemption:redemptions (id, created_at, offer:offers (id, title))",
+          ].join(","),
+        )
+        .maybeSingle(),
+      REQUEST_TIMEOUT_MS,
+      "saveReceipt",
+    );
     data = result?.data || null;
     error = result?.error || null;
   } catch (err) {
