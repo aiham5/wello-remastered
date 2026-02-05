@@ -1,6 +1,52 @@
 const config = window.WELLO_CONFIG || {};
 const supabaseUrl = config.supabaseUrl || "";
 const supabaseAnonKey = config.supabaseAnonKey || "";
+const debugEnabled =
+  new URLSearchParams(window.location.search).has("debug") ||
+  config.debug === true;
+
+const debugState = {
+  panel: null,
+  lines: [],
+  maxLines: 200,
+};
+
+const logDebug = (message, meta) => {
+  if (!debugEnabled) return;
+  const timestamp = new Date().toISOString().slice(11, 19);
+  const line = meta ? `${timestamp} ${message} ${JSON.stringify(meta)}` : `${timestamp} ${message}`;
+  debugState.lines.push(line);
+  if (debugState.lines.length > debugState.maxLines) {
+    debugState.lines.shift();
+  }
+  if (debugState.panel) {
+    debugState.panel.textContent = debugState.lines.join("\n");
+  }
+  console.log("[admin-debug]", message, meta || "");
+};
+
+const initDebugPanel = () => {
+  if (!debugEnabled || debugState.panel) return;
+  const panel = document.createElement("pre");
+  panel.id = "admin-debug-panel";
+  panel.style.position = "fixed";
+  panel.style.right = "12px";
+  panel.style.bottom = "12px";
+  panel.style.width = "360px";
+  panel.style.maxHeight = "240px";
+  panel.style.overflow = "auto";
+  panel.style.padding = "10px";
+  panel.style.background = "rgba(10, 14, 20, 0.9)";
+  panel.style.color = "#d7e0ff";
+  panel.style.fontSize = "11px";
+  panel.style.lineHeight = "1.4";
+  panel.style.borderRadius = "10px";
+  panel.style.zIndex = "9999";
+  panel.style.boxShadow = "0 12px 30px rgba(0,0,0,0.35)";
+  panel.textContent = "admin debug enabled\n";
+  document.body.appendChild(panel);
+  debugState.panel = panel;
+};
 
 const ui = {
   authPanel: document.getElementById("auth-panel"),
@@ -59,6 +105,24 @@ const ui = {
 if (!supabaseUrl || !supabaseAnonKey) {
   ui.authError.textContent =
     "Missing Supabase credentials. Set them in admin-config.js.";
+}
+
+if (debugEnabled) {
+  initDebugPanel();
+  logDebug("Debug enabled");
+  window.addEventListener("error", (event) => {
+    logDebug("window error", {
+      message: event?.message,
+      source: event?.filename,
+      line: event?.lineno,
+      column: event?.colno,
+    });
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    logDebug("unhandledrejection", {
+      reason: event?.reason?.message || String(event?.reason || ""),
+    });
+  });
 }
 
 const supabaseClient =
@@ -122,6 +186,7 @@ const callR2Presign = async ({ action, key, accessToken }) => {
   if (!accessToken) {
     return { data: null, error: "Missing access token." };
   }
+  logDebug("r2-presign request", { action, key });
   const response = await supabaseClient.functions.invoke("r2-presign", {
     body: { action, key },
     headers: {
@@ -137,6 +202,7 @@ const callR2Presign = async ({ action, key, accessToken }) => {
         parsedData = response?.data ?? null;
       }
     }
+    logDebug("r2-presign success", { action, key });
     return { data: parsedData, error: null };
   }
   const err = response.error;
@@ -161,6 +227,7 @@ const callR2Presign = async ({ action, key, accessToken }) => {
     message: err?.message,
     raw,
   });
+  logDebug("r2-presign failed", { status, message: err?.message });
   return {
     data: null,
     error:
@@ -287,6 +354,7 @@ const loadBusinesses = async () => {
     .select("id, name")
     .order("name");
   if (error) {
+    logDebug("loadBusinesses error", { message: error.message });
     return;
   }
   state.businesses = data || [];
@@ -330,6 +398,7 @@ const loadReceipts = async () => {
     .limit(400);
   if (error) {
     ui.receiptsMeta.textContent = error.message || "Unable to load receipts.";
+    logDebug("loadReceipts error", { message: error.message });
     return;
   }
   state.receipts = data || [];
@@ -343,11 +412,13 @@ const refreshAll = async ({ silent } = {}) => {
   if (!silent) {
     ui.receiptsMeta.textContent = "Refreshing...";
   }
+  logDebug("refreshAll start", { silent });
   try {
     await Promise.all([loadBusinesses(), loadReceipts()]);
     if (state.selected?.id) {
       selectReceipt(state.selected.id);
     }
+    logDebug("refreshAll done");
   } finally {
     refreshState.inFlight = false;
   }
@@ -392,6 +463,7 @@ const startLiveRefresh = () => {
   );
   channel.subscribe();
   liveState.channel = channel;
+  logDebug("live refresh subscribed");
 };
 
 const stopLiveRefresh = () => {
@@ -402,6 +474,7 @@ const stopLiveRefresh = () => {
   if (liveState.channel) {
     liveState.channel.unsubscribe();
     liveState.channel = null;
+    logDebug("live refresh unsubscribed");
   }
 };
 
@@ -805,6 +878,12 @@ const createTestEvent = async () => {
     return;
   }
 
+  logDebug("test event start", {
+    businessId,
+    amountCents,
+    eventDate,
+    redemptionId: redemptionId || null,
+  });
   setTestStatus("Creating test event...");
   if (ui.testCreate) ui.testCreate.disabled = true;
   try {
@@ -898,6 +977,7 @@ const saveReceipt = async (options = {}) => {
   ui.detailSave.disabled = true;
   ui.detailVerify.disabled = true;
   setDetailError("Saving...");
+  logDebug("saveReceipt start", { receiptId: receipt.id, status: options.status });
   const totalCents = parseMoneyToCents(ui.detailTotal.value);
   let commissionCents = parseMoneyToCents(ui.detailCommission.value);
   if (commissionCents == null && totalCents != null) {
@@ -963,11 +1043,13 @@ const saveReceipt = async (options = {}) => {
 
   if (error || !data) {
     setDetailError(error?.message || "Unable to save receipt review.");
+    logDebug("saveReceipt failed", { message: error?.message || "unknown" });
     ui.detailSave.disabled = false;
     ui.detailVerify.disabled = false;
     return;
   }
   console.log("Receipt review saved", data);
+  logDebug("saveReceipt success", { receiptId: data.id });
 
   state.receipts = state.receipts.map((item) =>
     item.id === receipt.id ? data : item,
@@ -989,6 +1071,9 @@ const saveReceipt = async (options = {}) => {
     if (syncResult?.error) {
       setDetailError(`Saved, but Stripe sync failed: ${syncResult.error}`);
       setTimeout(() => setDetailError(""), 4000);
+      logDebug("stripe sync failed", { error: syncResult.error });
+    } else {
+      logDebug("stripe sync success", syncResult?.data || {});
     }
   }
 };
@@ -1146,6 +1231,10 @@ const init = async () => {
     data: { session },
   } = await supabaseClient.auth.getSession();
   state.session = session;
+  logDebug("init session", {
+    hasSession: Boolean(session?.access_token),
+    userId: session?.user?.id || null,
+  });
   if (session?.user) {
     const ok = await requireStaff();
     if (ok) {
@@ -1161,6 +1250,11 @@ const init = async () => {
 
   supabaseClient.auth.onAuthStateChange(async (_event, session) => {
     state.session = session;
+    logDebug("auth state change", {
+      event: _event,
+      hasSession: Boolean(session?.access_token),
+      userId: session?.user?.id || null,
+    });
     if (session?.user) {
       const ok = await requireStaff();
       if (ok) {
