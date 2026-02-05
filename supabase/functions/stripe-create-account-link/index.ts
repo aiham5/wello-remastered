@@ -7,8 +7,13 @@ export const config = { verify_jwt: false };
 const SUPABASE_URL =
   Deno.env.get("EDGE_SUPABASE_URL") ?? Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY =
-  Deno.env.get("EDGE_SERVICE_ROLE_KEY") ??
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
+  Deno.env.get("EDGE_SUPABASE_SERVICE_ROLE_KEY") ??
+  Deno.env.get("EDGE_SERVICE_ROLE_KEY") ??
+  "";
+const SUPABASE_ANON_KEY =
+  Deno.env.get("SUPABASE_ANON_KEY") ??
+  Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
   "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 const CONNECT_REFRESH_URL =
@@ -75,13 +80,17 @@ serve(async (req) => {
     const token = authHeader.startsWith("Bearer ")
       ? authHeader.slice(7)
       : authHeader || bodyAccessToken;
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const supabaseAuth = createClient(
+      SUPABASE_URL,
+      SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY,
+    );
     debug.hasAuthorizationHeader = Boolean(authHeader);
     debug.hasBodyToken = Boolean(bodyAccessToken);
 
     phase = "auth_user";
     const { data: authData, error: authError } = token
-      ? await supabase.auth.getUser(token)
+      ? await supabaseAuth.auth.getUser(token)
       : { data: null, error: new Error("Missing auth token.") };
     if (authError || !authData?.user) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -98,7 +107,7 @@ serve(async (req) => {
     }
 
     phase = "load_business";
-    const { data: business, error: businessError } = await supabase
+    const { data: business, error: businessError } = await supabaseAdmin
       .from("businesses")
       .select("id, owner_id, name, stripe_account_id")
       .eq("id", businessId)
@@ -172,7 +181,7 @@ serve(async (req) => {
       debug.createdNewAccount = true;
       debug.createdAccountId = maskStripeId(accountId);
       phase = "persist_account";
-      await supabase
+      await supabaseAdmin
         .from("businesses")
         .update({ stripe_account_id: accountId })
         .eq("id", businessId);

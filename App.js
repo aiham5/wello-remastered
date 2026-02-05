@@ -927,14 +927,21 @@ const callStripeFunction = async (functionName, payload) => {
         data: null,
         error: attempt.errorMessage,
         status: attempt.status,
+        details: attempt.parsed ?? null,
       };
     }
-    return { data: attempt.parsed ?? null, error: null, status: attempt.status };
+    return {
+      data: attempt.parsed ?? null,
+      error: null,
+      status: attempt.status,
+      details: null,
+    };
   } catch (error) {
     return {
       data: null,
       error: error?.message || "Stripe request failed.",
       status: null,
+      details: null,
     };
   }
 };
@@ -2918,6 +2925,77 @@ export default function App() {
     Linking.openURL(data.url).catch(() => null);
   }, [cashoutStatus.connected]);
 
+  const handleCashoutPayout = useCallback(async () => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Supabase is not configured for payouts.",
+        success: null,
+      });
+      return;
+    }
+    if (!cashoutStatus.connected || !cashoutStatus.payoutsEnabled) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Link and verify a bank account first.",
+        success: null,
+      });
+      return;
+    }
+    if ((Number(cashbackBalance.availableCents) || 0) <= 0) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "No cashback available to cash out.",
+        success: null,
+      });
+      return;
+    }
+
+    setCashoutActionStatus({ loading: true, error: null, success: null });
+    const { data, error, status, details } = await callStripeFunction(
+      "stripe-create-cashout-payout",
+      {},
+    );
+    if (error || !data?.success) {
+      if (status === 429) {
+        const nextEligibleAt =
+          details?.nextEligibleAt || data?.nextEligibleAt || null;
+        const nextLabel = nextEligibleAt
+          ? new Date(nextEligibleAt).toLocaleDateString()
+          : "next week";
+        setCashoutActionStatus({
+          loading: false,
+          error: `Cashout is limited to once per week. Try again on ${nextLabel}.`,
+          success: null,
+        });
+        return;
+      }
+      setCashoutActionStatus({
+        loading: false,
+        error:
+          typeof error === "string"
+            ? error
+            : error?.message || "Unable to cash out right now.",
+        success: null,
+      });
+      return;
+    }
+
+    await loadCashbackBalance({ silent: true });
+    setCashoutActionStatus({
+      loading: false,
+      error: null,
+      success: `Cashout started: ${formatCurrencyFromCents(
+        Number(data.amountCents) || 0,
+      )}.`,
+    });
+  }, [
+    cashoutStatus.connected,
+    cashoutStatus.payoutsEnabled,
+    cashbackBalance.availableCents,
+    loadCashbackBalance,
+  ]);
+
   useEffect(() => {
     const scaleSub = receiptBaseScale.addListener(({ value }) => {
       receiptBaseScaleValue.current = value;
@@ -4794,7 +4872,6 @@ export default function App() {
       tags: "",
     });
     setCreateBusinessError(null);
-    setPaymentMessage(null);
     setCreateHoursStart("");
     setCreateHoursEnd("");
     setCreateHoursStartMeridiem("AM");
@@ -7827,7 +7904,6 @@ export default function App() {
     if (!ensureSupabaseReady(setCreateBusinessError)) return;
     setCreateBusinessBusy(true);
     setCreateBusinessError(null);
-    setPaymentMessage(null);
     try {
       const categoryConfig = getCategoryConfig(createBusinessForm.categoryKey);
       const hoursValue = formatBusinessHours(
@@ -11122,6 +11198,30 @@ export default function App() {
                               Verified receipts only. {CASHBACK_RATE_PERCENT}%
                               of commission is paid as cashback.
                             </Text>
+                            <TouchableOpacity
+                              style={[
+                                styles.primaryButton,
+                                { marginTop: 12 },
+                                (!cashoutStatus.connected ||
+                                  !cashoutStatus.payoutsEnabled ||
+                                  (Number(cashbackBalance.availableCents) || 0) <=
+                                    0 ||
+                                  cashoutActionStatus.loading) &&
+                                  styles.primaryButtonDisabled,
+                              ]}
+                              onPress={handleCashoutPayout}
+                              disabled={
+                                !cashoutStatus.connected ||
+                                !cashoutStatus.payoutsEnabled ||
+                                (Number(cashbackBalance.availableCents) || 0) <=
+                                  0 ||
+                                cashoutActionStatus.loading
+                              }
+                            >
+                              <Text style={styles.primaryButtonText}>
+                                Cash out now
+                              </Text>
+                            </TouchableOpacity>
                             {cashbackBalance.paidCents > 0 && (
                               <Text style={styles.formHint}>
                                 Paid out:{" "}
@@ -11147,6 +11247,9 @@ export default function App() {
                             </Text>
                             <Text style={styles.sectionBody}>
                               Link a bank account to receive cashback payouts.
+                            </Text>
+                            <Text style={styles.sectionBody}>
+                              Cashout is available once every 7 days.
                             </Text>
                             <View style={styles.cashoutStatusRow}>
                               <View

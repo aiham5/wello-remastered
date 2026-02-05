@@ -196,6 +196,23 @@ create table if not exists public.cashback_events (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.cashout_payouts (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users on delete cascade,
+  stripe_account_id text not null,
+  amount_cents integer not null check (amount_cents > 0),
+  status text not null default 'pending'
+    check (status in ('pending', 'paid', 'failed')),
+  stripe_transfer_id text,
+  failure_reason text,
+  processed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.cashback_events
+  add column if not exists payout_id uuid references public.cashout_payouts on delete set null;
+
 create table if not exists public.commission_invoices (
   id uuid primary key default gen_random_uuid(),
   business_id uuid not null references public.businesses on delete cascade,
@@ -279,6 +296,12 @@ create index if not exists cashback_events_business_id_idx
   on public.cashback_events(business_id);
 create index if not exists cashback_events_status_idx
   on public.cashback_events(status);
+create index if not exists cashback_events_payout_id_idx
+  on public.cashback_events(payout_id);
+create index if not exists cashout_payouts_user_id_idx
+  on public.cashout_payouts(user_id);
+create index if not exists cashout_payouts_status_idx
+  on public.cashout_payouts(status);
 create index if not exists commission_invoices_business_id_idx
   on public.commission_invoices(business_id);
 create index if not exists notification_tokens_token_idx
@@ -493,6 +516,11 @@ create trigger set_cashback_events_updated_at
 before update on public.cashback_events
 for each row execute function public.set_updated_at();
 
+drop trigger if exists set_cashout_payouts_updated_at on public.cashout_payouts;
+create trigger set_cashout_payouts_updated_at
+before update on public.cashout_payouts
+for each row execute function public.set_updated_at();
+
 drop trigger if exists set_offers_updated_at on public.offers;
 create trigger set_offers_updated_at
 before update on public.offers
@@ -591,6 +619,7 @@ alter table public.user_locations enable row level security;
 alter table public.receipt_uploads enable row level security;
 alter table public.commission_events enable row level security;
 alter table public.cashback_events enable row level security;
+alter table public.cashout_payouts enable row level security;
 alter table public.commission_invoices enable row level security;
 
 -- Drop existing policies to keep this script idempotent.
@@ -663,6 +692,12 @@ drop policy if exists "Staff can read cashback events"
   on public.cashback_events;
 drop policy if exists "Staff can manage cashback events"
   on public.cashback_events;
+drop policy if exists "Users can read own cashout payouts"
+  on public.cashout_payouts;
+drop policy if exists "Staff can read cashout payouts"
+  on public.cashout_payouts;
+drop policy if exists "Staff can manage cashout payouts"
+  on public.cashout_payouts;
 drop policy if exists "Staff can read commission invoices"
   on public.commission_invoices;
 
@@ -988,6 +1023,19 @@ using (public.is_staff());
 
 create policy "Staff can manage cashback events"
 on public.cashback_events for update
+using (public.is_staff())
+with check (public.is_staff());
+
+create policy "Users can read own cashout payouts"
+on public.cashout_payouts for select
+using (auth.uid() = user_id);
+
+create policy "Staff can read cashout payouts"
+on public.cashout_payouts for select
+using (public.is_staff());
+
+create policy "Staff can manage cashout payouts"
+on public.cashout_payouts for update
 using (public.is_staff())
 with check (public.is_staff());
 

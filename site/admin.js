@@ -42,6 +42,12 @@ const ui = {
   detailError: document.getElementById("detail-error"),
   businessSummary: document.getElementById("business-summary"),
   activitySummary: document.getElementById("activity-summary"),
+  testBusiness: document.getElementById("test-business"),
+  testAmount: document.getElementById("test-amount"),
+  testDate: document.getElementById("test-date"),
+  testRedemption: document.getElementById("test-redemption"),
+  testCreate: document.getElementById("test-create"),
+  testStatus: document.getElementById("test-status"),
   imageModal: document.getElementById("image-modal"),
   imageModalImg: document.getElementById("image-modal-img"),
   imageModalClose: document.getElementById("image-modal-close"),
@@ -208,6 +214,12 @@ const setDetailError = (message) => {
   ui.detailError.textContent = message || "";
 };
 
+const setTestStatus = (message, isError = false) => {
+  if (!ui.testStatus) return;
+  ui.testStatus.textContent = message || "";
+  ui.testStatus.style.color = isError ? "var(--danger)" : "var(--muted)";
+};
+
 const resetDetail = () => {
   state.selected = null;
   ui.detailContent.classList.add("is-hidden");
@@ -262,11 +274,20 @@ const loadBusinesses = async () => {
   }
   state.businesses = data || [];
   ui.filterBusiness.innerHTML = `<option value="all">All businesses</option>`;
+  if (ui.testBusiness) {
+    ui.testBusiness.innerHTML = `<option value="">Select a business</option>`;
+  }
   state.businesses.forEach((business) => {
     const option = document.createElement("option");
     option.value = business.id;
     option.textContent = business.name;
     ui.filterBusiness.appendChild(option);
+    if (ui.testBusiness) {
+      const testOption = document.createElement("option");
+      testOption.value = business.id;
+      testOption.textContent = business.name;
+      ui.testBusiness.appendChild(testOption);
+    }
   });
 };
 
@@ -584,6 +605,96 @@ const renderActivitySummary = () => {
   }
 };
 
+const getDefaultTestDate = () => {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const previousMonth = month === 0 ? 11 : month - 1;
+  const previousYear = month === 0 ? year - 1 : year;
+  const date = new Date(Date.UTC(previousYear, previousMonth, 15, 12, 0, 0));
+  return date.toISOString().slice(0, 10);
+};
+
+const createTestEvent = async () => {
+  if (!supabaseClient) {
+    setTestStatus("Supabase is not configured.", true);
+    return;
+  }
+  const businessId = ui.testBusiness?.value || "";
+  const amountCents = parseMoneyToCents(ui.testAmount?.value);
+  const eventDate = ui.testDate?.value || "";
+  const redemptionId = ui.testRedemption?.value?.trim() || "";
+
+  if (!businessId) {
+    setTestStatus("Select a business.", true);
+    return;
+  }
+  if (amountCents == null || amountCents <= 0) {
+    setTestStatus("Enter a commission amount greater than 0.", true);
+    return;
+  }
+
+  setTestStatus("Creating test event...");
+  if (ui.testCreate) ui.testCreate.disabled = true;
+  try {
+    let session = state.session;
+    if (!session?.access_token) {
+      const refresh = await supabaseClient.auth.refreshSession();
+      session = refresh?.data?.session || null;
+      state.session = session;
+    }
+    if (!session?.access_token) {
+      setTestStatus("Session missing. Please sign in again.", true);
+      return;
+    }
+    const response = await supabaseClient.functions.invoke(
+      "admin-create-test-commission",
+      {
+        body: {
+          businessId,
+          amountCents,
+          eventDate,
+          redemptionId: redemptionId || null,
+        },
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      },
+    );
+    if (!response?.error) {
+      const parsed = response.data || {};
+      setTestStatus(
+        `Created test event (${formatCurrency(parsed.amountCents || amountCents)}).`,
+      );
+      await refreshAll({ silent: true });
+      return;
+    }
+    const context = response.error?.context;
+    let raw = "";
+    if (context?.text) {
+      try {
+        raw = await context.text();
+      } catch {
+        raw = "";
+      }
+    }
+    let parsed = null;
+    try {
+      parsed = raw ? JSON.parse(raw) : null;
+    } catch {
+      parsed = null;
+    }
+    setTestStatus(
+      parsed?.error || parsed?.message || response.error?.message || "Unable to create test event.",
+      true,
+    );
+  } catch (error) {
+    setTestStatus(error?.message || "Unable to create test event.", true);
+  } finally {
+    if (ui.testCreate) ui.testCreate.disabled = false;
+  }
+};
+
 const saveReceipt = async (options = {}) => {
   const receipt = state.selected;
   if (!receipt || !supabaseClient) {
@@ -789,6 +900,9 @@ const attachListeners = () => {
     saveReceipt({ status: "verified" }),
   );
   ui.exportCsv.addEventListener("click", exportCsv);
+  if (ui.testCreate) {
+    ui.testCreate.addEventListener("click", createTestEvent);
+  }
 
   ui.detailOpen.addEventListener("click", () => {
     openImageModal(ui.detailImage.src);
@@ -814,6 +928,9 @@ const init = async () => {
   }
   attachListeners();
   ui.filterRate.value = state.defaultRate.toFixed(2);
+  if (ui.testDate) {
+    ui.testDate.value = getDefaultTestDate();
+  }
   const {
     data: { session },
   } = await supabaseClient.auth.getSession();

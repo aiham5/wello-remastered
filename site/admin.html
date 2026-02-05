@@ -227,6 +227,38 @@
               <div class="summary-list" id="business-summary"></div>
             </div>
             <div class="summary-card">
+              <h3>Test billing event</h3>
+              <p class="notice">
+                Create a test commission event to validate monthly invoicing.
+              </p>
+              <div class="form-grid">
+                <label class="field">
+                  <span>Business</span>
+                  <select id="test-business">
+                    <option value="">Select a business</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Commission amount ($)</span>
+                  <input id="test-amount" type="number" min="0" step="0.01" />
+                </label>
+                <label class="field">
+                  <span>Event date</span>
+                  <input id="test-date" type="date" />
+                </label>
+                <label class="field">
+                  <span>Redemption ID (optional)</span>
+                  <input id="test-redemption" type="text" />
+                </label>
+              </div>
+              <div class="cta-row">
+                <button class="button secondary" id="test-create">
+                  Create test event
+                </button>
+              </div>
+              <p class="notice" id="test-status"></p>
+            </div>
+            <div class="summary-card">
               <h3>Recent activity</h3>
               <div class="summary-list" id="activity-summary"></div>
             </div>
@@ -242,8 +274,8 @@
       </div>
     </div>
 
-    <script src="/admin-config.js?v=20260205b"></script>
+    <script src="/admin-config.js?v=20260206a"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="/admin.js?v=20260205b" defer></script>
+    <script src="/admin.js?v=20260206a" defer></script>
   </body>
 </html>

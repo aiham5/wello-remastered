@@ -188,7 +188,7 @@ serve(async (req) => {
       );
     }
     const authKey =
-      SUPABASE_SERVICE_ROLE_KEY || incomingApiKey || SUPABASE_ANON_KEY;
+      incomingApiKey || SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY;
     const userResponse = await fetch(
       `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1/user`,
       {

@@ -7,8 +7,13 @@ export const config = { verify_jwt: false };
 const SUPABASE_URL =
   Deno.env.get("EDGE_SUPABASE_URL") ?? Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY =
-  Deno.env.get("EDGE_SERVICE_ROLE_KEY") ??
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
+  Deno.env.get("EDGE_SUPABASE_SERVICE_ROLE_KEY") ??
+  Deno.env.get("EDGE_SERVICE_ROLE_KEY") ??
+  "";
+const SUPABASE_ANON_KEY =
+  Deno.env.get("SUPABASE_ANON_KEY") ??
+  Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
   "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
@@ -16,8 +21,13 @@ const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
 
-const createSupabase = () =>
+const createAdminSupabase = () =>
   createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+const createAuthSupabase = () =>
+  createClient(SUPABASE_URL, SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
@@ -110,9 +120,10 @@ serve(async (req) => {
       );
     }
 
-    const supabase = createSupabase();
+    const supabase = createAdminSupabase();
+    const authClient = createAuthSupabase();
     const { data: authData, error: authError } =
-      await supabase.auth.getUser(token);
+      await authClient.auth.getUser(token);
     if (authError || !authData?.user?.id) {
       return new Response(
         JSON.stringify({
