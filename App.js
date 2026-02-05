@@ -9710,24 +9710,34 @@ export default function App() {
                               )}
                             </Text>
                           </View>
-                          <View style={styles.paymentRow}>
-                            <Text style={styles.paymentLabel}>Charges</Text>
-                            <Text style={styles.paymentAmount}>
-                              {formatCurrencyFromCents(billingMetrics.totalCents)}
-                            </Text>
-                          </View>
-                          <View style={styles.paymentRow}>
-                            <Text style={styles.paymentLabel}>Net income</Text>
-                            <Text style={styles.paymentAmount}>
-                              {formatCurrencyFromCents(
-                                Math.max(
-                                  0,
-                                  (Number(billingMetrics.verifiedGrossCents) || 0) -
-                                    (Number(billingMetrics.totalCents) || 0),
-                                ),
-                              )}
-                            </Text>
-                          </View>
+                            <View style={styles.paymentRow}>
+                              <Text style={styles.paymentLabel}>Charges</Text>
+                              <Text style={styles.paymentAmount}>
+                                {formatCurrencyFromCents(
+                                  Math.max(
+                                    0,
+                                    (Number(billingMetrics.totalCents) || 0) -
+                                      (Number(billingMetrics.paidCents) || 0),
+                                  ),
+                                )}
+                              </Text>
+                            </View>
+                            <View style={styles.paymentRow}>
+                              <Text style={styles.paymentLabel}>Net income</Text>
+                              <Text style={styles.paymentAmount}>
+                                {formatCurrencyFromCents(
+                                  Math.max(
+                                    0,
+                                    (Number(billingMetrics.verifiedGrossCents) || 0) -
+                                      Math.max(
+                                        0,
+                                        (Number(billingMetrics.totalCents) || 0) -
+                                          (Number(billingMetrics.paidCents) || 0),
+                                      ),
+                                  ),
+                                )}
+                              </Text>
+                            </View>
                           {billingStatus.loading && (
                             <Text style={styles.formHint}>
                               Updating charges...

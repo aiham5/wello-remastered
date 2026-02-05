@@ -1,3 +1,4 @@
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import Stripe from "npm:stripe@14.25.0";
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
 
@@ -35,14 +36,19 @@ const createAuthClient = () =>
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-const getDefaultPeriod = () => {
-  const now = new Date();
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+const getPeriodForDate = (value?: string) => {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  const start = new Date(Date.UTC(year, month, 1));
+  const end = new Date(Date.UTC(year, month + 1, 1));
   return { start, end };
 };
 
-Deno.serve(async (req) => {
+serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { status: 200, headers: corsHeaders });
   }
@@ -74,26 +80,20 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const businessId = String(body?.businessId || "").trim();
+    const redemptionId = String(body?.redemptionId || "").trim();
+    const eventDate = String(body?.eventDate || "").trim();
+
     if (!businessId) {
       return new Response(JSON.stringify({ error: "Missing businessId." }), {
         status: 400,
         headers: corsHeaders,
       });
     }
-
-    const periodStartRaw = String(body?.periodStart || "").trim();
-    const periodEndRaw = String(body?.periodEnd || "").trim();
-    const defaultPeriod = getDefaultPeriod();
-    const start = periodStartRaw
-      ? new Date(periodStartRaw)
-      : defaultPeriod.start;
-    const end = periodEndRaw ? new Date(periodEndRaw) : defaultPeriod.end;
-
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-      return new Response(
-        JSON.stringify({ error: "Invalid period dates." }),
-        { status: 400, headers: corsHeaders },
-      );
+    if (!redemptionId) {
+      return new Response(JSON.stringify({ error: "Missing redemptionId." }), {
+        status: 400,
+        headers: corsHeaders,
+      });
     }
 
     const authClient = createAuthClient();
@@ -120,26 +120,49 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { data: events, error: eventsError } = await adminClient
+    const { data: event, error: eventError } = await adminClient
       .from("commission_events")
-      .select("id, amount_cents, created_at")
-      .eq("status", "pending")
+      .select("id, amount_cents, status, created_at")
+      .eq("redemption_id", redemptionId)
       .eq("business_id", businessId)
-      .gte("created_at", start.toISOString())
-      .lt("created_at", end.toISOString());
-
-    if (eventsError) {
+      .maybeSingle();
+    if (eventError || !event) {
       return new Response(
-        JSON.stringify({ error: eventsError.message || "Unable to load events." }),
-        { status: 500, headers: corsHeaders },
+        JSON.stringify({ error: "Commission event not found." }),
+        { status: 404, headers: corsHeaders },
+      );
+    }
+    if (event.status === "paid") {
+      return new Response(
+        JSON.stringify({ ok: true, alreadyPaid: true, eventId: event.id }),
+        { status: 200, headers: corsHeaders },
+      );
+    }
+    if (event.status === "invoiced") {
+      return new Response(
+        JSON.stringify({ ok: true, alreadyInvoiced: true, eventId: event.id }),
+        { status: 200, headers: corsHeaders },
       );
     }
 
-    const list = events || [];
-    const totalCents = list.reduce(
-      (sum, item) => sum + Number(item.amount_cents || 0),
-      0,
-    );
+    const amountCents = Number(event.amount_cents) || 0;
+    if (amountCents <= 0) {
+      return new Response(
+        JSON.stringify({ error: "Commission amount is invalid." }),
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const period = getPeriodForDate(eventDate || event.created_at);
+    if (!period) {
+      return new Response(
+        JSON.stringify({ error: "Invalid event date." }),
+        { status: 400, headers: corsHeaders },
+      );
+    }
+    const periodStart = period.start.toISOString().slice(0, 10);
+    const periodEnd = period.end.toISOString().slice(0, 10);
+
     const { data: business } = await adminClient
       .from("businesses")
       .select("stripe_customer_id")
@@ -152,12 +175,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    const periodStart = start.toISOString().slice(0, 10);
-    const periodEnd = end.toISOString().slice(0, 10);
-
     const { data: existingInvoice } = await adminClient
       .from("commission_invoices")
-      .select("stripe_invoice_id, status")
+      .select("id, stripe_invoice_id, status")
       .eq("business_id", businessId)
       .eq("period_start", periodStart)
       .eq("period_end", periodEnd)
@@ -167,98 +187,71 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     let invoiceId = existingInvoice?.stripe_invoice_id || "";
-    let invoiceTotalCents = totalCents;
-
     if (!invoiceId) {
-      if (totalCents <= 0) {
-        return new Response(
-          JSON.stringify({
-            ok: true,
-            totalCents: 0,
-            invoiceId: null,
-            periodStart: start.toISOString(),
-            periodEnd: end.toISOString(),
-          }),
-          { status: 200, headers: corsHeaders },
-        );
-      }
-
-      const description = `Wello verified redemptions (${periodStart} to ${periodEnd})`;
-      await stripe.invoiceItems.create({
-        customer: business.stripe_customer_id,
-        amount: totalCents,
-        currency: "usd",
-        description,
-      });
-
       const invoice = await stripe.invoices.create({
         customer: business.stripe_customer_id,
         collection_method: "charge_automatically",
-        auto_advance: true,
+        auto_advance: false,
         metadata: {
           business_id: businessId,
           period_start: periodStart,
           period_end: periodEnd,
-          test_run: "true",
+          mode: "draft",
         },
       });
-
       invoiceId = invoice.id;
-      invoiceTotalCents = invoice.amount_due || invoice.total || totalCents;
-
       await adminClient.from("commission_invoices").insert({
         business_id: businessId,
-        stripe_invoice_id: invoice.id,
+        stripe_invoice_id: invoiceId,
         period_start: periodStart,
         period_end: periodEnd,
-        amount_cents: invoiceTotalCents,
-        status: invoice.status || "open",
+        amount_cents: invoice.amount_due || 0,
+        status: invoice.status || "draft",
       });
     }
 
-    let paidInvoice = await stripe.invoices.retrieve(invoiceId);
-    if (paidInvoice.status === "draft") {
-      paidInvoice = await stripe.invoices.finalizeInvoice(invoiceId);
-    }
-    if (paidInvoice.status !== "paid" && paidInvoice.amount_due > 0) {
-      paidInvoice = await stripe.invoices.pay(invoiceId);
-    }
-    const responseTotalCents =
-      paidInvoice.amount_paid || paidInvoice.total || invoiceTotalCents;
+    await stripe.invoiceItems.create(
+      {
+        customer: business.stripe_customer_id,
+        amount: amountCents,
+        currency: "usd",
+        description: `Wello commission (${periodStart} to ${periodEnd})`,
+        invoice: invoiceId,
+        metadata: {
+          business_id: businessId,
+          redemption_id: redemptionId,
+          commission_event_id: event.id,
+        },
+      },
+      { idempotencyKey: `commission_${event.id}` },
+    );
 
-    const { data: periodEvents } = await adminClient
+    const updatedInvoice = await stripe.invoices.retrieve(invoiceId);
+    const invoiceTotal =
+      updatedInvoice.amount_due || updatedInvoice.total || amountCents;
+
+    await adminClient
+      .from("commission_invoices")
+      .update({
+        amount_cents: invoiceTotal,
+        status: updatedInvoice.status || "draft",
+      })
+      .eq("stripe_invoice_id", invoiceId);
+
+    await adminClient
       .from("commission_events")
-      .select("id")
-      .eq("business_id", businessId)
-      .gte("created_at", start.toISOString())
-      .lt("created_at", end.toISOString())
-      .in("status", ["pending", "invoiced"]);
-    const eventIds = (periodEvents || []).map((item) => item.id);
-
-    if (paidInvoice.status === "paid") {
-      await adminClient
-        .from("commission_invoices")
-        .update({
-          status: "paid",
-          amount_cents: responseTotalCents,
-        })
-        .eq("stripe_invoice_id", invoiceId);
-      if (eventIds.length) {
-        await adminClient
-          .from("commission_events")
-          .update({ status: "paid" })
-          .in("id", eventIds);
-      }
-    }
+      .update({ status: "invoiced" })
+      .eq("id", event.id)
+      .eq("status", "pending");
 
     return new Response(
       JSON.stringify({
         ok: true,
         invoiceId,
-        totalCents: responseTotalCents,
-        paid: paidInvoice.status === "paid",
-        periodStart: start.toISOString(),
-        periodEnd: end.toISOString(),
+        invoiceTotalCents: invoiceTotal,
+        eventId: event.id,
+        periodStart,
+        periodEnd,
       }),
       { status: 200, headers: corsHeaders },
     );

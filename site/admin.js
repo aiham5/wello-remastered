@@ -724,6 +724,67 @@ const runTestInvoice = async ({ businessId, period }) => {
   return null;
 };
 
+const addCommissionToStripe = async ({
+  businessId,
+  redemptionId,
+  eventDate,
+  context = "receipt",
+}) => {
+  if (!supabaseClient) {
+    return { error: "Supabase is not configured." };
+  }
+  let session = state.session;
+  if (!session?.access_token) {
+    const refresh = await supabaseClient.auth.refreshSession();
+    session = refresh?.data?.session || null;
+    state.session = session;
+  }
+  if (!session?.access_token) {
+    return { error: "Session missing. Please sign in again." };
+  }
+
+  const response = await supabaseClient.functions.invoke(
+    "admin-add-commission-to-stripe",
+    {
+      body: {
+        businessId,
+        redemptionId,
+        eventDate: eventDate || null,
+      },
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    },
+  );
+
+  if (!response?.error) {
+    return { data: response.data || null, error: null };
+  }
+  const contextText = response.error?.context;
+  let raw = "";
+  if (contextText?.text) {
+    try {
+      raw = await contextText.text();
+    } catch {
+      raw = "";
+    }
+  }
+  let parsed = null;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    parsed = null;
+  }
+  return {
+    data: null,
+    error:
+      parsed?.error ||
+      parsed?.message ||
+      response.error?.message ||
+      `Unable to sync ${context} to Stripe.`,
+  };
+};
+
 const createTestEvent = async () => {
   if (!supabaseClient) {
     setTestStatus("Supabase is not configured.", true);
@@ -772,7 +833,23 @@ const createTestEvent = async () => {
       },
     );
     if (!response?.error) {
-      setTestStatus("Test event created. Sending invoice to Stripe...");
+      const redemptionIdResult =
+        response?.data?.redemptionId || redemptionId || null;
+      setTestStatus("Test event created. Syncing draft invoice...");
+      const syncResult = redemptionIdResult
+        ? await addCommissionToStripe({
+            businessId,
+            redemptionId: redemptionIdResult,
+            eventDate,
+            context: "test event",
+          })
+        : { data: null, error: "Missing redemption id for Stripe sync." };
+      if (syncResult?.error) {
+        setTestStatus(syncResult.error, true);
+        return;
+      }
+
+      setTestStatus("Draft invoice updated. Charging in Stripe...");
       const invoiceResult = await runTestInvoice({ businessId, period });
       if (invoiceResult?.invoiceId) {
         setTestStatus(
@@ -902,6 +979,18 @@ const saveReceipt = async (options = {}) => {
   setTimeout(() => setDetailError(""), 2000);
   ui.detailSave.disabled = false;
   ui.detailVerify.disabled = false;
+
+  if (status === "verified" && (Number(commissionCents) || 0) > 0) {
+    const syncResult = await addCommissionToStripe({
+      businessId: data.business?.id,
+      redemptionId: data.redemption?.id,
+      eventDate: data.reviewed_at || data.uploaded_at,
+    });
+    if (syncResult?.error) {
+      setDetailError(`Saved, but Stripe sync failed: ${syncResult.error}`);
+      setTimeout(() => setDetailError(""), 4000);
+    }
+  }
 };
 
 const exportCsv = () => {
