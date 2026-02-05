@@ -956,6 +956,23 @@ const createTestEvent = async () => {
     } catch {
       parsed = null;
     }
+    const status = context?.status ?? null;
+    if (status === 409 || parsed?.error?.includes?.("already exists")) {
+      setTestStatus(
+        "Test event already exists. Charging monthly invoice...",
+      );
+      const invoiceResult = await runTestInvoice({ businessId, period });
+      if (invoiceResult?.invoiceId) {
+        setTestStatus(
+          `Invoice sent: ${formatCurrency(invoiceResult.totalCents || 0)} (ID ${invoiceResult.invoiceId}).`,
+        );
+      } else if (invoiceResult?.totalCents === 0) {
+        setTestStatus("No pending charges to invoice for this period.");
+      }
+      await refreshAll({ silent: true });
+      await loadTestCharges();
+      return;
+    }
     setTestStatus(
       parsed?.error || parsed?.message || response.error?.message || "Unable to create test event.",
       true,
