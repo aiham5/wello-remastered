@@ -93,6 +93,7 @@ const ui = {
   testDate: document.getElementById("test-date"),
   testRedemption: document.getElementById("test-redemption"),
   testCreate: document.getElementById("test-create"),
+  testCharge: document.getElementById("test-charge"),
   testStatus: document.getElementById("test-status"),
   testPeriod: document.getElementById("test-period"),
   testPending: document.getElementById("test-pending"),
@@ -984,6 +985,40 @@ const createTestEvent = async () => {
   }
 };
 
+const chargeNow = async () => {
+  if (!supabaseClient) {
+    setTestStatus("Supabase is not configured.", true);
+    return;
+  }
+  const businessId = ui.testBusiness?.value || "";
+  const eventDate = ui.testDate?.value || "";
+  const period = getBillingPeriodForDate(eventDate);
+
+  if (!businessId) {
+    setTestStatus("Select a business.", true);
+    return;
+  }
+
+  setTestStatus("Charging monthly invoice...");
+  if (ui.testCharge) ui.testCharge.disabled = true;
+  try {
+    const invoiceResult = await runTestInvoice({ businessId, period });
+    if (invoiceResult?.invoiceId) {
+      setTestStatus(
+        `Invoice sent: ${formatCurrency(invoiceResult.totalCents || 0)} (ID ${invoiceResult.invoiceId}).`,
+      );
+    } else if (invoiceResult?.totalCents === 0) {
+      setTestStatus("No pending charges to invoice for this period.");
+    }
+    await refreshAll({ silent: true });
+    await loadTestCharges();
+  } catch (error) {
+    setTestStatus(error?.message || "Unable to charge invoice.", true);
+  } finally {
+    if (ui.testCharge) ui.testCharge.disabled = false;
+  }
+};
+
 const saveReceipt = async (options = {}) => {
   const receipt = state.selected;
   if (!receipt || !supabaseClient) {
@@ -1215,6 +1250,9 @@ const attachListeners = () => {
   ui.exportCsv.addEventListener("click", exportCsv);
   if (ui.testCreate) {
     ui.testCreate.addEventListener("click", createTestEvent);
+  }
+  if (ui.testCharge) {
+    ui.testCharge.addEventListener("click", chargeNow);
   }
 
   ui.detailOpen.addEventListener("click", () => {

@@ -181,6 +181,12 @@ h1 {
   color: var(--ink);
 }
 
+.button.outline {
+  background: transparent;
+  border: 1px dashed var(--line);
+  color: var(--accent);
+}
+
 .button:hover {
   transform: translateY(-1px);
 }
@@ -528,6 +534,13 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.test-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
 }
 
 .test-label {
