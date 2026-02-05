@@ -6,10 +6,6 @@ export const config = { verify_jwt: false };
 
 const SUPABASE_URL =
   Deno.env.get("EDGE_SUPABASE_URL") ?? Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_ANON_KEY =
-  Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
-  Deno.env.get("SUPABASE_ANON_KEY") ??
-  "";
 const SUPABASE_SERVICE_ROLE_KEY =
   Deno.env.get("EDGE_SERVICE_ROLE_KEY") ??
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
@@ -22,11 +18,6 @@ const stripe = new Stripe(STRIPE_SECRET_KEY, {
 
 const createSupabase = () =>
   createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
-const createSupabaseAuth = () =>
-  createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
@@ -63,7 +54,6 @@ serve(async (req) => {
 
   if (
     !SUPABASE_URL ||
-    !SUPABASE_ANON_KEY ||
     !SUPABASE_SERVICE_ROLE_KEY ||
     !STRIPE_SECRET_KEY
   ) {
@@ -120,9 +110,9 @@ serve(async (req) => {
       );
     }
 
-    const supabaseAuth = createSupabaseAuth();
+    const supabase = createSupabase();
     const { data: authData, error: authError } =
-      await supabaseAuth.auth.getUser(token);
+      await supabase.auth.getUser(token);
     if (authError || !authData?.user?.id) {
       return new Response(
         JSON.stringify({
@@ -153,7 +143,6 @@ serve(async (req) => {
       );
     }
 
-    const supabase = createSupabase();
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select(

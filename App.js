@@ -43,6 +43,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
 import { toByteArray } from "base64-js";
+import { createClient } from "@supabase/supabase-js";
 import * as Location from "expo-location";
 import QRCode from "qrcode";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -96,6 +97,7 @@ const SCANNER_CARD_HEIGHT = SCANNER_FRAME + (IS_COMPACT ? 160 : 180);
 const REDEEM_RADIUS_METERS = 150;
 const REDEEM_BLOCKED_MESSAGE = "You need to be in store to redeem.";
 const COMMISSION_RATE_PERCENT = 10;
+const CASHBACK_RATE_PERCENT = 5;
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
 const GOOGLE_PLACES_KEY = getEnv("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY");
@@ -117,6 +119,8 @@ const TIME_SELECT_MIN = IS_COMPACT ? 80 : 96;
 const TIME_MERIDIEM_WIDTH = IS_COMPACT ? 68 : 80;
 const OFFERS_REFRESH_INTERVAL_MS = 1000 * 60 * 2;
 const REFRESH_MIN_INTERVAL_MS = 1000 * 15;
+const LIVE_POLL_MS = 1000 * 30;
+const LIVE_DEBOUNCE_MS = 1200;
 const RECEIPT_PREVIEW_HEIGHT = Math.min(SCREEN_HEIGHT * 0.72, 680);
 const RECEIPT_PREVIEW_WIDTH = Math.min(SCREEN_WIDTH - 40, 520);
 const TIME_OPTIONS = [
@@ -767,6 +771,12 @@ const callStripeFunction = async (functionName, payload) => {
   const tokenResult = await getAccessTokenWithFallback(6000);
   let accessToken = tokenResult.accessToken;
   if (!accessToken) {
+    const refreshed = await refreshAccessTokenWithRefreshToken(6000, {
+      persist: false,
+    });
+    accessToken = refreshed?.accessToken || "";
+  }
+  if (!accessToken) {
     return { data: null, error: "Sign in again to continue.", status: null };
   }
 
@@ -775,66 +785,100 @@ const callStripeFunction = async (functionName, payload) => {
   const expectedIssuer = SUPABASE_URL
     ? `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1`
     : "";
+  const refreshForStripe = async () =>
+    refreshAccessTokenWithRefreshToken(6000, { persist: false });
   if (expectedIssuer && issuer && issuer !== expectedIssuer) {
-    await safeLocalSignOut();
-    return {
-      data: null,
-      error: "Session belongs to a different project. Please sign in again.",
-      status: null,
-    };
+    const refreshed = await refreshForStripe();
+    if (refreshed?.accessToken) {
+      accessToken = refreshed.accessToken;
+    } else {
+      return {
+        data: null,
+        error: "Session belongs to a different project. Please sign in again.",
+        status: null,
+      };
+    }
   }
   const exp = Number(tokenPayload?.exp);
   if (Number.isFinite(exp) && exp * 1000 < Date.now()) {
-    await safeLocalSignOut();
-    return {
-      data: null,
-      error: "Session expired. Please sign in again.",
-      status: null,
-    };
+    const refreshed = await refreshForStripe();
+    if (refreshed?.accessToken) {
+      accessToken = refreshed.accessToken;
+    } else {
+      return {
+        data: null,
+        error: "Session expired. Please sign in again.",
+        status: null,
+      };
+    }
   }
 
   const runRequest = async (token) => {
     const startTime = Date.now();
-    const body = {
-      ...(payload || {}),
-      accessToken: token,
-      access_token: token,
-    };
-    const isStripeFunction = functionName.startsWith("stripe-");
-    const url = `${SUPABASE_URL}/functions/v1/${functionName}?apikey=${encodeURIComponent(
-      SUPABASE_ANON_KEY,
-    )}`;
-    const authHeaderValue = isStripeFunction
-      ? `Bearer ${SUPABASE_ANON_KEY}`
-      : `Bearer ${token}`;
-    let response;
-    const fetchPromise = fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: authHeaderValue,
-        apikey: SUPABASE_ANON_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("timeout")), 12000),
+    const body = { ...(payload || {}) };
+    const response = await withTimeout(
+      supabase.functions.invoke(functionName, {
+        body,
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      12000,
+      "stripe_invoke",
     );
-    response = await Promise.race([fetchPromise, timeoutPromise]);
-    const rawText = await response.text();
+    if (!response?.error) {
+      let parsedData = response?.data ?? null;
+      if (typeof parsedData === "string") {
+        try {
+          parsedData = parsedData ? JSON.parse(parsedData) : null;
+        } catch {
+          parsedData = response?.data ?? null;
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        parsed: parsedData,
+        rawText:
+          typeof parsedData === "string"
+            ? parsedData
+            : parsedData
+              ? JSON.stringify(parsedData)
+              : "",
+        errorMessage: null,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
+    const err = response.error;
+    const context = err?.context;
+    const status = context?.status ?? null;
+    let rawText = "";
     let parsed = null;
+    if (context?.text) {
+      try {
+        rawText = await context.text();
+      } catch {
+        rawText = "";
+      }
+    }
     try {
       parsed = rawText ? JSON.parse(rawText) : null;
     } catch {
       parsed = null;
     }
-    const errorMessage =
+    const baseErrorMessage =
       parsed?.error ||
       parsed?.message ||
-      `Stripe request failed (${response.status}).`;
+      err?.message ||
+      (status ? `Stripe request failed (${status}).` : "Stripe request failed.");
+    const errorMessage =
+      parsed?.phase && typeof parsed.phase === "string"
+        ? `${baseErrorMessage} (phase: ${parsed.phase})`
+        : baseErrorMessage;
     return {
-      ok: response.ok,
-      status: response.status,
+      ok: false,
+      status,
       parsed,
       rawText,
       errorMessage,
@@ -845,16 +889,25 @@ const callStripeFunction = async (functionName, payload) => {
   try {
     let attempt = await runRequest(accessToken);
     const rawTextLower = String(attempt.rawText || "").toLowerCase();
-    const isInvalidJwt =
-      attempt.status === 401 &&
-      (rawTextLower.includes("invalid jwt") ||
-        String(attempt.parsed?.message || "")
-          .toLowerCase()
-          .includes("invalid jwt"));
+    const parsedMessage = String(
+      attempt.parsed?.message || attempt.parsed?.error || "",
+    ).toLowerCase();
+    const isAuthFailure =
+      attempt.status === 401 ||
+      rawTextLower.includes("invalid jwt") ||
+      rawTextLower.includes("jwt expired") ||
+      rawTextLower.includes("unauthorized") ||
+      rawTextLower.includes("missing authorization") ||
+      parsedMessage.includes("invalid jwt") ||
+      parsedMessage.includes("jwt expired") ||
+      parsedMessage.includes("unauthorized") ||
+      parsedMessage.includes("missing authorization");
 
-    if (!attempt.ok && isInvalidJwt) {
+    if (!attempt.ok && isAuthFailure) {
       try {
-        const refreshResult = await refreshAccessTokenWithRefreshToken(6000);
+        const refreshResult = await refreshAccessTokenWithRefreshToken(6000, {
+          persist: false,
+        });
         const refreshedToken = refreshResult?.accessToken || "";
         if (refreshedToken) {
           attempt = await runRequest(refreshedToken);
@@ -863,6 +916,13 @@ const callStripeFunction = async (functionName, payload) => {
     }
 
     if (!attempt.ok) {
+      console.warn("Stripe function failed", {
+        functionName,
+        status: attempt.status,
+        error: attempt.errorMessage,
+        parsed: attempt.parsed,
+        raw: attempt.rawText,
+      });
       return {
         data: null,
         error: attempt.errorMessage,
@@ -914,35 +974,59 @@ const callR2Presign = async (payload) => {
       action: payload?.action,
       key: payload?.key,
     });
-    const runFetch = async (token, authHeaderToken = token) => {
-      const response = await fetch(
-        `${SUPABASE_URL}/functions/v1/r2-presign?apikey=${encodeURIComponent(
-          SUPABASE_ANON_KEY,
-        )}`,
-        {
-          method: "POST",
+    const runInvoke = async (token) => {
+      const response = await withTimeout(
+        supabase.functions.invoke("r2-presign", {
+          body: { ...(payload || {}) },
           headers: {
-            Authorization: `Bearer ${authHeaderToken}`,
-            apikey: SUPABASE_ANON_KEY,
-            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({
-            ...(payload || {}),
-            accessToken: token,
-          }),
-        },
+        }),
+        12000,
+        "r2_invoke",
       );
-      const rawText = await response.text();
+      if (!response?.error) {
+        let parsedData = response?.data ?? null;
+        if (typeof parsedData === "string") {
+          try {
+            parsedData = parsedData ? JSON.parse(parsedData) : null;
+          } catch {
+            parsedData = response?.data ?? null;
+          }
+        }
+        return {
+          ok: true,
+          status: 200,
+          parsed: parsedData,
+          rawText:
+            typeof parsedData === "string"
+              ? parsedData
+              : parsedData
+                ? JSON.stringify(parsedData)
+                : "",
+        };
+      }
+      const err = response.error;
+      const context = err?.context;
+      const status = context?.status ?? null;
+      let rawText = "";
       let parsed = null;
+      if (context?.text) {
+        try {
+          rawText = await context.text();
+        } catch {
+          rawText = "";
+        }
+      }
       try {
         parsed = rawText ? JSON.parse(rawText) : null;
       } catch {
         parsed = null;
       }
-      return { ok: response.ok, status: response.status, parsed, rawText };
+      return { ok: false, status, parsed, rawText };
     };
 
-    let attempt = await runFetch(accessToken);
+    let attempt = await runInvoke(accessToken);
     const rawLower = String(attempt.rawText || "").toLowerCase();
     const isAuthError =
       attempt.status === 401 ||
@@ -955,11 +1039,8 @@ const callR2Presign = async (payload) => {
       });
       if (refreshed?.accessToken) {
         accessToken = refreshed.accessToken;
-        attempt = await runFetch(refreshed.accessToken);
+        attempt = await runInvoke(refreshed.accessToken);
       }
-    }
-    if (!attempt.ok && isAuthError && SUPABASE_ANON_KEY) {
-      attempt = await runFetch(accessToken, SUPABASE_ANON_KEY);
     }
     if (!attempt.ok) {
       console.warn("R2 presign failed", {
@@ -1544,79 +1625,68 @@ const insertReceiptUploadRecord = async ({
       return { data: null, error: "Sign in again to continue." };
     }
 
+    const restClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+      global: {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      },
+    });
+
     const payload = {
       redemption_id: redemptionId,
       business_id: businessId,
       user_id: userId,
       storage_path: storagePath,
     };
-    const insertUrl = `${SUPABASE_URL}/rest/v1/receipt_uploads`;
     const insertResponse = await withTimeout(
-      fetch(insertUrl, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          apikey: SUPABASE_ANON_KEY,
-          "Content-Type": "application/json",
-          Prefer: "return=representation",
-        },
-        body: JSON.stringify(payload),
-      }),
+      restClient
+        .from("receipt_uploads")
+        .insert(payload)
+        .select("id, uploaded_at, storage_path")
+        .maybeSingle(),
       12000,
       "receipt_insert",
     );
-    const rawText = await insertResponse.text();
-    let parsed = null;
-    try {
-      parsed = rawText ? JSON.parse(rawText) : null;
-    } catch {
-      parsed = null;
-    }
-    if (insertResponse.ok) {
-      const row = Array.isArray(parsed) ? parsed[0] : parsed;
-      return { data: row, error: null, status: insertResponse.status };
+    if (!insertResponse.error) {
+      return {
+        data: insertResponse.data,
+        error: null,
+        status: insertResponse.status,
+      };
     }
 
     const message =
-      parsed?.message ||
-      parsed?.error ||
-      rawText ||
-      `Unable to save receipt (${insertResponse.status}).`;
+      insertResponse.error?.message ||
+      `Unable to save receipt (${insertResponse.status || "no-status"}).`;
     const lowered = String(message).toLowerCase();
     if (
       insertResponse.status === 409 ||
+      insertResponse.error?.code === "23505" ||
       lowered.includes("duplicate") ||
       lowered.includes("unique")
     ) {
-      const lookupUrl = `${SUPABASE_URL}/rest/v1/receipt_uploads?redemption_id=eq.${encodeURIComponent(
-        redemptionId,
-      )}&select=id,uploaded_at,storage_path`;
       const lookupResponse = await withTimeout(
-        fetch(lookupUrl, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            apikey: SUPABASE_ANON_KEY,
-          },
-        }),
+        restClient
+          .from("receipt_uploads")
+          .select("id, uploaded_at, storage_path")
+          .eq("redemption_id", redemptionId)
+          .order("uploaded_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
         12000,
         "receipt_lookup",
       );
-      const lookupRaw = await lookupResponse.text();
-      let lookupParsed = null;
-      try {
-        lookupParsed = lookupRaw ? JSON.parse(lookupRaw) : null;
-      } catch {
-        lookupParsed = null;
-      }
-      if (
-        lookupResponse.ok &&
-        Array.isArray(lookupParsed) &&
-        lookupParsed[0]
-      ) {
+      if (!lookupResponse.error && lookupResponse.data) {
         return {
-          data: lookupParsed[0],
+          data: lookupResponse.data,
           error: null,
-          status: lookupResponse.status,
+          status: lookupResponse.status ?? insertResponse.status,
           duplicate: true,
         };
       }
@@ -1896,6 +1966,12 @@ export default function App() {
   const lastLocationHashRef = useRef("");
   const lastRefreshRef = useRef(0);
   const refreshInFlightRef = useRef(false);
+  const liveSyncRef = useRef({
+    channel: null,
+    interval: null,
+    debounce: null,
+    inFlight: false,
+  });
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [isEditingBusiness, setIsEditingBusiness] = useState(false);
   const [businessSaveBusy, setBusinessSaveBusy] = useState(false);
@@ -2082,6 +2158,16 @@ export default function App() {
     accountId: null,
     requirementsDue: [],
     disabledReason: null,
+  });
+  const [cashbackBalance, setCashbackBalance] = useState({
+    availableCents: 0,
+    paidCents: 0,
+    totalCents: 0,
+    updatedAt: null,
+  });
+  const [cashbackBalanceState, setCashbackBalanceState] = useState({
+    loading: false,
+    error: null,
   });
   const [cashoutStatusState, setCashoutStatusState] = useState({
     loading: false,
@@ -2377,17 +2463,90 @@ export default function App() {
   }, []);
 
 
+  const ownerBusiness = useMemo(() => {
+    if (authUserId) {
+      return (
+        businesses.find((business) => business.ownerId === authUserId) || null
+      );
+    }
+    if (!ownerBusinessId) return null;
+    return (
+      businesses.find((business) => business.id === ownerBusinessId) || null
+    );
+  }, [businesses, ownerBusinessId, authUserId]);
+
   const resolvedOwnerBusiness = useMemo(() => {
     if (ownerBusiness) return ownerBusiness;
+    if (authUserId) return null;
     if (!ownerBusinessId) return null;
     return businesses.find((business) => business.id === ownerBusinessId) || null;
-  }, [ownerBusiness, ownerBusinessId, businesses]);
+  }, [ownerBusiness, authUserId, ownerBusinessId, businesses]);
+
+  const resolveStripeBusiness = useCallback(async () => {
+    if (resolvedOwnerBusiness?.id) return resolvedOwnerBusiness;
+    if (!authUserId || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+    const { data, error } = await supabase
+      .from("businesses")
+      .select(
+        [
+          "id",
+          "owner_id",
+          "name",
+          "address",
+          "city",
+          "state",
+          "postal_code",
+          "phone",
+          "category_key",
+          "category_label",
+          "offer_highlight",
+          "hours",
+          "tags",
+          "latitude",
+          "longitude",
+          "qr_code",
+          "is_open",
+          "approval_status",
+          "status",
+          "stripe_account_id",
+          "stripe_customer_id",
+          "stripe_payment_method_id",
+          "stripe_payment_method_brand",
+          "stripe_payment_method_last4",
+          "stripe_charges_enabled",
+          "stripe_payouts_enabled",
+          "stripe_onboarded_at",
+          "commission_rate_cents",
+          "commission_enabled",
+          "created_at",
+        ].join(","),
+      )
+      .eq("owner_id", authUserId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data) {
+      return null;
+    }
+
+    const mapped = mapSupabaseBusiness(data, 0);
+    setBusinesses((prev) => {
+      const next = prev.filter((business) => business.id !== mapped.id);
+      next.unshift(mapped);
+      return next.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    });
+    setOwnerBusinessId(mapped.id);
+    return mapped;
+  }, [resolvedOwnerBusiness, authUserId]);
 
   const handleStripeConnect = useCallback(async () => {
-    if (!resolvedOwnerBusiness?.id) {
+    const targetBusiness = await resolveStripeBusiness();
+    if (!targetBusiness?.id) {
       setStripeActionStatus({
         loading: false,
-        error: "Create your business profile first.",
+        error:
+          "No business profile found for this account. Create your business profile first.",
         success: null,
       });
       return;
@@ -2403,7 +2562,7 @@ export default function App() {
     setStripeActionStatus({ loading: true, error: null, success: null });
     const { data, error } = await callStripeFunction(
       "stripe-create-account-link",
-      { businessId: resolvedOwnerBusiness.id },
+      { businessId: targetBusiness.id },
     );
     if (error || !data?.url) {
       const errorMessage =
@@ -2417,19 +2576,30 @@ export default function App() {
       });
       return;
     }
+    if (data?.accountId) {
+      setBusinesses((prev) =>
+        prev.map((business) =>
+          business.id === targetBusiness.id
+            ? { ...business, stripeAccountId: data.accountId }
+            : business,
+        ),
+      );
+    }
     setStripeActionStatus({
       loading: false,
       error: null,
       success: "Stripe onboarding opened.",
     });
     Linking.openURL(data.url).catch(() => null);
-  }, [resolvedOwnerBusiness?.id]);
+  }, [resolveStripeBusiness]);
 
   const handleStripePaymentSetup = useCallback(async () => {
-    if (!resolvedOwnerBusiness?.id) {
+    const targetBusiness = await resolveStripeBusiness();
+    if (!targetBusiness?.id) {
       setStripeActionStatus({
         loading: false,
-        error: "Create your business profile first.",
+        error:
+          "No business profile found for this account. Create your business profile first.",
         success: null,
       });
       return;
@@ -2445,7 +2615,7 @@ export default function App() {
     setStripeActionStatus({ loading: true, error: null, success: null });
     const { data, error } = await callStripeFunction(
       "stripe-create-setup-session",
-      { businessId: resolvedOwnerBusiness.id },
+      { businessId: targetBusiness.id },
     );
     if (error || !data?.url) {
       const errorMessage =
@@ -2467,21 +2637,26 @@ export default function App() {
       success: "Payment setup opened.",
     });
     Linking.openURL(data.url).catch(() => null);
-  }, [resolvedOwnerBusiness?.id]);
+  }, [resolveStripeBusiness]);
 
   const handleStripeManage = useCallback(async () => {
-    if (!resolvedOwnerBusiness?.id) {
+    const targetBusiness = await resolveStripeBusiness();
+    if (!targetBusiness?.id) {
       setStripeActionStatus({
         loading: false,
-        error: "Create your business profile first.",
+        error:
+          "No business profile found for this account. Create your business profile first.",
         success: null,
       });
       return;
     }
-    if (!resolvedOwnerBusiness?.stripeAccountId) {
+    if (
+      !targetBusiness?.stripeCustomerId &&
+      !targetBusiness?.stripePaymentMethodId
+    ) {
       setStripeActionStatus({
         loading: false,
-        error: "Connect Stripe before managing your account.",
+        error: "Add a payment method before opening the billing portal.",
         success: null,
       });
       return;
@@ -2497,7 +2672,7 @@ export default function App() {
     setStripeActionStatus({ loading: true, error: null, success: null });
     const { data, error } = await callStripeFunction(
       "stripe-create-login-link",
-      { businessId: resolvedOwnerBusiness.id },
+      { businessId: targetBusiness.id },
     );
     if (error || !data?.url) {
       const errorMessage =
@@ -2519,7 +2694,7 @@ export default function App() {
       success: "Stripe dashboard opened.",
     });
     Linking.openURL(data.url).catch(() => null);
-  }, [resolvedOwnerBusiness?.id, resolvedOwnerBusiness?.stripeAccountId]);
+  }, [resolveStripeBusiness]);
 
   const loadCashoutStatus = useCallback(
     async ({ silent } = {}) => {
@@ -2572,6 +2747,65 @@ export default function App() {
       setCashoutStatusState({ loading: false, error: null });
     },
     [isSignedIn],
+  );
+
+  const loadCashbackBalance = useCallback(
+    async ({ silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+      if (!isSignedIn || !authUserId) {
+        setCashbackBalance({
+          availableCents: 0,
+          paidCents: 0,
+          totalCents: 0,
+          updatedAt: Date.now(),
+        });
+        setCashbackBalanceState({ loading: false, error: null });
+        return;
+      }
+      if (!silent) {
+        setCashbackBalanceState({ loading: true, error: null });
+      }
+      const { data, error } = await supabase
+        .from("cashback_events")
+        .select("amount_cents, status")
+        .eq("user_id", authUserId);
+      if (error) {
+        setCashbackBalanceState({
+          loading: false,
+          error: error.message || "Unable to load cashback.",
+        });
+        return;
+      }
+      let availableCents = 0;
+      let paidCents = 0;
+      let totalCents = 0;
+      (Array.isArray(data) ? data : []).forEach((row) => {
+        const amount = Number(row?.amount_cents) || 0;
+        if (!amount) return;
+        totalCents += amount;
+        if (row?.status === "paid") {
+          paidCents += amount;
+          return;
+        }
+        if (row?.status === "available") {
+          availableCents += amount;
+        }
+      });
+      setCashbackBalance({
+        availableCents,
+        paidCents,
+        totalCents,
+        updatedAt: Date.now(),
+      });
+      if (!silent) {
+        setCashbackBalanceState({ loading: false, error: null });
+      } else {
+        setCashbackBalanceState((prev) =>
+          prev.error ? prev : { loading: false, error: null },
+        );
+      }
+    },
+    [authUserId, isSignedIn],
   );
 
   const handleCashoutConnect = useCallback(async () => {
@@ -2766,6 +3000,7 @@ export default function App() {
       let paidCents = 0;
       rows.forEach((row) => {
         const amount = Number(row?.amount_cents) || 0;
+        if (row?.status === "failed") return;
         totalCents += amount;
         if (row?.status === "pending") pendingCents += amount;
         if (row?.status === "paid") paidCents += amount;
@@ -3446,17 +3681,6 @@ export default function App() {
     offerTypeSuggestion &&
     offerTypeSuggestion.toLowerCase() !== offerForm.type.trim().toLowerCase();
 
-  const ownerBusiness = useMemo(() => {
-    if (authUserId) {
-      return (
-        businesses.find((business) => business.ownerId === authUserId) || null
-      );
-    }
-    if (!ownerBusinessId) return null;
-    return (
-      businesses.find((business) => business.id === ownerBusinessId) || null
-    );
-  }, [businesses, ownerBusinessId, authUserId]);
   const canRequestEdits =
     Boolean(ownerBusiness) && !ownerBusiness?.pendingEdits;
   const canEditBusiness = isEditingBusiness && !ownerBusiness?.pendingEdits;
@@ -3744,13 +3968,20 @@ export default function App() {
 
   useEffect(() => {
     if (!businesses.length) return;
+    if (authUserId) {
+      const owned = businesses.find((business) => business.ownerId === authUserId);
+      if (owned?.id && ownerBusinessId !== owned.id) {
+        setOwnerBusinessId(owned.id);
+      }
+      return;
+    }
     const exists = ownerBusinessId
       ? businesses.some((business) => business.id === ownerBusinessId)
       : false;
-    if (!exists) {
+    if (!exists && businesses[0]?.id) {
       setOwnerBusinessId(businesses[0].id);
     }
-  }, [businesses, ownerBusinessId]);
+  }, [businesses, ownerBusinessId, authUserId]);
 
   useEffect(() => {
     if (activeTab === "admin" && isAdmin) {
@@ -3807,8 +4038,27 @@ export default function App() {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
     if (activeTab === "cashout" && isSignedIn) {
       loadCashoutStatus({});
+      loadCashbackBalance({});
     }
-  }, [activeTab, isSignedIn, loadCashoutStatus, SUPABASE_URL, SUPABASE_ANON_KEY]);
+  }, [
+    activeTab,
+    isSignedIn,
+    loadCashoutStatus,
+    loadCashbackBalance,
+    SUPABASE_URL,
+    SUPABASE_ANON_KEY,
+  ]);
+
+  useEffect(() => {
+    if (isSignedIn && authUserId) return;
+    setCashbackBalance({
+      availableCents: 0,
+      paidCents: 0,
+      totalCents: 0,
+      updatedAt: Date.now(),
+    });
+    setCashbackBalanceState({ loading: false, error: null });
+  }, [authUserId, isSignedIn]);
 
   useEffect(() => {
     if (!qrExpandedId) return;
@@ -6011,11 +6261,13 @@ export default function App() {
   );
 
   const refreshAll = useCallback(
-    async ({ silent } = {}) => {
+    async ({ silent, force } = {}) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
       const now = Date.now();
       if (refreshInFlightRef.current) return;
-      if (now - lastRefreshRef.current < REFRESH_MIN_INTERVAL_MS) return;
+      if (!force && now - lastRefreshRef.current < REFRESH_MIN_INTERVAL_MS) {
+        return;
+      }
       refreshInFlightRef.current = true;
       lastRefreshRef.current = now;
       if (!silent) {
@@ -6048,15 +6300,6 @@ export default function App() {
 
   const handleRefresh = useCallback(() => {
     refreshAll({ silent: false });
-  }, [refreshAll]);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") {
-        refreshAll({ silent: true });
-      }
-    });
-    return () => subscription.remove();
   }, [refreshAll]);
 
   const loadPendingOffers = useCallback(async () => {
@@ -7017,6 +7260,184 @@ export default function App() {
     },
     [authUserId],
   );
+
+  const refreshLiveData = useCallback(
+    async ({ silent, force } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+      if (liveSyncRef.current.inFlight) return;
+      liveSyncRef.current.inFlight = true;
+      try {
+        await refreshAll({ silent: true, force: Boolean(force) });
+        if (isSignedIn) {
+          await Promise.all([
+            loadRedemptions({ silent: true }),
+            loadUserReviews({ silent: true }),
+            loadCashbackBalance({ silent: true }),
+          ]);
+        }
+        const targetBusinessId =
+          resolvedOwnerBusiness?.id || ownerBusinessId;
+        if (isOwner && targetBusinessId) {
+          await Promise.all([
+            loadOwnerAnalytics(targetBusinessId, { silent: true }),
+            loadBillingMetrics(targetBusinessId, { silent: true }),
+            loadBusinessReceipts(targetBusinessId, { silent: true }),
+            loadBusinessRedemptions(targetBusinessId, { silent: true }),
+            loadOwnerOffers(targetBusinessId, { silent: true }),
+          ]);
+        }
+      } finally {
+        liveSyncRef.current.inFlight = false;
+      }
+    },
+    [
+      refreshAll,
+      isSignedIn,
+      isOwner,
+      resolvedOwnerBusiness?.id,
+      ownerBusinessId,
+      loadRedemptions,
+      loadUserReviews,
+      loadCashbackBalance,
+      loadOwnerAnalytics,
+      loadBillingMetrics,
+      loadBusinessReceipts,
+      loadBusinessRedemptions,
+      loadOwnerOffers,
+    ],
+  );
+
+  const scheduleLiveRefresh = useCallback(() => {
+    if (liveSyncRef.current.debounce) return;
+    liveSyncRef.current.debounce = setTimeout(() => {
+      liveSyncRef.current.debounce = null;
+      refreshLiveData({ silent: true });
+    }, LIVE_DEBOUNCE_MS);
+  }, [refreshLiveData]);
+
+  useEffect(() => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !supabase) return;
+    if (liveSyncRef.current.channel) {
+      liveSyncRef.current.channel.unsubscribe();
+      liveSyncRef.current.channel = null;
+    }
+    const channel = supabase.channel("wello-live");
+    const handleChange = () => scheduleLiveRefresh();
+    channel.on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "businesses" },
+      handleChange,
+    );
+    channel.on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "offers" },
+      handleChange,
+    );
+    channel.on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "reviews" },
+      handleChange,
+    );
+    if (authUserId) {
+      channel.on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "redemptions",
+          filter: `scanned_by=eq.${authUserId}`,
+        },
+        handleChange,
+      );
+      channel.on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "receipt_uploads",
+          filter: `user_id=eq.${authUserId}`,
+        },
+        handleChange,
+      );
+      channel.on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "cashback_events",
+          filter: `user_id=eq.${authUserId}`,
+        },
+        handleChange,
+      );
+    }
+    const targetBusinessId =
+      resolvedOwnerBusiness?.id || ownerBusinessId;
+    if (targetBusinessId) {
+      channel.on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "receipt_uploads",
+          filter: `business_id=eq.${targetBusinessId}`,
+        },
+        handleChange,
+      );
+      channel.on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "commission_events",
+          filter: `business_id=eq.${targetBusinessId}`,
+        },
+        handleChange,
+      );
+    }
+    channel.subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        scheduleLiveRefresh();
+      }
+    });
+    liveSyncRef.current.channel = channel;
+    return () => {
+      channel.unsubscribe();
+      if (liveSyncRef.current.channel === channel) {
+        liveSyncRef.current.channel = null;
+      }
+    };
+  }, [
+    authUserId,
+    resolvedOwnerBusiness?.id,
+    ownerBusinessId,
+    scheduleLiveRefresh,
+  ]);
+
+  useEffect(() => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    if (liveSyncRef.current.interval) {
+      clearInterval(liveSyncRef.current.interval);
+    }
+    liveSyncRef.current.interval = setInterval(() => {
+      if (AppState.currentState !== "active") return;
+      refreshLiveData({ silent: true });
+    }, LIVE_POLL_MS);
+    return () => {
+      if (liveSyncRef.current.interval) {
+        clearInterval(liveSyncRef.current.interval);
+        liveSyncRef.current.interval = null;
+      }
+    };
+  }, [refreshLiveData]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        refreshLiveData({ silent: true, force: true });
+      }
+    });
+    return () => subscription.remove();
+  }, [refreshLiveData]);
 
   const loadBusinessReviews = useCallback(
     async (businessId, { silent } = {}) => {
@@ -9154,14 +9575,15 @@ export default function App() {
                       <View style={styles.sectionBlock}>
                         <Text style={styles.sectionTitleAlt}>Payments</Text>
                         <Text style={styles.sectionBody}>
-                            Commission: {COMMISSION_RATE_PERCENT}% of each
-                            verified receipt total. Billed monthly. Wello
-                            covers processing fees.
-                          </Text>
-                          <Text style={styles.sectionBody}>
-                            Billing portal is for payment methods and invoices
-                            (not earnings).
-                          </Text>
+                          Commission: {COMMISSION_RATE_PERCENT}% of each
+                          verified receipt total, with{" "}
+                          {CASHBACK_RATE_PERCENT}% returned to customers as
+                          cashback. Billed monthly.
+                        </Text>
+                        <Text style={styles.sectionBody}>
+                          Billing portal is for payment methods and invoices
+                          (not earnings).
+                        </Text>
                       </View>
                       <View style={styles.paymentCard}>
                         <View style={styles.paymentRow}>
@@ -9204,17 +9626,7 @@ export default function App() {
                           </View>
                           <View style={styles.paymentRow}>
                             <Text style={styles.paymentLabel}>
-                              Verified sales (this month)
-                            </Text>
-                            <Text style={styles.paymentAmount}>
-                              {formatCurrencyFromCents(
-                                billingMetrics.verifiedMonthCents,
-                              )}
-                            </Text>
-                          </View>
-                          <View style={styles.paymentRow}>
-                            <Text style={styles.paymentLabel}>
-                              Verified sales (total)
+                              Gross income
                             </Text>
                             <Text style={styles.paymentAmount}>
                               {formatCurrencyFromCents(
@@ -9223,32 +9635,20 @@ export default function App() {
                             </Text>
                           </View>
                           <View style={styles.paymentRow}>
-                            <Text style={styles.paymentLabel}>
-                              Commission accrued this month
-                            </Text>
+                            <Text style={styles.paymentLabel}>Charges</Text>
                             <Text style={styles.paymentAmount}>
-                              {formatCurrencyFromCents(
-                                billingMetrics.monthCents,
-                              )}
+                              {formatCurrencyFromCents(billingMetrics.totalCents)}
                             </Text>
                           </View>
                           <View style={styles.paymentRow}>
-                            <Text style={styles.paymentLabel}>
-                              Commission paid
-                            </Text>
+                            <Text style={styles.paymentLabel}>Net income</Text>
                             <Text style={styles.paymentAmount}>
                               {formatCurrencyFromCents(
-                                billingMetrics.paidCents,
-                              )}
-                            </Text>
-                          </View>
-                          <View style={styles.paymentRow}>
-                            <Text style={styles.paymentLabel}>
-                              Pending charges
-                            </Text>
-                            <Text style={styles.paymentAmount}>
-                              {formatCurrencyFromCents(
-                                billingMetrics.pendingCents,
+                                Math.max(
+                                  0,
+                                  (Number(billingMetrics.verifiedGrossCents) || 0) -
+                                    (Number(billingMetrics.totalCents) || 0),
+                                ),
                               )}
                             </Text>
                           </View>
@@ -9262,33 +9662,38 @@ export default function App() {
                               {billingStatus.error}
                             </Text>
                           )}
-                          <TouchableOpacity
-                            style={[
-                              styles.primaryButton,
-                              stripeActionStatus.loading &&
-                                styles.primaryButtonDisabled,
-                          ]}
-                          onPress={handleStripeConnect}
-                          disabled={stripeActionStatus.loading}
-                        >
-                          <Text style={styles.primaryButtonText}>
-                            Connect Stripe
-                          </Text>
-                        </TouchableOpacity>
-                          <TouchableOpacity
-                            style={[
-                              styles.secondaryButton,
-                              stripeActionStatus.loading &&
-                                styles.secondaryButtonDisabled,
-                            ]}
-                            onPress={handleStripePaymentSetup}
-                            disabled={stripeActionStatus.loading}
-                          >
-                            <Text style={styles.secondaryButtonText}>
-                              Add payment method
-                            </Text>
-                          </TouchableOpacity>
-                          {resolvedOwnerBusiness?.stripeAccountId && (
+                          {!resolvedOwnerBusiness?.stripeAccountId && (
+                            <TouchableOpacity
+                              style={[
+                                styles.primaryButton,
+                                stripeActionStatus.loading &&
+                                  styles.primaryButtonDisabled,
+                              ]}
+                              onPress={handleStripeConnect}
+                              disabled={stripeActionStatus.loading}
+                            >
+                              <Text style={styles.primaryButtonText}>
+                                Connect Stripe
+                              </Text>
+                            </TouchableOpacity>
+                          )}
+                          {!resolvedOwnerBusiness?.stripePaymentMethodId && (
+                            <TouchableOpacity
+                              style={[
+                                styles.secondaryButton,
+                                stripeActionStatus.loading &&
+                                  styles.secondaryButtonDisabled,
+                              ]}
+                              onPress={handleStripePaymentSetup}
+                              disabled={stripeActionStatus.loading}
+                            >
+                              <Text style={styles.secondaryButtonText}>
+                                Add payment method
+                              </Text>
+                            </TouchableOpacity>
+                          )}
+                          {(resolvedOwnerBusiness?.stripeCustomerId ||
+                            resolvedOwnerBusiness?.stripePaymentMethodId) && (
                             <TouchableOpacity
                               style={[
                                 styles.secondaryButton,
@@ -9299,9 +9704,9 @@ export default function App() {
                               disabled={stripeActionStatus.loading}
                             >
                               <Text style={styles.secondaryButtonText}>
-                              Billing portal
-                            </Text>
-                          </TouchableOpacity>
+                                Billing portal
+                              </Text>
+                            </TouchableOpacity>
                           )}
                           {stripeActionStatus.error && (
                             <Text style={styles.formError}>
@@ -10708,12 +11113,33 @@ export default function App() {
                                 Cashback balance
                               </Text>
                               <Text style={styles.pointsValue}>
-                                {formatCurrencyFromCents(0)}
+                                {formatCurrencyFromCents(
+                                  cashbackBalance.availableCents,
+                                )}
                               </Text>
                             </View>
                             <Text style={styles.pointsMeta}>
-                              Verified receipts only.
+                              Verified receipts only. {CASHBACK_RATE_PERCENT}%
+                              cashback per approved receipt.
                             </Text>
+                            {cashbackBalance.paidCents > 0 && (
+                              <Text style={styles.formHint}>
+                                Paid out:{" "}
+                                {formatCurrencyFromCents(
+                                  cashbackBalance.paidCents,
+                                )}
+                              </Text>
+                            )}
+                            {cashbackBalanceState.loading && (
+                              <Text style={styles.formHint}>
+                                Updating cashback...
+                              </Text>
+                            )}
+                            {cashbackBalanceState.error && (
+                              <Text style={styles.formError}>
+                                {cashbackBalanceState.error}
+                              </Text>
+                            )}
                           </View>
                           <View style={styles.sectionBlock}>
                             <Text style={styles.sectionTitleAlt}>

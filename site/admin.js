@@ -1,7 +1,6 @@
 const config = window.WELLO_CONFIG || {};
 const supabaseUrl = config.supabaseUrl || "";
 const supabaseAnonKey = config.supabaseAnonKey || "";
-const supabaseLegacyAnonKey = config.supabaseLegacyAnonKey || "";
 
 const ui = {
   authPanel: document.getElementById("auth-panel"),
@@ -35,6 +34,7 @@ const ui = {
   detailOpen: document.getElementById("detail-open"),
   detailTotal: document.getElementById("detail-total"),
   detailCommission: document.getElementById("detail-commission"),
+  detailCashback: document.getElementById("detail-cashback"),
   detailStatusSelect: document.getElementById("detail-status-select"),
   detailNotes: document.getElementById("detail-notes"),
   detailSave: document.getElementById("detail-save"),
@@ -75,7 +75,13 @@ const refreshState = {
   inFlight: false,
   timer: null,
 };
+const liveState = {
+  channel: null,
+  debounce: null,
+};
 const AUTO_REFRESH_MS = 30000;
+const LIVE_DEBOUNCE_MS = 1200;
+const CASHBACK_RATE = 0.05;
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -101,43 +107,59 @@ const formatDateTime = (value) => {
 };
 
 const callR2Presign = async ({ action, key, accessToken }) => {
-  if (!supabaseUrl || !supabaseAnonKey) {
+  if (!supabaseClient) {
     return { data: null, error: "Supabase is not configured." };
   }
   if (!accessToken) {
     return { data: null, error: "Missing access token." };
   }
-  const response = await fetch(
-    `${supabaseUrl.replace(/\/+$/, "")}/functions/v1/r2-presign`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${supabaseLegacyAnonKey || accessToken}`,
-        apikey: supabaseLegacyAnonKey || supabaseAnonKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ action, key, accessToken }),
+  const response = await supabaseClient.functions.invoke("r2-presign", {
+    body: { action, key },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
     },
-  );
-  const raw = await response.text();
+  });
+  if (!response?.error) {
+    let parsedData = response?.data ?? null;
+    if (typeof parsedData === "string") {
+      try {
+        parsedData = parsedData ? JSON.parse(parsedData) : null;
+      } catch {
+        parsedData = response?.data ?? null;
+      }
+    }
+    return { data: parsedData, error: null };
+  }
+  const err = response.error;
+  const context = err?.context;
+  let raw = "";
   let parsed = null;
+  if (context?.text) {
+    try {
+      raw = await context.text();
+    } catch {
+      raw = "";
+    }
+  }
   try {
     parsed = raw ? JSON.parse(raw) : null;
   } catch {
     parsed = null;
   }
-  if (!response.ok) {
-    console.warn("r2-presign failed", { status: response.status, raw });
-    return {
-      data: null,
-      error:
-        parsed?.error ||
-        parsed?.message ||
-        raw ||
-        `R2 presign failed (${response.status}).`,
-    };
-  }
-  return { data: parsed, error: null };
+  const status = context?.status ?? null;
+  console.warn("r2-presign failed", {
+    status,
+    message: err?.message,
+    raw,
+  });
+  return {
+    data: null,
+    error:
+      parsed?.error ||
+      parsed?.message ||
+      err?.message ||
+      (status ? `R2 presign failed (${status}).` : "R2 presign failed."),
+  };
 };
 
 const parseMoneyToCents = (value) => {
@@ -145,6 +167,11 @@ const parseMoneyToCents = (value) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return null;
   return Math.round(parsed * 100);
+};
+
+const calculateCashbackCents = (totalCents) => {
+  if (!Number.isFinite(totalCents) || totalCents <= 0) return 0;
+  return Math.round(totalCents * CASHBACK_RATE);
 };
 
 const updateStatusPill = (el, status) => {
@@ -192,6 +219,7 @@ const resetDetail = () => {
   updateStatusPill(ui.detailStatus, "pending");
   ui.detailTotal.value = "";
   ui.detailCommission.value = "";
+  ui.detailCashback.value = "";
   ui.detailStatusSelect.value = "pending";
   ui.detailNotes.value = "";
   setDetailError("");
@@ -215,7 +243,7 @@ const requireStaff = async () => {
   }
   if (!["admin", "supervisor"].includes(data.role)) {
     setAuthError("This account does not have admin access.");
-    await supabase.auth.signOut();
+    await supabaseClient.auth.signOut();
     return false;
   }
   state.profile = data;
@@ -302,6 +330,43 @@ const stopAutoRefresh = () => {
   }
 };
 
+const scheduleLiveRefresh = () => {
+  if (liveState.debounce) return;
+  liveState.debounce = setTimeout(() => {
+    liveState.debounce = null;
+    refreshAll({ silent: true });
+  }, LIVE_DEBOUNCE_MS);
+};
+
+const startLiveRefresh = () => {
+  if (!supabaseClient || liveState.channel) return;
+  const channel = supabaseClient.channel("admin-receipts-live");
+  const handleChange = () => scheduleLiveRefresh();
+  channel.on(
+    "postgres_changes",
+    { event: "*", schema: "public", table: "receipt_uploads" },
+    handleChange,
+  );
+  channel.on(
+    "postgres_changes",
+    { event: "*", schema: "public", table: "commission_events" },
+    handleChange,
+  );
+  channel.subscribe();
+  liveState.channel = channel;
+};
+
+const stopLiveRefresh = () => {
+  if (liveState.debounce) {
+    clearTimeout(liveState.debounce);
+    liveState.debounce = null;
+  }
+  if (liveState.channel) {
+    liveState.channel.unsubscribe();
+    liveState.channel = null;
+  }
+};
+
 const applyFilters = () => {
   const search = (ui.filterSearch.value || "").toLowerCase().trim();
   const status = ui.filterStatus.value;
@@ -353,6 +418,9 @@ const renderReceipts = () => {
       <td>${formatDate(receipt.uploaded_at)}</td>
       <td>${formatCurrency(receipt.receipt_total_cents)}</td>
       <td>${formatCurrency(receipt.commission_due_cents)}</td>
+      <td>${formatCurrency(
+        calculateCashbackCents(Number(receipt.receipt_total_cents) || 0),
+      )}</td>
       <td><span class="status-pill ${receipt.review_status || "pending"}">${receipt.review_status || "pending"}</span></td>
     `;
     row.addEventListener("click", () => selectReceipt(receipt.id));
@@ -381,6 +449,11 @@ const selectReceipt = async (receiptId) => {
     receipt.commission_due_cents != null
       ? (receipt.commission_due_cents / 100).toFixed(2)
       : "";
+  const cashbackCents = calculateCashbackCents(
+    Number(receipt.receipt_total_cents) || 0,
+  );
+  ui.detailCashback.value =
+    receipt.receipt_total_cents != null ? (cashbackCents / 100).toFixed(2) : "";
   ui.detailNotes.value = receipt.review_notes || "";
   setDetailError("");
   await loadReceiptImage(receipt);
@@ -460,10 +533,13 @@ const renderBusinessSummary = () => {
       count: 0,
       gross: 0,
       commission: 0,
+      cashback: 0,
     };
     current.count += 1;
-    current.gross += receipt.receipt_total_cents || 0;
-    current.commission += receipt.commission_due_cents || 0;
+    const totalCents = Number(receipt.receipt_total_cents) || 0;
+    current.gross += totalCents;
+    current.commission += Number(receipt.commission_due_cents) || 0;
+    current.cashback += calculateCashbackCents(totalCents);
     totals.set(businessName, current);
   });
   ui.businessSummary.innerHTML = "";
@@ -475,6 +551,7 @@ const renderBusinessSummary = () => {
       <p>${data.count} receipts</p>
       <p>Gross: ${formatCurrency(data.gross)}</p>
       <p>Commission: ${formatCurrency(data.commission)}</p>
+      <p>Customer cashback: ${formatCurrency(data.cashback)}</p>
     `;
     ui.businessSummary.appendChild(item);
   });
@@ -607,6 +684,7 @@ const exportCsv = () => {
       "Uploaded",
       "Receipt total",
       "Commission due",
+      "Customer cashback",
       "Status",
     ],
     ...state.filtered.map((receipt) => [
@@ -615,6 +693,7 @@ const exportCsv = () => {
       formatDateTime(receipt.uploaded_at),
       (receipt.receipt_total_cents || 0) / 100,
       (receipt.commission_due_cents || 0) / 100,
+      calculateCashbackCents(Number(receipt.receipt_total_cents) || 0) / 100,
       receipt.review_status || "pending",
     ]),
   ];
@@ -682,11 +761,15 @@ const attachListeners = () => {
     const totalCents = parseMoneyToCents(ui.detailTotal.value);
     if (totalCents == null) {
       ui.detailCommission.value = "";
+      ui.detailCashback.value = "";
       return;
     }
     const rate = (Number(ui.filterRate.value) || state.defaultRate) / 100;
     const commissionCents = Math.round(totalCents * rate);
     ui.detailCommission.value = (commissionCents / 100).toFixed(2);
+    ui.detailCashback.value = (calculateCashbackCents(totalCents) / 100).toFixed(
+      2,
+    );
   });
 
   ui.detailSave.addEventListener("click", () => saveReceipt());
@@ -729,6 +812,7 @@ const init = async () => {
       setAuthUI(true);
       await refreshAll({ silent: true });
       startAutoRefresh();
+      startLiveRefresh();
     }
   } else {
     setAuthUI(false);
@@ -742,11 +826,13 @@ const init = async () => {
         setAuthUI(true);
         await refreshAll({ silent: true });
         startAutoRefresh();
+        startLiveRefresh();
       }
     } else {
       setAuthUI(false);
       resetDetail();
       stopAutoRefresh();
+      stopLiveRefresh();
     }
   });
 
