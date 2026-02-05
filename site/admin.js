@@ -350,6 +350,8 @@ const requireStaff = async () => {
 
 const loadBusinesses = async () => {
   if (!supabaseClient) return;
+  const selectedFilter = ui.filterBusiness.value;
+  const selectedTest = ui.testBusiness ? ui.testBusiness.value : "";
   const { data, error } = await supabaseClient
     .from("businesses")
     .select("id, name")
@@ -375,6 +377,12 @@ const loadBusinesses = async () => {
       ui.testBusiness.appendChild(testOption);
     }
   });
+  if (selectedFilter && selectedFilter !== "all") {
+    ui.filterBusiness.value = selectedFilter;
+  }
+  if (ui.testBusiness && selectedTest) {
+    ui.testBusiness.value = selectedTest;
+  }
 };
 
 const loadReceipts = async () => {

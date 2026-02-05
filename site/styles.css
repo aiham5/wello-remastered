@@ -543,6 +543,21 @@ h1 {
   margin-top: 8px;
 }
 
+.advanced {
+  margin: 12px 0 6px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px dashed var(--line);
+  background: #fff;
+}
+
+.advanced summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--slate);
+  margin-bottom: 10px;
+}
+
 .test-label {
   text-transform: uppercase;
   letter-spacing: 0.08em;
