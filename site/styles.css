@@ -511,6 +511,31 @@ h1 {
   margin-top: 12px;
 }
 
+.test-metrics {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  margin: 14px 0;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--frost);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.test-metrics div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.test-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+}
+
 .summary-item {
   display: grid;
   gap: 6px;

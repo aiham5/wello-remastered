@@ -48,6 +48,9 @@ const ui = {
   testRedemption: document.getElementById("test-redemption"),
   testCreate: document.getElementById("test-create"),
   testStatus: document.getElementById("test-status"),
+  testPeriod: document.getElementById("test-period"),
+  testPending: document.getElementById("test-pending"),
+  testInvoiced: document.getElementById("test-invoiced"),
   imageModal: document.getElementById("image-modal"),
   imageModalImg: document.getElementById("image-modal-img"),
   imageModalClose: document.getElementById("image-modal-close"),
@@ -219,6 +222,20 @@ const setTestStatus = (message, isError = false) => {
   ui.testStatus.textContent = message || "";
   ui.testStatus.style.color = isError ? "var(--danger)" : "var(--muted)";
 };
+
+const getBillingPeriodForDate = (dateValue) => {
+  const date = dateValue
+    ? new Date(`${dateValue}T12:00:00Z`)
+    : new Date();
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  const start = new Date(Date.UTC(year, month, 1));
+  const end = new Date(Date.UTC(year, month + 1, 1));
+  return { start, end };
+};
+
+const formatPeriodLabel = ({ start, end }) =>
+  `${start.toISOString().slice(0, 10)} to ${end.toISOString().slice(0, 10)}`;
 
 const resetDetail = () => {
   state.selected = null;
@@ -615,6 +632,98 @@ const getDefaultTestDate = () => {
   return date.toISOString().slice(0, 10);
 };
 
+const loadTestCharges = async () => {
+  if (!supabaseClient || !ui.testBusiness) return;
+  const businessId = ui.testBusiness.value || "";
+  const period = getBillingPeriodForDate(ui.testDate?.value || "");
+  if (ui.testPeriod) {
+    ui.testPeriod.textContent = formatPeriodLabel(period);
+  }
+  if (!businessId) {
+    if (ui.testPending) ui.testPending.textContent = "$0.00";
+    if (ui.testInvoiced) ui.testInvoiced.textContent = "$0.00";
+    return;
+  }
+  const { data, error } = await supabaseClient
+    .from("commission_events")
+    .select("amount_cents, status, created_at")
+    .eq("business_id", businessId)
+    .gte("created_at", period.start.toISOString())
+    .lt("created_at", period.end.toISOString());
+  if (error) {
+    setTestStatus(error.message || "Unable to load charges.", true);
+    return;
+  }
+  const rows = data || [];
+  const pendingCents = rows
+    .filter((row) => row.status === "pending")
+    .reduce((sum, row) => sum + (Number(row.amount_cents) || 0), 0);
+  const invoicedCents = rows
+    .filter((row) => row.status === "invoiced" || row.status === "paid")
+    .reduce((sum, row) => sum + (Number(row.amount_cents) || 0), 0);
+  if (ui.testPending) ui.testPending.textContent = formatCurrency(pendingCents);
+  if (ui.testInvoiced)
+    ui.testInvoiced.textContent = formatCurrency(invoicedCents);
+};
+
+const runTestInvoice = async ({ businessId, period }) => {
+  if (!supabaseClient) {
+    setTestStatus("Supabase is not configured.", true);
+    return null;
+  }
+  let session = state.session;
+  if (!session?.access_token) {
+    const refresh = await supabaseClient.auth.refreshSession();
+    session = refresh?.data?.session || null;
+    state.session = session;
+  }
+  if (!session?.access_token) {
+    setTestStatus("Session missing. Please sign in again.", true);
+    return null;
+  }
+
+  const response = await supabaseClient.functions.invoke(
+    "admin-run-monthly-invoices",
+    {
+      body: {
+        businessId,
+        periodStart: period.start.toISOString(),
+        periodEnd: period.end.toISOString(),
+      },
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    },
+  );
+
+  if (!response?.error) {
+    return response.data || {};
+  }
+  const context = response.error?.context;
+  let raw = "";
+  if (context?.text) {
+    try {
+      raw = await context.text();
+    } catch {
+      raw = "";
+    }
+  }
+  let parsed = null;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    parsed = null;
+  }
+  setTestStatus(
+    parsed?.error ||
+      parsed?.message ||
+      response.error?.message ||
+      "Unable to run invoice.",
+    true,
+  );
+  return null;
+};
+
 const createTestEvent = async () => {
   if (!supabaseClient) {
     setTestStatus("Supabase is not configured.", true);
@@ -624,6 +733,7 @@ const createTestEvent = async () => {
   const amountCents = parseMoneyToCents(ui.testAmount?.value);
   const eventDate = ui.testDate?.value || "";
   const redemptionId = ui.testRedemption?.value?.trim() || "";
+  const period = getBillingPeriodForDate(eventDate);
 
   if (!businessId) {
     setTestStatus("Select a business.", true);
@@ -662,11 +772,17 @@ const createTestEvent = async () => {
       },
     );
     if (!response?.error) {
-      const parsed = response.data || {};
-      setTestStatus(
-        `Created test event (${formatCurrency(parsed.amountCents || amountCents)}).`,
-      );
+      setTestStatus("Test event created. Sending invoice to Stripe...");
+      const invoiceResult = await runTestInvoice({ businessId, period });
+      if (invoiceResult?.invoiceId) {
+        setTestStatus(
+          `Invoice sent: ${formatCurrency(invoiceResult.totalCents || 0)} (ID ${invoiceResult.invoiceId}).`,
+        );
+      } else if (invoiceResult?.totalCents === 0) {
+        setTestStatus("No pending charges to invoice for this period.");
+      }
       await refreshAll({ silent: true });
+      await loadTestCharges();
       return;
     }
     const context = response.error?.context;
@@ -869,6 +985,12 @@ const attachListeners = () => {
   ui.filterRate.addEventListener("input", () => {
     state.defaultRate = Number(ui.filterRate.value) || state.defaultRate;
   });
+  if (ui.testBusiness) {
+    ui.testBusiness.addEventListener("change", loadTestCharges);
+  }
+  if (ui.testDate) {
+    ui.testDate.addEventListener("change", loadTestCharges);
+  }
 
   ui.detailTotal.addEventListener("input", () => {
     const totalCents = parseMoneyToCents(ui.detailTotal.value);
@@ -940,6 +1062,7 @@ const init = async () => {
     if (ok) {
       setAuthUI(true);
       await refreshAll({ silent: true });
+      await loadTestCharges();
       startAutoRefresh();
       startLiveRefresh();
     }
@@ -954,6 +1077,7 @@ const init = async () => {
       if (ok) {
         setAuthUI(true);
         await refreshAll({ silent: true });
+        await loadTestCharges();
         startAutoRefresh();
         startLiveRefresh();
       }

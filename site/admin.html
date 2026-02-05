@@ -227,9 +227,10 @@
               <div class="summary-list" id="business-summary"></div>
             </div>
             <div class="summary-card">
-              <h3>Test billing event</h3>
+              <h3>Test monthly billing</h3>
               <p class="notice">
-                Create a test commission event to validate monthly invoicing.
+                Create a test commission event and send an invoice to Stripe for
+                the selected period.
               </p>
               <div class="form-grid">
                 <label class="field">
@@ -251,9 +252,23 @@
                   <input id="test-redemption" type="text" />
                 </label>
               </div>
+              <div class="test-metrics">
+                <div>
+                  <span class="test-label">Billing period</span>
+                  <span id="test-period">--</span>
+                </div>
+                <div>
+                  <span class="test-label">Pending charges</span>
+                  <span id="test-pending">$0.00</span>
+                </div>
+                <div>
+                  <span class="test-label">Invoiced</span>
+                  <span id="test-invoiced">$0.00</span>
+                </div>
+              </div>
               <div class="cta-row">
                 <button class="button secondary" id="test-create">
-                  Create test event
+                  Create test event & invoice
                 </button>
               </div>
               <p class="notice" id="test-status"></p>
@@ -274,8 +289,8 @@
       </div>
     </div>
 
-    <script src="/admin-config.js?v=20260206a"></script>
+    <script src="/admin-config.js?v=20260206b"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="/admin.js?v=20260206a" defer></script>
+    <script src="/admin.js?v=20260206b" defer></script>
   </body>
 </html>
