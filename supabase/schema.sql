@@ -365,8 +365,8 @@ as $$
 declare
   cashback_cents integer := 0;
 begin
-  if coalesce(new.receipt_total_cents, 0) > 0 then
-    cashback_cents := round((new.receipt_total_cents::numeric) * 0.05)::integer;
+  if coalesce(new.commission_due_cents, 0) > 0 then
+    cashback_cents := round((new.commission_due_cents::numeric) * 0.05)::integer;
   end if;
 
   if new.review_status = 'verified'
@@ -556,11 +556,11 @@ select
   ru.redemption_id,
   ru.business_id,
   ru.user_id,
-  round((ru.receipt_total_cents::numeric) * 0.05)::integer,
+  round((ru.commission_due_cents::numeric) * 0.05)::integer,
   'available'
 from public.receipt_uploads ru
 where ru.review_status = 'verified'
-  and coalesce(ru.receipt_total_cents, 0) > 0
+  and coalesce(ru.commission_due_cents, 0) > 0
 on conflict (receipt_upload_id) do update
   set amount_cents = case
         when cashback_events.status = 'paid'

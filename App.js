@@ -9577,8 +9577,8 @@ export default function App() {
                         <Text style={styles.sectionBody}>
                           Commission: {COMMISSION_RATE_PERCENT}% of each
                           verified receipt total, with{" "}
-                          {CASHBACK_RATE_PERCENT}% returned to customers as
-                          cashback. Billed monthly.
+                          {CASHBACK_RATE_PERCENT}% of that commission returned
+                          to customers as cashback. Billed monthly.
                         </Text>
                         <Text style={styles.sectionBody}>
                           Billing portal is for payment methods and invoices
@@ -11120,7 +11120,7 @@ export default function App() {
                             </View>
                             <Text style={styles.pointsMeta}>
                               Verified receipts only. {CASHBACK_RATE_PERCENT}%
-                              cashback per approved receipt.
+                              of commission is paid as cashback.
                             </Text>
                             {cashbackBalance.paidCents > 0 && (
                               <Text style={styles.formHint}>

@@ -169,9 +169,9 @@ const parseMoneyToCents = (value) => {
   return Math.round(parsed * 100);
 };
 
-const calculateCashbackCents = (totalCents) => {
-  if (!Number.isFinite(totalCents) || totalCents <= 0) return 0;
-  return Math.round(totalCents * CASHBACK_RATE);
+const calculateCashbackCents = (commissionCents) => {
+  if (!Number.isFinite(commissionCents) || commissionCents <= 0) return 0;
+  return Math.round(commissionCents * CASHBACK_RATE);
 };
 
 const updateStatusPill = (el, status) => {
@@ -419,7 +419,7 @@ const renderReceipts = () => {
       <td>${formatCurrency(receipt.receipt_total_cents)}</td>
       <td>${formatCurrency(receipt.commission_due_cents)}</td>
       <td>${formatCurrency(
-        calculateCashbackCents(Number(receipt.receipt_total_cents) || 0),
+        calculateCashbackCents(Number(receipt.commission_due_cents) || 0),
       )}</td>
       <td><span class="status-pill ${receipt.review_status || "pending"}">${receipt.review_status || "pending"}</span></td>
     `;
@@ -450,10 +450,10 @@ const selectReceipt = async (receiptId) => {
       ? (receipt.commission_due_cents / 100).toFixed(2)
       : "";
   const cashbackCents = calculateCashbackCents(
-    Number(receipt.receipt_total_cents) || 0,
+    Number(receipt.commission_due_cents) || 0,
   );
   ui.detailCashback.value =
-    receipt.receipt_total_cents != null ? (cashbackCents / 100).toFixed(2) : "";
+    receipt.commission_due_cents != null ? (cashbackCents / 100).toFixed(2) : "";
   ui.detailNotes.value = receipt.review_notes || "";
   setDetailError("");
   await loadReceiptImage(receipt);
@@ -539,7 +539,9 @@ const renderBusinessSummary = () => {
     const totalCents = Number(receipt.receipt_total_cents) || 0;
     current.gross += totalCents;
     current.commission += Number(receipt.commission_due_cents) || 0;
-    current.cashback += calculateCashbackCents(totalCents);
+    current.cashback += calculateCashbackCents(
+      Number(receipt.commission_due_cents) || 0,
+    );
     totals.set(businessName, current);
   });
   ui.businessSummary.innerHTML = "";
@@ -693,7 +695,7 @@ const exportCsv = () => {
       formatDateTime(receipt.uploaded_at),
       (receipt.receipt_total_cents || 0) / 100,
       (receipt.commission_due_cents || 0) / 100,
-      calculateCashbackCents(Number(receipt.receipt_total_cents) || 0) / 100,
+      calculateCashbackCents(Number(receipt.commission_due_cents) || 0) / 100,
       receipt.review_status || "pending",
     ]),
   ];
@@ -767,7 +769,17 @@ const attachListeners = () => {
     const rate = (Number(ui.filterRate.value) || state.defaultRate) / 100;
     const commissionCents = Math.round(totalCents * rate);
     ui.detailCommission.value = (commissionCents / 100).toFixed(2);
-    ui.detailCashback.value = (calculateCashbackCents(totalCents) / 100).toFixed(
+    ui.detailCashback.value = (calculateCashbackCents(commissionCents) / 100).toFixed(
+      2,
+    );
+  });
+  ui.detailCommission.addEventListener("input", () => {
+    const commissionCents = parseMoneyToCents(ui.detailCommission.value);
+    if (commissionCents == null) {
+      ui.detailCashback.value = "";
+      return;
+    }
+    ui.detailCashback.value = (calculateCashbackCents(commissionCents) / 100).toFixed(
       2,
     );
   });
