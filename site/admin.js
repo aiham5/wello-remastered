@@ -131,7 +131,7 @@ const supabaseClient =
     ? window.supabase.createClient(supabaseUrl, supabaseAnonKey, {
         auth: {
           persistSession: true,
-          autoRefreshToken: true,
+          autoRefreshToken: false,
         },
       })
     : null;
@@ -1469,6 +1469,9 @@ const init = async () => {
     data: { session },
   } = await supabaseClient.auth.getSession();
   state.session = session;
+  if (!state.session?.access_token) {
+    await ensureSession();
+  }
   logDebug("init session", {
     hasSession: Boolean(session?.access_token),
     userId: session?.user?.id || null,
