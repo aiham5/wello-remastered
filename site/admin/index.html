@@ -153,6 +153,7 @@
                       <th>Uploaded</th>
                       <th>Total</th>
                       <th>Commission</th>
+                      <th>Cashback</th>
                       <th>Status</th>
                     </tr>
                   </thead>
@@ -191,6 +192,10 @@
                     <input id="detail-commission" type="number" step="0.01" />
                   </label>
                   <label class="field">
+                    <span>Customer cashback (5% of commission)</span>
+                    <input id="detail-cashback" type="number" step="0.01" readonly />
+                  </label>
+                  <label class="field">
                     <span>Status</span>
                     <select id="detail-status-select">
                       <option value="pending">Pending</option>
@@ -221,12 +226,76 @@
               <h3>Business totals</h3>
               <div class="summary-list" id="business-summary"></div>
             </div>
+              <div class="summary-card">
+                <h3>Invoice charger</h3>
+                <p class="notice">
+                  Charge the selected business for all pending commissions in the
+                  chosen billing period.
+                </p>
+                <div class="form-grid">
+                  <label class="field">
+                    <span>Business</span>
+                    <select id="test-business">
+                      <option value="">Select a business</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Billing date</span>
+                    <input id="test-date" type="date" />
+                  </label>
+                </div>
+                <details class="advanced">
+                  <summary>Add a test charge (optional)</summary>
+                  <div class="form-grid">
+                    <label class="field">
+                      <span>Commission amount ($)</span>
+                      <input id="test-amount" type="number" min="0" step="0.01" />
+                    </label>
+                    <label class="field">
+                      <span>Redemption ID (optional)</span>
+                      <input id="test-redemption" type="text" />
+                    </label>
+                  </div>
+                </details>
+                <div class="test-metrics">
+                  <div>
+                    <span class="test-label">Billing period</span>
+                    <span id="test-period">--</span>
+                  </div>
+                <div>
+                  <span class="test-label">Pending charges</span>
+                  <span id="test-pending">$0.00</span>
+                </div>
+                <div>
+                  <span class="test-label">Invoiced</span>
+                  <span id="test-invoiced">$0.00</span>
+                </div>
+              </div>
+                <div class="cta-row">
+                <div class="test-actions">
+                  <button class="button secondary" id="test-create">
+                  Add test charge
+                  </button>
+                  <button class="button outline" id="test-charge">
+                    Charge now
+                  </button>
+                </div>
+              </div>
+              <p class="notice" id="test-status"></p>
+            </div>
             <div class="summary-card">
               <h3>Recent activity</h3>
               <div class="summary-list" id="activity-summary"></div>
             </div>
           </div>
         </section>
+      </div>
+    </div>
+
+    <div class="modal-backdrop is-hidden" id="image-modal">
+      <div class="modal-card">
+        <button class="modal-close" id="image-modal-close">×</button>
+        <img id="image-modal-img" alt="Receipt preview" />
       </div>
     </div>
 
