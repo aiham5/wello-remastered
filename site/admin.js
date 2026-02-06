@@ -145,6 +145,10 @@ const state = {
   selected: null,
   defaultRate: 10,
 };
+const imageState = {
+  key: null,
+  inFlight: false,
+};
 const refreshState = {
   inFlight: false,
   timer: null,
@@ -200,19 +204,20 @@ const withTimeout = (promise, ms, label) =>
     }),
   ]);
 
-const getSessionSafe = async () => {
+const ensureSession = async () => {
   if (!supabaseClient) return null;
+  if (state.session?.access_token) return state.session;
   try {
     const result = await withTimeout(
-      supabaseClient.auth.getSession(),
+      supabaseClient.auth.refreshSession(),
       REQUEST_TIMEOUT_MS,
-      "getSession",
+      "refreshSession",
     );
     const session = result?.data?.session || null;
     state.session = session;
     return session;
   } catch (error) {
-    logDebug("getSession failed", { message: error?.message || "unknown" });
+    logDebug("refreshSession failed", { message: error?.message || "unknown" });
     return null;
   }
 };
@@ -226,7 +231,6 @@ const recoverFromAbort = async (source) => {
   try {
     stopLiveRefresh();
     stopAutoRefresh();
-    await getSessionSafe();
     await refreshAll({ silent: true });
     startAutoRefresh();
     startLiveRefresh();
@@ -556,7 +560,7 @@ const refreshAll = async ({ silent } = {}) => {
   }
   logDebug("refreshAll start", { silent });
   try {
-    await getSessionSafe();
+    await ensureSession();
     await Promise.all([loadBusinesses(), loadReceipts()]);
     if (state.selected?.id) {
       selectReceipt(state.selected.id);
@@ -720,15 +724,19 @@ const loadReceiptImage = async (receipt) => {
   ui.detailImage.removeAttribute("src");
   ui.detailOpen.disabled = true;
   if (!receipt?.storage_path || !supabaseClient) return;
+  if (imageState.inFlight && imageState.key === receipt.storage_path) {
+    return;
+  }
+  imageState.inFlight = true;
+  imageState.key = receipt.storage_path;
   try {
     let session = state.session;
     if (!session?.access_token) {
-      const refresh = await supabaseClient.auth.refreshSession();
-      session = refresh?.data?.session || null;
-      state.session = session;
+      session = await ensureSession();
     }
     if (!session?.access_token) {
       setDetailError("Session missing. Please sign in again.");
+      imageState.inFlight = false;
       return;
     }
     let result = await callR2Presign({
@@ -737,10 +745,8 @@ const loadReceiptImage = async (receipt) => {
       accessToken: session.access_token,
     });
     if (result.error) {
-      const refresh = await supabaseClient.auth.refreshSession();
-      const nextSession = refresh?.data?.session || null;
+      const nextSession = await ensureSession();
       if (nextSession?.access_token) {
-        state.session = nextSession;
         result = await callR2Presign({
           action: "download",
           key: receipt.storage_path,
@@ -755,12 +761,15 @@ const loadReceiptImage = async (receipt) => {
       if (!document.hidden && message.toLowerCase().includes("aborterror")) {
         recoverFromAbort("loadReceiptImage");
       }
+      imageState.inFlight = false;
       return;
     }
     ui.detailImage.src = data.signedUrl;
     ui.detailOpen.disabled = false;
+    imageState.inFlight = false;
   } catch (error) {
     setDetailError(error?.message || "Unable to load receipt image.");
+    imageState.inFlight = false;
   }
 };
 
