@@ -153,6 +153,10 @@ const liveState = {
   channel: null,
   debounce: null,
 };
+const abortRecovery = {
+  inFlight: false,
+  lastAt: 0,
+};
 const AUTO_REFRESH_MS = 30000;
 const LIVE_DEBOUNCE_MS = 1200;
 const CASHBACK_RATE = 0.05;
@@ -210,6 +214,24 @@ const getSessionSafe = async () => {
   } catch (error) {
     logDebug("getSession failed", { message: error?.message || "unknown" });
     return null;
+  }
+};
+
+const recoverFromAbort = async (source) => {
+  const now = Date.now();
+  if (abortRecovery.inFlight || now - abortRecovery.lastAt < 4000) return;
+  abortRecovery.inFlight = true;
+  abortRecovery.lastAt = now;
+  logDebug("recoverFromAbort", { source });
+  try {
+    stopLiveRefresh();
+    stopAutoRefresh();
+    await getSessionSafe();
+    await refreshAll({ silent: true });
+    startAutoRefresh();
+    startLiveRefresh();
+  } finally {
+    abortRecovery.inFlight = false;
   }
 };
 
@@ -420,7 +442,7 @@ const loadBusinesses = async () => {
     const message = error.message || "unknown";
     logDebug("loadBusinesses error", { message });
     if (!document.hidden && message.toLowerCase().includes("aborterror")) {
-      setTimeout(() => refreshAll({ silent: true }), 600);
+      recoverFromAbort("loadBusinesses");
     }
     return;
   }
@@ -517,7 +539,7 @@ const loadReceipts = async () => {
     ui.receiptsMeta.textContent = message;
     logDebug("loadReceipts error", { message });
     if (!document.hidden && message.toLowerCase().includes("aborterror")) {
-      setTimeout(() => refreshAll({ silent: true }), 600);
+      recoverFromAbort("loadReceipts");
     }
     return;
   }
@@ -731,7 +753,7 @@ const loadReceiptImage = async (receipt) => {
       const message = error?.message || "Unable to load receipt image.";
       setDetailError(message);
       if (!document.hidden && message.toLowerCase().includes("aborterror")) {
-        setTimeout(() => loadReceiptImage(receipt), 600);
+        recoverFromAbort("loadReceiptImage");
       }
       return;
     }
@@ -1470,13 +1492,20 @@ const init = async () => {
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
-      refreshAll({ silent: true });
+    if (document.hidden) {
+      stopAutoRefresh();
+      stopLiveRefresh();
+      return;
     }
+    startAutoRefresh();
+    startLiveRefresh();
+    refreshAll({ silent: true });
   });
 
   window.addEventListener("focus", () => {
     if (!document.hidden) {
+      startAutoRefresh();
+      startLiveRefresh();
       refreshAll({ silent: true });
     }
   });
