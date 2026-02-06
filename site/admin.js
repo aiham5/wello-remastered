@@ -196,6 +196,23 @@ const withTimeout = (promise, ms, label) =>
     }),
   ]);
 
+const getSessionSafe = async () => {
+  if (!supabaseClient) return null;
+  try {
+    const result = await withTimeout(
+      supabaseClient.auth.getSession(),
+      REQUEST_TIMEOUT_MS,
+      "getSession",
+    );
+    const session = result?.data?.session || null;
+    state.session = session;
+    return session;
+  } catch (error) {
+    logDebug("getSession failed", { message: error?.message || "unknown" });
+    return null;
+  }
+};
+
 const callR2Presign = async ({ action, key, accessToken }) => {
   if (!supabaseClient) {
     return { data: null, error: "Supabase is not configured." };
@@ -385,6 +402,20 @@ const loadBusinesses = async () => {
   } catch (err) {
     error = err;
   }
+  if (error?.message && error.message.toLowerCase().includes("jwt")) {
+    await supabaseClient.auth.refreshSession().catch(() => null);
+    try {
+      const retry = await withTimeout(
+        supabaseClient.from("businesses").select("id, name").order("name"),
+        REQUEST_TIMEOUT_MS,
+        "loadBusinessesRetry",
+      );
+      data = retry?.data ?? null;
+      error = retry?.error ?? null;
+    } catch (err) {
+      error = err;
+    }
+  }
   if (error) {
     logDebug("loadBusinesses error", { message: error.message });
     return;
@@ -446,6 +477,37 @@ const loadReceipts = async () => {
   } catch (err) {
     error = err;
   }
+  if (error?.message && error.message.toLowerCase().includes("jwt")) {
+    await supabaseClient.auth.refreshSession().catch(() => null);
+    try {
+      const retry = await withTimeout(
+        supabaseClient
+          .from("receipt_uploads")
+          .select(
+            [
+              "id",
+              "storage_path",
+              "uploaded_at",
+              "receipt_total_cents",
+              "commission_due_cents",
+              "review_status",
+              "review_notes",
+              "reviewed_at",
+              "business:businesses (id, name)",
+              "redemption:redemptions (id, created_at, offer:offers (id, title))",
+            ].join(","),
+          )
+          .order("uploaded_at", { ascending: false })
+          .limit(400),
+        REQUEST_TIMEOUT_MS,
+        "loadReceiptsRetry",
+      );
+      data = retry?.data ?? null;
+      error = retry?.error ?? null;
+    } catch (err) {
+      error = err;
+    }
+  }
   if (error) {
     ui.receiptsMeta.textContent = error.message || "Unable to load receipts.";
     logDebug("loadReceipts error", { message: error.message });
@@ -464,6 +526,7 @@ const refreshAll = async ({ silent } = {}) => {
   }
   logDebug("refreshAll start", { silent });
   try {
+    await getSessionSafe();
     await Promise.all([loadBusinesses(), loadReceipts()]);
     if (state.selected?.id) {
       selectReceipt(state.selected.id);
