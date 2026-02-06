@@ -563,7 +563,7 @@ const refreshAll = async ({ silent } = {}) => {
     await ensureSession();
     await Promise.all([loadBusinesses(), loadReceipts()]);
     if (state.selected?.id) {
-      selectReceipt(state.selected.id);
+      selectReceipt(state.selected.id, { forceImage: false });
     }
     logDebug("refreshAll done");
   } finally {
@@ -688,9 +688,11 @@ const renderReceipts = () => {
   });
 };
 
-const selectReceipt = async (receiptId) => {
+const selectReceipt = async (receiptId, options = {}) => {
   const receipt = state.receipts.find((item) => item.id === receiptId);
   if (!receipt) return;
+  const sameReceipt = state.selected?.id === receiptId;
+  const hasImage = Boolean(ui.detailImage.getAttribute("src"));
   closeImageModal();
   state.selected = receipt;
   ui.detailEmpty.classList.add("is-hidden");
@@ -716,7 +718,15 @@ const selectReceipt = async (receiptId) => {
     receipt.commission_due_cents != null ? (cashbackCents / 100).toFixed(2) : "";
   ui.detailNotes.value = receipt.review_notes || "";
   setDetailError("");
-  await loadReceiptImage(receipt);
+  if (!sameReceipt) {
+    ui.detailImage.removeAttribute("src");
+    ui.detailOpen.disabled = true;
+  }
+  if (!sameReceipt || !hasImage || options.forceImage) {
+    await loadReceiptImage(receipt);
+  } else {
+    ui.detailOpen.disabled = false;
+  }
   renderReceipts();
 };
 
