@@ -417,7 +417,11 @@ const loadBusinesses = async () => {
     }
   }
   if (error) {
-    logDebug("loadBusinesses error", { message: error.message });
+    const message = error.message || "unknown";
+    logDebug("loadBusinesses error", { message });
+    if (!document.hidden && message.toLowerCase().includes("aborterror")) {
+      setTimeout(() => refreshAll({ silent: true }), 600);
+    }
     return;
   }
   state.businesses = data || [];
@@ -509,8 +513,12 @@ const loadReceipts = async () => {
     }
   }
   if (error) {
-    ui.receiptsMeta.textContent = error.message || "Unable to load receipts.";
-    logDebug("loadReceipts error", { message: error.message });
+    const message = error.message || "Unable to load receipts.";
+    ui.receiptsMeta.textContent = message;
+    logDebug("loadReceipts error", { message });
+    if (!document.hidden && message.toLowerCase().includes("aborterror")) {
+      setTimeout(() => refreshAll({ silent: true }), 600);
+    }
     return;
   }
   state.receipts = data || [];
@@ -720,7 +728,11 @@ const loadReceiptImage = async (receipt) => {
     }
     const { data, error } = result;
     if (error || !data?.signedUrl) {
-      setDetailError(error?.message || "Unable to load receipt image.");
+      const message = error?.message || "Unable to load receipt image.";
+      setDetailError(message);
+      if (!document.hidden && message.toLowerCase().includes("aborterror")) {
+        setTimeout(() => loadReceiptImage(receipt), 600);
+      }
       return;
     }
     ui.detailImage.src = data.signedUrl;
@@ -1458,6 +1470,12 @@ const init = async () => {
   });
 
   document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      refreshAll({ silent: true });
+    }
+  });
+
+  window.addEventListener("focus", () => {
     if (!document.hidden) {
       refreshAll({ silent: true });
     }
