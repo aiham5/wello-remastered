@@ -1,6 +1,8 @@
 import Stripe from "npm:stripe@14.25.0";
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
 
+export const config = { verify_jwt: false };
+
 const SUPABASE_URL =
   Deno.env.get("EDGE_SUPABASE_URL") ?? Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY =

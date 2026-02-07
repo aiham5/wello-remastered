@@ -182,7 +182,7 @@ const COLORS = {
 
 const daysAgo = (days) => Date.now() - days * 24 * 60 * 60 * 1000;
 
-function ConfettiDrizzle({ active, width, height }) {
+function ConfettiDrizzle({ active, width, height, style }) {
   const pieces = useMemo(
     () =>
       Array.from({ length: CONFETTI_PIECES }, (_, index) => {
@@ -248,7 +248,7 @@ function ConfettiDrizzle({ active, width, height }) {
   if (!active) return null;
 
   return (
-    <View style={styles.confettiOverlay} pointerEvents="none">
+    <View style={[styles.confettiOverlay, style]} pointerEvents="none">
       {pieces.map((piece, index) => (
         <Animated.View
           key={`confetti-${piece.id}`}
@@ -2185,11 +2185,44 @@ export default function App() {
     error: null,
     success: null,
   });
+  const [cashoutAmountText, setCashoutAmountText] = useState("");
+  const cashoutPreview = useMemo(() => {
+    const availableCents = Number(cashbackBalance.availableCents) || 0;
+    const cleaned = String(cashoutAmountText || "").trim();
+    if (!cleaned) {
+      return {
+        mode: "max",
+        amountCents: availableCents,
+        label: availableCents > 0 ? `Cash out ${formatCurrencyFromCents(availableCents)}` : "Cash out now",
+      };
+    }
+    const parsed = Number(cleaned);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return { mode: "invalid", amountCents: 0, label: "Cash out now" };
+    }
+    const cents = Math.round(parsed * 100);
+    if (cents <= 0 || cents > availableCents) {
+      return { mode: "invalid", amountCents: 0, label: "Cash out now" };
+    }
+    return {
+      mode: "custom",
+      amountCents: cents,
+      label: `Cash out ${formatCurrencyFromCents(cents)}`,
+    };
+  }, [cashoutAmountText, cashbackBalance.availableCents]);
   const [receiptUploadStatus, setReceiptUploadStatus] = useState({
     uploading: false,
     error: null,
     targetId: null,
   });
+  const [receiptUploadOverlay, setReceiptUploadOverlay] = useState({
+    visible: false,
+    phase: "idle", // idle | uploading | success | error
+    title: "",
+    message: "",
+  });
+  const [receiptUploadConfetti, setReceiptUploadConfetti] = useState(false);
+  const receiptUploadTimersRef = useRef({ hide: null, confetti: null });
   const [receiptDebug, setReceiptDebug] = useState(null);
   const [businessReceiptStatus, setBusinessReceiptStatus] = useState({
     loading: false,
@@ -2242,6 +2275,14 @@ export default function App() {
   );
   const receiptTranslateX = Animated.add(receiptBaseX, receiptPanX);
   const receiptTranslateY = Animated.add(receiptBaseY, receiptPanY);
+
+  useEffect(() => {
+    return () => {
+      const timers = receiptUploadTimersRef.current;
+      if (timers.hide) clearTimeout(timers.hide);
+      if (timers.confetti) clearTimeout(timers.confetti);
+    };
+  }, []);
 
   const hydrateProfile = useCallback(async (user, roleOverride = null) => {
     if (!user) return "consumer";
@@ -2951,10 +2992,52 @@ export default function App() {
       return;
     }
 
+    const availableCents = Number(cashbackBalance.availableCents) || 0;
+    const cleaned = String(cashoutAmountText || "").trim();
+    let amountCentsToCashout = availableCents;
+
+    if (cleaned) {
+      const parsed = Number(cleaned);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setCashoutActionStatus({
+          loading: false,
+          error: "Enter a valid cashout amount.",
+          success: null,
+        });
+        return;
+      }
+      amountCentsToCashout = Math.round(parsed * 100);
+      if (amountCentsToCashout <= 0) {
+        setCashoutActionStatus({
+          loading: false,
+          error: "Enter a valid cashout amount.",
+          success: null,
+        });
+        return;
+      }
+      if (amountCentsToCashout > availableCents) {
+        setCashoutActionStatus({
+          loading: false,
+          error: `Max cashout is ${formatCurrencyFromCents(availableCents)}.`,
+          success: null,
+        });
+        return;
+      }
+    }
+
+    if (amountCentsToCashout <= 0) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "No cashback available to cash out.",
+        success: null,
+      });
+      return;
+    }
+
     setCashoutActionStatus({ loading: true, error: null, success: null });
     const { data, error, status, details } = await callStripeFunction(
       "stripe-create-cashout-payout",
-      {},
+      { amountCents: amountCentsToCashout },
     );
     if (error || !data?.success) {
       if (status === 429) {
@@ -2989,10 +3072,12 @@ export default function App() {
         Number(data.amountCents) || 0,
       )}.`,
     });
+    setCashoutAmountText("");
   }, [
     cashoutStatus.connected,
     cashoutStatus.payoutsEnabled,
     cashbackBalance.availableCents,
+    cashoutAmountText,
     loadCashbackBalance,
   ]);
 
@@ -6708,6 +6793,32 @@ export default function App() {
 
   const handleUploadReceipt = async (entry, source = "library") => {
     if (!entry?.id || !entry.businessId) return;
+    const showReceiptOverlay = (phase, title, message, { autoHideMs } = {}) => {
+      const timers = receiptUploadTimersRef.current;
+      if (timers.hide) clearTimeout(timers.hide);
+      setReceiptUploadOverlay({
+        visible: true,
+        phase,
+        title,
+        message,
+      });
+      if (autoHideMs) {
+        timers.hide = setTimeout(() => {
+          setReceiptUploadOverlay((prev) => ({ ...prev, visible: false }));
+          timers.hide = null;
+        }, autoHideMs);
+      }
+    };
+    const triggerReceiptConfetti = () => {
+      const timers = receiptUploadTimersRef.current;
+      if (timers.confetti) clearTimeout(timers.confetti);
+      setReceiptUploadConfetti(true);
+      timers.confetti = setTimeout(() => {
+        setReceiptUploadConfetti(false);
+        timers.confetti = null;
+      }, 2600);
+    };
+
     setReceiptDebug(null);
     setReceiptUploadStatus((prev) => ({ ...prev, error: null }));
     if (
@@ -6794,6 +6905,11 @@ export default function App() {
         error: null,
         targetId: entry.id,
       });
+      showReceiptOverlay(
+        "uploading",
+        "Uploading receipt",
+        "Uploading your photo and saving it securely...",
+      );
       const { path, error, debug } = await uploadReceiptImage(
         normalized.image,
         entry.businessId,
@@ -6808,6 +6924,12 @@ export default function App() {
           error: error || "Unable to upload receipt.",
           targetId: null,
         });
+        showReceiptOverlay(
+          "error",
+          "Upload failed",
+          error || "Unable to upload receipt. Please try again.",
+          { autoHideMs: 2200 },
+        );
         return;
       }
       const {
@@ -6831,6 +6953,12 @@ export default function App() {
           error: insertError || "Unable to save receipt.",
           targetId: null,
         });
+        showReceiptOverlay(
+          "error",
+          "Upload failed",
+          insertError || "Unable to save receipt. Please try again.",
+          { autoHideMs: 2200 },
+        );
         return;
       }
       setRedemptionHistory((prev) =>
@@ -6854,6 +6982,13 @@ export default function App() {
         error: null,
         targetId: null,
       });
+      triggerReceiptConfetti();
+      showReceiptOverlay(
+        "success",
+        "Receipt uploaded",
+        "Thanks! We'll review it shortly.",
+        { autoHideMs: 1600 },
+      );
       loadRedemptions({ silent: true });
     } catch (error) {
       setReceiptUploadStatus({
@@ -6861,6 +6996,12 @@ export default function App() {
         error: error?.message || "Unable to upload receipt.",
         targetId: null,
       });
+      showReceiptOverlay(
+        "error",
+        "Upload failed",
+        error?.message || "Unable to upload receipt. Please try again.",
+        { autoHideMs: 2200 },
+      );
     }
   };
 
@@ -9322,6 +9463,68 @@ export default function App() {
             </View>
           </Modal>
 
+          <Modal
+            transparent
+            visible={receiptUploadOverlay.visible}
+            animationType="fade"
+            presentationStyle="overFullScreen"
+            statusBarTranslucent
+          >
+            <View style={styles.uploadOverlay}>
+              <View style={styles.uploadCard}>
+                <View style={styles.uploadIconWrap}>
+                  {receiptUploadOverlay.phase === "uploading" ? (
+                    <ActivityIndicator size="small" color={COLORS.pine} />
+                  ) : (
+                    <Ionicons
+                      name={
+                        receiptUploadOverlay.phase === "success"
+                          ? "checkmark"
+                          : "alert"
+                      }
+                      size={18}
+                      color={
+                        receiptUploadOverlay.phase === "success"
+                          ? "#14532D"
+                          : "#B42318"
+                      }
+                    />
+                  )}
+                </View>
+                <View style={styles.uploadCopy}>
+                  <Text style={styles.uploadTitle}>
+                    {receiptUploadOverlay.title ||
+                      (receiptUploadOverlay.phase === "success"
+                        ? "Receipt uploaded"
+                        : receiptUploadOverlay.phase === "error"
+                          ? "Upload failed"
+                          : "Uploading receipt")}
+                  </Text>
+                  <Text style={styles.uploadMessage}>
+                    {receiptUploadOverlay.message || " "}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          </Modal>
+
+          <Modal
+            transparent
+            visible={receiptUploadConfetti}
+            animationType="fade"
+            presentationStyle="overFullScreen"
+            statusBarTranslucent
+          >
+            <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+              <ConfettiDrizzle
+                active={receiptUploadConfetti}
+                width={SCREEN_WIDTH}
+                height={SCREEN_HEIGHT}
+                style={{ borderRadius: 0, overflow: "visible" }}
+              />
+            </View>
+          </Modal>
+
           <Modal transparent visible={businessQrOpen} animationType="fade">
             <View style={styles.qrModalOverlay}>
               <View style={styles.qrModalCard}>
@@ -11208,12 +11411,79 @@ export default function App() {
                               Verified receipts only. {CASHBACK_RATE_PERCENT}%
                               of commission is paid as cashback.
                             </Text>
+                            <View style={styles.cashoutAmountGroup}>
+                              <View style={styles.cashoutAmountHeader}>
+                                <Text style={styles.cashoutAmountTitle}>
+                                  Cashout amount
+                                </Text>
+                                <Text style={styles.cashoutAmountMeta}>
+                                  Available:{" "}
+                                  {formatCurrencyFromCents(
+                                    cashbackBalance.availableCents,
+                                  )}
+                                </Text>
+                              </View>
+                              <View style={styles.cashoutAmountRow}>
+                                <View style={styles.cashoutAmountField}>
+                                  <Text style={styles.cashoutAmountPrefix}>
+                                    $
+                                  </Text>
+                                  <TextInput
+                                    style={styles.cashoutAmountInput}
+                                    value={cashoutAmountText}
+                                    onChangeText={setCashoutAmountText}
+                                    placeholder="Leave blank for max"
+                                    placeholderTextColor={COLORS.muted}
+                                    keyboardType="decimal-pad"
+                                    returnKeyType="done"
+                                    onBlur={() => {
+                                      const cleaned = String(
+                                        cashoutAmountText || "",
+                                      ).trim();
+                                      if (!cleaned) return;
+                                      const parsed = Number(cleaned);
+                                      if (!Number.isFinite(parsed) || parsed <= 0) return;
+                                      setCashoutAmountText(parsed.toFixed(2));
+                                    }}
+                                  />
+                                </View>
+                                <TouchableOpacity
+                                  style={styles.cashoutAmountMaxButton}
+                                  onPress={() =>
+                                    setCashoutAmountText(
+                                      ((Number(cashbackBalance.availableCents) ||
+                                        0) /
+                                        100).toFixed(2),
+                                    )
+                                  }
+                                  disabled={cashoutActionStatus.loading}
+                                >
+                                  <Text style={styles.cashoutAmountMaxText}>
+                                    Max
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                              <Text style={styles.cashoutAmountHint}>
+                                Leave blank to withdraw your full balance.
+                              </Text>
+                              {String(cashoutAmountText || "").trim() &&
+                                cashoutPreview.mode === "invalid" && (
+                                  <Text style={styles.formError}>
+                                    Enter an amount up to{" "}
+                                    {formatCurrencyFromCents(
+                                      cashbackBalance.availableCents,
+                                    )}
+                                    .
+                                  </Text>
+                                )}
+                            </View>
                             <TouchableOpacity
                               style={[
                                 styles.primaryButton,
                                 { marginTop: 12 },
                                 (!cashoutStatus.connected ||
                                   !cashoutStatus.payoutsEnabled ||
+                                  cashoutPreview.mode === "invalid" ||
                                   (Number(cashbackBalance.availableCents) || 0) <=
                                     0 ||
                                   cashoutActionStatus.loading) &&
@@ -11223,13 +11493,14 @@ export default function App() {
                               disabled={
                                 !cashoutStatus.connected ||
                                 !cashoutStatus.payoutsEnabled ||
+                                cashoutPreview.mode === "invalid" ||
                                 (Number(cashbackBalance.availableCents) || 0) <=
                                   0 ||
                                 cashoutActionStatus.loading
                               }
                             >
                               <Text style={styles.primaryButtonText}>
-                                Cash out now
+                                {cashoutPreview.label}
                               </Text>
                             </TouchableOpacity>
                             {cashbackBalance.paidCents > 0 && (
@@ -15086,6 +15357,55 @@ const styles = StyleSheet.create({
   noticeActions: {
     marginTop: 12,
   },
+  uploadOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.52)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  uploadCard: {
+    width: "100%",
+    maxWidth: 420,
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    flexDirection: "row",
+    alignItems: "center",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.18,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 6,
+  },
+  uploadIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: "#EEF2F7",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  uploadCopy: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  uploadTitle: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+  },
+  uploadMessage: {
+    marginTop: 4,
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 18,
+  },
   historyList: {
     gap: 12,
     marginBottom: 12,
@@ -15192,6 +15512,77 @@ const styles = StyleSheet.create({
     fontFamily: FONT_BOLD,
   },
   pointsMeta: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutAmountGroup: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(15, 23, 42, 0.08)",
+  },
+  cashoutAmountHeader: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  cashoutAmountTitle: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutAmountMeta: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutAmountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 10,
+  },
+  cashoutAmountField: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+  },
+  cashoutAmountPrefix: {
+    fontSize: 13,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+    marginRight: 8,
+  },
+  cashoutAmountInput: {
+    flex: 1,
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    padding: 0,
+  },
+  cashoutAmountMaxButton: {
+    marginLeft: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+  },
+  cashoutAmountMaxText: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutAmountHint: {
+    marginTop: 8,
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,

@@ -1247,38 +1247,82 @@ const saveReceipt = async (options = {}) => {
   let data = null;
   let error = null;
   try {
-    const result = await withTimeout(
-      supabaseClient
-        .from("receipt_uploads")
-        .update(updates)
-        .eq("id", receipt.id)
-        .select(
-          [
-            "id",
-            "storage_path",
-            "uploaded_at",
-            "receipt_total_cents",
-            "commission_due_cents",
-            "review_status",
-            "review_notes",
-            "reviewed_at",
-            "business:businesses (id, name)",
-            "redemption:redemptions (id, created_at, offer:offers (id, title))",
-          ].join(","),
-        )
-        .maybeSingle(),
-      REQUEST_TIMEOUT_MS,
-      "saveReceipt",
-    );
-    data = result?.data || null;
-    error = result?.error || null;
+    const baseSelect = [
+      "id",
+      "storage_path",
+      "uploaded_at",
+      "receipt_total_cents",
+      "commission_due_cents",
+      "review_status",
+      "review_notes",
+      "reviewed_at",
+      "business:businesses (id, name)",
+      "redemption:redemptions (id, created_at, offer:offers (id, title))",
+    ];
+
+    const runUpdate = async (payload, fields) =>
+      withTimeout(
+        supabaseClient
+          .from("receipt_uploads")
+          .update(payload)
+          .eq("id", receipt.id)
+          .select(fields.join(","))
+          .maybeSingle(),
+        REQUEST_TIMEOUT_MS,
+        "saveReceipt",
+      );
+
+    const first = await runUpdate(updates, baseSelect);
+    data = first?.data || null;
+    error = first?.error || null;
+
+    const message = String(error?.message || "").toLowerCase();
+    const isSchemaCacheError =
+      message.includes("schema cache") ||
+      String(error?.code || "").toLowerCase().includes("pgrst") ||
+      message.includes("could not find the") ||
+      message.includes("column") && message.includes("receipt_uploads");
+
+    if (error && isSchemaCacheError) {
+      // If the DB schema is missing some audit columns (common during early iterations),
+      // retry without them so the review workflow still works.
+      const retryUpdates = { ...updates };
+      const retrySelect = [...baseSelect];
+
+      const maybeStrip = (col) => {
+        if (message.includes(`'${col}'`) || message.includes(` ${col} `) || message.includes(col)) {
+          delete retryUpdates[col];
+          const idx = retrySelect.indexOf(col);
+          if (idx >= 0) retrySelect.splice(idx, 1);
+        }
+      };
+
+      maybeStrip("reviewed_by");
+      maybeStrip("reviewed_at");
+      maybeStrip("review_notes");
+
+      const second = await runUpdate(retryUpdates, retrySelect);
+      data = second?.data || null;
+      error = second?.error || null;
+    }
   } catch (err) {
     error = err;
   }
 
   if (error || !data) {
-    setDetailError(error?.message || "Unable to save receipt review.");
-    logDebug("saveReceipt failed", { message: error?.message || "unknown" });
+    const raw = {
+      message: error?.message || "unknown",
+      code: error?.code || null,
+      details: error?.details || null,
+      hint: error?.hint || null,
+    };
+    console.warn("saveReceipt failed", raw);
+    logDebug("saveReceipt failed", raw);
+    setDetailError(
+      debugEnabled && (raw.details || raw.hint)
+        ? `${raw.message}${raw.details ? ` (${raw.details})` : ""}`
+        : raw.message || "Unable to save receipt review.",
+    );
     ui.detailSave.disabled = false;
     ui.detailVerify.disabled = false;
     return;

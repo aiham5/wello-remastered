@@ -122,8 +122,8 @@ Deno.serve(async (req) => {
 
     const { data: events, error: eventsError } = await adminClient
       .from("commission_events")
-      .select("id, amount_cents, created_at")
-      .eq("status", "pending")
+      .select("id, amount_cents, created_at, status")
+      .in("status", ["pending", "invoiced"])
       .eq("business_id", businessId)
       .gte("created_at", start.toISOString())
       .lt("created_at", end.toISOString());
@@ -136,6 +136,7 @@ Deno.serve(async (req) => {
     }
 
     const list = events || [];
+    const pendingEvents = list.filter((row) => row.status === "pending");
     const totalCents = list.reduce(
       (sum, item) => sum + Number(item.amount_cents || 0),
       0,
@@ -184,17 +185,10 @@ Deno.serve(async (req) => {
       }
 
       const description = `Wello verified redemptions (${periodStart} to ${periodEnd})`;
-      await stripe.invoiceItems.create({
-        customer: business.stripe_customer_id,
-        amount: totalCents,
-        currency: "usd",
-        description,
-      });
-
       const invoice = await stripe.invoices.create({
         customer: business.stripe_customer_id,
         collection_method: "charge_automatically",
-        auto_advance: true,
+        auto_advance: false,
         metadata: {
           business_id: businessId,
           period_start: periodStart,
@@ -216,6 +210,38 @@ Deno.serve(async (req) => {
       });
     }
 
+    const eventsToAdd = invoiceId && existingInvoice?.stripe_invoice_id
+      ? pendingEvents
+      : list;
+
+    if (eventsToAdd.length) {
+      for (const event of eventsToAdd) {
+        const amount = Number(event.amount_cents || 0);
+        if (amount <= 0) continue;
+        await stripe.invoiceItems.create(
+          {
+            customer: business.stripe_customer_id,
+            amount,
+            currency: "usd",
+            description: `Wello commission (${periodStart} to ${periodEnd})`,
+            invoice: invoiceId,
+            metadata: {
+              business_id: businessId,
+              commission_event_id: event.id,
+            },
+          },
+          { idempotencyKey: `commission_${event.id}` },
+        );
+      }
+      await adminClient
+        .from("commission_events")
+        .update({ status: "invoiced" })
+        .in(
+          "id",
+          eventsToAdd.map((item) => item.id),
+        );
+    }
+
     let paidInvoice = await stripe.invoices.retrieve(invoiceId);
     if (paidInvoice.status === "draft") {
       paidInvoice = await stripe.invoices.finalizeInvoice(invoiceId);
@@ -235,20 +261,18 @@ Deno.serve(async (req) => {
       .in("status", ["pending", "invoiced"]);
     const eventIds = (periodEvents || []).map((item) => item.id);
 
-    if (paidInvoice.status === "paid") {
+    await adminClient
+      .from("commission_invoices")
+      .update({
+        status: paidInvoice.status || "open",
+        amount_cents: responseTotalCents,
+      })
+      .eq("stripe_invoice_id", invoiceId);
+    if (paidInvoice.status === "paid" && eventIds.length) {
       await adminClient
-        .from("commission_invoices")
-        .update({
-          status: "paid",
-          amount_cents: responseTotalCents,
-        })
-        .eq("stripe_invoice_id", invoiceId);
-      if (eventIds.length) {
-        await adminClient
-          .from("commission_events")
-          .update({ status: "paid" })
-          .in("id", eventIds);
-      }
+        .from("commission_events")
+        .update({ status: "paid" })
+        .in("id", eventIds);
     }
 
     return new Response(
