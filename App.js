@@ -17,7 +17,6 @@ import {
   KeyboardAvoidingView,
   Linking,
   Modal,
-  PanResponder,
   Platform,
   Pressable,
   RefreshControl,
@@ -2281,7 +2280,20 @@ export default function App() {
   const viewedOfferIdsRef = useRef(new Set());
   const translateY = useRef(new Animated.Value(COLLAPSED_Y)).current;
   const translateYRef = useRef(COLLAPSED_Y);
-  const dragStart = useRef(COLLAPSED_Y);
+  const sheetDragY = useRef(new Animated.Value(0)).current;
+  const sheetDragClamped = useMemo(
+    () =>
+      sheetDragY.interpolate({
+        inputRange: [-COLLAPSED_Y, 0, COLLAPSED_Y],
+        outputRange: [-COLLAPSED_Y, 0, COLLAPSED_Y],
+        extrapolate: "clamp",
+      }),
+    [sheetDragY],
+  );
+  const sheetTranslateY = useMemo(
+    () => Animated.add(translateY, sheetDragClamped),
+    [translateY, sheetDragClamped],
+  );
   const receiptPinchScale = useRef(new Animated.Value(1)).current;
   const receiptBaseScale = useRef(new Animated.Value(1)).current;
   const receiptPanX = useRef(new Animated.Value(0)).current;
@@ -3642,12 +3654,8 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const id = translateY.addListener(({ value }) => {
-      translateYRef.current = value;
-    });
-    return () => translateY.removeListener(id);
-  }, [translateY]);
+  // Avoid per-frame JS listeners on Android (they can cause stutter). We update
+  // `translateYRef` only when we commit a new base position.
 
   useEffect(() => {
     if (!GOOGLE_PLACES_KEY) {
@@ -5291,9 +5299,11 @@ export default function App() {
 
   const openSheet = (nextTab = "discover") => {
     setActiveTab(nextTab);
+    sheetDragY.setValue(0);
+    translateYRef.current = 0;
     Animated.spring(translateY, {
       toValue: 0,
-      useNativeDriver: false,
+      useNativeDriver: true,
       tension: 90,
       friction: 12,
     }).start();
@@ -8276,32 +8286,42 @@ export default function App() {
     });
   };
 
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dy) > 4,
-      onPanResponderGrant: () => {
-        dragStart.current = translateYRef.current;
-      },
-      onPanResponderMove: (_, gesture) => {
-        const nextValue = Math.min(
-          Math.max(0, dragStart.current + gesture.dy),
-          COLLAPSED_Y,
-        );
-        translateY.setValue(nextValue);
-      },
-      onPanResponderRelease: (_, gesture) => {
-        const shouldExpand =
-          gesture.vy < -0.4 || translateYRef.current < COLLAPSED_Y * 0.5;
-        Animated.spring(translateY, {
-          toValue: shouldExpand ? 0 : COLLAPSED_Y,
-          useNativeDriver: false,
-          tension: 90,
-          friction: 12,
-        }).start();
-      },
-    }),
-  ).current;
+  const onSheetGestureEvent = useMemo(
+    () =>
+      Animated.event([{ nativeEvent: { translationY: sheetDragY } }], {
+        useNativeDriver: true,
+      }),
+    [sheetDragY],
+  );
+
+  const onSheetHandlerStateChange = useCallback(
+    (event) => {
+      const { oldState, translationY, velocityY } = event.nativeEvent || {};
+      if (oldState !== GestureState.ACTIVE) return;
+
+      const base = translateYRef.current || 0;
+      const delta = Number(translationY) || 0;
+      const next = Math.min(Math.max(0, base + delta), COLLAPSED_Y);
+      const vy = Number(velocityY) || 0;
+
+      // velocityY is px/s. Negative is upward.
+      const shouldExpand = vy < -800 || next < COLLAPSED_Y * 0.5;
+      const target = shouldExpand ? 0 : COLLAPSED_Y;
+
+      // Commit the dragged position to the base value, then reset drag and spring.
+      // This avoids a visible snap when we zero out translationY.
+      translateYRef.current = target;
+      translateY.setValue(next);
+      sheetDragY.setValue(0);
+      Animated.spring(translateY, {
+        toValue: target,
+        useNativeDriver: true,
+        tension: 90,
+        friction: 12,
+      }).start();
+    },
+    [sheetDragY, translateY],
+  );
 
   if ((!fontsLoaded && !fontError) || !sessionReady) {
     return <View style={styles.loadingScreen} />;
@@ -9753,12 +9773,18 @@ export default function App() {
           </Modal>
 
           <Animated.View
-            style={[styles.sheet, { transform: [{ translateY }] }]}
+            style={[styles.sheet, { transform: [{ translateY: sheetTranslateY }] }]}
           >
-            <View style={styles.sheetHandle} {...panResponder.panHandlers}>
+            <PanGestureHandler
+              onGestureEvent={onSheetGestureEvent}
+              onHandlerStateChange={onSheetHandlerStateChange}
+              activeOffsetY={[-6, 6]}
+            >
+              <Animated.View style={styles.sheetHandle}>
               <View style={styles.handleBar} />
               <Text style={styles.sheetHint}>Swipe up to explore offers</Text>
-            </View>
+              </Animated.View>
+            </PanGestureHandler>
             {activeTab === "discover" ? (
               <ScrollView
                 style={styles.sheetScroll}
