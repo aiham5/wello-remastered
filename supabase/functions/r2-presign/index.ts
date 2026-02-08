@@ -81,6 +81,7 @@ const createPresignedUrl = async (
   const endpoint = R2_ENDPOINT.replace(/\/+$/, "");
   const url = new URL(endpoint);
   const host = url.host;
+  const basePath = url.pathname && url.pathname !== "/" ? url.pathname.replace(/\/+$/, "") : "";
   const now = new Date();
   const amzDate = now
     .toISOString()
@@ -88,7 +89,12 @@ const createPresignedUrl = async (
   const dateStamp = amzDate.slice(0, 8);
   const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
   const credential = `${R2_ACCESS_KEY_ID}/${credentialScope}`;
-  const canonicalUri = `/${encodePath(`${R2_BUCKET}/${key}`)}`;
+  // Support both endpoint styles:
+  // - https://<account>.r2.cloudflarestorage.com
+  // - https://<account>.r2.cloudflarestorage.com/<bucket>
+  const canonicalUri = basePath
+    ? `${basePath}/${encodePath(key)}`
+    : `/${encodePath(`${R2_BUCKET}/${key}`)}`;
   const payloadHash = "UNSIGNED-PAYLOAD";
 
   const queryParams: Record<string, string> = {

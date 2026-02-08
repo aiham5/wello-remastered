@@ -462,7 +462,13 @@ const callR2Presign = async ({ action, key, accessToken }) => {
           parsedData = response?.data ?? null;
         }
       }
-      logDebug("r2-presign success", { action, key });
+      let pathname = null;
+      try {
+        pathname = parsedData?.signedUrl ? new URL(parsedData.signedUrl).pathname : null;
+      } catch {
+        pathname = null;
+      }
+      logDebug("r2-presign success", { action, key, pathname });
       if (parsedData?.signedUrl) {
         const expiresInSec = Number(parsedData?.expiresIn) || 0;
         const ttlMs = Math.min(
@@ -1055,8 +1061,45 @@ const loadReceiptImage = async (receipt, { seq } = {}) => {
       imageState.inFlight = false;
       return;
     }
-    ui.detailImage.src = data.signedUrl;
-    ui.detailOpen.disabled = false;
+    const tryLoad = async (signedUrl, attempt) => {
+      if (!signedUrl) return false;
+      ui.detailImage.src = signedUrl;
+      const ok = await withTimeout(
+        new Promise((resolve) => {
+          const img = ui.detailImage;
+          const done = (success) => resolve(Boolean(success));
+          const onLoad = () => done(true);
+          const onError = () => done(false);
+          img.addEventListener("load", onLoad, { once: true });
+          img.addEventListener("error", onError, { once: true });
+        }),
+        12000,
+        "imageLoad",
+      ).catch(() => false);
+      logDebug("receipt image load", {
+        attempt,
+        ok,
+        key: receipt.storage_path,
+      });
+      return ok;
+    };
+
+    let ok = await tryLoad(data.signedUrl, 1);
+    if (!ok && requestSeq === (imageState.seq || 0)) {
+      // Signed URL may have expired or endpoint may have been misconfigured; re-presign bypassing cache.
+      presignCache.delete(`download:${receipt.storage_path}`);
+      presignInFlight.delete(`download:${receipt.storage_path}`);
+      const retry = await callR2Presign({
+        action: "download",
+        key: receipt.storage_path,
+        accessToken: session.access_token,
+      });
+      if (retry?.data?.signedUrl) {
+        ok = await tryLoad(retry.data.signedUrl, 2);
+      }
+    }
+
+    ui.detailOpen.disabled = !ok;
     imageState.inFlight = false;
   } catch (error) {
     setDetailError(error?.message || "Unable to load receipt image.");
