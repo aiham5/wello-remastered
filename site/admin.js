@@ -228,6 +228,56 @@ const fetchTextWithAbortTimeout = async (url, init, timeoutMs, label) => {
   }
 };
 
+const fetchTextWithTimeout = async (url, init, timeoutMs, label) => {
+  const controller = new AbortController();
+  const pageSignal = getPageNetworkSignal();
+  const upstream = init?.signal;
+
+  const signals = [upstream, pageSignal].filter(Boolean);
+  const abortHandlers = [];
+  for (const s of signals) {
+    try {
+      if (s.aborted) {
+        controller.abort();
+        break;
+      }
+      const handler = () => controller.abort();
+      s.addEventListener("abort", handler, { once: true });
+      abortHandlers.push([s, handler]);
+    } catch {
+      // ignore
+    }
+  }
+
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    const text = await res.text();
+    return { res, text };
+  } catch (error) {
+    const message = error?.message || "";
+    const aborted =
+      error?.name === "AbortError" ||
+      message.toLowerCase().includes("aborted") ||
+      message.toLowerCase().includes("aborterror");
+    if (aborted) {
+      const err = new Error(`${label || "request"} aborted`);
+      err.name = "AbortError";
+      throw err;
+    }
+    throw error;
+  } finally {
+    clearTimeout(id);
+    for (const [s, handler] of abortHandlers) {
+      try {
+        s.removeEventListener("abort", handler);
+      } catch {
+        // ignore
+      }
+    }
+  }
+};
+
 function createTimedFetch(timeoutMs) {
   return async (input, init = {}) => {
     const controller = new AbortController();
@@ -340,6 +390,102 @@ const formatDateTime = (value) => {
     hour: "numeric",
     minute: "2-digit",
   })}`;
+};
+
+const callEdgeFunctionJson = async (functionName, body, { timeoutMs, label } = {}) => {
+  if (!supabaseClient) {
+    return { data: null, error: "Supabase is not configured.", status: null, raw: "" };
+  }
+  if (document.hidden) {
+    return { data: null, error: "Page hidden.", status: null, raw: "" };
+  }
+  const session = await ensureSession({ force: false });
+  const token = session?.access_token || state.session?.access_token || "";
+  if (!token) {
+    return { data: null, error: "Missing access token.", status: 401, raw: "" };
+  }
+  const url = `${supabaseUrl.replace(/\/+$/, "")}/functions/v1/${functionName}`;
+  const { res, text } = await fetchTextWithTimeout(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        apikey: supabaseAnonKey,
+        "x-client-info": "wello-admin",
+      },
+      body: JSON.stringify(body || {}),
+    },
+    timeoutMs || EDGE_TIMEOUT_MS,
+    label || functionName,
+  );
+
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+
+  if (res.ok) {
+    return { data: parsed, error: null, status: res.status, raw: text };
+  }
+  return {
+    data: null,
+    error: parsed?.error || parsed?.message || `Edge function failed (${res.status}).`,
+    status: res.status,
+    raw: text,
+  };
+};
+
+const postgrestUpdateReceipt = async ({ receiptId, updates, select }) => {
+  const session = await ensureSession({ force: false });
+  const token = session?.access_token || state.session?.access_token || "";
+  if (!token) {
+    return { data: null, error: { message: "Missing access token." } };
+  }
+  const base = `${supabaseUrl.replace(/\/+$/, "")}/rest/v1/receipt_uploads`;
+  const query = `id=eq.${encodeURIComponent(receiptId)}&select=${encodeURIComponent(select)}`;
+  const url = `${base}?${query}`;
+
+  const { res, text } = await fetchTextWithTimeout(
+    url,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/vnd.pgrst.object+json",
+        Prefer: "return=representation",
+        Authorization: `Bearer ${token}`,
+        apikey: supabaseAnonKey,
+      },
+      body: JSON.stringify(updates || {}),
+    },
+    DB_TIMEOUT_MS,
+    "saveReceipt",
+  );
+
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+  if (res.ok) {
+    return { data: parsed, error: null };
+  }
+  return {
+    data: null,
+    error: {
+      message: parsed?.message || parsed?.error || `Bad request (${res.status}).`,
+      code: parsed?.code || null,
+      details: parsed?.details || null,
+      hint: parsed?.hint || null,
+      status: res.status,
+      raw: text,
+    },
+  };
 };
 
 const withTimeout = (promise, ms, label) =>
@@ -1273,14 +1419,47 @@ const loadTestCharges = async () => {
     if (ui.testInvoiced) ui.testInvoiced.textContent = "$0.00";
     return;
   }
-  const { data, error } = await supabaseClient
-    .from("commission_events")
-    .select("amount_cents, status, created_at")
-    .eq("business_id", businessId)
-    .gte("created_at", period.start.toISOString())
-    .lt("created_at", period.end.toISOString());
+  let data = null;
+  let error = null;
+  try {
+    const result = await withTimeout(
+      supabaseClient
+        .from("commission_events")
+        .select("amount_cents, status, created_at")
+        .eq("business_id", businessId)
+        .gte("created_at", period.start.toISOString())
+        .lt("created_at", period.end.toISOString()),
+      DB_TIMEOUT_MS,
+      "loadTestCharges",
+    );
+    data = result?.data ?? null;
+    error = result?.error ?? null;
+  } catch (err) {
+    error = err;
+  }
+  if (error?.message && String(error.message).toLowerCase().includes("jwt")) {
+    await ensureSession({ force: true });
+    try {
+      const retry = await withTimeout(
+        supabaseClient
+          .from("commission_events")
+          .select("amount_cents, status, created_at")
+          .eq("business_id", businessId)
+          .gte("created_at", period.start.toISOString())
+          .lt("created_at", period.end.toISOString()),
+        DB_TIMEOUT_MS,
+        "loadTestChargesRetry",
+      );
+      data = retry?.data ?? null;
+      error = retry?.error ?? null;
+    } catch (err) {
+      error = err;
+    }
+  }
   if (error) {
-    setTestStatus(error.message || "Unable to load charges.", true);
+    const message = error.message || "Unable to load charges.";
+    setTestStatus(message, true);
+    logDebug("loadTestCharges error", { message });
     return;
   }
   const rows = data || [];
@@ -1300,55 +1479,25 @@ const runTestInvoice = async ({ businessId, period }) => {
     setTestStatus("Supabase is not configured.", true);
     return null;
   }
-  let session = state.session;
-  if (!session?.access_token) {
-    session = await ensureSession({ force: true });
-  }
-  if (!session?.access_token) {
-    setTestStatus("Session missing. Please sign in again.", true);
-    return null;
-  }
-
-  const response = await withTimeout(
-    supabaseClient.functions.invoke(
-      "admin-run-monthly-invoices",
-      {
-        body: {
-          businessId,
-          periodStart: period.start.toISOString(),
-          periodEnd: period.end.toISOString(),
-        },
-      },
-    ),
-    EDGE_TIMEOUT_MS,
+  const result = await callEdgeFunctionJson(
     "admin-run-monthly-invoices",
-  );
+    {
+      businessId,
+      periodStart: period.start.toISOString(),
+      periodEnd: period.end.toISOString(),
+    },
+    { timeoutMs: EDGE_TIMEOUT_MS, label: "admin-run-monthly-invoices" },
+  ).catch((error) => ({
+    data: null,
+    error: error?.message || "Unable to run invoice.",
+    status: null,
+    raw: "",
+  }));
 
-  if (!response?.error) {
-    return response.data || {};
+  if (!result?.error) {
+    return result.data || {};
   }
-  const context = response.error?.context;
-  let raw = "";
-  if (context?.text) {
-    try {
-      raw = await context.text();
-    } catch {
-      raw = "";
-    }
-  }
-  let parsed = null;
-  try {
-    parsed = raw ? JSON.parse(raw) : null;
-  } catch {
-    parsed = null;
-  }
-  setTestStatus(
-    parsed?.error ||
-      parsed?.message ||
-      response.error?.message ||
-      "Unable to run invoice.",
-    true,
-  );
+  setTestStatus(result.error || "Unable to run invoice.", true);
   return null;
 };
 
@@ -1361,55 +1510,25 @@ const addCommissionToStripe = async ({
   if (!supabaseClient) {
     return { error: "Supabase is not configured." };
   }
-  let session = state.session;
-  if (!session?.access_token) {
-    session = await ensureSession({ force: true });
-  }
-  if (!session?.access_token) {
-    return { error: "Session missing. Please sign in again." };
-  }
-
-  const response = await withTimeout(
-    supabaseClient.functions.invoke(
-      "admin-add-commission-to-stripe",
-      {
-        body: {
-          businessId,
-          redemptionId,
-          eventDate: eventDate || null,
-        },
-      },
-    ),
-    EDGE_TIMEOUT_MS,
+  const result = await callEdgeFunctionJson(
     "admin-add-commission-to-stripe",
-  );
-
-  if (!response?.error) {
-    return { data: response.data || null, error: null };
-  }
-  const contextText = response.error?.context;
-  let raw = "";
-  if (contextText?.text) {
-    try {
-      raw = await contextText.text();
-    } catch {
-      raw = "";
-    }
-  }
-  let parsed = null;
-  try {
-    parsed = raw ? JSON.parse(raw) : null;
-  } catch {
-    parsed = null;
-  }
-  return {
+    {
+      businessId,
+      redemptionId,
+      eventDate: eventDate || null,
+    },
+    { timeoutMs: EDGE_TIMEOUT_MS, label: "admin-add-commission-to-stripe" },
+  ).catch((error) => ({
     data: null,
-    error:
-      parsed?.error ||
-      parsed?.message ||
-      response.error?.message ||
-      `Unable to sync ${context} to Stripe.`,
-  };
+    error: error?.message || `Unable to sync ${context} to Stripe.`,
+    status: null,
+    raw: "",
+  }));
+
+  if (!result?.error) {
+    return { data: result.data || null, error: null };
+  }
+  return { data: null, error: result.error || `Unable to sync ${context} to Stripe.` };
 };
 
 const createTestEvent = async () => {
@@ -1441,28 +1560,15 @@ const createTestEvent = async () => {
   setTestStatus("Creating test event...");
   if (ui.testCreate) ui.testCreate.disabled = true;
   try {
-    let session = state.session;
-    if (!session?.access_token) {
-      session = await ensureSession({ force: true });
-    }
-    if (!session?.access_token) {
-      setTestStatus("Session missing. Please sign in again.", true);
-      return;
-    }
-    const response = await withTimeout(
-      supabaseClient.functions.invoke(
-        "admin-create-test-commission",
-        {
-          body: {
-            businessId,
-            amountCents,
-            eventDate,
-            redemptionId: redemptionId || null,
-          },
-        },
-      ),
-      EDGE_TIMEOUT_MS,
+    const response = await callEdgeFunctionJson(
       "admin-create-test-commission",
+      {
+        businessId,
+        amountCents,
+        eventDate,
+        redemptionId: redemptionId || null,
+      },
+      { timeoutMs: EDGE_TIMEOUT_MS, label: "admin-create-test-commission" },
     );
     if (!response?.error) {
       const redemptionIdResult =
@@ -1494,23 +1600,9 @@ const createTestEvent = async () => {
       await loadTestCharges();
       return;
     }
-    const context = response.error?.context;
-    let raw = "";
-    if (context?.text) {
-      try {
-        raw = await context.text();
-      } catch {
-        raw = "";
-      }
-    }
-    let parsed = null;
-    try {
-      parsed = raw ? JSON.parse(raw) : null;
-    } catch {
-      parsed = null;
-    }
-    const status = context?.status ?? null;
-    if (status === 409 || parsed?.error?.includes?.("already exists")) {
+    const status = response?.status ?? null;
+    const raw = response?.raw || "";
+    if (status === 409 || String(raw).toLowerCase().includes("already exists")) {
       setTestStatus(
         "Test event already exists. Charging monthly invoice...",
       );
@@ -1527,7 +1619,7 @@ const createTestEvent = async () => {
       return;
     }
     setTestStatus(
-      parsed?.error || parsed?.message || response.error?.message || "Unable to create test event.",
+      response.error || "Unable to create test event.",
       true,
     );
   } catch (error) {
@@ -1577,26 +1669,21 @@ const saveReceipt = async (options = {}) => {
     setDetailError("Missing receipt or Supabase client.");
     return;
   }
+
   setDetailError("");
-  ui.detailSave.disabled = true;
-  ui.detailVerify.disabled = true;
+  if (ui.detailSave) ui.detailSave.disabled = true;
+  if (ui.detailVerify) ui.detailVerify.disabled = true;
   setDetailError("Saving...");
   logDebug("saveReceipt start", { receiptId: receipt.id, status: options.status });
+
+  let status = options.status || ui.detailStatusSelect.value;
   const totalCents = parseMoneyToCents(ui.detailTotal.value);
   let commissionCents = parseMoneyToCents(ui.detailCommission.value);
   if (commissionCents == null && totalCents != null) {
     const rate = Number(ui.filterRate.value || state.defaultRate) / 100;
     commissionCents = Math.round(totalCents * rate);
   }
-  let status = options.status || ui.detailStatusSelect.value;
   const notes = ui.detailNotes.value || null;
-  let user = null;
-  try {
-    const userResult = await supabaseClient.auth.getUser();
-    user = userResult?.data?.user || null;
-  } catch (error) {
-    console.warn("getUser failed", error);
-  }
 
   if (
     status === "pending" &&
@@ -1607,126 +1694,145 @@ const saveReceipt = async (options = {}) => {
     status = "verified";
   }
 
+  let userId = null;
+  try {
+    const userResult = await withTimeout(
+      supabaseClient.auth.getUser(),
+      12000,
+      "getUser",
+    );
+    userId = userResult?.data?.user?.id || null;
+  } catch (err) {
+    logDebug("getUser failed", { message: err?.message || "unknown" });
+    userId = null;
+  }
+
   const updates = {
     receipt_total_cents: totalCents,
     commission_due_cents: commissionCents,
     review_status: status,
     review_notes: notes,
     reviewed_at: new Date().toISOString(),
-    reviewed_by: user?.id || null,
+    reviewed_by: userId,
   };
 
-  console.log("Saving receipt review", { receiptId: receipt.id, updates });
-  let data = null;
-  let error = null;
+  const select = [
+    "id",
+    "storage_path",
+    "uploaded_at",
+    "receipt_total_cents",
+    "commission_due_cents",
+    "review_status",
+    "review_notes",
+    "reviewed_at",
+    "business:businesses (id, name)",
+    "redemption:redemptions (id, created_at, offer:offers (id, title))",
+  ].join(",");
+
   try {
-    const baseSelect = [
-      "id",
-      "storage_path",
-      "uploaded_at",
-      "receipt_total_cents",
-      "commission_due_cents",
-      "review_status",
-      "review_notes",
-      "reviewed_at",
-      "business:businesses (id, name)",
-      "redemption:redemptions (id, created_at, offer:offers (id, title))",
-    ];
+    console.log("Saving receipt review", { receiptId: receipt.id, updates });
 
-    const runUpdate = async (payload, fields) =>
-      withTimeout(
-        supabaseClient
-          .from("receipt_uploads")
-          .update(payload)
-          .eq("id", receipt.id)
-          .select(fields.join(","))
-          .maybeSingle(),
-        DB_TIMEOUT_MS,
-        "saveReceipt",
-      );
+    let result = await postgrestUpdateReceipt({
+      receiptId: receipt.id,
+      updates,
+      select,
+    });
 
-    const first = await runUpdate(updates, baseSelect);
-    data = first?.data || null;
-    error = first?.error || null;
+    // Retry once on JWT-ish errors by forcing a session refresh.
+    const msg = String(result?.error?.message || "").toLowerCase();
+    if (result?.error && (msg.includes("jwt") || msg.includes("authorization"))) {
+      await ensureSession({ force: true });
+      result = await postgrestUpdateReceipt({
+        receiptId: receipt.id,
+        updates,
+        select,
+      });
+    }
+
+    let data = result?.data || null;
+    let error = result?.error || null;
 
     const message = String(error?.message || "").toLowerCase();
     const isSchemaCacheError =
       message.includes("schema cache") ||
       String(error?.code || "").toLowerCase().includes("pgrst") ||
       message.includes("could not find the") ||
-      message.includes("column") && message.includes("receipt_uploads");
+      (message.includes("column") && message.includes("receipt_uploads"));
 
     if (error && isSchemaCacheError) {
-      // If the DB schema is missing some audit columns (common during early iterations),
-      // retry without them so the review workflow still works.
       const retryUpdates = { ...updates };
-      const retrySelect = [...baseSelect];
-
       const maybeStrip = (col) => {
         if (message.includes(`'${col}'`) || message.includes(` ${col} `) || message.includes(col)) {
           delete retryUpdates[col];
-          const idx = retrySelect.indexOf(col);
-          if (idx >= 0) retrySelect.splice(idx, 1);
         }
       };
-
       maybeStrip("reviewed_by");
       maybeStrip("reviewed_at");
       maybeStrip("review_notes");
-
-      const second = await runUpdate(retryUpdates, retrySelect);
+      const second = await postgrestUpdateReceipt({
+        receiptId: receipt.id,
+        updates: retryUpdates,
+        select,
+      });
       data = second?.data || null;
       error = second?.error || null;
     }
-  } catch (err) {
-    error = err;
-  }
 
-  if (error || !data) {
+    if (error || !data) {
+      const raw = {
+        message: error?.message || "unknown",
+        code: error?.code || null,
+        details: error?.details || null,
+        hint: error?.hint || null,
+      };
+      throw Object.assign(new Error(raw.message), raw);
+    }
+
+    console.log("Receipt review saved", data);
+    logDebug("saveReceipt success", { receiptId: data.id });
+
+    state.receipts = state.receipts.map((item) =>
+      item.id === receipt.id ? data : item,
+    );
+    state.selected = data;
+    applyFilters();
+    selectReceipt(data.id);
+    setDetailError("Saved.");
+    setTimeout(() => setDetailError(""), 2000);
+
+    if (status === "verified" && (Number(commissionCents) || 0) > 0) {
+      const syncResult = await addCommissionToStripe({
+        businessId: data.business?.id,
+        redemptionId: data.redemption?.id,
+        eventDate: data.reviewed_at || data.uploaded_at,
+      }).catch((err) => ({ data: null, error: err?.message || "Stripe sync failed." }));
+
+      if (syncResult?.error) {
+        setDetailError(`Saved, but Stripe sync failed: ${syncResult.error}`);
+        setTimeout(() => setDetailError(""), 4000);
+        logDebug("stripe sync failed", { error: syncResult.error });
+      } else {
+        logDebug("stripe sync success", syncResult?.data || {});
+      }
+    }
+  } catch (err) {
+    const aborted = err?.name === "AbortError";
     const raw = {
-      message: error?.message || "unknown",
-      code: error?.code || null,
-      details: error?.details || null,
-      hint: error?.hint || null,
+      message: err?.message || "unknown",
+      code: err?.code || null,
+      details: err?.details || null,
+      hint: err?.hint || null,
+      aborted: Boolean(aborted),
     };
     console.warn("saveReceipt failed", raw);
     logDebug("saveReceipt failed", raw);
     setDetailError(
-      debugEnabled && (raw.details || raw.hint)
-        ? `${raw.message}${raw.details ? ` (${raw.details})` : ""}`
-        : raw.message || "Unable to save receipt review.",
+      aborted ? "Cancelled (tab was backgrounded). Try again." : raw.message,
     );
-    ui.detailSave.disabled = false;
-    ui.detailVerify.disabled = false;
-    return;
-  }
-  console.log("Receipt review saved", data);
-  logDebug("saveReceipt success", { receiptId: data.id });
-
-  state.receipts = state.receipts.map((item) =>
-    item.id === receipt.id ? data : item,
-  );
-  state.selected = data;
-  applyFilters();
-  selectReceipt(data.id);
-  setDetailError("Saved.");
-  setTimeout(() => setDetailError(""), 2000);
-  ui.detailSave.disabled = false;
-  ui.detailVerify.disabled = false;
-
-  if (status === "verified" && (Number(commissionCents) || 0) > 0) {
-    const syncResult = await addCommissionToStripe({
-      businessId: data.business?.id,
-      redemptionId: data.redemption?.id,
-      eventDate: data.reviewed_at || data.uploaded_at,
-    });
-    if (syncResult?.error) {
-      setDetailError(`Saved, but Stripe sync failed: ${syncResult.error}`);
-      setTimeout(() => setDetailError(""), 4000);
-      logDebug("stripe sync failed", { error: syncResult.error });
-    } else {
-      logDebug("stripe sync success", syncResult?.data || {});
-    }
+  } finally {
+    if (ui.detailSave) ui.detailSave.disabled = false;
+    if (ui.detailVerify) ui.detailVerify.disabled = false;
+    logDebug("saveReceipt end", { receiptId: receipt.id });
   }
 };
 
