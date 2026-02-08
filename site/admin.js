@@ -273,20 +273,25 @@ const callR2Presign = async ({ action, key, accessToken }) => {
   if (!supabaseClient) {
     return { data: null, error: "Supabase is not configured." };
   }
-  if (!accessToken) {
-    return { data: null, error: "Missing access token." };
-  }
   logDebug("r2-presign request", { action, key });
-  const response = await withTimeout(
-    supabaseClient.functions.invoke("r2-presign", {
-      body: { action, key },
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    }),
-    REQUEST_TIMEOUT_MS,
-    "r2-presign",
-  );
+  const invoke = () =>
+    withTimeout(
+      supabaseClient.functions.invoke("r2-presign", {
+        body: { action, key },
+      }),
+      REQUEST_TIMEOUT_MS,
+      "r2-presign",
+    );
+
+  // Prefer letting supabase-js attach auth; it avoids stale token bugs.
+  let response = await invoke();
+  if (response?.error?.message) {
+    const msg = String(response.error.message).toLowerCase();
+    if (msg.includes("jwt") || msg.includes("authorization")) {
+      await ensureSession({ force: true });
+      response = await invoke();
+    }
+  }
   if (!response?.error) {
     let parsedData = response?.data ?? null;
     if (typeof parsedData === "string") {
@@ -960,9 +965,6 @@ const runTestInvoice = async ({ businessId, period }) => {
           periodStart: period.start.toISOString(),
           periodEnd: period.end.toISOString(),
         },
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
       },
     ),
     REQUEST_TIMEOUT_MS,
@@ -1022,9 +1024,6 @@ const addCommissionToStripe = async ({
           businessId,
           redemptionId,
           eventDate: eventDate || null,
-        },
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
         },
       },
     ),
@@ -1106,9 +1105,6 @@ const createTestEvent = async () => {
             amountCents,
             eventDate,
             redemptionId: redemptionId || null,
-          },
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
           },
         },
       ),
@@ -1564,10 +1560,16 @@ const init = async () => {
       hasSession: Boolean(session?.access_token),
       userId: session?.user?.id || null,
     });
+    // When the tab is backgrounded, browsers may throttle/abort network activity.
+    // Avoid kicking off refresh cycles until the page is visible again.
+    if (document.hidden) {
+      return;
+    }
     if (session?.user) {
       const ok = await requireStaff();
       if (ok) {
         setAuthUI(true);
+        await ensureSession({ force: true });
         await refreshAll({ silent: true });
         await loadTestCharges();
         startAutoRefresh();
@@ -1582,18 +1584,28 @@ const init = async () => {
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) return;
-    // Keep subscriptions stable; just refresh when the tab becomes active again.
-    startAutoRefresh();
-    startLiveRefresh();
-    refreshAll({ silent: true });
+    logDebug("visibilitychange", { hidden: document.hidden });
+    if (document.hidden) {
+      stopAutoRefresh();
+      stopLiveRefresh();
+      return;
+    }
+    // Coming back into focus: rehydrate session and do a clean refresh.
+    ensureSession({ force: true }).finally(() => {
+      startAutoRefresh();
+      startLiveRefresh();
+      refreshAll({ silent: true });
+    });
   });
 
   window.addEventListener("focus", () => {
     if (!document.hidden) {
-      startAutoRefresh();
-      startLiveRefresh();
-      refreshAll({ silent: true });
+      logDebug("window focus");
+      ensureSession({ force: true }).finally(() => {
+        startAutoRefresh();
+        startLiveRefresh();
+        refreshAll({ silent: true });
+      });
     }
   });
 };
