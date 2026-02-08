@@ -104,7 +104,7 @@ const ui = {
 };
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  ui.authError.textContent =
+  if (ui.authError) ui.authError.textContent =
     "Missing Supabase credentials. Set them in admin-config.js.";
 }
 
@@ -467,17 +467,17 @@ const closeImageModal = () => {
 };
 
 const setAuthUI = (isSignedIn) => {
-  ui.authPanel.classList.toggle("is-hidden", isSignedIn);
-  ui.adminPanel.classList.toggle("is-hidden", !isSignedIn);
-  ui.signOut.classList.toggle("is-hidden", !isSignedIn);
+  if (ui.authPanel) ui.authPanel.classList.toggle("is-hidden", isSignedIn);
+  if (ui.adminPanel) ui.adminPanel.classList.toggle("is-hidden", !isSignedIn);
+  if (ui.signOut) ui.signOut.classList.toggle("is-hidden", !isSignedIn);
 };
 
 const setAuthError = (message) => {
-  ui.authError.textContent = message || "";
+  if (ui.authError) ui.authError.textContent = message || "";
 };
 
 const setDetailError = (message) => {
-  ui.detailError.textContent = message || "";
+  if (ui.detailError) ui.detailError.textContent = message || "";
 };
 
 const setTestStatus = (message, isError = false) => {
@@ -1542,7 +1542,7 @@ const exportCsv = () => {
 };
 
 const attachListeners = () => {
-  ui.signIn.addEventListener("click", async () => {
+  if (ui.signIn) ui.signIn.addEventListener("click", async () => {
     setAuthError("");
     if (!supabaseClient) {
       setAuthError("Supabase is not configured.");
@@ -1572,22 +1572,22 @@ const attachListeners = () => {
     }
   });
 
-  ui.signOut.addEventListener("click", async () => {
+  if (ui.signOut) ui.signOut.addEventListener("click", async () => {
     if (!supabaseClient) return;
     await supabaseClient.auth.signOut({ scope: "local" });
-    ui.adminUser.textContent = "Not signed in";
+    if (ui.adminUser) ui.adminUser.textContent = "Not signed in";
   });
 
-  ui.refresh.addEventListener("click", async () => {
+  if (ui.refresh) ui.refresh.addEventListener("click", async () => {
     await refreshAll({ silent: false });
   });
 
-  ui.filterSearch.addEventListener("input", applyFilters);
-  ui.filterStatus.addEventListener("change", applyFilters);
-  ui.filterBusiness.addEventListener("change", applyFilters);
-  ui.filterStart.addEventListener("change", applyFilters);
-  ui.filterEnd.addEventListener("change", applyFilters);
-  ui.filterRate.addEventListener("input", () => {
+  if (ui.filterSearch) ui.filterSearch.addEventListener("input", applyFilters);
+  if (ui.filterStatus) ui.filterStatus.addEventListener("change", applyFilters);
+  if (ui.filterBusiness) ui.filterBusiness.addEventListener("change", applyFilters);
+  if (ui.filterStart) ui.filterStart.addEventListener("change", applyFilters);
+  if (ui.filterEnd) ui.filterEnd.addEventListener("change", applyFilters);
+  if (ui.filterRate) ui.filterRate.addEventListener("input", () => {
     state.defaultRate = Number(ui.filterRate.value) || state.defaultRate;
   });
   if (ui.testBusiness) {
@@ -1597,36 +1597,36 @@ const attachListeners = () => {
     ui.testDate.addEventListener("change", loadTestCharges);
   }
 
-  ui.detailTotal.addEventListener("input", () => {
+  if (ui.detailTotal) ui.detailTotal.addEventListener("input", () => {
     const totalCents = parseMoneyToCents(ui.detailTotal.value);
     if (totalCents == null) {
-      ui.detailCommission.value = "";
-      ui.detailCashback.value = "";
+      if (ui.detailCommission) ui.detailCommission.value = "";
+      if (ui.detailCashback) ui.detailCashback.value = "";
       return;
     }
     const rate = (Number(ui.filterRate.value) || state.defaultRate) / 100;
     const commissionCents = Math.round(totalCents * rate);
-    ui.detailCommission.value = (commissionCents / 100).toFixed(2);
-    ui.detailCashback.value = (calculateCashbackCents(commissionCents) / 100).toFixed(
+    if (ui.detailCommission) ui.detailCommission.value = (commissionCents / 100).toFixed(2);
+    if (ui.detailCashback) ui.detailCashback.value = (calculateCashbackCents(commissionCents) / 100).toFixed(
       2,
     );
   });
-  ui.detailCommission.addEventListener("input", () => {
+  if (ui.detailCommission) ui.detailCommission.addEventListener("input", () => {
     const commissionCents = parseMoneyToCents(ui.detailCommission.value);
     if (commissionCents == null) {
-      ui.detailCashback.value = "";
+      if (ui.detailCashback) ui.detailCashback.value = "";
       return;
     }
-    ui.detailCashback.value = (calculateCashbackCents(commissionCents) / 100).toFixed(
+    if (ui.detailCashback) ui.detailCashback.value = (calculateCashbackCents(commissionCents) / 100).toFixed(
       2,
     );
   });
 
-  ui.detailSave.addEventListener("click", () => saveReceipt());
-  ui.detailVerify.addEventListener("click", () =>
+  if (ui.detailSave) ui.detailSave.addEventListener("click", () => saveReceipt());
+  if (ui.detailVerify) ui.detailVerify.addEventListener("click", () =>
     saveReceipt({ status: "verified" }),
   );
-  ui.exportCsv.addEventListener("click", exportCsv);
+  if (ui.exportCsv) ui.exportCsv.addEventListener("click", exportCsv);
   if (ui.testCreate) {
     ui.testCreate.addEventListener("click", createTestEvent);
   }
@@ -1634,18 +1634,22 @@ const attachListeners = () => {
     ui.testCharge.addEventListener("click", chargeNow);
   }
 
-  ui.detailOpen.addEventListener("click", () => {
-    openImageModal(ui.detailImage.src);
+  if (ui.detailOpen) ui.detailOpen.addEventListener("click", () => {
+    openImageModal(ui.detailImage?.src);
   });
 
-  ui.imageModalClose.addEventListener("click", closeImageModal);
-  ui.imageModal.addEventListener("click", (event) => {
+  if (ui.imageModalClose) ui.imageModalClose.addEventListener("click", closeImageModal);
+  if (ui.imageModal) ui.imageModal.addEventListener("click", (event) => {
     if (event.target === ui.imageModal) {
       closeImageModal();
     }
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !ui.imageModal.classList.contains("is-hidden")) {
+    if (
+      event.key === "Escape" &&
+      ui.imageModal &&
+      !ui.imageModal.classList.contains("is-hidden")
+    ) {
       closeImageModal();
     }
   });
