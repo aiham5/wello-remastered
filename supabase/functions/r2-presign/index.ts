@@ -138,6 +138,20 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+const fetchWithTimeout = async (
+  input: string,
+  init: RequestInit,
+  timeoutMs: number,
+) => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(id);
+  }
+};
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { status: 200, headers: corsHeaders });
@@ -189,15 +203,31 @@ serve(async (req) => {
     }
     const authKey =
       incomingApiKey || SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY;
-    const userResponse = await fetch(
-      `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1/user`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          apikey: authKey,
+    let userResponse: Response;
+    try {
+      userResponse = await fetchWithTimeout(
+        `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1/user`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            apikey: authKey,
+          },
         },
-      },
-    );
+        8000,
+      );
+    } catch (error) {
+      const message = String(error?.message || "");
+      const isAbort =
+        message.toLowerCase().includes("aborted") ||
+        message.toLowerCase().includes("aborterror");
+      return new Response(
+        JSON.stringify({
+          error: "Auth timeout",
+          reason: isAbort ? "auth_fetch_timeout" : "auth_fetch_failed",
+        }),
+        { status: 503, headers: corsHeaders },
+      );
+    }
     if (!userResponse.ok) {
       const raw = await userResponse.text();
       const payload = (() => {

@@ -204,6 +204,7 @@ const resumeState = {
   inFlight: false,
   lastSource: null,
 };
+let didBootResume = false;
 const abortRecovery = {
   inFlight: false,
   lastAt: 0,
@@ -774,6 +775,7 @@ const resumeNow = async (source) => {
 
 const scheduleResume = (source) => {
   if (!supabaseClient || document.hidden) return;
+  if (resumeState.inFlight) return;
   if (resumeState.timer) {
     clearTimeout(resumeState.timer);
     resumeState.timer = null;
@@ -1667,6 +1669,7 @@ const init = async () => {
     if (ok) {
       setAuthUI(true);
       scheduleResume("init");
+      didBootResume = true;
     }
   } else {
     setAuthUI(false);
@@ -1687,6 +1690,10 @@ const init = async () => {
     if (session?.user) {
       // Token refreshes are noisy and don't require a full UI refresh.
       if (_event === "TOKEN_REFRESHED") {
+        return;
+      }
+      // Avoid double-boot refresh: init() already schedules one.
+      if (_event === "INITIAL_SESSION" && didBootResume) {
         return;
       }
       const ok = await requireStaff();
