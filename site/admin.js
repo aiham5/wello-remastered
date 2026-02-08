@@ -131,7 +131,8 @@ const supabaseClient =
     ? window.supabase.createClient(supabaseUrl, supabaseAnonKey, {
         auth: {
           persistSession: true,
-          autoRefreshToken: false,
+          // Let supabase-js manage refresh in the background; it is more reliable than manual refresh races.
+          autoRefreshToken: true,
         },
       })
     : null;
@@ -190,34 +191,63 @@ const formatDateTime = (value) => {
 };
 
 const withTimeout = (promise, ms, label) =>
-  Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      const id = setTimeout(() => {
+  new Promise((resolve, reject) => {
+    let done = false;
+    const id = setTimeout(() => {
+      if (done) return;
+      done = true;
+      const error = new Error(`${label || "Request"} timed out after ${ms}ms`);
+      error.name = "TimeoutError";
+      reject(error);
+    }, ms);
+    Promise.resolve(promise).then(
+      (value) => {
+        if (done) return;
+        done = true;
         clearTimeout(id);
-        const error = new Error(
-          `${label || "Request"} timed out after ${ms}ms`,
-        );
-        error.name = "TimeoutError";
-        reject(error);
-      }, ms);
-    }),
-  ]);
-
-const ensureSession = async () => {
-  if (!supabaseClient) return null;
-  if (state.session?.access_token) return state.session;
-  try {
-    const result = await withTimeout(
-      supabaseClient.auth.refreshSession(),
-      REQUEST_TIMEOUT_MS,
-      "refreshSession",
+        resolve(value);
+      },
+      (err) => {
+        if (done) return;
+        done = true;
+        clearTimeout(id);
+        reject(err);
+      },
     );
-    const session = result?.data?.session || null;
+  });
+
+const sessionState = {
+  refreshPromise: null,
+};
+
+const ensureSession = async ({ force } = {}) => {
+  if (!supabaseClient) return null;
+  if (!force && state.session?.access_token) return state.session;
+  try {
+    if (!sessionState.refreshPromise) {
+      sessionState.refreshPromise = withTimeout(
+        (async () => {
+          // Prefer cached session first.
+          const {
+            data: { session },
+          } = await supabaseClient.auth.getSession();
+          if (session?.access_token && !force) return session;
+
+          // If forced (or missing), refresh.
+          const refreshed = await supabaseClient.auth.refreshSession();
+          return refreshed?.data?.session || null;
+        })(),
+        REQUEST_TIMEOUT_MS,
+        force ? "ensureSession(force)" : "ensureSession",
+      ).finally(() => {
+        sessionState.refreshPromise = null;
+      });
+    }
+    const session = await sessionState.refreshPromise;
     state.session = session;
-    return session;
+    return session || null;
   } catch (error) {
-    logDebug("refreshSession failed", { message: error?.message || "unknown" });
+    logDebug("ensureSession failed", { message: error?.message || "unknown" });
     return null;
   }
 };
@@ -429,7 +459,7 @@ const loadBusinesses = async () => {
     error = err;
   }
   if (error?.message && error.message.toLowerCase().includes("jwt")) {
-    await supabaseClient.auth.refreshSession().catch(() => null);
+    await ensureSession({ force: true });
     try {
       const retry = await withTimeout(
         supabaseClient.from("businesses").select("id, name").order("name"),
@@ -508,7 +538,7 @@ const loadReceipts = async () => {
     error = err;
   }
   if (error?.message && error.message.toLowerCase().includes("jwt")) {
-    await supabaseClient.auth.refreshSession().catch(() => null);
+    await ensureSession({ force: true });
     try {
       const retry = await withTimeout(
         supabaseClient
@@ -914,9 +944,7 @@ const runTestInvoice = async ({ businessId, period }) => {
   }
   let session = state.session;
   if (!session?.access_token) {
-    const refresh = await supabaseClient.auth.refreshSession();
-    session = refresh?.data?.session || null;
-    state.session = session;
+    session = await ensureSession({ force: true });
   }
   if (!session?.access_token) {
     setTestStatus("Session missing. Please sign in again.", true);
@@ -980,9 +1008,7 @@ const addCommissionToStripe = async ({
   }
   let session = state.session;
   if (!session?.access_token) {
-    const refresh = await supabaseClient.auth.refreshSession();
-    session = refresh?.data?.session || null;
-    state.session = session;
+    session = await ensureSession({ force: true });
   }
   if (!session?.access_token) {
     return { error: "Session missing. Please sign in again." };
@@ -1065,9 +1091,7 @@ const createTestEvent = async () => {
   try {
     let session = state.session;
     if (!session?.access_token) {
-      const refresh = await supabaseClient.auth.refreshSession();
-      session = refresh?.data?.session || null;
-      state.session = session;
+      session = await ensureSession({ force: true });
     }
     if (!session?.access_token) {
       setTestStatus("Session missing. Please sign in again.", true);
@@ -1558,11 +1582,8 @@ const init = async () => {
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      stopAutoRefresh();
-      stopLiveRefresh();
-      return;
-    }
+    if (document.hidden) return;
+    // Keep subscriptions stable; just refresh when the tab becomes active again.
     startAutoRefresh();
     startLiveRefresh();
     refreshAll({ silent: true });

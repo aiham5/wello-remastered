@@ -19,6 +19,7 @@ import {
   Modal,
   PanResponder,
   Platform,
+  Pressable,
   RefreshControl,
   ScrollView,
   StatusBar,
@@ -45,8 +46,6 @@ import * as FileSystem from "expo-file-system";
 import { toByteArray } from "base64-js";
 import { createClient } from "@supabase/supabase-js";
 import * as Location from "expo-location";
-import QRCode from "qrcode";
-import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import {
@@ -121,8 +120,9 @@ const OFFERS_REFRESH_INTERVAL_MS = 1000 * 60 * 2;
 const REFRESH_MIN_INTERVAL_MS = 1000 * 15;
 const LIVE_POLL_MS = 1000 * 30;
 const LIVE_DEBOUNCE_MS = 1200;
-const RECEIPT_PREVIEW_HEIGHT = Math.min(SCREEN_HEIGHT * 0.72, 680);
-const RECEIPT_PREVIEW_WIDTH = Math.min(SCREEN_WIDTH - 40, 520);
+const RECEIPT_PREVIEW_HEIGHT = Math.min(SCREEN_HEIGHT * 0.78, 760);
+const RECEIPT_PREVIEW_WIDTH = Math.min(SCREEN_WIDTH - 24, 720);
+const RECEIPT_PREVIEW_MAX_ZOOM = 6;
 const TIME_OPTIONS = [
   "12:00",
   "12:30",
@@ -441,16 +441,6 @@ const BUSINESS_ANALYTICS = {
   8: { views: 1760, saves: 298, redemptions: 74, reach: "6.0k" },
 };
 const DEFAULT_ANALYTICS = { views: 0, saves: 0, redemptions: 0, reach: "0" };
-const BUSINESS_QR_IMAGES = {
-  1: require("./assets/qr/wello-1.png"),
-  2: require("./assets/qr/wello-2.png"),
-  3: require("./assets/qr/wello-3.png"),
-  4: require("./assets/qr/wello-4.png"),
-  5: require("./assets/qr/wello-5.png"),
-  6: require("./assets/qr/wello-6.png"),
-  7: require("./assets/qr/wello-7.png"),
-  8: require("./assets/qr/wello-8.png"),
-};
 
 const MAP_REGION = {
   latitude: 40.7128,
@@ -538,12 +528,22 @@ const mapSupabaseRedemption = (row) => ({
       ? row.receipt_uploads[0]
       : row.receipt_uploads;
     if (!receipt) return null;
+    const cashbackEvent = (() => {
+      const events = Array.isArray(receipt.cashback_events)
+        ? receipt.cashback_events
+        : receipt.cashback_events
+          ? [receipt.cashback_events]
+          : [];
+      return events[0] || null;
+    })();
     return {
       id: String(receipt.id),
       storagePath: receipt.storage_path || "",
       uploadedAt: receipt.uploaded_at
         ? new Date(receipt.uploaded_at).getTime()
         : Date.now(),
+      cashbackCents: Number(cashbackEvent?.amount_cents) || 0,
+      cashbackStatus: cashbackEvent?.status || null,
     };
   })(),
 });
@@ -1122,7 +1122,18 @@ const formatCurrencyFromCents = (cents) => {
   return `$${(amount / 100).toFixed(2)}`;
 };
 
-const openMapsForBusiness = (business) => {
+const computeContainedSize = (viewportWidth, viewportHeight, imageWidth, imageHeight) => {
+  const vw = Number(viewportWidth) || 0;
+  const vh = Number(viewportHeight) || 0;
+  const iw = Number(imageWidth) || 0;
+  const ih = Number(imageHeight) || 0;
+  if (!vw || !vh) return { width: 0, height: 0 };
+  if (!iw || !ih) return { width: vw, height: vh };
+  const scale = Math.min(vw / iw, vh / ih);
+  return { width: iw * scale, height: ih * scale };
+};
+
+const openMapsForBusiness = async (business) => {
   if (!business) return;
   const latitude =
     business.coordinate?.latitude ??
@@ -1150,10 +1161,51 @@ const openMapsForBusiness = (business) => {
         ? encodeURIComponent(address)
         : null;
   if (!destination) return;
-  const url = latitude && longitude
-    ? `https://www.google.com/maps/dir/?api=1&destination=${destination}`
-    : `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
-  Linking.openURL(url).catch(() => null);
+
+  // Prefer native maps apps over web on iOS to avoid App Store prompts.
+  const destinationParam = encodeURIComponent(
+    latitude && longitude ? `${latitude},${longitude}` : address,
+  );
+  const googleWebUrl = `https://www.google.com/maps/dir/?api=1&destination=${destinationParam}`;
+
+  if (Platform.OS === "ios") {
+    const appleMapsUrl =
+      latitude && longitude
+        ? `maps://?daddr=${latitude},${longitude}`
+        : `maps://?daddr=${destinationParam}`;
+    try {
+      await Linking.openURL(appleMapsUrl);
+      return;
+    } catch (error) {
+      // Fall back to the web if the scheme is blocked (rare).
+      await Linking.openURL(googleWebUrl).catch(() => null);
+      return;
+    }
+  }
+
+  if (Platform.OS === "android") {
+    const navigationUrl =
+      latitude && longitude
+        ? `google.navigation:q=${encodeURIComponent(`${latitude},${longitude}`)}`
+        : `google.navigation:q=${destinationParam}`;
+    try {
+      await Linking.openURL(navigationUrl);
+      return;
+    } catch (error) {
+      const geoUrl =
+        latitude && longitude
+          ? `geo:${latitude},${longitude}?q=${encodeURIComponent(
+              `${latitude},${longitude}`,
+            )}`
+          : `geo:0,0?q=${destinationParam}`;
+      await Linking.openURL(geoUrl).catch(() =>
+        Linking.openURL(googleWebUrl).catch(() => null),
+      );
+      return;
+    }
+  }
+
+  Linking.openURL(googleWebUrl).catch(() => null);
 };
 
 const parseClockMinutes = (time, meridiem) => {
@@ -1310,22 +1362,6 @@ const CATEGORY_CONFIG = {
 
 function getCategoryConfig(categoryKey) {
   return CATEGORY_CONFIG[categoryKey] || CATEGORY_CONFIG.default;
-}
-
-function buildQrHash(value) {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash << 5) - hash + value.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(36).toUpperCase();
-}
-
-function getBusinessQrCode(business) {
-  if (!business) return "";
-  const base = `${business.id}|${business.name || ""}|${business.categoryKey || ""}`;
-  const hash = buildQrHash(base).slice(0, 8);
-  return business.qrCode || `WELLO-${business.id}-${hash}`;
 }
 
 const OFFER_IMAGE_BUCKET = "offer-images";
@@ -1810,16 +1846,18 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
               {isOpen ? "Redeem offer" : "Closed now"}
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.directionsButton}
+          <Pressable
+            style={({ pressed }) => [
+              styles.directionsButton,
+              pressed && styles.directionsButtonPressed,
+            ]}
             onPress={() => openMapsForBusiness(item.business || item)}
-            activeOpacity={0.85}
           >
             <Ionicons name="navigate" size={14} color={COLORS.pine} />
             <Text style={styles.directionsButtonText}>
               Directions
             </Text>
-          </TouchableOpacity>
+          </Pressable>
           <View style={styles.cardMetaRow}>
             <Text style={styles.cardMeta}>{offerTypeLabel}</Text>
             <Text style={styles.cardMeta}>
@@ -1945,7 +1983,6 @@ export default function App() {
   const [scannerBusiness, setScannerBusiness] = useState(null);
   const [scannerOffer, setScannerOffer] = useState(null);
   const [scannerStatus, setScannerStatus] = useState(null);
-  const [scannerEnabled, setScannerEnabled] = useState(true);
   const [redeemGate, setRedeemGate] = useState({
     allowed: true,
     reason: null,
@@ -1953,10 +1990,6 @@ export default function App() {
   });
   const [redeemGateBusy, setRedeemGateBusy] = useState(false);
   const redemptionLoggedRef = useRef(false);
-  const [qrExpandedId, setQrExpandedId] = useState(null);
-  const [qrImageMap, setQrImageMap] = useState({});
-  const [businessQrOpen, setBusinessQrOpen] = useState(false);
-  const [businessQrNotice, setBusinessQrNotice] = useState(null);
   const [notificationPreferences, setNotificationPreferences] = useState(
     NOTIFICATION_DEFAULTS,
   );
@@ -2057,7 +2090,6 @@ export default function App() {
     error: null,
     success: null,
   });
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [ownerBusinessId, setOwnerBusinessId] = useState(defaultOwnerId);
   const [androidMarkerIcons, setAndroidMarkerIcons] = useState(null);
   const [formData, setFormData] = useState({
@@ -2267,6 +2299,17 @@ export default function App() {
   const receiptBaseScaleValue = useRef(1);
   const receiptBaseXValue = useRef(0);
   const receiptBaseYValue = useRef(0);
+  const receiptViewportSizeRef = useRef({
+    width: RECEIPT_PREVIEW_WIDTH,
+    height: RECEIPT_PREVIEW_HEIGHT,
+  });
+  const receiptImageSizeRef = useRef({ width: 0, height: 0 });
+  const [receiptViewportSize, setReceiptViewportSize] = useState(
+    receiptViewportSizeRef.current,
+  );
+  const [receiptImageSize, setReceiptImageSize] = useState(
+    receiptImageSizeRef.current,
+  );
   const receiptPinchRef = useRef(null);
   const receiptPanRef = useRef(null);
   const receiptScale = Animated.multiply(
@@ -4224,36 +4267,6 @@ export default function App() {
   }, [authUserId, isSignedIn]);
 
   useEffect(() => {
-    if (!qrExpandedId) return;
-    const business = businesses.find(
-      (item) => String(item.id) === String(qrExpandedId),
-    );
-    if (!business) return;
-    if (BUSINESS_QR_IMAGES[business.id] || qrImageMap[business.id]) return;
-    let isMounted = true;
-    const payload = getBusinessQrCode(business);
-    QRCode.toDataURL(payload, {
-      errorCorrectionLevel: "M",
-      margin: 2,
-      width: 240,
-    })
-      .then((dataUrl) => {
-        if (!isMounted) return;
-        setQrImageMap((prev) => ({ ...prev, [business.id]: dataUrl }));
-      })
-      .catch(() => {
-        if (!isMounted) return;
-        const fallbackUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(
-          payload,
-        )}`;
-        setQrImageMap((prev) => ({ ...prev, [business.id]: fallbackUrl }));
-      });
-    return () => {
-      isMounted = false;
-    };
-  }, [businesses, qrExpandedId, qrImageMap]);
-
-  useEffect(() => {
     if (activeTab === "admin" && !isStaff) {
       setActiveTab("discover");
     }
@@ -4579,21 +4592,6 @@ export default function App() {
     },
     [notificationPreferences, saveNotificationPreferences],
   );
-
-  const handleOpenBusinessQr = () => {
-    if (!ownerBusiness?.id) return;
-    setQrExpandedId(ownerBusiness.id);
-    setBusinessQrNotice(null);
-    setBusinessQrOpen(true);
-  };
-
-  const handleCloseBusinessQr = () => {
-    setBusinessQrOpen(false);
-  };
-
-  const handlePrintBusinessQr = () => {
-    setBusinessQrNotice("Print template coming soon.");
-  };
 
   const handleSignIn = async () => {
     if (!signInEmail.trim() || !signInPassword.trim()) {
@@ -4988,7 +4986,6 @@ export default function App() {
   const runRedeemGate = async (business) => {
     if (!business) return false;
     setRedeemGateBusy(true);
-    setScannerEnabled(false);
     setScannerStatus("checking");
     setRedeemGate({
       allowed: false,
@@ -5056,8 +5053,6 @@ export default function App() {
           reason: null,
           distanceMeters: distance,
         });
-        setScannerStatus(null);
-        setScannerEnabled(true);
         return true;
       }
       setRedeemGate({
@@ -5090,16 +5085,17 @@ export default function App() {
     setScannerBusiness(business);
     setScannerOffer(card);
     setScannerStatus("checking");
-    setScannerEnabled(false);
     redemptionLoggedRef.current = false;
     setScannerVisible(true);
-    await runRedeemGate(business);
+    const allowed = await runRedeemGate(business);
+    if (allowed) {
+      await redeemOfferInStore(business, card);
+    }
   };
 
   const handleCloseScanner = () => {
     setScannerVisible(false);
     setScannerStatus(null);
-    setScannerEnabled(true);
     setScannerOffer(null);
     setRedeemGate({
       allowed: true,
@@ -5211,42 +5207,34 @@ export default function App() {
     }
   };
 
-  const handleScanCode = async ({ data }) => {
-    if (!scannerEnabled || !scannerBusiness) return;
-    setScannerEnabled(false);
-    const expected = getBusinessQrCode(scannerBusiness);
-    if (data && expected && data.includes(expected)) {
-      setScannerStatus("success");
-      if (!redemptionLoggedRef.current) {
-        redemptionLoggedRef.current = true;
-        if (SUPABASE_URL && SUPABASE_ANON_KEY && authUserId) {
-          const { error } = await supabase.from("redemptions").insert({
-            business_id: scannerBusiness.id,
-            offer_id: scannerOffer?.offerId || scannerOffer?.id || null,
-            qr_payload: data,
-            scanned_by: authUserId,
-          });
-          if (error) {
-            console.warn(
-              "Wello redemption insert failed:",
-              error.message || error,
-            );
-          } else {
-            loadRedemptions({ silent: true });
-          }
-        }
+  const redeemOfferInStore = async (business, offerCard) => {
+    if (!business?.id || !authUserId) return false;
+    if (redemptionLoggedRef.current) return true;
+    redemptionLoggedRef.current = true;
+    setScannerStatus("redeeming");
+    try {
+      const { error } = await supabase.from("redemptions").insert({
+        business_id: business.id,
+        offer_id: offerCard?.offerId || offerCard?.id || null,
+        qr_payload: null,
+        scanned_by: authUserId,
+      });
+      if (error) {
+        redemptionLoggedRef.current = false;
+        setScannerStatus("error");
+        console.warn("Wello redemption insert failed:", error.message || error);
+        return false;
       }
-    } else {
-      setScannerStatus("invalid");
+      setScannerStatus("success");
+      loadRedemptions({ silent: true });
+      return true;
+    } catch (error) {
+      redemptionLoggedRef.current = false;
+      setScannerStatus("error");
+      console.warn("Wello redemption insert failed:", error?.message || error);
+      return false;
     }
   };
-
-  useEffect(() => {
-    if (!scannerVisible) return;
-    if (!cameraPermission || cameraPermission.status !== "granted") {
-      requestCameraPermission();
-    }
-  }, [scannerVisible, cameraPermission, requestCameraPermission]);
 
   const handleLocateMe = async () => {
     try {
@@ -6664,15 +6652,6 @@ export default function App() {
     setPendingOffers((prev) =>
       prev.filter((offer) => offer.businessId !== business.id),
     );
-    if (qrExpandedId === business.id) {
-      setQrExpandedId(null);
-    }
-    setQrImageMap((prev) => {
-      if (!prev[business.id]) return prev;
-      const next = { ...prev };
-      delete next[business.id];
-      return next;
-    });
     if (ownerBusinessId === business.id) {
       setOwnerBusinessId(null);
     }
@@ -7112,6 +7091,13 @@ export default function App() {
     receiptBaseY.setValue(0);
     receiptPanX.setValue(0);
     receiptPanY.setValue(0);
+    receiptViewportSizeRef.current = {
+      width: RECEIPT_PREVIEW_WIDTH,
+      height: RECEIPT_PREVIEW_HEIGHT,
+    };
+    receiptImageSizeRef.current = { width: 0, height: 0 };
+    setReceiptViewportSize(receiptViewportSizeRef.current);
+    setReceiptImageSize(receiptImageSizeRef.current);
     const title = offerTitle || receipt.offerTitle || "Receipt";
     setReceiptPreview({
       uri: "",
@@ -7178,36 +7164,86 @@ export default function App() {
     { useNativeDriver: true },
   );
 
+  const resetReceiptZoom = useCallback(() => {
+    receiptBaseScale.setValue(1);
+    receiptPinchScale.setValue(1);
+    receiptBaseX.setValue(0);
+    receiptBaseY.setValue(0);
+    receiptPanX.setValue(0);
+    receiptPanY.setValue(0);
+  }, [
+    receiptBaseScale,
+    receiptPinchScale,
+    receiptBaseX,
+    receiptBaseY,
+    receiptPanX,
+    receiptPanY,
+  ]);
+
+  const getReceiptPanBounds = useCallback(
+    (scale) => {
+      const viewport = receiptViewportSizeRef.current;
+      const image = receiptImageSizeRef.current;
+      const viewportWidth = Number(viewport?.width) || RECEIPT_PREVIEW_WIDTH;
+      const viewportHeight = Number(viewport?.height) || RECEIPT_PREVIEW_HEIGHT;
+      const { width: contentWidth, height: contentHeight } = computeContainedSize(
+        viewportWidth,
+        viewportHeight,
+        image?.width,
+        image?.height,
+      );
+      const maxX = Math.max(
+        0,
+        (Number(contentWidth) * scale - viewportWidth) / 2,
+      );
+      const maxY = Math.max(
+        0,
+        (Number(contentHeight) * scale - viewportHeight) / 2,
+      );
+      return { maxX, maxY };
+    },
+    [receiptViewportSizeRef, receiptImageSizeRef],
+  );
+
   const onReceiptPinchStateChange = useCallback(
     (event) => {
       if (event.nativeEvent.oldState === GestureState.ACTIVE) {
         const next = Math.max(
           1,
-          Math.min(4, receiptBaseScaleValue.current * event.nativeEvent.scale),
+          Math.min(
+            RECEIPT_PREVIEW_MAX_ZOOM,
+            receiptBaseScaleValue.current * event.nativeEvent.scale,
+          ),
         );
         receiptBaseScale.setValue(next);
         receiptPinchScale.setValue(1);
-        const maxX =
-          (RECEIPT_PREVIEW_WIDTH * next - RECEIPT_PREVIEW_WIDTH) / 2;
-        const maxY =
-          (RECEIPT_PREVIEW_HEIGHT * next - RECEIPT_PREVIEW_HEIGHT) / 2;
+        if (next <= 1.001) {
+          receiptBaseScale.setValue(1);
+          receiptBaseX.setValue(0);
+          receiptBaseY.setValue(0);
+          return;
+        }
+        const { maxX, maxY } = getReceiptPanBounds(next);
         const clampedX = clampValue(receiptBaseXValue.current, -maxX, maxX);
         const clampedY = clampValue(receiptBaseYValue.current, -maxY, maxY);
         receiptBaseX.setValue(clampedX);
         receiptBaseY.setValue(clampedY);
       }
     },
-    [receiptBaseScale, receiptPinchScale, receiptBaseX, receiptBaseY],
+    [
+      receiptBaseScale,
+      receiptPinchScale,
+      receiptBaseX,
+      receiptBaseY,
+      getReceiptPanBounds,
+    ],
   );
 
   const onReceiptPanStateChange = useCallback(
     (event) => {
       if (event.nativeEvent.oldState === GestureState.ACTIVE) {
         const scale = receiptBaseScaleValue.current;
-        const maxX =
-          (RECEIPT_PREVIEW_WIDTH * scale - RECEIPT_PREVIEW_WIDTH) / 2;
-        const maxY =
-          (RECEIPT_PREVIEW_HEIGHT * scale - RECEIPT_PREVIEW_HEIGHT) / 2;
+        const { maxX, maxY } = getReceiptPanBounds(scale);
         const nextX = clampValue(
           receiptBaseXValue.current + event.nativeEvent.translationX,
           -maxX,
@@ -7224,7 +7260,7 @@ export default function App() {
         receiptPanY.setValue(0);
       }
     },
-    [receiptBaseX, receiptBaseY, receiptPanX, receiptPanY],
+    [receiptBaseX, receiptBaseY, receiptPanX, receiptPanY, getReceiptPanBounds],
   );
 
   const handleCreateOffer = async () => {
@@ -7406,21 +7442,46 @@ export default function App() {
       if (!silent) {
         setRedemptionStatus({ loading: true, error: null });
       }
-      const { data, error } = await supabase
+      const selectWithCashback = [
+        "id",
+        "business_id",
+        "offer_id",
+        "created_at",
+        "offer:offers (id, title, description, offer_type, image_url)",
+        "business:businesses (id, name, category_key, category_label)",
+        "receipt_uploads (id, uploaded_at, storage_path, cashback_events (amount_cents, status))",
+      ].join(",");
+      const selectBasic = [
+        "id",
+        "business_id",
+        "offer_id",
+        "created_at",
+        "offer:offers (id, title, description, offer_type, image_url)",
+        "business:businesses (id, name, category_key, category_label)",
+        "receipt_uploads (id, uploaded_at, storage_path)",
+      ].join(",");
+
+      let { data, error } = await supabase
         .from("redemptions")
-        .select(
-          [
-            "id",
-            "business_id",
-            "offer_id",
-            "created_at",
-            "offer:offers (id, title, description, offer_type, image_url)",
-            "business:businesses (id, name, category_key, category_label)",
-            "receipt_uploads (id, uploaded_at, storage_path)",
-          ].join(","),
-        )
+        .select(selectWithCashback)
         .eq("scanned_by", authUserId)
         .order("created_at", { ascending: false });
+
+      if (error) {
+        const message = String(error.message || "").toLowerCase();
+        if (
+          message.includes("relationship") ||
+          message.includes("could not find") ||
+          message.includes("embedded") ||
+          message.includes("cashback_events")
+        ) {
+          ({ data, error } = await supabase
+            .from("redemptions")
+            .select(selectBasic)
+            .eq("scanned_by", authUserId)
+            .order("created_at", { ascending: false }));
+        }
+      }
       if (error) {
         if (!silent) {
           setRedemptionStatus({
@@ -8409,30 +8470,54 @@ export default function App() {
                 </View>
 
                 <View style={styles.scannerFrame}>
-                  {cameraPermission?.status === "denied" ? (
-                    <View style={styles.scannerBlocked}>
-                      <Text style={styles.scannerBlockedText}>
-                        Camera permission is required.
-                      </Text>
-                    </View>
-                  ) : scannerStatus === "blocked" ||
-                    scannerStatus === "checking" ? (
-                    <View style={styles.scannerBlocked}>
-                      <Text style={styles.scannerBlockedText}>
-                        {scannerStatus === "checking"
-                          ? "Checking your location..."
-                          : REDEEM_BLOCKED_MESSAGE}
-                      </Text>
-                    </View>
-                  ) : (
-                    <CameraView
-                      onBarcodeScanned={
-                        scannerEnabled ? handleScanCode : undefined
+                  <View style={styles.scannerBlocked}>
+                    <Ionicons
+                      name={
+                        scannerStatus === "success"
+                          ? "checkmark-circle"
+                          : scannerStatus === "blocked"
+                            ? "alert-circle"
+                            : scannerStatus === "error"
+                              ? "warning"
+                              : scannerStatus === "redeeming"
+                                ? "card"
+                                : "locate"
                       }
-                      barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-                      style={styles.scanner}
+                      size={42}
+                      color={
+                        scannerStatus === "success"
+                          ? "#047857"
+                          : scannerStatus === "blocked" ||
+                              scannerStatus === "error"
+                            ? "#B42318"
+                            : COLORS.pine
+                      }
                     />
-                  )}
+                    <Text style={styles.scannerBlockedText}>
+                      {scannerStatus === "success"
+                        ? "Offer redeemed."
+                        : scannerStatus === "redeeming"
+                          ? "Redeeming offer..."
+                          : scannerStatus === "checking"
+                            ? "Checking your location..."
+                            : scannerStatus === "blocked"
+                              ? REDEEM_BLOCKED_MESSAGE
+                              : scannerStatus === "error"
+                                ? "Unable to redeem right now. Try again."
+                                : "Checking your location..."}
+                    </Text>
+                    {Number.isFinite(redeemGate?.distanceMeters) &&
+                      redeemGate.distanceMeters !== null && (
+                        <Text style={styles.scannerDistanceText}>
+                          Distance:{" "}
+                          {redeemGate.distanceMeters < 1000
+                            ? `${Math.round(redeemGate.distanceMeters)} m`
+                            : `${(redeemGate.distanceMeters / 1000).toFixed(
+                                1,
+                              )} km`}
+                        </Text>
+                      )}
+                  </View>
                   <View
                     style={styles.scannerFrameOutline}
                     pointerEvents="none"
@@ -8443,13 +8528,15 @@ export default function App() {
                   <Text style={styles.scannerStatusText}>
                     {scannerStatus === "success"
                       ? "Offer redeemed. Show this confirmation to the staff."
-                      : scannerStatus === "invalid"
-                        ? "That code does not match this offer. Try again."
+                      : scannerStatus === "redeeming"
+                        ? "Hang tight. This will only take a moment."
                         : scannerStatus === "checking"
                           ? "Checking your location..."
                           : scannerStatus === "blocked"
                             ? REDEEM_BLOCKED_MESSAGE
-                            : "Scan the business QR code to redeem this offer."}
+                            : scannerStatus === "error"
+                              ? "We couldn't complete that redemption."
+                              : "Checking your location..."}
                   </Text>
                 </View>
 
@@ -8461,8 +8548,7 @@ export default function App() {
                     >
                       <Text style={styles.primaryButtonText}>Done</Text>
                     </TouchableOpacity>
-                  ) : scannerStatus === "blocked" ||
-                    scannerStatus === "checking" ? (
+                  ) : scannerStatus === "blocked" ? (
                     <TouchableOpacity
                       style={[
                         styles.secondaryButton,
@@ -8470,7 +8556,15 @@ export default function App() {
                       ]}
                       onPress={() => {
                         if (!redeemGateBusy) {
-                          runRedeemGate(scannerBusiness);
+                          void (async () => {
+                            const allowed = await runRedeemGate(scannerBusiness);
+                            if (allowed) {
+                              await redeemOfferInStore(
+                                scannerBusiness,
+                                scannerOffer,
+                              );
+                            }
+                          })();
                         }
                       }}
                       disabled={redeemGateBusy}
@@ -8479,17 +8573,39 @@ export default function App() {
                         {redeemGateBusy ? "Checking..." : "Check again"}
                       </Text>
                     </TouchableOpacity>
-                  ) : (
+                  ) : scannerStatus === "checking" ||
+                    scannerStatus === "redeeming" ? (
+                    <View
+                      style={[
+                        styles.secondaryButton,
+                        styles.secondaryButtonDisabled,
+                      ]}
+                    >
+                      <Text style={styles.secondaryButtonText}>
+                        {scannerStatus === "redeeming"
+                          ? "Redeeming..."
+                          : "Checking..."}
+                      </Text>
+                    </View>
+                  ) : scannerStatus === "error" ? (
                     <TouchableOpacity
                       style={styles.secondaryButton}
                       onPress={() => {
-                        setScannerStatus(null);
-                        setScannerEnabled(true);
+                        void (async () => {
+                          setScannerStatus("checking");
+                          const allowed = await runRedeemGate(scannerBusiness);
+                          if (allowed) {
+                            await redeemOfferInStore(
+                              scannerBusiness,
+                              scannerOffer,
+                            );
+                          }
+                        })();
                       }}
                     >
-                      <Text style={styles.secondaryButtonText}>Scan again</Text>
+                      <Text style={styles.secondaryButtonText}>Try again</Text>
                     </TouchableOpacity>
-                  )}
+                  ) : null}
                 </View>
                 {scannerStatus === "success" && (
                   <ConfettiDrizzle
@@ -8742,15 +8858,18 @@ export default function App() {
                           {isBusinessOpen ? "Redeem this offer" : "Closed now"}
                         </Text>
                       </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.detailOfferDirections}
+                      <Pressable
+                        style={({ pressed }) => [
+                          styles.detailOfferDirections,
+                          pressed && styles.detailOfferDirectionsPressed,
+                        ]}
                         onPress={() => openMapsForBusiness(businessDetail)}
                       >
                         <Ionicons name="navigate" size={14} color={COLORS.pine} />
                         <Text style={styles.detailOfferDirectionsText}>
                           Get directions
                         </Text>
-                      </TouchableOpacity>
+                      </Pressable>
                     </View>
                   )})
                 )}
@@ -8817,6 +8936,8 @@ export default function App() {
           </Modal>
 
           <Modal visible={receiptsModalOpen} animationType="slide">
+            {/* React Native Modal renders in a separate root on Android; wrap it so RNGH works reliably. */}
+            <GestureHandlerRootView style={{ flex: 1 }}>
             <SafeAreaView style={styles.receiptsScreen} edges={["top", "bottom"]}>
               <View style={styles.receiptsHeader}>
                 <View>
@@ -9062,13 +9183,29 @@ export default function App() {
                           </Text>
                         ) : null}
                       </View>
-                      <TouchableOpacity
-                        style={styles.receiptsClose}
-                        onPress={() => setReceiptPreview(null)}
-                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                      >
-                        <Ionicons name="close" size={18} color={COLORS.ink} />
-                      </TouchableOpacity>
+                      <View style={styles.receiptPreviewHeaderActions}>
+                        <TouchableOpacity
+                          style={styles.receiptPreviewReset}
+                          onPress={resetReceiptZoom}
+                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        >
+                          <Ionicons
+                            name="refresh"
+                            size={18}
+                            color={COLORS.ink}
+                          />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.receiptsClose}
+                          onPress={() => {
+                            setReceiptPreview(null);
+                            resetReceiptZoom();
+                          }}
+                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        >
+                          <Ionicons name="close" size={18} color={COLORS.ink} />
+                        </TouchableOpacity>
+                      </View>
                     </View>
                     {receiptPreview?.loading ? (
                       <View style={styles.receiptPreviewPlaceholder}>
@@ -9082,54 +9219,88 @@ export default function App() {
                         </Text>
                       </View>
                     ) : receiptPreview?.uri ? (
-                      <PinchGestureHandler
-                        ref={receiptPinchRef}
-                        simultaneousHandlers={receiptPanRef}
-                        onGestureEvent={onReceiptPinchEvent}
-                        onHandlerStateChange={onReceiptPinchStateChange}
+                      <View
+                        style={styles.receiptPreviewViewport}
+                        onLayout={(event) => {
+                          const { width, height } = event.nativeEvent.layout || {};
+                          if (!width || !height) return;
+                          const next = { width, height };
+                          receiptViewportSizeRef.current = next;
+                          setReceiptViewportSize(next);
+                        }}
                       >
-                        <Animated.View style={styles.receiptZoomWrap}>
-                          <PanGestureHandler
-                            ref={receiptPanRef}
-                            simultaneousHandlers={receiptPinchRef}
-                            onGestureEvent={onReceiptPanEvent}
-                            onHandlerStateChange={onReceiptPanStateChange}
-                            minPointers={1}
-                            maxPointers={1}
-                          >
-                            <Animated.View
-                              style={[
-                                styles.receiptPreviewImageWrap,
-                                {
-                                  transform: [
-                                    { scale: receiptScale },
-                                    { translateX: receiptTranslateX },
-                                    { translateY: receiptTranslateY },
-                                  ],
-                                },
-                              ]}
+                        <PinchGestureHandler
+                          ref={receiptPinchRef}
+                          simultaneousHandlers={receiptPanRef}
+                          onGestureEvent={onReceiptPinchEvent}
+                          onHandlerStateChange={onReceiptPinchStateChange}
+                        >
+                          <Animated.View style={styles.receiptZoomWrap}>
+                            <PanGestureHandler
+                              ref={receiptPanRef}
+                              simultaneousHandlers={receiptPinchRef}
+                              onGestureEvent={onReceiptPanEvent}
+                              onHandlerStateChange={onReceiptPanStateChange}
+                              minPointers={1}
+                              maxPointers={2}
                             >
-                              <Image
-                                source={{ uri: receiptPreview.uri }}
-                                style={styles.receiptPreviewImage}
-                                resizeMode="contain"
-                                onError={() =>
-                                  setReceiptPreview((prev) =>
-                                    prev
-                                      ? {
-                                          ...prev,
-                                          uri: "",
-                                          error:
-                                            "Unable to load receipt image.",
-                                        }
-                                      : prev,
-                                  )
-                                }
-                              />
-                            </Animated.View>
-                          </PanGestureHandler>
-                        </Animated.View>
-                      </PinchGestureHandler>
+                              <Animated.View
+                                style={[
+                                  styles.receiptPreviewContent,
+                                  (() => {
+                                    const { width: vw, height: vh } =
+                                      receiptViewportSize || {};
+                                    const { width: iw, height: ih } =
+                                      receiptImageSize || {};
+                                    const base = computeContainedSize(
+                                      vw || RECEIPT_PREVIEW_WIDTH,
+                                      vh || RECEIPT_PREVIEW_HEIGHT,
+                                      iw,
+                                      ih,
+                                    );
+                                    return {
+                                      width: base.width || vw || RECEIPT_PREVIEW_WIDTH,
+                                      height: base.height || vh || RECEIPT_PREVIEW_HEIGHT,
+                                      transform: [
+                                        { translateX: receiptTranslateX },
+                                        { translateY: receiptTranslateY },
+                                        { scale: receiptScale },
+                                      ],
+                                    };
+                                  })(),
+                                ]}
+                              >
+                                <Image
+                                  source={{ uri: receiptPreview.uri }}
+                                  style={styles.receiptPreviewImage}
+                                  resizeMode="contain"
+                                  onLoad={(event) => {
+                                    const source = event?.nativeEvent?.source;
+                                    const width = Number(source?.width) || 0;
+                                    const height = Number(source?.height) || 0;
+                                    if (!width || !height) return;
+                                    const next = { width, height };
+                                    receiptImageSizeRef.current = next;
+                                    setReceiptImageSize(next);
+                                  }}
+                                  onError={() =>
+                                    setReceiptPreview((prev) =>
+                                      prev
+                                        ? {
+                                            ...prev,
+                                            uri: "",
+                                            error:
+                                              "Unable to load receipt image.",
+                                          }
+                                        : prev,
+                                    )
+                                  }
+                                />
+                              </Animated.View>
+                            </PanGestureHandler>
+                          </Animated.View>
+                        </PinchGestureHandler>
+                      </View>
                     ) : (
                       <View style={styles.receiptPreviewPlaceholder}>
                         <Ionicons
@@ -9147,6 +9318,7 @@ export default function App() {
                 </View>
               )}
             </SafeAreaView>
+            </GestureHandlerRootView>
           </Modal>
 
           <Modal visible={editOfferOpen} animationType="slide">
@@ -9522,73 +9694,6 @@ export default function App() {
                 height={SCREEN_HEIGHT}
                 style={{ borderRadius: 0, overflow: "visible" }}
               />
-            </View>
-          </Modal>
-
-          <Modal transparent visible={businessQrOpen} animationType="fade">
-            <View style={styles.qrModalOverlay}>
-              <View style={styles.qrModalCard}>
-                <View style={styles.qrModalHeader}>
-                  <View>
-                    <Text style={styles.qrTitle}>
-                      {ownerBusiness?.name || "Business QR"}
-                    </Text>
-                    <Text style={styles.qrMeta}>
-                      {ownerBusiness
-                        ? getCategoryConfig(ownerBusiness.categoryKey).display
-                        : "Business QR"}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.detailClose}
-                    onPress={handleCloseBusinessQr}
-                  >
-                    <Ionicons name="close" size={18} color={COLORS.ink} />
-                  </TouchableOpacity>
-                </View>
-                <View style={styles.qrBody}>
-                  <View style={styles.qrCodeWrap}>
-                    {ownerBusiness &&
-                    (BUSINESS_QR_IMAGES[ownerBusiness.id] ||
-                      qrImageMap[ownerBusiness.id]) ? (
-                      <Image
-                        source={
-                          BUSINESS_QR_IMAGES[ownerBusiness.id] || {
-                            uri: qrImageMap[ownerBusiness.id],
-                          }
-                        }
-                        style={styles.qrImage}
-                        resizeMode="contain"
-                      />
-                    ) : (
-                      <View style={styles.qrFallback}>
-                        <Text style={styles.qrFallbackText}>
-                          Generating QR
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                  {ownerBusiness && (
-                    <Text style={styles.qrCodeLabel}>
-                      {getBusinessQrCode(ownerBusiness)}
-                    </Text>
-                  )}
-                  <Text style={styles.qrCodeNote}>
-                    Keep this code private. Scan at checkout to redeem offers.
-                  </Text>
-                </View>
-                <View style={styles.qrModalActions}>
-                  <TouchableOpacity
-                    style={styles.primaryButton}
-                    onPress={handlePrintBusinessQr}
-                  >
-                    <Text style={styles.primaryButtonText}>Print</Text>
-                  </TouchableOpacity>
-                  {businessQrNotice && (
-                    <Text style={styles.formHint}>{businessQrNotice}</Text>
-                  )}
-                </View>
-              </View>
             </View>
           </Modal>
 
@@ -10847,26 +10952,6 @@ export default function App() {
                       )}
 
                       {ownerBusiness && (
-                        <View style={styles.sectionBlock}>
-                          <Text style={styles.sectionTitleAlt}>
-                            Business QR code
-                          </Text>
-                          <Text style={styles.sectionBody}>
-                            Share this QR at checkout so customers can redeem
-                            offers.
-                          </Text>
-                          <TouchableOpacity
-                            style={styles.primaryButton}
-                            onPress={handleOpenBusinessQr}
-                          >
-                            <Text style={styles.primaryButtonText}>
-                              View QR code
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-                      )}
-
-                      {ownerBusiness && (
                         <>
                           <View style={styles.sectionBlock}>
                             <Text style={styles.sectionTitleAlt}>Offers</Text>
@@ -11166,6 +11251,38 @@ export default function App() {
                                     receiptUploadStatus.targetId === entry.id;
                                   const needsReceipt =
                                     !hasReceipt;
+                                  const cashbackStatus =
+                                    entry.receipt?.cashbackStatus || null;
+                                  const cashbackCents = Number(
+                                    entry.receipt?.cashbackCents,
+                                  );
+                                  const cashbackLine = (() => {
+                                    if (!hasReceipt) return null;
+                                    if (cashbackStatus === "reversed") {
+                                      return {
+                                        icon: "alert-circle",
+                                        text: "Cashback reversed",
+                                        variant: "reversed",
+                                      };
+                                    }
+                                    if (
+                                      Number.isFinite(cashbackCents) &&
+                                      cashbackCents > 0
+                                    ) {
+                                      return {
+                                        icon: "cash",
+                                        text: `Cashback +${formatCurrencyFromCents(
+                                          cashbackCents,
+                                        )}`,
+                                        variant: "earned",
+                                      };
+                                    }
+                                    return {
+                                      icon: "time",
+                                      text: "Cashback pending",
+                                      variant: "pending",
+                                    };
+                                  })();
                                   return (
                                     <View
                                       key={entry.id}
@@ -11184,6 +11301,50 @@ export default function App() {
                                               entry.createdAt,
                                             )}
                                           </Text>
+                                          {cashbackLine && (
+                                            <View
+                                              style={[
+                                                styles.historyCashbackPill,
+                                                cashbackLine.variant ===
+                                                  "earned" &&
+                                                  styles.historyCashbackPillEarned,
+                                                cashbackLine.variant ===
+                                                  "pending" &&
+                                                  styles.historyCashbackPillPending,
+                                                cashbackLine.variant ===
+                                                  "reversed" &&
+                                                  styles.historyCashbackPillReversed,
+                                              ]}
+                                            >
+                                              <Ionicons
+                                                name={cashbackLine.icon}
+                                                size={12}
+                                                color={
+                                                  cashbackLine.variant ===
+                                                  "earned"
+                                                    ? "#047857"
+                                                    : cashbackLine.variant ===
+                                                        "reversed"
+                                                      ? "#B42318"
+                                                      : COLORS.muted
+                                                }
+                                              />
+                                              <Text
+                                                style={[
+                                                  styles.historyCashbackPillText,
+                                                  cashbackLine.variant ===
+                                                    "earned" &&
+                                                    styles.historyCashbackPillTextEarned,
+                                                  cashbackLine.variant ===
+                                                    "reversed" &&
+                                                    styles.historyCashbackPillTextReversed,
+                                                ]}
+                                                numberOfLines={1}
+                                              >
+                                                {cashbackLine.text}
+                                              </Text>
+                                            </View>
+                                          )}
                                         </View>
                                       </View>
                                       {!hasReview &&
@@ -12881,94 +13042,6 @@ export default function App() {
                         ))
                       )}
 
-                      <View style={styles.sectionBlock}>
-                        <Text style={styles.sectionTitleAlt}>
-                          Business QR codes
-                        </Text>
-                        <Text style={styles.sectionBody}>
-                          Expand a business to show its unique QR code for
-                          in-store redemption.
-                        </Text>
-                      </View>
-
-                      {approvedBusinesses.length === 0 ? (
-                        <View style={styles.emptyState}>
-                          <Text style={styles.emptyTitle}>
-                            No approved businesses yet.
-                          </Text>
-                          <Text style={styles.emptyCopy}>
-                            Approve listings to generate QR codes.
-                          </Text>
-                        </View>
-                      ) : (
-                        approvedBusinesses.map((business) => {
-                          const isExpanded = qrExpandedId === business.id;
-                          const payload = getBusinessQrCode(business);
-                          return (
-                            <View key={business.id} style={styles.qrCard}>
-                              <TouchableOpacity
-                                style={styles.qrHeaderRow}
-                                onPress={() =>
-                                  setQrExpandedId(
-                                    isExpanded ? null : business.id,
-                                  )
-                                }
-                              >
-                                <View style={styles.qrHeaderText}>
-                                  <Text style={styles.qrTitle}>
-                                    {business.name}
-                                  </Text>
-                                  <Text style={styles.qrMeta}>
-                                    {
-                                      getCategoryConfig(business.categoryKey)
-                                        .display
-                                    }
-                                  </Text>
-                                </View>
-                                <Ionicons
-                                  name={
-                                    isExpanded ? "chevron-up" : "chevron-down"
-                                  }
-                                  size={18}
-                                  color={COLORS.muted}
-                                />
-                              </TouchableOpacity>
-                              {isExpanded && (
-                                <View style={styles.qrBody}>
-                                  <View style={styles.qrCodeWrap}>
-                                    {BUSINESS_QR_IMAGES[business.id] ||
-                                    qrImageMap[business.id] ? (
-                                      <Image
-                                        source={
-                                          BUSINESS_QR_IMAGES[business.id] || {
-                                            uri: qrImageMap[business.id],
-                                          }
-                                        }
-                                        style={styles.qrImage}
-                                        resizeMode="contain"
-                                      />
-                                    ) : (
-                                      <View style={styles.qrFallback}>
-                                        <Text style={styles.qrFallbackText}>
-                                          Generating QR
-                                        </Text>
-                                      </View>
-                                    )}
-                                  </View>
-                                  <Text style={styles.qrCodeLabel}>
-                                    {payload}
-                                  </Text>
-                                  <Text style={styles.qrCodeNote}>
-                                    Keep this code private. Scan at checkout to
-                                    redeem offers.
-                                  </Text>
-                                </View>
-                              )}
-                            </View>
-                          );
-                        })
-                      )}
-
                       {isAdmin && (
                         <>
                           <View style={styles.sectionBlock}>
@@ -13521,6 +13594,11 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
     backgroundColor: COLORS.white,
   },
+  directionsButtonPressed: {
+    backgroundColor: "#E9EEF6",
+    borderColor: "#C9D4E4",
+    opacity: 0.92,
+  },
   directionsButtonText: {
     fontSize: 12,
     color: COLORS.pine,
@@ -13665,11 +13743,19 @@ const styles = StyleSheet.create({
   },
   scannerBlocked: {
     padding: 20,
+    alignItems: "center",
   },
   scannerBlockedText: {
     fontSize: 12,
     color: COLORS.white,
     fontFamily: FONT_TEXT,
+    textAlign: "center",
+  },
+  scannerDistanceText: {
+    marginTop: 8,
+    fontSize: 11,
+    color: "rgba(255, 255, 255, 0.9)",
+    fontFamily: FONT_MEDIUM,
     textAlign: "center",
   },
   scannerStatus: {
@@ -13958,6 +14044,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.white,
+  },
+  detailOfferDirectionsPressed: {
+    backgroundColor: "#E9EEF6",
+    borderColor: "#C9D4E4",
+    opacity: 0.92,
   },
   detailOfferDirectionsText: {
     fontSize: 12,
@@ -15246,7 +15337,7 @@ const styles = StyleSheet.create({
     zIndex: 50,
     backgroundColor: "rgba(15, 23, 42, 0.7)",
     justifyContent: "center",
-    padding: 20,
+    padding: 12,
   },
   receiptPreviewCard: {
     backgroundColor: COLORS.white,
@@ -15255,7 +15346,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     width: "100%",
-    maxWidth: 520,
+    maxWidth: RECEIPT_PREVIEW_WIDTH,
+    maxHeight: RECEIPT_PREVIEW_HEIGHT + 92,
     alignSelf: "center",
   },
   receiptPreviewHeader: {
@@ -15264,6 +15356,21 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 12,
     marginBottom: 12,
+  },
+  receiptPreviewHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  receiptPreviewReset: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: COLORS.sand,
   },
   receiptPreviewTitle: {
     fontSize: 15,
@@ -15282,23 +15389,31 @@ const styles = StyleSheet.create({
     backgroundColor: "#EFF3F8",
   },
   receiptZoomWrap: {
-    width: RECEIPT_PREVIEW_WIDTH,
-    height: RECEIPT_PREVIEW_HEIGHT,
+    flex: 1,
+    width: "100%",
     alignItems: "center",
     justifyContent: "center",
-    alignSelf: "center",
   },
-  receiptPreviewImageWrap: {
-    width: RECEIPT_PREVIEW_WIDTH,
+  receiptPreviewViewport: {
+    width: "100%",
     height: RECEIPT_PREVIEW_HEIGHT,
+    borderRadius: 14,
+    overflow: "hidden",
+    backgroundColor: "#0B1220",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.12)",
+  },
+  receiptPreviewContent: {
+    alignSelf: "center",
+    justifyContent: "center",
+    backgroundColor: "#EFF3F8",
     borderRadius: 12,
     overflow: "hidden",
-    backgroundColor: "#EFF3F8",
   },
   receiptPreviewPlaceholder: {
-    width: RECEIPT_PREVIEW_WIDTH,
+    width: "100%",
     height: RECEIPT_PREVIEW_HEIGHT,
-    borderRadius: 12,
+    borderRadius: 14,
     backgroundColor: "#EFF3F8",
     alignItems: "center",
     justifyContent: "center",
@@ -15671,6 +15786,41 @@ const styles = StyleSheet.create({
   historyEntryMeta: {
     alignItems: "flex-end",
     gap: 4,
+  },
+  historyCashbackPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    maxWidth: 168,
+  },
+  historyCashbackPillEarned: {
+    borderColor: "#A7F3D0",
+    backgroundColor: "#ECFDF5",
+  },
+  historyCashbackPillPending: {
+    borderColor: COLORS.sand,
+    backgroundColor: "#F8FAFC",
+  },
+  historyCashbackPillReversed: {
+    borderColor: "#FECDCA",
+    backgroundColor: "#FFFBFA",
+  },
+  historyCashbackPillText: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  historyCashbackPillTextEarned: {
+    color: "#047857",
+  },
+  historyCashbackPillTextReversed: {
+    color: "#B42318",
   },
   historyEntryPending: {
     fontSize: 10,
