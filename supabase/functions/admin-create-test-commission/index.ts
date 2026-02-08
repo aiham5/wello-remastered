@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "npm:@supabase/supabase-js@2.40.0";
 
 export const config = { verify_jwt: false };
 
@@ -15,11 +15,27 @@ const SUPABASE_ANON_KEY =
   Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
   "";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+const baseCorsHeaders = {
   "Access-Control-Allow-Headers":
     "authorization, apikey, content-type, x-client-info",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+const getCorsHeaders = (req: Request) => {
+  const origin = req.headers.get("origin") ?? "";
+  if (origin && ALLOWED_ORIGINS.length && !ALLOWED_ORIGINS.includes(origin)) {
+    return null;
+  }
+  return {
+    "Access-Control-Allow-Origin": origin || "*",
+    Vary: "Origin",
+    ...baseCorsHeaders,
+  };
 };
 
 const createAdminClient = () =>
@@ -33,6 +49,13 @@ const createAuthClient = () =>
   });
 
 serve(async (req) => {
+  const corsHeaders = getCorsHeaders(req);
+  if (!corsHeaders) {
+    return new Response(JSON.stringify({ error: "CORS blocked" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
   if (req.method === "OPTIONS") {
     return new Response("ok", { status: 200, headers: corsHeaders });
   }

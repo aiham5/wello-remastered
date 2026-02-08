@@ -2280,19 +2280,16 @@ export default function App() {
   const viewedOfferIdsRef = useRef(new Set());
   const translateY = useRef(new Animated.Value(COLLAPSED_Y)).current;
   const translateYRef = useRef(COLLAPSED_Y);
-  const sheetDragY = useRef(new Animated.Value(0)).current;
-  const sheetDragClamped = useMemo(
-    () =>
-      sheetDragY.interpolate({
-        inputRange: [-COLLAPSED_Y, 0, COLLAPSED_Y],
-        outputRange: [-COLLAPSED_Y, 0, COLLAPSED_Y],
-        extrapolate: "clamp",
-      }),
-    [sheetDragY],
-  );
   const sheetTranslateY = useMemo(
-    () => Animated.add(translateY, sheetDragClamped),
-    [translateY, sheetDragClamped],
+    () => {
+      // Clamp is stateless (avoids diffClamp lock points on Android).
+      return translateY.interpolate({
+        inputRange: [-100000, 0, COLLAPSED_Y, 100000],
+        outputRange: [0, 0, COLLAPSED_Y, COLLAPSED_Y],
+        extrapolate: "clamp",
+      });
+    },
+    [translateY],
   );
   const receiptPinchScale = useRef(new Animated.Value(1)).current;
   const receiptBaseScale = useRef(new Animated.Value(1)).current;
@@ -5299,8 +5296,9 @@ export default function App() {
 
   const openSheet = (nextTab = "discover") => {
     setActiveTab(nextTab);
-    sheetDragY.setValue(0);
     translateYRef.current = 0;
+    translateY.setOffset(0);
+    translateY.setValue(0);
     Animated.spring(translateY, {
       toValue: 0,
       useNativeDriver: true,
@@ -8288,39 +8286,52 @@ export default function App() {
 
   const onSheetGestureEvent = useMemo(
     () =>
-      Animated.event([{ nativeEvent: { translationY: sheetDragY } }], {
+      Animated.event([{ nativeEvent: { translationY: translateY } }], {
         useNativeDriver: true,
       }),
-    [sheetDragY],
+    [translateY],
   );
 
   const onSheetHandlerStateChange = useCallback(
     (event) => {
-      const { oldState, translationY, velocityY } = event.nativeEvent || {};
+      const { state, oldState, translationY, velocityY } = event.nativeEvent || {};
+
+      if (state === GestureState.BEGAN) {
+        // Capture the current spring position so the drag starts from the
+        // real visual value (avoids jitter if the user grabs mid-animation).
+        translateY.stopAnimation((value) => {
+          const base = Number(value) || 0;
+          translateY.setOffset(base);
+          translateY.setValue(0);
+          translateYRef.current = base;
+        });
+        return;
+      }
+
       if (oldState !== GestureState.ACTIVE) return;
 
-      const base = translateYRef.current || 0;
-      const delta = Number(translationY) || 0;
-      const next = Math.min(Math.max(0, base + delta), COLLAPSED_Y);
       const vy = Number(velocityY) || 0;
+      translateY.flattenOffset();
 
-      // velocityY is px/s. Negative is upward.
-      const shouldExpand = vy < -800 || next < COLLAPSED_Y * 0.5;
-      const target = shouldExpand ? 0 : COLLAPSED_Y;
+      translateY.stopAnimation((rawValue) => {
+        const next = Math.min(Math.max(0, Number(rawValue) || 0), COLLAPSED_Y);
 
-      // Commit the dragged position to the base value, then reset drag and spring.
-      // This avoids a visible snap when we zero out translationY.
-      translateYRef.current = target;
-      translateY.setValue(next);
-      sheetDragY.setValue(0);
-      Animated.spring(translateY, {
-        toValue: target,
-        useNativeDriver: true,
-        tension: 90,
-        friction: 12,
-      }).start();
+        // velocityY is px/s. Negative is upward.
+        const shouldExpand = vy < -800 || next < COLLAPSED_Y * 0.5;
+        const target = shouldExpand ? 0 : COLLAPSED_Y;
+
+        translateY.setValue(next);
+        Animated.spring(translateY, {
+          toValue: target,
+          useNativeDriver: true,
+          tension: 90,
+          friction: 12,
+        }).start(() => {
+          translateYRef.current = target;
+        });
+      });
     },
-    [sheetDragY, translateY],
+    [translateY],
   );
 
   if ((!fontsLoaded && !fontError) || !sessionReady) {
@@ -8438,12 +8449,16 @@ export default function App() {
           <View style={styles.topMeta} pointerEvents="box-none">
             <View style={[styles.navContainer, { width: navContainerWidth }]}>
               <View style={styles.navRow}>
-                {visibleTabs.map((tab) => {
+                {visibleTabs.map((tab, index) => {
                   const isActive = activeTab === tab.key;
                   return (
                     <TouchableOpacity
                       key={tab.key}
-                      style={[styles.navPill, isActive && styles.navPillActive]}
+                      style={[
+                        styles.navPill,
+                        index > 0 && styles.navPillSpaced,
+                        isActive && styles.navPillActive,
+                      ]}
                       onPress={() => openSheet(tab.key)}
                     >
                       <Text
@@ -8452,8 +8467,7 @@ export default function App() {
                           isActive && styles.navPillTextActive,
                         ]}
                         numberOfLines={1}
-                        adjustsFontSizeToFit
-                        minimumFontScale={0.85}
+                        allowFontScaling={false}
                       >
                         {tab.label}
                       </Text>
@@ -13688,9 +13702,6 @@ const styles = StyleSheet.create({
   },
   navRow: {
     flexDirection: "row",
-    ...Platform.select({
-      ios: { gap: NAV_GAP },
-    }),
     paddingHorizontal: 2,
     paddingTop: 6,
     paddingBottom: 2,
@@ -14174,23 +14185,36 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderRadius: 999,
     paddingVertical: IS_COMPACT ? 6 : 8,
-    paddingHorizontal: IS_COMPACT ? 12 : 16,
+    paddingHorizontal: Platform.select({
+      ios: IS_COMPACT ? 10 : 14,
+      android: IS_COMPACT ? 10 : 12,
+      default: IS_COMPACT ? 12 : 16,
+    }),
     borderWidth: 1,
     borderColor: COLORS.sand,
     position: "relative",
-    ...Platform.select({
-      android: { marginHorizontal: NAV_GAP / 2 },
-    }),
+  },
+  navPillSpaced: {
+    marginLeft: NAV_GAP,
   },
   navPillActive: {
     backgroundColor: COLORS.pine,
     borderColor: COLORS.pine,
   },
   navPillText: {
-    fontSize: IS_COMPACT ? 12 : 13,
+    fontSize: Platform.select({
+      ios: IS_COMPACT ? 12 : 13,
+      android: IS_COMPACT ? 11 : 12,
+      default: IS_COMPACT ? 12 : 13,
+    }),
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
-    lineHeight: IS_COMPACT ? 16 : 18,
+    lineHeight: Platform.select({
+      ios: IS_COMPACT ? 16 : 18,
+      android: IS_COMPACT ? 15 : 17,
+      default: IS_COMPACT ? 16 : 18,
+    }),
+    textAlign: "center",
     ...Platform.select({
       android: { includeFontPadding: false },
     }),

@@ -15,6 +15,11 @@ const SUPABASE_SERVICE_ROLE_KEY =
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
   "";
 
+const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
 const encoder = new TextEncoder();
 
 const toHex = (buffer: ArrayBuffer | Uint8Array) => {
@@ -135,11 +140,22 @@ const createPresignedUrl = async (
   return `${endpoint}${canonicalUri}?${finalQuery}`;
 };
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+const baseCorsHeaders = {
   "Access-Control-Allow-Headers":
     "authorization, apikey, content-type, x-client-info",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+const getCorsHeaders = (req: Request) => {
+  const origin = req.headers.get("origin") ?? "";
+  if (origin && ALLOWED_ORIGINS.length && !ALLOWED_ORIGINS.includes(origin)) {
+    return null;
+  }
+  return {
+    "Access-Control-Allow-Origin": origin || "*",
+    Vary: "Origin",
+    ...baseCorsHeaders,
+  };
 };
 
 const fetchWithTimeout = async (
@@ -157,6 +173,14 @@ const fetchWithTimeout = async (
 };
 
 Deno.serve(async (req) => {
+  const corsHeaders = getCorsHeaders(req);
+  if (!corsHeaders) {
+    return new Response(JSON.stringify({ error: "CORS blocked" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   if (req.method === "OPTIONS") {
     return new Response("ok", { status: 200, headers: corsHeaders });
   }

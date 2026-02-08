@@ -18,11 +18,27 @@ const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+const baseCorsHeaders = {
   "Access-Control-Allow-Headers":
     "authorization, apikey, content-type, x-client-info",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+const getCorsHeaders = (req: Request) => {
+  const origin = req.headers.get("origin") ?? "";
+  if (origin && ALLOWED_ORIGINS.length && !ALLOWED_ORIGINS.includes(origin)) {
+    return null;
+  }
+  return {
+    "Access-Control-Allow-Origin": origin || "*",
+    Vary: "Origin",
+    ...baseCorsHeaders,
+  };
 };
 
 const createAdminClient = () =>
@@ -43,6 +59,13 @@ const getDefaultPeriod = () => {
 };
 
 Deno.serve(async (req) => {
+  const corsHeaders = getCorsHeaders(req);
+  if (!corsHeaders) {
+    return new Response(JSON.stringify({ error: "CORS blocked" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
   if (req.method === "OPTIONS") {
     return new Response("ok", { status: 200, headers: corsHeaders });
   }
