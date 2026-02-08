@@ -138,6 +138,7 @@ const presignCache = new Map(); // cacheKey -> { data, expiresAtMs }
 const presignInFlight = new Map(); // cacheKey -> Promise<{data,error}>
 const presignQueue = [];
 let presignActive = 0;
+const presignControllers = new Set();
 
 const nowMs = () => Date.now();
 
@@ -148,6 +149,19 @@ const cleanupPresignCache = () => {
       presignCache.delete(key);
     }
   }
+};
+
+const abortAllPresigns = (reason) => {
+  if (!presignControllers.size) return;
+  logDebug("r2-presign abortAll", { reason, count: presignControllers.size });
+  for (const controller of presignControllers) {
+    try {
+      controller.abort();
+    } catch {
+      // ignore
+    }
+  }
+  presignControllers.clear();
 };
 
 const enqueuePresign = (fn) =>
@@ -167,6 +181,32 @@ const drainPresignQueue = () => {
         presignActive -= 1;
         drainPresignQueue();
       });
+  }
+};
+
+const fetchTextWithAbortTimeout = async (url, init, timeoutMs, label) => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  presignControllers.add(controller);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    const text = await res.text();
+    return { res, text };
+  } catch (error) {
+    const message = error?.message || "";
+    const aborted =
+      error?.name === "AbortError" ||
+      message.toLowerCase().includes("aborted") ||
+      message.toLowerCase().includes("aborterror");
+    if (aborted) {
+      const err = new Error(`${label || "request"} aborted`);
+      err.name = "AbortError";
+      throw err;
+    }
+    throw error;
+  } finally {
+    clearTimeout(id);
+    presignControllers.delete(controller);
   }
 };
 
@@ -402,6 +442,9 @@ const callR2Presign = async ({ action, key, accessToken }) => {
   if (!supabaseClient) {
     return { data: null, error: "Supabase is not configured." };
   }
+  if (document.hidden) {
+    return { data: null, error: "Page hidden." };
+  }
   cleanupPresignCache();
   const cacheKey = `${String(action || "").toLowerCase()}:${key}`;
   const cached = presignCache.get(cacheKey);
@@ -422,22 +465,33 @@ const callR2Presign = async ({ action, key, accessToken }) => {
   if (!token) {
     return { data: null, error: "Missing access token." };
   }
-  const invoke = () =>
-    withTimeout(
-      supabaseClient.functions.invoke("r2-presign", {
-        body: { action, key },
-        headers: { Authorization: `Bearer ${token}` },
-      }),
+  const invoke = async () => {
+    const url = `${supabaseUrl.replace(/\/+$/, "")}/functions/v1/r2-presign`;
+    const { res, text } = await fetchTextWithAbortTimeout(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          apikey: supabaseAnonKey,
+          "x-client-info": "wello-admin",
+        },
+        body: JSON.stringify({ action, key }),
+      },
       EDGE_TIMEOUT_MS,
       "r2-presign",
     );
+    return { res, text };
+  };
 
   const run = async () => {
     let response = null;
     try {
-      response = await invoke();
-      if (response?.error?.message) {
-        const msg = String(response.error.message).toLowerCase();
+      const first = await invoke();
+      response = first;
+      if (!first?.res?.ok) {
+        const msg = String(first?.text || "").toLowerCase();
         if (msg.includes("jwt") || msg.includes("authorization")) {
           await ensureSession({ force: true });
           response = await invoke();
@@ -445,23 +499,28 @@ const callR2Presign = async ({ action, key, accessToken }) => {
       }
     } catch (error) {
       const message = error?.message || "unknown";
+      const aborted = error?.name === "AbortError";
+      if (aborted && document.hidden) {
+        logDebug("r2-presign aborted", { reason: "hidden" });
+        return { data: null, error: "aborted_hidden" };
+      }
       console.warn("r2-presign exception", message);
       logDebug("r2-presign exception", { message });
       return {
         data: null,
-        error: message.includes("timed out") ? "r2_invoke timeout" : message,
+        error: aborted ? "aborted" : message,
       };
     }
 
-    if (!response?.error) {
-      let parsedData = response?.data ?? null;
-      if (typeof parsedData === "string") {
-        try {
-          parsedData = parsedData ? JSON.parse(parsedData) : null;
-        } catch {
-          parsedData = response?.data ?? null;
-        }
-      }
+    const ok = Boolean(response?.res?.ok);
+    let parsedData = null;
+    try {
+      parsedData = response?.text ? JSON.parse(response.text) : null;
+    } catch {
+      parsedData = null;
+    }
+
+    if (ok) {
       let pathname = null;
       try {
         pathname = parsedData?.signedUrl ? new URL(parsedData.signedUrl).pathname : null;
@@ -483,35 +542,19 @@ const callR2Presign = async ({ action, key, accessToken }) => {
       return { data: parsedData, error: null };
     }
 
-    const err = response.error;
-    const context = err?.context;
-    let raw = "";
-    let parsed = null;
-    if (context?.text) {
-      try {
-        raw = await context.text();
-      } catch {
-        raw = "";
-      }
-    }
-    try {
-      parsed = raw ? JSON.parse(raw) : null;
-    } catch {
-      parsed = null;
-    }
-    const status = context?.status ?? null;
+    const status = response?.res?.status ?? null;
+    const raw = response?.text || "";
+    const parsed = parsedData;
     console.warn("r2-presign failed", {
       status,
-      message: err?.message,
       raw,
     });
-    logDebug("r2-presign failed", { status, message: err?.message, raw });
+    logDebug("r2-presign failed", { status, raw });
     return {
       data: null,
       error:
         parsed?.error ||
         parsed?.message ||
-        err?.message ||
         (status ? `R2 presign failed (${status}).` : "R2 presign failed."),
     };
   };
@@ -1881,6 +1924,7 @@ const init = async () => {
   document.addEventListener("visibilitychange", () => {
     logDebug("visibilitychange", { hidden: document.hidden });
     if (document.hidden) {
+      abortAllPresigns("hidden");
       stopAutoRefresh();
       stopLiveRefresh();
       return;
