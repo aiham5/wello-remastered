@@ -127,6 +127,44 @@ if (debugEnabled) {
 }
 
 const REQUEST_TIMEOUT_MS = 15000;
+const PRESIGN_CACHE_MAX_AGE_MS = 8 * 60 * 1000; // keep small; URLs also have their own expiry
+const PRESIGN_MAX_CONCURRENT = 2;
+
+const presignCache = new Map(); // cacheKey -> { data, expiresAtMs }
+const presignInFlight = new Map(); // cacheKey -> Promise<{data,error}>
+const presignQueue = [];
+let presignActive = 0;
+
+const nowMs = () => Date.now();
+
+const cleanupPresignCache = () => {
+  const now = nowMs();
+  for (const [key, entry] of presignCache.entries()) {
+    if (!entry?.expiresAtMs || entry.expiresAtMs <= now) {
+      presignCache.delete(key);
+    }
+  }
+};
+
+const enqueuePresign = (fn) =>
+  new Promise((resolve, reject) => {
+    presignQueue.push({ fn, resolve, reject });
+    drainPresignQueue();
+  });
+
+const drainPresignQueue = () => {
+  while (presignActive < PRESIGN_MAX_CONCURRENT && presignQueue.length) {
+    const task = presignQueue.shift();
+    presignActive += 1;
+    Promise.resolve()
+      .then(task.fn)
+      .then(task.resolve, task.reject)
+      .finally(() => {
+        presignActive -= 1;
+        drainPresignQueue();
+      });
+  }
+};
 
 function createTimedFetch(timeoutMs) {
   return async (input, init = {}) => {
@@ -194,6 +232,7 @@ const imageState = {
 const refreshState = {
   inFlight: false,
   timer: null,
+  lastAt: 0,
 };
 const liveState = {
   channel: null,
@@ -351,6 +390,18 @@ const callR2Presign = async ({ action, key, accessToken }) => {
   if (!supabaseClient) {
     return { data: null, error: "Supabase is not configured." };
   }
+  cleanupPresignCache();
+  const cacheKey = `${String(action || "").toLowerCase()}:${key}`;
+  const cached = presignCache.get(cacheKey);
+  if (cached?.data?.signedUrl && cached.expiresAtMs > nowMs()) {
+    logDebug("r2-presign cache hit", { action, key });
+    return { data: cached.data, error: null };
+  }
+  const existing = presignInFlight.get(cacheKey);
+  if (existing) {
+    logDebug("r2-presign dedupe await", { action, key });
+    return existing;
+  }
   logDebug("r2-presign request", { action, key });
   // Explicitly attach the current user token; we have seen cases where invoke() does not
   // include it consistently after tab backgrounding.
@@ -369,69 +420,89 @@ const callR2Presign = async ({ action, key, accessToken }) => {
       "r2-presign",
     );
 
-  let response = null;
-  try {
-    // Prefer letting supabase-js attach auth; it avoids stale token bugs.
-    response = await invoke();
-    if (response?.error?.message) {
-      const msg = String(response.error.message).toLowerCase();
-      if (msg.includes("jwt") || msg.includes("authorization")) {
-        await ensureSession({ force: true });
-        response = await invoke();
+  const run = async () => {
+    let response = null;
+    try {
+      response = await invoke();
+      if (response?.error?.message) {
+        const msg = String(response.error.message).toLowerCase();
+        if (msg.includes("jwt") || msg.includes("authorization")) {
+          await ensureSession({ force: true });
+          response = await invoke();
+        }
+      }
+    } catch (error) {
+      const message = error?.message || "unknown";
+      console.warn("r2-presign exception", message);
+      logDebug("r2-presign exception", { message });
+      return {
+        data: null,
+        error: message.includes("timed out") ? "r2_invoke timeout" : message,
+      };
+    }
+
+    if (!response?.error) {
+      let parsedData = response?.data ?? null;
+      if (typeof parsedData === "string") {
+        try {
+          parsedData = parsedData ? JSON.parse(parsedData) : null;
+        } catch {
+          parsedData = response?.data ?? null;
+        }
+      }
+      logDebug("r2-presign success", { action, key });
+      if (parsedData?.signedUrl) {
+        const expiresInSec = Number(parsedData?.expiresIn) || 0;
+        const ttlMs = Math.min(
+          PRESIGN_CACHE_MAX_AGE_MS,
+          Math.max(30_000, (expiresInSec ? expiresInSec * 1000 : 0) - 60_000),
+        );
+        presignCache.set(cacheKey, {
+          data: parsedData,
+          expiresAtMs: nowMs() + ttlMs,
+        });
+      }
+      return { data: parsedData, error: null };
+    }
+
+    const err = response.error;
+    const context = err?.context;
+    let raw = "";
+    let parsed = null;
+    if (context?.text) {
+      try {
+        raw = await context.text();
+      } catch {
+        raw = "";
       }
     }
-  } catch (error) {
-    const message = error?.message || "unknown";
-    console.warn("r2-presign exception", message);
-    logDebug("r2-presign exception", { message });
+    try {
+      parsed = raw ? JSON.parse(raw) : null;
+    } catch {
+      parsed = null;
+    }
+    const status = context?.status ?? null;
+    console.warn("r2-presign failed", {
+      status,
+      message: err?.message,
+      raw,
+    });
+    logDebug("r2-presign failed", { status, message: err?.message, raw });
     return {
       data: null,
-      error: message.includes("timed out") ? "r2_invoke timeout" : message,
+      error:
+        parsed?.error ||
+        parsed?.message ||
+        err?.message ||
+        (status ? `R2 presign failed (${status}).` : "R2 presign failed."),
     };
-  }
-  if (!response?.error) {
-    let parsedData = response?.data ?? null;
-    if (typeof parsedData === "string") {
-      try {
-        parsedData = parsedData ? JSON.parse(parsedData) : null;
-      } catch {
-        parsedData = response?.data ?? null;
-      }
-    }
-    logDebug("r2-presign success", { action, key });
-    return { data: parsedData, error: null };
-  }
-  const err = response.error;
-  const context = err?.context;
-  let raw = "";
-  let parsed = null;
-  if (context?.text) {
-    try {
-      raw = await context.text();
-    } catch {
-      raw = "";
-    }
-  }
-  try {
-    parsed = raw ? JSON.parse(raw) : null;
-  } catch {
-    parsed = null;
-  }
-  const status = context?.status ?? null;
-  console.warn("r2-presign failed", {
-    status,
-    message: err?.message,
-    raw,
-  });
-  logDebug("r2-presign failed", { status, message: err?.message, raw });
-  return {
-    data: null,
-    error:
-      parsed?.error ||
-      parsed?.message ||
-      err?.message ||
-      (status ? `R2 presign failed (${status}).` : "R2 presign failed."),
   };
+
+  const promise = enqueuePresign(run).finally(() => {
+    presignInFlight.delete(cacheKey);
+  });
+  presignInFlight.set(cacheKey, promise);
+  return promise;
 };
 
 const parseMoneyToCents = (value) => {
@@ -686,18 +757,25 @@ const loadReceipts = async () => {
 const refreshAll = async ({ silent } = {}) => {
   if (!supabaseClient || !state.session?.user) return;
   if (refreshState.inFlight) return;
+  // Avoid hammering on tab focus. If we refreshed very recently, skip.
+  if (silent && refreshState.lastAt && nowMs() - refreshState.lastAt < 8000) {
+    return;
+  }
   refreshState.inFlight = true;
   if (!silent) {
     ui.receiptsMeta.textContent = "Refreshing...";
   }
   logDebug("refreshAll start", { silent });
   try {
-    await ensureSession();
-    await Promise.all([loadBusinesses(), loadReceipts()]);
+    await ensureSession({ force: false });
+    // Sequential requests reduce burstiness when the tab resumes.
+    await loadBusinesses();
+    await loadReceipts();
     if (state.selected?.id) {
-      selectReceipt(state.selected.id, { forceImage: false });
+      selectReceipt(state.selected.id, { forceImage: false, skipImage: true });
     }
     logDebug("refreshAll done");
+    refreshState.lastAt = nowMs();
   } finally {
     refreshState.inFlight = false;
   }
@@ -889,7 +967,10 @@ const selectReceipt = async (receiptId, options = {}) => {
     ui.detailImage.removeAttribute("src");
     ui.detailOpen.disabled = true;
   }
-  if (!sameReceipt || !hasImage || options.forceImage) {
+  if (options.skipImage) {
+    // Keep whatever is already on screen. This avoids a burst of presign calls on tab resume.
+    ui.detailOpen.disabled = !Boolean(ui.detailImage.getAttribute("src"));
+  } else if (!sameReceipt || !hasImage || options.forceImage) {
     await loadReceiptImage(receipt);
   } else {
     ui.detailOpen.disabled = false;
@@ -922,13 +1003,21 @@ const loadReceiptImage = async (receipt) => {
       accessToken: session.access_token,
     });
     if (result.error) {
-      const nextSession = await ensureSession();
-      if (nextSession?.access_token) {
-        result = await callR2Presign({
-          action: "download",
-          key: receipt.storage_path,
-          accessToken: nextSession.access_token,
-        });
+      const msg = String(result.error || "").toLowerCase();
+      const shouldRetry =
+        msg.includes("jwt") ||
+        msg.includes("authorization") ||
+        msg.includes("unauthorized") ||
+        msg.includes("missing access token");
+      if (shouldRetry) {
+        const nextSession = await ensureSession({ force: true });
+        if (nextSession?.access_token) {
+          result = await callR2Presign({
+            action: "download",
+            key: receipt.storage_path,
+            accessToken: nextSession.access_token,
+          });
+        }
       }
     }
     const { data, error } = result;
