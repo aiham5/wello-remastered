@@ -126,7 +126,11 @@ if (debugEnabled) {
   });
 }
 
-const REQUEST_TIMEOUT_MS = 15000;
+// Timeouts: DB calls can be slower than edge invocations (especially on free tiers),
+// but we still want a ceiling to avoid "hung tab" behavior.
+const DB_TIMEOUT_MS = 45000;
+const EDGE_TIMEOUT_MS = 20000;
+const REQUEST_TIMEOUT_MS = DB_TIMEOUT_MS;
 const PRESIGN_CACHE_MAX_AGE_MS = 8 * 60 * 1000; // keep small; URLs also have their own expiry
 const PRESIGN_MAX_CONCURRENT = 2;
 
@@ -211,7 +215,7 @@ const supabaseClient =
           autoRefreshToken: true,
         },
         global: {
-          fetch: createTimedFetch(REQUEST_TIMEOUT_MS),
+          fetch: createTimedFetch(DB_TIMEOUT_MS),
         },
       })
     : null;
@@ -224,10 +228,12 @@ const state = {
   businesses: [],
   selected: null,
   defaultRate: 10,
+  businessesLoadedAt: 0,
 };
 const imageState = {
   key: null,
   inFlight: false,
+  seq: 0,
 };
 const refreshState = {
   inFlight: false,
@@ -300,6 +306,12 @@ const withTimeout = (promise, ms, label) =>
       },
     );
   });
+
+const shouldReloadBusinesses = () => {
+  if (!state.businesses?.length) return true;
+  const ageMs = nowMs() - (Number(state.businessesLoadedAt) || 0);
+  return ageMs > 10 * 60 * 1000; // 10 minutes
+};
 
 const sessionState = {
   refreshPromise: null,
@@ -416,7 +428,7 @@ const callR2Presign = async ({ action, key, accessToken }) => {
         body: { action, key },
         headers: { Authorization: `Bearer ${token}` },
       }),
-      REQUEST_TIMEOUT_MS,
+      EDGE_TIMEOUT_MS,
       "r2-presign",
     );
 
@@ -623,7 +635,7 @@ const loadBusinesses = async () => {
   try {
     const result = await withTimeout(
       supabaseClient.from("businesses").select("id, name").order("name"),
-      REQUEST_TIMEOUT_MS,
+      DB_TIMEOUT_MS,
       "loadBusinesses",
     );
     data = result?.data ?? null;
@@ -636,7 +648,7 @@ const loadBusinesses = async () => {
     try {
       const retry = await withTimeout(
         supabaseClient.from("businesses").select("id, name").order("name"),
-        REQUEST_TIMEOUT_MS,
+        DB_TIMEOUT_MS,
         "loadBusinessesRetry",
       );
       data = retry?.data ?? null;
@@ -654,6 +666,7 @@ const loadBusinesses = async () => {
     return;
   }
   state.businesses = data || [];
+  state.businessesLoadedAt = nowMs();
   ui.filterBusiness.innerHTML = `<option value="all">All businesses</option>`;
   if (ui.testBusiness) {
     ui.testBusiness.innerHTML = `<option value="">Select a business</option>`;
@@ -702,7 +715,7 @@ const loadReceipts = async () => {
         )
         .order("uploaded_at", { ascending: false })
         .limit(400),
-      REQUEST_TIMEOUT_MS,
+      DB_TIMEOUT_MS,
       "loadReceipts",
     );
     data = result?.data ?? null;
@@ -732,7 +745,7 @@ const loadReceipts = async () => {
           )
           .order("uploaded_at", { ascending: false })
           .limit(400),
-        REQUEST_TIMEOUT_MS,
+        DB_TIMEOUT_MS,
         "loadReceiptsRetry",
       );
       data = retry?.data ?? null;
@@ -768,8 +781,10 @@ const refreshAll = async ({ silent } = {}) => {
   logDebug("refreshAll start", { silent });
   try {
     await ensureSession({ force: false });
-    // Sequential requests reduce burstiness when the tab resumes.
-    await loadBusinesses();
+    // Businesses are relatively static; avoid reloading them on every focus/refresh cycle.
+    if (shouldReloadBusinesses()) {
+      await loadBusinesses();
+    }
     await loadReceipts();
     if (state.selected?.id) {
       selectReceipt(state.selected.id, { forceImage: false, skipImage: true });
@@ -936,6 +951,7 @@ const renderReceipts = () => {
 const selectReceipt = async (receiptId, options = {}) => {
   const receipt = state.receipts.find((item) => item.id === receiptId);
   if (!receipt) return;
+  const seq = (imageState.seq = (imageState.seq || 0) + 1);
   const sameReceipt = state.selected?.id === receiptId;
   const hasImage = Boolean(ui.detailImage.getAttribute("src"));
   closeImageModal();
@@ -971,17 +987,21 @@ const selectReceipt = async (receiptId, options = {}) => {
     // Keep whatever is already on screen. This avoids a burst of presign calls on tab resume.
     ui.detailOpen.disabled = !Boolean(ui.detailImage.getAttribute("src"));
   } else if (!sameReceipt || !hasImage || options.forceImage) {
-    await loadReceiptImage(receipt);
+    await loadReceiptImage(receipt, { seq });
   } else {
     ui.detailOpen.disabled = false;
   }
   renderReceipts();
 };
 
-const loadReceiptImage = async (receipt) => {
+const loadReceiptImage = async (receipt, { seq } = {}) => {
   ui.detailImage.removeAttribute("src");
   ui.detailOpen.disabled = true;
   if (!receipt?.storage_path || !supabaseClient) return;
+  // Only allow the most recent selection to win. Older selections should not
+  // overwrite the UI when they resolve late.
+  const requestSeq = Number(seq) || imageState.seq || 0;
+
   if (imageState.inFlight && imageState.key === receipt.storage_path) {
     return;
   }
@@ -1027,6 +1047,11 @@ const loadReceiptImage = async (receipt) => {
       if (!document.hidden && message.toLowerCase().includes("aborterror")) {
         recoverFromAbort("loadReceiptImage");
       }
+      imageState.inFlight = false;
+      return;
+    }
+    if (requestSeq !== (imageState.seq || 0)) {
+      // User selected a different receipt while we were loading; ignore.
       imageState.inFlight = false;
       return;
     }
@@ -1188,7 +1213,7 @@ const runTestInvoice = async ({ businessId, period }) => {
         },
       },
     ),
-    REQUEST_TIMEOUT_MS,
+    EDGE_TIMEOUT_MS,
     "admin-run-monthly-invoices",
   );
 
@@ -1248,7 +1273,7 @@ const addCommissionToStripe = async ({
         },
       },
     ),
-    REQUEST_TIMEOUT_MS,
+    EDGE_TIMEOUT_MS,
     "admin-add-commission-to-stripe",
   );
 
@@ -1329,7 +1354,7 @@ const createTestEvent = async () => {
           },
         },
       ),
-      REQUEST_TIMEOUT_MS,
+      EDGE_TIMEOUT_MS,
       "admin-create-test-commission",
     );
     if (!response?.error) {
@@ -1509,7 +1534,7 @@ const saveReceipt = async (options = {}) => {
           .eq("id", receipt.id)
           .select(fields.join(","))
           .maybeSingle(),
-        REQUEST_TIMEOUT_MS,
+        DB_TIMEOUT_MS,
         "saveReceipt",
       );
 
