@@ -488,6 +488,52 @@ const postgrestUpdateReceipt = async ({ receiptId, updates, select }) => {
   };
 };
 
+const postgrestGetJson = async ({ path, searchParams, label, timeoutMs }) => {
+  const session = await ensureSession({ force: false });
+  const token = session?.access_token || state.session?.access_token || "";
+  if (!token) {
+    return { data: null, error: { message: "Missing access token." } };
+  }
+  const url = new URL(`${supabaseUrl.replace(/\/+$/, "")}/rest/v1/${path.replace(/^\/+/, "")}`);
+  if (searchParams) {
+    const sp = searchParams instanceof URLSearchParams ? searchParams : new URLSearchParams(searchParams);
+    for (const [k, v] of sp.entries()) url.searchParams.append(k, v);
+  }
+
+  const { res, text } = await fetchTextWithTimeout(
+    url.toString(),
+    {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+        apikey: supabaseAnonKey,
+      },
+    },
+    timeoutMs || DB_TIMEOUT_MS,
+    label || `GET ${path}`,
+  );
+
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+  if (res.ok) {
+    return { data: parsed, error: null };
+  }
+  return {
+    data: null,
+    error: {
+      message: parsed?.message || parsed?.error || `Request failed (${res.status}).`,
+      code: parsed?.code || null,
+      status: res.status,
+      raw: text,
+    },
+  };
+};
+
 const withTimeout = (promise, ms, label) =>
   new Promise((resolve, reject) => {
     let done = false;
@@ -818,15 +864,31 @@ const resetDetail = () => {
 
 const requireStaff = async () => {
   if (!supabaseClient) return false;
-  const {
-    data: { user },
-  } = await supabaseClient.auth.getUser();
+  let user = state.session?.user || null;
+  if (!user) {
+    try {
+      const result = await withTimeout(supabaseClient.auth.getUser(), 12000, "getUser");
+      user = result?.data?.user || null;
+    } catch (error) {
+      logDebug("getUser failed", { message: error?.message || "unknown" });
+      user = null;
+    }
+  }
   if (!user) return false;
-  const { data, error } = await supabaseClient
-    .from("profiles")
-    .select("id, role, full_name, email")
-    .eq("id", user.id)
-    .maybeSingle();
+  const profileResult = await postgrestGetJson({
+    path: "profiles",
+    label: "requireStaff",
+    timeoutMs: DB_TIMEOUT_MS,
+    searchParams: new URLSearchParams({
+      select: "id,role,full_name,email",
+      id: `eq.${user.id}`,
+      limit: "1",
+    }),
+  }).catch((error) => ({ data: null, error: { message: error?.message || "unknown" } }));
+
+  const error = profileResult?.error || null;
+  const row = Array.isArray(profileResult?.data) ? profileResult.data[0] : profileResult?.data || null;
+  const data = row || null;
   if (error || !data) {
     setAuthError(error?.message || "Unable to verify admin access.");
     await supabaseClient.auth.signOut();
@@ -849,11 +911,15 @@ const loadBusinesses = async () => {
   let data = null;
   let error = null;
   try {
-    const result = await withTimeout(
-      supabaseClient.from("businesses").select("id, name").order("name"),
-      DB_TIMEOUT_MS,
-      "loadBusinesses",
-    );
+    const result = await postgrestGetJson({
+      path: "businesses",
+      label: "loadBusinesses",
+      timeoutMs: DB_TIMEOUT_MS,
+      searchParams: new URLSearchParams({
+        select: "id,name",
+        order: "name.asc",
+      }),
+    });
     data = result?.data ?? null;
     error = result?.error ?? null;
   } catch (err) {
@@ -862,11 +928,15 @@ const loadBusinesses = async () => {
   if (error?.message && error.message.toLowerCase().includes("jwt")) {
     await ensureSession({ force: true });
     try {
-      const retry = await withTimeout(
-        supabaseClient.from("businesses").select("id, name").order("name"),
-        DB_TIMEOUT_MS,
-        "loadBusinessesRetry",
-      );
+      const retry = await postgrestGetJson({
+        path: "businesses",
+        label: "loadBusinessesRetry",
+        timeoutMs: DB_TIMEOUT_MS,
+        searchParams: new URLSearchParams({
+          select: "id,name",
+          order: "name.asc",
+        }),
+      });
       data = retry?.data ?? null;
       error = retry?.error ?? null;
     } catch (err) {
@@ -912,28 +982,28 @@ const loadReceipts = async () => {
   let data = null;
   let error = null;
   try {
-    const result = await withTimeout(
-      supabaseClient
-        .from("receipt_uploads")
-        .select(
-          [
-            "id",
-            "storage_path",
-            "uploaded_at",
-            "receipt_total_cents",
-            "commission_due_cents",
-            "review_status",
-            "review_notes",
-            "reviewed_at",
-            "business:businesses (id, name)",
-            "redemption:redemptions (id, created_at, offer:offers (id, title))",
-          ].join(","),
-        )
-        .order("uploaded_at", { ascending: false })
-        .limit(400),
-      DB_TIMEOUT_MS,
-      "loadReceipts",
-    );
+    const select = [
+      "id",
+      "storage_path",
+      "uploaded_at",
+      "receipt_total_cents",
+      "commission_due_cents",
+      "review_status",
+      "review_notes",
+      "reviewed_at",
+      "business:businesses (id, name)",
+      "redemption:redemptions (id, created_at, offer:offers (id, title))",
+    ].join(",");
+    const result = await postgrestGetJson({
+      path: "receipt_uploads",
+      label: "loadReceipts",
+      timeoutMs: DB_TIMEOUT_MS,
+      searchParams: new URLSearchParams({
+        select,
+        order: "uploaded_at.desc",
+        limit: "400",
+      }),
+    });
     data = result?.data ?? null;
     error = result?.error ?? null;
   } catch (err) {
@@ -942,28 +1012,28 @@ const loadReceipts = async () => {
   if (error?.message && error.message.toLowerCase().includes("jwt")) {
     await ensureSession({ force: true });
     try {
-      const retry = await withTimeout(
-        supabaseClient
-          .from("receipt_uploads")
-          .select(
-            [
-              "id",
-              "storage_path",
-              "uploaded_at",
-              "receipt_total_cents",
-              "commission_due_cents",
-              "review_status",
-              "review_notes",
-              "reviewed_at",
-              "business:businesses (id, name)",
-              "redemption:redemptions (id, created_at, offer:offers (id, title))",
-            ].join(","),
-          )
-          .order("uploaded_at", { ascending: false })
-          .limit(400),
-        DB_TIMEOUT_MS,
-        "loadReceiptsRetry",
-      );
+      const select = [
+        "id",
+        "storage_path",
+        "uploaded_at",
+        "receipt_total_cents",
+        "commission_due_cents",
+        "review_status",
+        "review_notes",
+        "reviewed_at",
+        "business:businesses (id, name)",
+        "redemption:redemptions (id, created_at, offer:offers (id, title))",
+      ].join(",");
+      const retry = await postgrestGetJson({
+        path: "receipt_uploads",
+        label: "loadReceiptsRetry",
+        timeoutMs: DB_TIMEOUT_MS,
+        searchParams: new URLSearchParams({
+          select,
+          order: "uploaded_at.desc",
+          limit: "400",
+        }),
+      });
       data = retry?.data ?? null;
       error = retry?.error ?? null;
     } catch (err) {
@@ -1422,16 +1492,18 @@ const loadTestCharges = async () => {
   let data = null;
   let error = null;
   try {
-    const result = await withTimeout(
-      supabaseClient
-        .from("commission_events")
-        .select("amount_cents, status, created_at")
-        .eq("business_id", businessId)
-        .gte("created_at", period.start.toISOString())
-        .lt("created_at", period.end.toISOString()),
-      DB_TIMEOUT_MS,
-      "loadTestCharges",
-    );
+    const sp = new URLSearchParams();
+    sp.append("select", "amount_cents,status");
+    sp.append("business_id", `eq.${businessId}`);
+    sp.append("created_at", `gte.${period.start.toISOString()}`);
+    sp.append("created_at", `lt.${period.end.toISOString()}`);
+    sp.append("status", "in.(pending,invoiced,paid)");
+    const result = await postgrestGetJson({
+      path: "commission_events",
+      label: "loadTestCharges",
+      timeoutMs: DB_TIMEOUT_MS,
+      searchParams: sp,
+    });
     data = result?.data ?? null;
     error = result?.error ?? null;
   } catch (err) {
@@ -1440,16 +1512,18 @@ const loadTestCharges = async () => {
   if (error?.message && String(error.message).toLowerCase().includes("jwt")) {
     await ensureSession({ force: true });
     try {
-      const retry = await withTimeout(
-        supabaseClient
-          .from("commission_events")
-          .select("amount_cents, status, created_at")
-          .eq("business_id", businessId)
-          .gte("created_at", period.start.toISOString())
-          .lt("created_at", period.end.toISOString()),
-        DB_TIMEOUT_MS,
-        "loadTestChargesRetry",
-      );
+      const sp = new URLSearchParams();
+      sp.append("select", "amount_cents,status");
+      sp.append("business_id", `eq.${businessId}`);
+      sp.append("created_at", `gte.${period.start.toISOString()}`);
+      sp.append("created_at", `lt.${period.end.toISOString()}`);
+      sp.append("status", "in.(pending,invoiced,paid)");
+      const retry = await postgrestGetJson({
+        path: "commission_events",
+        label: "loadTestChargesRetry",
+        timeoutMs: DB_TIMEOUT_MS,
+        searchParams: sp,
+      });
       data = retry?.data ?? null;
       error = retry?.error ?? null;
     } catch (err) {
