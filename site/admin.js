@@ -140,6 +140,24 @@ const presignQueue = [];
 let presignActive = 0;
 const presignControllers = new Set();
 
+// Browsers can pause/throttle network and timers heavily when a tab is backgrounded.
+// To avoid "stuck" UI actions (save, invoice charge, etc), we attach a shared signal
+// to every network request and abort it immediately when the page becomes hidden.
+let pageNetworkController = new AbortController();
+const getPageNetworkSignal = () => pageNetworkController.signal;
+const resetPageNetworkController = () => {
+  pageNetworkController = new AbortController();
+};
+const abortPageNetwork = (reason) => {
+  try {
+    if (!pageNetworkController.signal.aborted) {
+      pageNetworkController.abort(reason || "hidden");
+    }
+  } catch {
+    // ignore
+  }
+};
+
 const nowMs = () => Date.now();
 
 const cleanupPresignCache = () => {
@@ -215,18 +233,21 @@ function createTimedFetch(timeoutMs) {
     const controller = new AbortController();
     const signal = controller.signal;
     const upstream = init?.signal;
+    const pageSignal = getPageNetworkSignal();
 
-    let upstreamAbortHandler = null;
-    if (upstream) {
-      if (upstream.aborted) {
-        controller.abort();
-      } else {
-        upstreamAbortHandler = () => controller.abort();
-        try {
-          upstream.addEventListener("abort", upstreamAbortHandler, { once: true });
-        } catch {
-          // ignore
+    const signals = [upstream, pageSignal].filter(Boolean);
+    const abortHandlers = [];
+    for (const s of signals) {
+      try {
+        if (s.aborted) {
+          controller.abort();
+          break;
         }
+        const handler = () => controller.abort();
+        s.addEventListener("abort", handler, { once: true });
+        abortHandlers.push([s, handler]);
+      } catch {
+        // ignore
       }
     }
 
@@ -235,9 +256,9 @@ function createTimedFetch(timeoutMs) {
       return await fetch(input, { ...init, signal });
     } finally {
       clearTimeout(id);
-      if (upstream && upstreamAbortHandler) {
+      for (const [s, handler] of abortHandlers) {
         try {
-          upstream.removeEventListener("abort", upstreamAbortHandler);
+          s.removeEventListener("abort", handler);
         } catch {
           // ignore
         }
@@ -1925,9 +1946,14 @@ const init = async () => {
     logDebug("visibilitychange", { hidden: document.hidden });
     if (document.hidden) {
       abortAllPresigns("hidden");
+      abortPageNetwork("hidden");
       stopAutoRefresh();
       stopLiveRefresh();
       return;
+    }
+    // Ensure future requests don't inherit an already-aborted page signal.
+    if (getPageNetworkSignal().aborted) {
+      resetPageNetworkController();
     }
     scheduleResume("visibilitychange");
   });
@@ -1935,6 +1961,9 @@ const init = async () => {
   window.addEventListener("focus", () => {
     if (!document.hidden) {
       logDebug("window focus");
+      if (getPageNetworkSignal().aborted) {
+        resetPageNetworkController();
+      }
       scheduleResume("focus");
     }
   });
