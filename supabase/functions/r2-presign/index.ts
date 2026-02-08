@@ -1,5 +1,3 @@
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-
 export const config = { verify_jwt: false };
 
 const R2_ENDPOINT = Deno.env.get("R2_ENDPOINT") ?? "";
@@ -152,7 +150,7 @@ const fetchWithTimeout = async (
   }
 };
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { status: 200, headers: corsHeaders });
   }
