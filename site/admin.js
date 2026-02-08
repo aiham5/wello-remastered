@@ -126,6 +126,44 @@ if (debugEnabled) {
   });
 }
 
+const REQUEST_TIMEOUT_MS = 15000;
+
+function createTimedFetch(timeoutMs) {
+  return async (input, init = {}) => {
+    const controller = new AbortController();
+    const signal = controller.signal;
+    const upstream = init?.signal;
+
+    let upstreamAbortHandler = null;
+    if (upstream) {
+      if (upstream.aborted) {
+        controller.abort();
+      } else {
+        upstreamAbortHandler = () => controller.abort();
+        try {
+          upstream.addEventListener("abort", upstreamAbortHandler, { once: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(input, { ...init, signal });
+    } finally {
+      clearTimeout(id);
+      if (upstream && upstreamAbortHandler) {
+        try {
+          upstream.removeEventListener("abort", upstreamAbortHandler);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  };
+}
+
 const supabaseClient =
   supabaseUrl && supabaseAnonKey
     ? window.supabase.createClient(supabaseUrl, supabaseAnonKey, {
@@ -133,6 +171,9 @@ const supabaseClient =
           persistSession: true,
           // Let supabase-js manage refresh in the background; it is more reliable than manual refresh races.
           autoRefreshToken: true,
+        },
+        global: {
+          fetch: createTimedFetch(REQUEST_TIMEOUT_MS),
         },
       })
     : null;
@@ -165,7 +206,6 @@ const abortRecovery = {
 const AUTO_REFRESH_MS = 30000;
 const LIVE_DEBOUNCE_MS = 1200;
 const CASHBACK_RATE = 0.05;
-const REQUEST_TIMEOUT_MS = 15000;
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -227,14 +267,23 @@ const ensureSession = async ({ force } = {}) => {
     if (!sessionState.refreshPromise) {
       sessionState.refreshPromise = withTimeout(
         (async () => {
+          logDebug("ensureSession start", { force: Boolean(force) });
           // Prefer cached session first.
+          logDebug("ensureSession getSession start");
           const {
             data: { session },
           } = await supabaseClient.auth.getSession();
+          logDebug("ensureSession getSession done", {
+            hasSession: Boolean(session?.access_token),
+          });
           if (session?.access_token && !force) return session;
 
           // If forced (or missing), refresh.
+          logDebug("ensureSession refreshSession start");
           const refreshed = await supabaseClient.auth.refreshSession();
+          logDebug("ensureSession refreshSession done", {
+            hasSession: Boolean(refreshed?.data?.session?.access_token),
+          });
           return refreshed?.data?.session || null;
         })(),
         REQUEST_TIMEOUT_MS,
@@ -283,14 +332,25 @@ const callR2Presign = async ({ action, key, accessToken }) => {
       "r2-presign",
     );
 
-  // Prefer letting supabase-js attach auth; it avoids stale token bugs.
-  let response = await invoke();
-  if (response?.error?.message) {
-    const msg = String(response.error.message).toLowerCase();
-    if (msg.includes("jwt") || msg.includes("authorization")) {
-      await ensureSession({ force: true });
-      response = await invoke();
+  let response = null;
+  try {
+    // Prefer letting supabase-js attach auth; it avoids stale token bugs.
+    response = await invoke();
+    if (response?.error?.message) {
+      const msg = String(response.error.message).toLowerCase();
+      if (msg.includes("jwt") || msg.includes("authorization")) {
+        await ensureSession({ force: true });
+        response = await invoke();
+      }
     }
+  } catch (error) {
+    const message = error?.message || "unknown";
+    console.warn("r2-presign exception", message);
+    logDebug("r2-presign exception", { message });
+    return {
+      data: null,
+      error: message.includes("timed out") ? "r2_invoke timeout" : message,
+    };
   }
   if (!response?.error) {
     let parsedData = response?.data ?? null;
@@ -1569,7 +1629,6 @@ const init = async () => {
       const ok = await requireStaff();
       if (ok) {
         setAuthUI(true);
-        await ensureSession({ force: true });
         await refreshAll({ silent: true });
         await loadTestCharges();
         startAutoRefresh();
