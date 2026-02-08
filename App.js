@@ -42,6 +42,7 @@ import * as Font from "expo-font";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as FileSystem from "expo-file-system";
 import { toByteArray } from "base64-js";
 import { createClient } from "@supabase/supabase-js";
@@ -1092,23 +1093,9 @@ const formatStripeError = (error) => {
 };
 
 
-const imageManipulatorState = { promise: null, module: null };
-const loadImageManipulator = async () => {
-  if (imageManipulatorState.module) return imageManipulatorState.module;
-  if (!imageManipulatorState.promise) {
-    imageManipulatorState.promise = import("expo-image-manipulator")
-      .then((mod) => {
-        imageManipulatorState.module = mod;
-        return mod;
-      })
-      .catch((error) => {
-        console.warn("Wello image manipulator unavailable:", error?.message || error);
-        imageManipulatorState.module = null;
-        return null;
-      });
-  }
-  return imageManipulatorState.promise;
-};
+// Note: avoid dynamic `import()` here. Metro can intermittently fail to include
+// dynamically imported modules in dev, causing "Requiring unknown module" at runtime.
+const loadImageManipulator = async () => ImageManipulator;
 
 const formatMetricValue = (value) => {
   if (value === null || value === undefined) return "—";
@@ -2179,6 +2166,11 @@ export default function App() {
     paidCents: 0,
     verifiedGrossCents: 0,
     verifiedMonthCents: 0,
+    periodStart: null,
+    periodEnd: null,
+    periodTotalCents: 0,
+    periodPaidCents: 0,
+    periodVerifiedGrossCents: 0,
     updatedAt: null,
   });
   const [billingStatus, setBillingStatus] = useState({
@@ -3168,6 +3160,17 @@ export default function App() {
       if (!silent) {
         setBillingStatus({ loading: true, error: null });
       }
+
+      const now = new Date();
+      const periodStartDate = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0),
+      );
+      const periodEndDate = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0),
+      );
+      const periodStart = periodStartDate.toISOString().slice(0, 10);
+      const periodEnd = periodEndDate.toISOString().slice(0, 10);
+
       const [eventsResult, receiptsResult] = await Promise.all([
         supabase
           .from("commission_events")
@@ -3204,6 +3207,8 @@ export default function App() {
       let pendingCents = 0;
       let totalCents = 0;
       let paidCents = 0;
+      let periodTotalCents = 0;
+      let periodPaidCents = 0;
       rows.forEach((row) => {
         const amount = Number(row?.amount_cents) || 0;
         if (row?.status === "failed") return;
@@ -3213,15 +3218,30 @@ export default function App() {
         if (row?.created_at && new Date(row.created_at) >= monthStart) {
           monthCents += amount;
         }
+        if (
+          row?.created_at &&
+          new Date(row.created_at) >= periodStartDate &&
+          new Date(row.created_at) < periodEndDate
+        ) {
+          periodTotalCents += amount;
+          if (row?.status === "paid") periodPaidCents += amount;
+        }
       });
       let verifiedGrossCents = 0;
       let verifiedMonthCents = 0;
+      let periodVerifiedGrossCents = 0;
       receiptRows.forEach((row) => {
         const amount = Number(row?.receipt_total_cents) || 0;
         verifiedGrossCents += amount;
         const stamp = row?.reviewed_at || row?.uploaded_at;
         if (stamp && new Date(stamp) >= monthStart) {
           verifiedMonthCents += amount;
+        }
+        if (stamp) {
+          const stampDate = new Date(stamp);
+          if (stampDate >= periodStartDate && stampDate < periodEndDate) {
+            periodVerifiedGrossCents += amount;
+          }
         }
       });
       setBillingMetrics({
@@ -3231,6 +3251,11 @@ export default function App() {
         paidCents,
         verifiedGrossCents,
         verifiedMonthCents,
+        periodStart,
+        periodEnd,
+        periodTotalCents,
+        periodPaidCents,
+        periodVerifiedGrossCents,
         updatedAt: Date.now(),
       });
       if (!silent) {
@@ -9964,6 +9989,12 @@ export default function App() {
                           {CASHBACK_RATE_PERCENT}% of that commission returned
                           to customers as cashback. Billed monthly.
                         </Text>
+                        {billingMetrics.periodStart && billingMetrics.periodEnd && (
+                          <Text style={styles.sectionBody}>
+                            Billing period: {billingMetrics.periodStart} to{" "}
+                            {billingMetrics.periodEnd}
+                          </Text>
+                        )}
                         <Text style={styles.sectionBody}>
                           Billing portal is for payment methods and invoices
                           (not earnings).
@@ -10014,34 +10045,32 @@ export default function App() {
                             </Text>
                             <Text style={styles.paymentAmount}>
                               {formatCurrencyFromCents(
-                                billingMetrics.verifiedGrossCents,
+                                billingMetrics.periodVerifiedGrossCents,
                               )}
                             </Text>
                           </View>
                             <View style={styles.paymentRow}>
-                              <Text style={styles.paymentLabel}>Charges</Text>
+                              <Text style={styles.paymentLabel}>Charges due</Text>
                               <Text style={styles.paymentAmount}>
                                 {formatCurrencyFromCents(
                                   Math.max(
                                     0,
-                                    (Number(billingMetrics.totalCents) || 0) -
-                                      (Number(billingMetrics.paidCents) || 0),
+                                    (Number(billingMetrics.periodTotalCents) || 0) -
+                                      (Number(billingMetrics.periodPaidCents) || 0),
                                   ),
                                 )}
                               </Text>
                             </View>
                             <View style={styles.paymentRow}>
-                              <Text style={styles.paymentLabel}>Net income</Text>
+                              <Text style={styles.paymentLabel}>
+                                Net after fees
+                              </Text>
                               <Text style={styles.paymentAmount}>
                                 {formatCurrencyFromCents(
                                   Math.max(
                                     0,
-                                    (Number(billingMetrics.verifiedGrossCents) || 0) -
-                                      Math.max(
-                                        0,
-                                        (Number(billingMetrics.totalCents) || 0) -
-                                          (Number(billingMetrics.paidCents) || 0),
-                                      ),
+                                    (Number(billingMetrics.periodVerifiedGrossCents) || 0) -
+                                      (Number(billingMetrics.periodTotalCents) || 0),
                                   ),
                                 )}
                               </Text>
