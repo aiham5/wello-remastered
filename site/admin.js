@@ -352,10 +352,18 @@ const callR2Presign = async ({ action, key, accessToken }) => {
     return { data: null, error: "Supabase is not configured." };
   }
   logDebug("r2-presign request", { action, key });
+  // Explicitly attach the current user token; we have seen cases where invoke() does not
+  // include it consistently after tab backgrounding.
+  const session = await ensureSession({ force: false });
+  const token = session?.access_token || state.session?.access_token || "";
+  if (!token) {
+    return { data: null, error: "Missing access token." };
+  }
   const invoke = () =>
     withTimeout(
       supabaseClient.functions.invoke("r2-presign", {
         body: { action, key },
+        headers: { Authorization: `Bearer ${token}` },
       }),
       REQUEST_TIMEOUT_MS,
       "r2-presign",
@@ -415,7 +423,7 @@ const callR2Presign = async ({ action, key, accessToken }) => {
     message: err?.message,
     raw,
   });
-  logDebug("r2-presign failed", { status, message: err?.message });
+  logDebug("r2-presign failed", { status, message: err?.message, raw });
   return {
     data: null,
     error:
