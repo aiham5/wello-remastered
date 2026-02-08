@@ -199,6 +199,11 @@ const liveState = {
   channel: null,
   debounce: null,
 };
+const resumeState = {
+  timer: null,
+  inFlight: false,
+  lastSource: null,
+};
 const abortRecovery = {
   inFlight: false,
   lastAt: 0,
@@ -260,15 +265,29 @@ const sessionState = {
   refreshPromise: null,
 };
 
+const SESSION_REFRESH_BUFFER_MS = 90_000;
+
+const needsRefresh = (session) => {
+  const expiresAtSeconds = Number(session?.expires_at) || 0;
+  if (!expiresAtSeconds) return true;
+  const msLeft = expiresAtSeconds * 1000 - Date.now();
+  return msLeft < SESSION_REFRESH_BUFFER_MS;
+};
+
+// Keep this extremely conservative: prefer getSession; refresh only when needed.
 const ensureSession = async ({ force } = {}) => {
   if (!supabaseClient) return null;
-  if (!force && state.session?.access_token) return state.session;
+
+  // If we already have a token and it's not close to expiring, keep it.
+  if (!force && state.session?.access_token && !needsRefresh(state.session)) {
+    return state.session;
+  }
+
   try {
     if (!sessionState.refreshPromise) {
       sessionState.refreshPromise = withTimeout(
         (async () => {
           logDebug("ensureSession start", { force: Boolean(force) });
-          // Prefer cached session first.
           logDebug("ensureSession getSession start");
           const {
             data: { session },
@@ -276,15 +295,18 @@ const ensureSession = async ({ force } = {}) => {
           logDebug("ensureSession getSession done", {
             hasSession: Boolean(session?.access_token),
           });
-          if (session?.access_token && !force) return session;
 
-          // If forced (or missing), refresh.
+          if (session?.access_token && !force && !needsRefresh(session)) {
+            return session;
+          }
+
           logDebug("ensureSession refreshSession start");
           const refreshed = await supabaseClient.auth.refreshSession();
+          const next = refreshed?.data?.session || null;
           logDebug("ensureSession refreshSession done", {
-            hasSession: Boolean(refreshed?.data?.session?.access_token),
+            hasSession: Boolean(next?.access_token),
           });
-          return refreshed?.data?.session || null;
+          return next;
         })(),
         REQUEST_TIMEOUT_MS,
         force ? "ensureSession(force)" : "ensureSession",
@@ -292,11 +314,17 @@ const ensureSession = async ({ force } = {}) => {
         sessionState.refreshPromise = null;
       });
     }
+
     const session = await sessionState.refreshPromise;
     state.session = session;
     return session || null;
   } catch (error) {
-    logDebug("ensureSession failed", { message: error?.message || "unknown" });
+    const message = error?.message || "unknown";
+    logDebug("ensureSession failed", { message });
+    // If the refresh was aborted but we still have a usable token, keep going.
+    if (state.session?.access_token && !needsRefresh(state.session)) {
+      return state.session;
+    }
     return null;
   }
 };
@@ -720,6 +748,40 @@ const stopLiveRefresh = () => {
     liveState.channel = null;
     logDebug("live refresh unsubscribed");
   }
+};
+
+const resumeNow = async (source) => {
+  if (!supabaseClient || document.hidden) return;
+  if (resumeState.inFlight) return;
+  resumeState.inFlight = true;
+  resumeState.lastSource = source || null;
+  logDebug("resume start", { source: source || null });
+  try {
+    // Make sure we have a usable session before hitting Edge Functions / PostgREST.
+    await ensureSession({ force: false });
+
+    startAutoRefresh();
+    startLiveRefresh();
+    await refreshAll({ silent: true });
+    await loadTestCharges();
+  } catch (error) {
+    logDebug("resume failed", { message: error?.message || "unknown" });
+  } finally {
+    resumeState.inFlight = false;
+    logDebug("resume done", { source: source || null });
+  }
+};
+
+const scheduleResume = (source) => {
+  if (!supabaseClient || document.hidden) return;
+  if (resumeState.timer) {
+    clearTimeout(resumeState.timer);
+    resumeState.timer = null;
+  }
+  resumeState.timer = setTimeout(() => {
+    resumeState.timer = null;
+    resumeNow(source);
+  }, 150);
 };
 
 const applyFilters = () => {
@@ -1604,10 +1666,7 @@ const init = async () => {
     const ok = await requireStaff();
     if (ok) {
       setAuthUI(true);
-      await refreshAll({ silent: true });
-      await loadTestCharges();
-      startAutoRefresh();
-      startLiveRefresh();
+      scheduleResume("init");
     }
   } else {
     setAuthUI(false);
@@ -1626,13 +1685,14 @@ const init = async () => {
       return;
     }
     if (session?.user) {
+      // Token refreshes are noisy and don't require a full UI refresh.
+      if (_event === "TOKEN_REFRESHED") {
+        return;
+      }
       const ok = await requireStaff();
       if (ok) {
         setAuthUI(true);
-        await refreshAll({ silent: true });
-        await loadTestCharges();
-        startAutoRefresh();
-        startLiveRefresh();
+        scheduleResume(`auth:${_event}`);
       }
     } else {
       setAuthUI(false);
@@ -1649,22 +1709,13 @@ const init = async () => {
       stopLiveRefresh();
       return;
     }
-    // Coming back into focus: rehydrate session and do a clean refresh.
-    ensureSession({ force: true }).finally(() => {
-      startAutoRefresh();
-      startLiveRefresh();
-      refreshAll({ silent: true });
-    });
+    scheduleResume("visibilitychange");
   });
 
   window.addEventListener("focus", () => {
     if (!document.hidden) {
       logDebug("window focus");
-      ensureSession({ force: true }).finally(() => {
-        startAutoRefresh();
-        startLiveRefresh();
-        refreshAll({ silent: true });
-      });
+      scheduleResume("focus");
     }
   });
 };
