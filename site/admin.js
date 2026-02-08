@@ -98,6 +98,7 @@ const ui = {
   testPeriod: document.getElementById("test-period"),
   testPending: document.getElementById("test-pending"),
   testInvoiced: document.getElementById("test-invoiced"),
+  testPaid: document.getElementById("test-paid"),
   imageModal: document.getElementById("image-modal"),
   imageModalImg: document.getElementById("image-modal-img"),
   imageModalClose: document.getElementById("image-modal-close"),
@@ -1468,13 +1469,8 @@ const renderActivitySummary = () => {
 };
 
 const getDefaultTestDate = () => {
-  const now = new Date();
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
-  const previousMonth = month === 0 ? 11 : month - 1;
-  const previousYear = month === 0 ? year - 1 : year;
-  const date = new Date(Date.UTC(previousYear, previousMonth, 15, 12, 0, 0));
-  return date.toISOString().slice(0, 10);
+  // Use today's date so the billing period defaults to the current month.
+  return new Date().toISOString().slice(0, 10);
 };
 
 const loadTestCharges = async () => {
@@ -1487,6 +1483,7 @@ const loadTestCharges = async () => {
   if (!businessId) {
     if (ui.testPending) ui.testPending.textContent = "$0.00";
     if (ui.testInvoiced) ui.testInvoiced.textContent = "$0.00";
+    if (ui.testPaid) ui.testPaid.textContent = "$0.00";
     return;
   }
   let data = null;
@@ -1541,11 +1538,14 @@ const loadTestCharges = async () => {
     .filter((row) => row.status === "pending")
     .reduce((sum, row) => sum + (Number(row.amount_cents) || 0), 0);
   const invoicedCents = rows
-    .filter((row) => row.status === "invoiced" || row.status === "paid")
+    .filter((row) => row.status === "invoiced")
+    .reduce((sum, row) => sum + (Number(row.amount_cents) || 0), 0);
+  const paidCents = rows
+    .filter((row) => row.status === "paid")
     .reduce((sum, row) => sum + (Number(row.amount_cents) || 0), 0);
   if (ui.testPending) ui.testPending.textContent = formatCurrency(pendingCents);
-  if (ui.testInvoiced)
-    ui.testInvoiced.textContent = formatCurrency(invoicedCents);
+  if (ui.testInvoiced) ui.testInvoiced.textContent = formatCurrency(invoicedCents);
+  if (ui.testPaid) ui.testPaid.textContent = formatCurrency(paidCents);
 };
 
 const runTestInvoice = async ({ businessId, period }) => {
