@@ -35,6 +35,10 @@ import {
   PinchGestureHandler,
   State as GestureState,
 } from "react-native-gesture-handler";
+import BottomSheet, {
+  BottomSheetScrollView,
+  BottomSheetView,
+} from "@gorhom/bottom-sheet";
 import MapView, { Marker } from "react-native-maps";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Font from "expo-font";
@@ -70,7 +74,6 @@ const IS_NARROW = SCREEN_WIDTH < 420;
 const IS_SHORT = SCREEN_HEIGHT < 700;
 const SHEET_MIN = IS_SHORT ? 140 : 160;
 const SHEET_MAX = Math.min(SCREEN_HEIGHT * 0.72, IS_SHORT ? 560 : 620);
-const COLLAPSED_Y = SHEET_MAX - SHEET_MIN;
 const SAFE_TOP =
   Platform.OS === "android"
     ? (StatusBar.currentHeight || 0) + (IS_COMPACT ? 8 : 12)
@@ -1792,12 +1795,50 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
     : "Offer";
   const redemptionLimitCount = Number(item.redemptionLimitCount);
   const redemptionLimitPeriod = String(item.redemptionLimitPeriod || "");
-  const redemptionLimitLabel =
-    Number.isFinite(redemptionLimitCount) &&
-    redemptionLimitCount > 0 &&
-    (redemptionLimitPeriod === "day" || redemptionLimitPeriod === "week")
-      ? `Limit: ${redemptionLimitCount}/${redemptionLimitPeriod}`
-      : null;
+  const limitMeta = useMemo(() => {
+    const isDay = redemptionLimitPeriod === "day";
+    const isWeek = redemptionLimitPeriod === "week";
+    const isLimited =
+      Number.isFinite(redemptionLimitCount) &&
+      redemptionLimitCount > 0 &&
+      (isDay || isWeek);
+    const periodLabel = isDay ? "day" : isWeek ? "week" : "";
+    const count = isLimited ? redemptionLimitCount : 0;
+    const mode = isLimited ? (count === 1 ? "once" : "max") : "unlimited";
+    const label =
+      mode === "unlimited"
+        ? "Unlimited"
+        : mode === "once"
+          ? `Once/${periodLabel}`
+          : `Max ${count}/${periodLabel}`;
+    const icon =
+      mode === "unlimited"
+        ? "infinite-outline"
+        : isDay
+          ? "sunny-outline"
+          : "calendar-outline";
+    const badgeStyle =
+      mode === "unlimited"
+        ? styles.cardLimitBadgeUnlimited
+        : mode === "once" && isDay
+          ? styles.cardLimitBadgeOnceDay
+          : mode === "max" && isDay
+            ? styles.cardLimitBadgeMaxDay
+            : mode === "once" && isWeek
+              ? styles.cardLimitBadgeOnceWeek
+              : styles.cardLimitBadgeMaxWeek;
+    const textStyle =
+      mode === "unlimited"
+        ? styles.cardLimitTextUnlimited
+        : mode === "once" && isDay
+          ? styles.cardLimitTextOnceDay
+          : mode === "max" && isDay
+            ? styles.cardLimitTextMaxDay
+            : mode === "once" && isWeek
+              ? styles.cardLimitTextOnceWeek
+              : styles.cardLimitTextMaxWeek;
+    return { label, icon, badgeStyle, textStyle };
+  }, [redemptionLimitCount, redemptionLimitPeriod]);
   const hoursValue = item.hours || item.business?.hours || "";
   const openFromHours = isBusinessOpenNow(hoursValue);
   const isOpen =
@@ -1831,20 +1872,26 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
               {offerTitle}
             </Text>
           ) : null}
-          {offerDescription ? (
-            <Text style={styles.cardOffer} numberOfLines={2}>
-              {offerDescription}
-            </Text>
-          ) : null}
-          {redemptionLimitLabel ? (
-            <View style={styles.cardLimitRow}>
-              <View style={styles.cardLimitBadge}>
-                <Text style={styles.cardLimitBadgeText}>
-                  {redemptionLimitLabel}
+          <View style={styles.cardOfferRow}>
+            <View style={styles.cardOfferColumn}>
+              {offerDescription ? (
+                <Text style={styles.cardOffer} numberOfLines={2}>
+                  {offerDescription}
                 </Text>
-              </View>
+              ) : null}
             </View>
-          ) : null}
+            <View style={[styles.cardLimitBadgeRight, limitMeta.badgeStyle]}>
+              <Ionicons
+                name={limitMeta.icon}
+                size={13}
+                color={StyleSheet.flatten(limitMeta.textStyle)?.color || COLORS.coral}
+                style={styles.cardLimitIcon}
+              />
+              <Text style={[styles.cardLimitBadgeText, limitMeta.textStyle]}>
+                {limitMeta.label}
+              </Text>
+            </View>
+          </View>
           <TouchableOpacity
             style={[
               styles.redeemButton,
@@ -1929,6 +1976,8 @@ export default function App() {
   const mapRef = useRef(null);
   const cardListRef = useRef(null);
   const sheetScrollRef = useRef(null);
+  const bottomSheetRef = useRef(null);
+  const sheetIndexRef = useRef(0);
   const isMountedRef = useRef(true);
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState("discover");
@@ -2307,6 +2356,7 @@ export default function App() {
   });
   const [offerBusy, setOfferBusy] = useState(false);
   const [offerError, setOfferError] = useState(null);
+  const [offerNotice, setOfferNotice] = useState(null);
   const [formMessage, setFormMessage] = useState(null);
   const [addressResults, setAddressResults] = useState([]);
   const [addressLoading, setAddressLoading] = useState(false);
@@ -2315,16 +2365,26 @@ export default function App() {
   const addressSelectionRef = useRef(false);
   const reachTooltipTimerRef = useRef(null);
   const viewedOfferIdsRef = useRef(new Set());
-  const translateY = useRef(new Animated.Value(COLLAPSED_Y)).current;
-  const translateYRef = useRef(COLLAPSED_Y);
-  const sheetTranslateY = useMemo(() => {
-    // Clamp is stateless (avoids diffClamp lock points on Android).
-    return translateY.interpolate({
-      inputRange: [-100000, 0, COLLAPSED_Y, 100000],
-      outputRange: [0, 0, COLLAPSED_Y, COLLAPSED_Y],
-      extrapolate: "clamp",
-    });
-  }, [translateY]);
+  // Use percentage snap points to keep behavior consistent across iOS/Android
+  // and avoid device-specific pixel rounding jitter.
+  const sheetSnapPoints = useMemo(() => {
+    // Slightly taller collapsed state on short screens so the handle/search
+    // does not feel cramped.
+    const min = IS_SHORT ? "24%" : "22%";
+    const max = "78%";
+    return [min, max];
+  }, []);
+  const handleSheetChange = useCallback((index) => {
+    sheetIndexRef.current = Number.isFinite(index) ? index : 0;
+  }, []);
+  const renderSheetHandle = useCallback(() => {
+    return (
+      <View style={styles.sheetHandle}>
+        <View style={styles.handleBar} />
+        <Text style={styles.sheetHint}>Swipe up to explore offers</Text>
+      </View>
+    );
+  }, []);
   const receiptPinchScale = useRef(new Animated.Value(1)).current;
   const receiptBaseScale = useRef(new Animated.Value(1)).current;
   const receiptPanX = useRef(new Animated.Value(0)).current;
@@ -3686,8 +3746,8 @@ export default function App() {
     };
   }, []);
 
-  // Avoid per-frame JS listeners on Android (they can cause stutter). We update
-  // `translateYRef` only when we commit a new base position.
+  // Avoid per-frame JS listeners on Android (they can cause stutter). We keep
+  // sheet state in refs and only update them when committing a snap.
 
   useEffect(() => {
     if (!GOOGLE_PLACES_KEY) {
@@ -4663,14 +4723,39 @@ export default function App() {
     setSignInError(null);
     try {
       const email = signInEmail.trim().toLowerCase();
-      const { data, error } = await withTimeout(
-        supabase.auth.signInWithPassword({
-          email,
-          password: signInPassword,
-        }),
-        12000,
-        "signIn",
-      );
+      // Clear any stale local session keys before attempting a fresh sign-in.
+      // This helps when the app was backgrounded and the auth state/storage got wedged.
+      await clearSupabaseSession();
+      refreshSupabaseClient(true);
+
+      const runSignIn = () =>
+        withTimeout(
+          supabase.auth.signInWithPassword({
+            email,
+            password: signInPassword,
+          }),
+          12000,
+          "signIn",
+        );
+
+      let result;
+      try {
+        result = await runSignIn();
+      } catch (error) {
+        const message = String(error?.message || "");
+        const isTimeout =
+          message.includes("signIn timeout") ||
+          message.includes("fetch timeout") ||
+          message.toLowerCase().includes("abort");
+        if (!isTimeout) throw error;
+
+        // Self-heal: rebuild the client and retry once.
+        await clearSupabaseSession();
+        refreshSupabaseClient(true);
+        result = await runSignIn();
+      }
+
+      const { data, error } = result || {};
       if (error) {
         setSignInError(error.message || "Unable to sign in.");
         return;
@@ -4679,11 +4764,17 @@ export default function App() {
         setSignInError("Unable to sign in.");
         return;
       }
-      await hydrateProfile(data.user, null);
+      // Hydrate in the background; the auth listener also hydrates on session changes.
+      hydrateProfile(data.user, null).catch(() => {});
       setIsSignedIn(true);
       setSignInPassword("");
     } catch (error) {
-      setSignInError(error?.message || "Sign in timed out. Try again.");
+      const raw = String(error?.message || "");
+      const friendly =
+        raw.includes("timeout") || raw.toLowerCase().includes("abort")
+          ? "Sign in timed out. Check your connection and try again."
+          : raw || "Unable to sign in.";
+      setSignInError(friendly);
     } finally {
       setAuthBusy(false);
     }
@@ -5416,15 +5507,7 @@ export default function App() {
 
   const openSheet = (nextTab = "discover") => {
     setActiveTab(nextTab);
-    translateYRef.current = 0;
-    translateY.setOffset(0);
-    translateY.setValue(0);
-    Animated.spring(translateY, {
-      toValue: 0,
-      useNativeDriver: true,
-      tension: 90,
-      friction: 12,
-    }).start();
+    bottomSheetRef.current?.snapToIndex(1);
   };
 
   const scrollToBusiness = (business) => {
@@ -5602,7 +5685,7 @@ export default function App() {
 
   const handleMarkerPress = (business) => {
     const isSame = selectedId === business.id;
-    const isSheetOpen = translateYRef.current < COLLAPSED_Y - 10;
+    const isSheetOpen = sheetIndexRef.current > 0;
     if (isSame || isSheetOpen) {
       openSheetForBusiness(business);
     } else {
@@ -7426,6 +7509,7 @@ export default function App() {
   );
 
   const handleCreateOffer = async () => {
+    setOfferNotice(null);
     if (!ownerBusiness) {
       setOfferError("Create your business profile first.");
       return;
@@ -7437,6 +7521,14 @@ export default function App() {
     const normalizedType = normalizeOfferType(offerForm.type);
     if (!normalizedType) {
       setOfferError("Offer type is required.");
+      return;
+    }
+    if (!offerForm.description.trim()) {
+      setOfferError("Description is required.");
+      return;
+    }
+    if (!offerImage?.uri) {
+      setOfferError("Offer photo is required.");
       return;
     }
     const redemptionLimitMode = String(
@@ -7551,6 +7643,10 @@ export default function App() {
       loadOwnerOffers(ownerBusiness.id);
       loadRemoteOffers({ silent: true });
     }
+    setOfferNotice({
+      type: "success",
+      text: "Offer submitted for review. It will appear as pending until approved. Reviews typically take 12-24 hours.",
+    });
     setOfferBusy(false);
   };
 
@@ -7595,6 +7691,7 @@ export default function App() {
                 title: value,
               }));
               if (offerError) setOfferError(null);
+              if (offerNotice) setOfferNotice(null);
             }}
             maxLength={64}
             returnKeyType="next"
@@ -7613,6 +7710,7 @@ export default function App() {
                 type: value,
               }));
               if (offerError) setOfferError(null);
+              if (offerNotice) setOfferNotice(null);
             }}
             autoCorrect
             autoCapitalize="words"
@@ -7642,6 +7740,7 @@ export default function App() {
             description: value,
           }));
           if (offerError) setOfferError(null);
+          if (offerNotice) setOfferNotice(null);
         }}
         multiline
         textAlignVertical="top"
@@ -7660,10 +7759,38 @@ export default function App() {
           { key: "custom", label: "Custom" },
         ].map((option) => {
           const active = offerForm.redemptionLimitMode === option.key;
+          const optionStyles =
+            option.key === "unlimited"
+              ? {
+                  pill: styles.limitOptionUnlimited,
+                  pillActive: styles.limitOptionUnlimitedActive,
+                  text: styles.limitOptionTextUnlimited,
+                }
+              : option.key === "day"
+                ? {
+                    pill: styles.limitOptionDay,
+                    pillActive: styles.limitOptionDayActive,
+                    text: styles.limitOptionTextDay,
+                  }
+                : option.key === "week"
+                  ? {
+                      pill: styles.limitOptionWeek,
+                      pillActive: styles.limitOptionWeekActive,
+                      text: styles.limitOptionTextWeek,
+                    }
+                  : {
+                      pill: styles.limitOptionCustom,
+                      pillActive: styles.limitOptionCustomActive,
+                      text: styles.limitOptionTextCustom,
+                    };
           return (
             <TouchableOpacity
               key={option.key}
-              style={[styles.limitOption, active && styles.limitOptionActive]}
+              style={[
+                styles.limitOption,
+                optionStyles.pill,
+                active && optionStyles.pillActive,
+              ]}
               onPress={() => {
                 setOfferForm((prev) => ({
                   ...prev,
@@ -7680,12 +7807,14 @@ export default function App() {
                       : "1",
                 }));
                 if (offerError) setOfferError(null);
+                if (offerNotice) setOfferNotice(null);
               }}
               activeOpacity={0.85}
             >
               <Text
                 style={[
                   styles.limitOptionText,
+                  optionStyles.text,
                   active && styles.limitOptionTextActive,
                 ]}
               >
@@ -7710,6 +7839,7 @@ export default function App() {
                   redemptionLimitCount: value.replace(/[^\d]/g, ""),
                 }));
                 if (offerError) setOfferError(null);
+                if (offerNotice) setOfferNotice(null);
               }}
               keyboardType="number-pad"
               maxLength={3}
@@ -7756,7 +7886,10 @@ export default function App() {
         {offerImage && (
           <TouchableOpacity
             style={styles.offerRemoveButton}
-            onPress={() => setOfferImage(null)}
+            onPress={() => {
+              setOfferImage(null);
+              if (offerNotice) setOfferNotice(null);
+            }}
           >
             <Text style={styles.offerRemoveButtonText}>Remove</Text>
           </TouchableOpacity>
@@ -7767,7 +7900,10 @@ export default function App() {
       )}
       <TouchableOpacity
         style={[styles.offerUploadFrame, styles.offerUploadFrameInteractive]}
-        onPress={handlePickOfferImage}
+        onPress={() => {
+          if (offerNotice) setOfferNotice(null);
+          handlePickOfferImage();
+        }}
         disabled={offerImageStatus.uploading}
         activeOpacity={0.85}
       >
@@ -7801,6 +7937,11 @@ export default function App() {
         )}
       </TouchableOpacity>
 
+      {offerNotice && (
+        <View style={[styles.alertBox, styles.alertSuccess]}>
+          <Text style={styles.alertText}>{offerNotice.text}</Text>
+        </View>
+      )}
       {offerError && <Text style={styles.formError}>{offerError}</Text>}
 
       <View style={styles.formActions}>
@@ -8720,57 +8861,6 @@ export default function App() {
       success: "Supervisor access removed.",
     });
   };
-
-  const onSheetGestureEvent = useMemo(
-    () =>
-      Animated.event([{ nativeEvent: { translationY: translateY } }], {
-        useNativeDriver: true,
-      }),
-    [translateY],
-  );
-
-  const onSheetHandlerStateChange = useCallback(
-    (event) => {
-      const { state, oldState, translationY, velocityY } =
-        event.nativeEvent || {};
-
-      if (state === GestureState.BEGAN) {
-        // Capture the current spring position so the drag starts from the
-        // real visual value (avoids jitter if the user grabs mid-animation).
-        translateY.stopAnimation((value) => {
-          const base = Number(value) || 0;
-          translateY.setOffset(base);
-          translateY.setValue(0);
-          translateYRef.current = base;
-        });
-        return;
-      }
-
-      if (oldState !== GestureState.ACTIVE) return;
-
-      const vy = Number(velocityY) || 0;
-      translateY.flattenOffset();
-
-      translateY.stopAnimation((rawValue) => {
-        const next = Math.min(Math.max(0, Number(rawValue) || 0), COLLAPSED_Y);
-
-        // velocityY is px/s. Negative is upward.
-        const shouldExpand = vy < -800 || next < COLLAPSED_Y * 0.5;
-        const target = shouldExpand ? 0 : COLLAPSED_Y;
-
-        translateY.setValue(next);
-        Animated.spring(translateY, {
-          toValue: target,
-          useNativeDriver: true,
-          tension: 90,
-          friction: 12,
-        }).start(() => {
-          translateYRef.current = target;
-        });
-      });
-    },
-    [translateY],
-  );
 
   if ((!fontsLoaded && !fontError) || !sessionReady) {
     return <View style={styles.loadingScreen} />;
@@ -10356,26 +10446,23 @@ export default function App() {
               </View>
             </Modal>
 
-            <Animated.View
-              style={[
-                styles.sheet,
-                { transform: [{ translateY: sheetTranslateY }] },
-              ]}
+            <BottomSheet
+              ref={bottomSheetRef}
+              snapPoints={sheetSnapPoints}
+              onChange={handleSheetChange}
+              handleComponent={renderSheetHandle}
+              enablePanDownToClose={false}
+              enableOverDrag={false}
+              enableDynamicSizing={false}
+              enableHandlePanningGesture
+              enableContentPanningGesture={false}
+              backgroundStyle={styles.sheetBackground}
+              keyboardBehavior="extend"
+              keyboardBlurBehavior="restore"
             >
-              <PanGestureHandler
-                onGestureEvent={onSheetGestureEvent}
-                onHandlerStateChange={onSheetHandlerStateChange}
-                activeOffsetY={[-6, 6]}
-              >
-                <Animated.View style={styles.sheetHandle}>
-                  <View style={styles.handleBar} />
-                  <Text style={styles.sheetHint}>
-                    Swipe up to explore offers
-                  </Text>
-                </Animated.View>
-              </PanGestureHandler>
+              <View style={styles.sheetBody}>
               {activeTab === "discover" ? (
-                <ScrollView
+                <BottomSheetScrollView
                   style={styles.sheetScroll}
                   showsVerticalScrollIndicator={false}
                   contentContainerStyle={styles.sheetScrollContent}
@@ -10490,14 +10577,14 @@ export default function App() {
                       onScrollToIndexFailed={handleScrollToIndexFailed}
                     />
                   )}
-                </ScrollView>
+                </BottomSheetScrollView>
               ) : (
                 <KeyboardAvoidingView
                   behavior={Platform.OS === "ios" ? "padding" : "height"}
                   keyboardVerticalOffset={SAFE_TOP + 20}
                   style={styles.sheetScroll}
                 >
-                  <ScrollView
+                  <BottomSheetScrollView
                     ref={sheetScrollRef}
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={[
@@ -11737,38 +11824,7 @@ export default function App() {
                           </View>
                         )}
 
-                        {ownerBusiness && (
-                          <>
-                            <View style={styles.sectionBlock}>
-                              <Text style={styles.sectionTitleAlt}>Offers</Text>
-                              <Text style={styles.sectionBody}>
-                                Create and manage multiple offers for your
-                                business. New offers may require approval.
-                              </Text>
-                              <TouchableOpacity
-                                style={styles.secondaryButton}
-                                onPress={() => setOwnerOffersModalOpen(true)}
-                              >
-                                <Text style={styles.secondaryButtonText}>
-                                  View current offers
-                                </Text>
-                              </TouchableOpacity>
-                            </View>
-
-                            {renderCreateOfferCard()}
-
-                            {ownerOffers.length === 0 && (
-                              <View style={styles.emptyState}>
-                                <Text style={styles.emptyTitle}>
-                                  No offers yet.
-                                </Text>
-                                <Text style={styles.emptyCopy}>
-                                  Create your first offer to show on Discover.
-                                </Text>
-                              </View>
-                            )}
-                          </>
-                        )}
+                        {/* Offer management lives in the Business Dashboard tab. */}
                       </>
                     ) : activeTab === "history" ? (
                       <>
@@ -13973,10 +14029,11 @@ export default function App() {
                         </View>
                       </View>
                     </Modal>
-                  </ScrollView>
+                  </BottomSheetScrollView>
                 </KeyboardAvoidingView>
               )}
-            </Animated.View>
+              </View>
+            </BottomSheet>
           </View>
         </SafeAreaView>
       </SafeAreaProvider>
@@ -14928,6 +14985,38 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
     backgroundColor: "#F4F6FA",
   },
+  limitOptionUnlimited: {
+    borderColor: "rgba(92, 107, 122, 0.22)",
+    backgroundColor: "rgba(92, 107, 122, 0.08)",
+  },
+  limitOptionUnlimitedActive: {
+    borderColor: "rgba(92, 107, 122, 0.92)",
+    backgroundColor: "rgba(92, 107, 122, 0.92)",
+  },
+  limitOptionDay: {
+    borderColor: "rgba(16, 185, 129, 0.26)",
+    backgroundColor: "rgba(16, 185, 129, 0.10)",
+  },
+  limitOptionDayActive: {
+    borderColor: "#047857",
+    backgroundColor: "#047857",
+  },
+  limitOptionWeek: {
+    borderColor: "rgba(245, 158, 11, 0.28)",
+    backgroundColor: "rgba(245, 158, 11, 0.12)",
+  },
+  limitOptionWeekActive: {
+    borderColor: "#B45309",
+    backgroundColor: "#B45309",
+  },
+  limitOptionCustom: {
+    borderColor: "rgba(31, 78, 140, 0.22)",
+    backgroundColor: "rgba(31, 78, 140, 0.10)",
+  },
+  limitOptionCustomActive: {
+    borderColor: COLORS.coral,
+    backgroundColor: COLORS.coral,
+  },
   limitOptionActive: {
     borderColor: COLORS.pine,
     backgroundColor: COLORS.pine,
@@ -14936,6 +15025,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
+  },
+  limitOptionTextUnlimited: {
+    color: COLORS.muted,
+  },
+  limitOptionTextDay: {
+    color: "#047857",
+  },
+  limitOptionTextWeek: {
+    color: "#B45309",
+  },
+  limitOptionTextCustom: {
+    color: COLORS.coral,
   },
   limitOptionTextActive: {
     color: COLORS.white,
@@ -15051,6 +15152,21 @@ const styles = StyleSheet.create({
     renderToHardwareTextureAndroid: true,
     shouldRasterizeIOS: true,
   },
+  sheetBackground: {
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.9,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: -8 },
+    elevation: 10,
+  },
+  sheetBody: {
+    flex: 1,
+    paddingHorizontal: IS_COMPACT ? 12 : 16,
+    paddingTop: 10,
+  },
   sheetScroll: {
     flex: 1,
   },
@@ -15059,6 +15175,7 @@ const styles = StyleSheet.create({
   },
   sheetHandle: {
     alignItems: "center",
+    paddingTop: 10,
     paddingBottom: 12,
   },
   handleBar: {
@@ -15413,22 +15530,69 @@ const styles = StyleSheet.create({
     marginTop: 6,
     lineHeight: 20,
   },
-  cardLimitRow: {
+  cardOfferRow: {
     flexDirection: "row",
+    alignItems: "flex-start",
     marginTop: 10,
   },
-  cardLimitBadge: {
+  cardOfferColumn: {
+    flex: 1,
+    paddingRight: 10,
+  },
+  cardLimitBadgeRight: {
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.12)",
-    backgroundColor: "#F4F6FA",
+    borderColor: "rgba(31, 78, 140, 0.18)",
+    backgroundColor: "rgba(31, 78, 140, 0.09)",
+    flexDirection: "row",
+    alignItems: "center",
+    flexShrink: 0,
+  },
+  cardLimitBadgeUnlimited: {
+    borderColor: "rgba(92, 107, 122, 0.22)",
+    backgroundColor: "rgba(92, 107, 122, 0.10)",
+  },
+  cardLimitBadgeOnceDay: {
+    borderColor: "rgba(16, 185, 129, 0.28)",
+    backgroundColor: "rgba(16, 185, 129, 0.12)",
+  },
+  cardLimitBadgeMaxDay: {
+    borderColor: "rgba(31, 78, 140, 0.22)",
+    backgroundColor: "rgba(31, 78, 140, 0.10)",
+  },
+  cardLimitBadgeOnceWeek: {
+    borderColor: "rgba(245, 158, 11, 0.30)",
+    backgroundColor: "rgba(245, 158, 11, 0.14)",
+  },
+  cardLimitBadgeMaxWeek: {
+    borderColor: "rgba(244, 63, 94, 0.30)",
+    backgroundColor: "rgba(244, 63, 94, 0.13)",
+  },
+  cardLimitIcon: {
+    marginRight: 6,
+    marginTop: 1,
   },
   cardLimitBadgeText: {
     fontSize: 11,
-    color: COLORS.ink,
+    color: COLORS.coral,
     fontFamily: FONT_MEDIUM,
+  },
+  cardLimitTextUnlimited: {
+    color: COLORS.muted,
+  },
+  cardLimitTextOnceDay: {
+    color: "#047857",
+  },
+  cardLimitTextMaxDay: {
+    color: COLORS.coral,
+  },
+  cardLimitTextOnceWeek: {
+    color: "#B45309",
+  },
+  cardLimitTextMaxWeek: {
+    color: "#BE123C",
   },
   cardMetaRow: {
     flexDirection: "row",
@@ -15443,7 +15607,10 @@ const styles = StyleSheet.create({
   },
   cardMedia: {
     position: "relative",
-    height: CARD_MEDIA_FULL_HEIGHT,
+    // Keep cards visually consistent across platforms (Android font scaling can
+    // make the content section taller). Using the "content width" media height
+    // prevents the card from feeling oversized and getting clipped in the sheet.
+    height: CARD_MEDIA_HEIGHT,
     alignSelf: "stretch",
     backgroundColor: "#EFF3F8",
     alignItems: "center",
