@@ -96,7 +96,9 @@ const SCANNER_FRAME = Math.min(
 );
 const SCANNER_CARD_WIDTH = Math.max(280, SCREEN_WIDTH - 40);
 const SCANNER_CARD_HEIGHT = SCANNER_FRAME + (IS_COMPACT ? 160 : 180);
-const REDEEM_RADIUS_METERS = 150;
+// How close the customer must be to redeem. Keep this strict, but not so strict
+// that normal GPS drift blocks legitimate in-store redemptions.
+const REDEEM_RADIUS_METERS = 40;
 const REDEEM_BLOCKED_MESSAGE = "You need to be in store to redeem.";
 const COMMISSION_RATE_PERCENT = 10;
 const CASHBACK_RATE_PERCENT = 5;
@@ -1785,7 +1787,15 @@ function getPendingEditLabel(field) {
   }
 }
 
-function OfferCard({ item, onPress, onRedeem, selected }) {
+function formatCashbackRateLabel(percentValue) {
+  const value = Number(percentValue);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const rounded = Math.round(value * 10) / 10;
+  const label = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  return `${label}% cashback`;
+}
+
+function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
   const category = getCategoryConfig(item.categoryKey);
   const ratingLabel =
     item.rating && Number.isFinite(item.rating) ? item.rating.toFixed(1) : null;
@@ -1849,6 +1859,9 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
   const tags = Array.isArray(item.tags) ? item.tags : [];
   const visibleTags = tags.slice(0, 2);
   const extraTagCount = tags.length - visibleTags.length;
+  const cashbackLabel = useMemo(() => {
+    return formatCashbackRateLabel(cashbackRatePercent);
+  }, [cashbackRatePercent]);
   return (
     <View style={styles.cardShell}>
       <TouchableOpacity
@@ -1861,11 +1874,19 @@ function OfferCard({ item, onPress, onRedeem, selected }) {
             <Text style={styles.cardName} numberOfLines={1}>
               {item.name}
             </Text>
-            {isOpen && (
-              <View style={[styles.cardBadge, styles.cardBadgeOpen]}>
-                <Text style={styles.cardBadgeText}>Open</Text>
-              </View>
-            )}
+            <View style={styles.cardHeaderBadges}>
+              {cashbackLabel ? (
+                <View style={styles.cardCashbackBadge}>
+                  <Ionicons
+                    name="cash-outline"
+                    size={13}
+                    color="#065F46"
+                    style={styles.cardCashbackIcon}
+                  />
+                  <Text style={styles.cardCashbackText}>{cashbackLabel}</Text>
+                </View>
+              ) : null}
+            </View>
           </View>
           <Text style={styles.cardCategory}>{category.display}</Text>
           {offerTitle ? (
@@ -5445,6 +5466,13 @@ export default function App() {
       openSheet("profile");
       return;
     }
+    if (accountRole && accountRole !== "consumer") {
+      Alert.alert(
+        "User account required",
+        "Switch to a user account to redeem offers.",
+      );
+      return;
+    }
     if (businessDetailOpen) {
       setBusinessDetailOpen(false);
     }
@@ -5578,6 +5606,12 @@ export default function App() {
 
   const redeemOfferInStore = async (business, offerCard) => {
     if (!business?.id || !authUserId) return false;
+    if (accountRole && accountRole !== "consumer") {
+      setScannerStatus("error");
+      setScannerMessage("Switch to a user account to redeem offers.");
+      redemptionLoggedRef.current = false;
+      return false;
+    }
     if (redemptionLoggedRef.current) return true;
     redemptionLoggedRef.current = true;
     setScannerStatus("redeeming");
@@ -10772,6 +10806,7 @@ export default function App() {
                           onPress={() => handleCardPress(item)}
                           onRedeem={() => handleRedeemOffer(item)}
                           selected={selectedId === item.businessId}
+                          cashbackRatePercent={cashbackRatePercent}
                         />
                       )}
                       horizontal
@@ -13312,31 +13347,35 @@ export default function App() {
                               )}
                             </View>
 
-                            <View style={styles.notificationPanel}>
-                              <View style={styles.promoHeader}>
-                                <Text style={styles.sectionTitleAlt}>
-                                  Promo code
-                                </Text>
-                                <View style={styles.promoRatePill}>
-                                  <Text style={styles.promoRateText}>
-                                    {cashbackRatePercent.toFixed(2)}%
-                                  </Text>
+                              <View style={styles.notificationPanel}>
+                                <View style={styles.promoHeader}>
+                                  <View style={styles.promoHeaderLeft}>
+                                    <Text style={styles.sectionTitleAlt}>
+                                      Cashback
+                                    </Text>
+                                    {promoState.code ? (
+                                      <View style={styles.promoActivePill}>
+                                        <Ionicons
+                                          name="sparkles-outline"
+                                          size={12}
+                                          color={COLORS.pine}
+                                        />
+                                        <Text style={styles.promoActivePillText}>
+                                          {promoState.code}
+                                        </Text>
+                                      </View>
+                                    ) : null}
+                                  </View>
+                                  <View style={styles.promoRatePill}>
+                                    <Text style={styles.promoRateText}>
+                                      {formatCashbackRateLabel(cashbackRatePercent) ||
+                                        "Cashback"}
+                                    </Text>
+                                  </View>
                                 </View>
-                              </View>
-                              <Text style={styles.sectionBody}>
-                                Cashback is a percentage of the commission on
-                                verified receipts. Apply a promo code to boost
-                                your cashback rate.
+                              <Text style={styles.promoHint}>
+                                Apply a promo code to increase your cashback rate.
                               </Text>
-                              {promoState.code ? (
-                                <Text style={styles.formHint}>
-                                  Active promo: {promoState.code}
-                                </Text>
-                              ) : (
-                                <Text style={styles.formHint}>
-                                  No promo active.
-                                </Text>
-                              )}
 
                               <View style={styles.promoRow}>
                                 <AutoFocusInput
@@ -13370,7 +13409,7 @@ export default function App() {
                                     disabled={promoState.loading}
                                   >
                                     <Text style={styles.promoClearText}>
-                                      Remove promo
+                                      Remove
                                     </Text>
                                   </TouchableOpacity>
                                 ) : null}
@@ -13381,7 +13420,7 @@ export default function App() {
                                 </Text>
                               ) : null}
                               {promoState.success ? (
-                                <Text style={styles.formSuccess}>
+                                <Text style={styles.promoSuccess}>
                                   {promoState.success}
                                 </Text>
                               ) : null}
@@ -15767,6 +15806,10 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
   },
+  cardHeaderBadges: {
+    alignItems: "flex-end",
+    gap: 6,
+  },
   cardName: {
     fontSize: IS_COMPACT ? 14 : 15,
     color: COLORS.ink,
@@ -15791,6 +15834,25 @@ const styles = StyleSheet.create({
   cardBadgeText: {
     fontSize: 10,
     color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+  },
+  cardCashbackBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#86EFAC",
+    backgroundColor: "#DCFCE7",
+  },
+  cardCashbackIcon: {
+    marginTop: 1,
+  },
+  cardCashbackText: {
+    fontSize: 11,
+    color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
   cardCategory: {
@@ -16490,6 +16552,112 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 8,
     marginBottom: 16,
+  },
+  promoHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 2,
+  },
+  promoHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+  },
+  promoActivePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(15, 118, 110, 0.22)",
+    backgroundColor: "rgba(15, 118, 110, 0.10)",
+    maxWidth: 160,
+  },
+  promoActivePillText: {
+    fontSize: 11,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+  },
+  promoRatePill: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(31, 78, 140, 0.18)",
+    backgroundColor: "rgba(31, 78, 140, 0.08)",
+  },
+  promoRateText: {
+    fontSize: 12,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+  },
+  promoHint: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+    marginBottom: 6,
+  },
+  promoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  promoInput: {
+    flex: 1,
+    backgroundColor: COLORS.mint,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontFamily: FONT_TEXT,
+    fontSize: 13,
+    color: COLORS.ink,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+  },
+  promoApplyButton: {
+    backgroundColor: COLORS.pine,
+    borderRadius: 12,
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 84,
+  },
+  promoApplyText: {
+    fontSize: 12,
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM,
+  },
+  promoActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 8,
+  },
+  promoClearButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+  },
+  promoClearText: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  promoSuccess: {
+    fontSize: 11,
+    color: "#047857",
+    fontFamily: FONT_MEDIUM,
+    marginTop: 8,
   },
   notificationRow: {
     flexDirection: "row",
