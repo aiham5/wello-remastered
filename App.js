@@ -100,6 +100,7 @@ const REDEEM_RADIUS_METERS = 150;
 const REDEEM_BLOCKED_MESSAGE = "You need to be in store to redeem.";
 const COMMISSION_RATE_PERCENT = 10;
 const CASHBACK_RATE_PERCENT = 5;
+const CASHBACK_BASE_RATE_BPS = 500;
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
 const GOOGLE_PLACES_KEY = getEnv("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY");
@@ -2038,6 +2039,14 @@ export default function App() {
   const [profilePhone, setProfilePhone] = useState("");
   const [profileCompany, setProfileCompany] = useState("");
   const [profileMessage, setProfileMessage] = useState(null);
+  const [promoCodeInput, setPromoCodeInput] = useState("");
+  const [promoState, setPromoState] = useState({
+    loading: false,
+    error: null,
+    success: null,
+    code: null,
+    cashbackRateBps: CASHBACK_BASE_RATE_BPS,
+  });
   const [accountRole, setAccountRole] = useState("consumer");
   const [authUserId, setAuthUserId] = useState(null);
   const [authBusinessDraft, setAuthBusinessDraft] = useState(null);
@@ -2475,6 +2484,203 @@ export default function App() {
     return nextRole;
   }, []);
 
+  const cashbackRatePercent = useMemo(() => {
+    const bps = Number(promoState.cashbackRateBps);
+    if (!Number.isFinite(bps) || bps <= 0) return CASHBACK_RATE_PERCENT;
+    return Math.round((bps / 100) * 100) / 100;
+  }, [promoState.cashbackRateBps]);
+
+  const callAuthedEdgeFunction = useCallback(
+    async (functionName, payload, options = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        return { data: null, error: "Supabase is not configured.", status: null };
+      }
+      const refreshResult = refreshSupabaseClient();
+      if (!refreshResult.ok) {
+        return { data: null, error: refreshResult.error, status: null };
+      }
+
+      const timeoutMs = Number(options?.timeoutMs) || 12000;
+      const tokenResult = await getAccessTokenWithFallback(6000);
+      let accessToken = tokenResult.accessToken;
+      if (!accessToken) {
+        const refreshed = await refreshAccessTokenWithRefreshToken(6000, {
+          persist: false,
+        });
+        accessToken = refreshed?.accessToken || "";
+      }
+      if (!accessToken) {
+        return { data: null, error: "Sign in again to continue.", status: null };
+      }
+
+      try {
+        const response = await withTimeout(
+          supabase.functions.invoke(functionName, {
+            body: { ...(payload || {}) },
+            headers: { Authorization: `Bearer ${accessToken}` },
+          }),
+          timeoutMs,
+          "edge_invoke",
+        );
+
+        if (!response?.error) {
+          let parsedData = response?.data ?? null;
+          if (typeof parsedData === "string") {
+            try {
+              parsedData = parsedData ? JSON.parse(parsedData) : null;
+            } catch {
+              parsedData = response?.data ?? null;
+            }
+          }
+          return { data: parsedData, error: null, status: 200 };
+        }
+
+        const err = response.error;
+        const context = err?.context;
+        const status = context?.status ?? null;
+        let rawText = "";
+        if (context?.text) {
+          try {
+            rawText = await context.text();
+          } catch {
+            rawText = "";
+          }
+        }
+        let parsed = null;
+        try {
+          parsed = rawText ? JSON.parse(rawText) : null;
+        } catch {
+          parsed = null;
+        }
+        const message =
+          parsed?.error ||
+          parsed?.message ||
+          err?.message ||
+          (status ? `Request failed (${status}).` : "Request failed.");
+        return { data: null, error: message, status };
+      } catch (error) {
+        return {
+          data: null,
+          error: error?.message || "Request failed.",
+          status: null,
+        };
+      }
+    },
+    [],
+  );
+
+  const loadPromoStatus = useCallback(async () => {
+    if (!isSignedIn) {
+      setPromoState((prev) => ({
+        ...prev,
+        loading: false,
+        error: null,
+        success: null,
+        code: null,
+        cashbackRateBps: CASHBACK_BASE_RATE_BPS,
+      }));
+      return;
+    }
+    setPromoState((prev) => ({ ...prev, loading: true, error: null }));
+    const { data, error } = await callAuthedEdgeFunction("promo-get", {});
+    if (error) {
+      setPromoState((prev) => ({
+        ...prev,
+        loading: false,
+        error,
+        success: null,
+      }));
+      return;
+    }
+    const rateBps = Number(data?.cashbackRateBps) || CASHBACK_BASE_RATE_BPS;
+    const code = data?.promo?.code ? String(data.promo.code) : null;
+    setPromoState((prev) => ({
+      ...prev,
+      loading: false,
+      error: null,
+      success: null,
+      code,
+      cashbackRateBps: rateBps,
+    }));
+  }, [isSignedIn, callAuthedEdgeFunction]);
+
+  const handleApplyPromoCode = useCallback(async () => {
+    if (!isSignedIn) {
+      setPromoState((prev) => ({
+        ...prev,
+        loading: false,
+        error: "Sign in to apply a promo code.",
+        success: null,
+      }));
+      return;
+    }
+    const code = String(promoCodeInput || "").trim();
+    setPromoState((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+      success: null,
+    }));
+    const { data, error } = await callAuthedEdgeFunction("promo-apply", {
+      code,
+    });
+    if (error) {
+      setPromoState((prev) => ({
+        ...prev,
+        loading: false,
+        error,
+        success: null,
+      }));
+      return;
+    }
+    const nextRateBps =
+      Number(data?.promo?.cashbackRateBps) ||
+      Number(data?.cashbackRateBps) ||
+      CASHBACK_BASE_RATE_BPS;
+    const nextCode = data?.promo?.code ? String(data.promo.code) : null;
+    setPromoState((prev) => ({
+      ...prev,
+      loading: false,
+      error: null,
+      success: nextCode
+        ? `Promo applied. Cashback is now ${(nextRateBps / 100).toFixed(2)}% of commission.`
+        : "Promo updated.",
+      code: nextCode,
+      cashbackRateBps: nextRateBps,
+    }));
+    if (!nextCode) {
+      setPromoCodeInput("");
+    }
+  }, [isSignedIn, promoCodeInput, callAuthedEdgeFunction]);
+
+  const handleClearPromoCode = useCallback(async () => {
+    setPromoCodeInput("");
+    setPromoState((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+      success: null,
+    }));
+    const { error } = await callAuthedEdgeFunction("promo-apply", { code: "" });
+    if (error) {
+      setPromoState((prev) => ({
+        ...prev,
+        loading: false,
+        error,
+        success: null,
+      }));
+      return;
+    }
+    setPromoState((prev) => ({
+      ...prev,
+      loading: false,
+      error: null,
+      success: "Promo removed.",
+      code: null,
+      cashbackRateBps: CASHBACK_BASE_RATE_BPS,
+    }));
+  }, [callAuthedEdgeFunction]);
+
   useEffect(() => {
     let isMounted = true;
     Font.loadAsync({
@@ -2544,6 +2750,7 @@ export default function App() {
         if (session?.user) {
           await hydrateProfile(session.user);
           setIsSignedIn(true);
+          loadPromoStatus().catch(() => {});
         } else {
           resetAuthState();
         }
@@ -2564,6 +2771,7 @@ export default function App() {
           if (session?.user) {
             await hydrateProfile(session.user);
             setIsSignedIn(true);
+            loadPromoStatus().catch(() => {});
           } else {
             resetAuthState();
           }
@@ -2574,7 +2782,7 @@ export default function App() {
       clearTimeout(safetyTimer);
       authListener?.data?.subscription?.unsubscribe();
     };
-  }, [hydrateProfile, resetAuthState]);
+  }, [hydrateProfile, resetAuthState, loadPromoStatus]);
 
   useEffect(() => {
     let isMounted = true;
@@ -10725,7 +10933,7 @@ export default function App() {
                               onPress={() =>
                                 openInfoTooltip(
                                   "Payments",
-                                  `Commission is ${COMMISSION_RATE_PERCENT}% of each verified receipt total. ${CASHBACK_RATE_PERCENT}% of that commission is returned to customers as cashback. Your commission is billed monthly. The billing portal is for payment methods and invoices.`,
+                                  `Commission is ${COMMISSION_RATE_PERCENT}% of each verified receipt total. Customer cashback is a percentage of that commission (promo codes can increase it). Your commission is billed monthly. The billing portal is for payment methods and invoices.`,
                                 )
                               }
                               hitSlop={{
@@ -12256,8 +12464,9 @@ export default function App() {
                                 </Text>
                               </View>
                               <Text style={styles.pointsMeta}>
-                                Verified receipts only. {CASHBACK_RATE_PERCENT}%
-                                of commission is paid as cashback.
+                                Verified receipts only. Cashback is currently{" "}
+                                {cashbackRatePercent.toFixed(2)}% of
+                                commission.
                               </Text>
                               <View style={styles.cashoutAmountGroup}>
                                 <View style={styles.cashoutAmountHeader}>
@@ -13101,6 +13310,81 @@ export default function App() {
                                   {tokenError}
                                 </Text>
                               )}
+                            </View>
+
+                            <View style={styles.notificationPanel}>
+                              <View style={styles.promoHeader}>
+                                <Text style={styles.sectionTitleAlt}>
+                                  Promo code
+                                </Text>
+                                <View style={styles.promoRatePill}>
+                                  <Text style={styles.promoRateText}>
+                                    {cashbackRatePercent.toFixed(2)}%
+                                  </Text>
+                                </View>
+                              </View>
+                              <Text style={styles.sectionBody}>
+                                Cashback is a percentage of the commission on
+                                verified receipts. Apply a promo code to boost
+                                your cashback rate.
+                              </Text>
+                              {promoState.code ? (
+                                <Text style={styles.formHint}>
+                                  Active promo: {promoState.code}
+                                </Text>
+                              ) : (
+                                <Text style={styles.formHint}>
+                                  No promo active.
+                                </Text>
+                              )}
+
+                              <View style={styles.promoRow}>
+                                <AutoFocusInput
+                                  style={styles.promoInput}
+                                  placeholder="Enter promo code"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={promoCodeInput}
+                                  onChangeText={setPromoCodeInput}
+                                  autoCapitalize="characters"
+                                  autoCorrect={false}
+                                />
+                                <TouchableOpacity
+                                  style={[
+                                    styles.promoApplyButton,
+                                    promoState.loading &&
+                                      styles.authButtonDisabled,
+                                  ]}
+                                  onPress={handleApplyPromoCode}
+                                  disabled={promoState.loading}
+                                >
+                                  <Text style={styles.promoApplyText}>
+                                    {promoState.loading ? "..." : "Apply"}
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                              <View style={styles.promoActions}>
+                                {promoState.code ? (
+                                  <TouchableOpacity
+                                    style={styles.promoClearButton}
+                                    onPress={handleClearPromoCode}
+                                    disabled={promoState.loading}
+                                  >
+                                    <Text style={styles.promoClearText}>
+                                      Remove promo
+                                    </Text>
+                                  </TouchableOpacity>
+                                ) : null}
+                              </View>
+                              {promoState.error ? (
+                                <Text style={styles.formError}>
+                                  {promoState.error}
+                                </Text>
+                              ) : null}
+                              {promoState.success ? (
+                                <Text style={styles.formSuccess}>
+                                  {promoState.success}
+                                </Text>
+                              ) : null}
                             </View>
 
                             <View style={styles.formCard}>

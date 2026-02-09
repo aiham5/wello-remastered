@@ -80,7 +80,9 @@ const ui = {
   detailOpen: document.getElementById("detail-open"),
   detailTotal: document.getElementById("detail-total"),
   detailCommission: document.getElementById("detail-commission"),
+  detailCashbackLabel: document.getElementById("detail-cashback-label"),
   detailCashback: document.getElementById("detail-cashback"),
+  detailCashbackHelp: document.getElementById("detail-cashback-help"),
   detailStatusSelect: document.getElementById("detail-status-select"),
   detailNotes: document.getElementById("detail-notes"),
   detailSave: document.getElementById("detail-save"),
@@ -102,6 +104,14 @@ const ui = {
   imageModal: document.getElementById("image-modal"),
   imageModalImg: document.getElementById("image-modal-img"),
   imageModalClose: document.getElementById("image-modal-close"),
+  promoCode: document.getElementById("promo-code"),
+  promoRate: document.getElementById("promo-rate"),
+  promoActive: document.getElementById("promo-active"),
+  promoStart: document.getElementById("promo-start"),
+  promoEnd: document.getElementById("promo-end"),
+  promoCreate: document.getElementById("promo-create"),
+  promoStatus: document.getElementById("promo-status"),
+  promoList: document.getElementById("promo-list"),
 };
 
 if (!supabaseUrl || !supabaseAnonKey) {
@@ -338,9 +348,11 @@ const state = {
   receipts: [],
   filtered: [],
   businesses: [],
+  promoCodes: [],
   selected: null,
   defaultRate: 10,
   businessesLoadedAt: 0,
+  promoCodesLoadedAt: 0,
 };
 const imageState = {
   key: null,
@@ -368,7 +380,7 @@ const abortRecovery = {
 };
 const AUTO_REFRESH_MS = 30000;
 const LIVE_DEBOUNCE_MS = 1200;
-const CASHBACK_RATE = 0.05;
+const CASHBACK_BASE_RATE_BPS = 500; // 5% of commission
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -391,6 +403,46 @@ const formatDateTime = (value) => {
     hour: "numeric",
     minute: "2-digit",
   })}`;
+};
+
+const escapeHtml = (value) =>
+  String(value ?? "").replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      case "'":
+        return "&#39;";
+      default:
+        return char;
+    }
+  });
+
+const normalizeMaybeArray = (value) =>
+  Array.isArray(value) ? value : value ? [value] : [];
+
+const getReceiptCashbackEvent = (receipt) => {
+  const events = normalizeMaybeArray(receipt?.cashback_events);
+  if (!events.length) return null;
+  // Usually 0/1 row; if multiple, prefer available/paid over reversed.
+  const ranked = [...events].sort((a, b) => {
+    const rank = (status) =>
+      status === "paid" ? 3 : status === "available" ? 2 : status === "reversed" ? 1 : 0;
+    return rank(b?.status) - rank(a?.status);
+  });
+  return ranked[0] || null;
+};
+
+const calculateCashbackCents = (commissionCents, cashbackRateBps) => {
+  const cents = Number(commissionCents) || 0;
+  const bps = Number(cashbackRateBps) || CASHBACK_BASE_RATE_BPS;
+  if (cents <= 0 || bps <= 0) return 0;
+  return Math.round((cents * bps) / 10000);
 };
 
 const callEdgeFunctionJson = async (functionName, body, { timeoutMs, label } = {}) => {
@@ -535,6 +587,65 @@ const postgrestGetJson = async ({ path, searchParams, label, timeoutMs }) => {
   };
 };
 
+const postgrestWriteJson = async ({
+  path,
+  method,
+  searchParams,
+  body,
+  label,
+  timeoutMs,
+  acceptObject,
+}) => {
+  const session = await ensureSession({ force: false });
+  const token = session?.access_token || state.session?.access_token || "";
+  if (!token) {
+    return { data: null, error: { message: "Missing access token." } };
+  }
+  const url = new URL(`${supabaseUrl.replace(/\/+$/, "")}/rest/v1/${path.replace(/^\/+/, "")}`);
+  if (searchParams) {
+    const sp = searchParams instanceof URLSearchParams ? searchParams : new URLSearchParams(searchParams);
+    for (const [k, v] of sp.entries()) url.searchParams.append(k, v);
+  }
+
+  const { res, text } = await fetchTextWithTimeout(
+    url.toString(),
+    {
+      method: method || "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: acceptObject
+          ? "application/vnd.pgrst.object+json"
+          : "application/json",
+        Prefer: "return=representation",
+        Authorization: `Bearer ${token}`,
+        apikey: supabaseAnonKey,
+      },
+      body: JSON.stringify(body || {}),
+    },
+    timeoutMs || DB_TIMEOUT_MS,
+    label || `${method || "POST"} ${path}`,
+  );
+
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+  if (res.ok) {
+    return { data: parsed, error: null };
+  }
+  return {
+    data: null,
+    error: {
+      message: parsed?.message || parsed?.error || `Request failed (${res.status}).`,
+      code: parsed?.code || null,
+      status: res.status,
+      raw: text,
+    },
+  };
+};
+
 const withTimeout = (promise, ms, label) =>
   new Promise((resolve, reject) => {
     let done = false;
@@ -565,6 +676,12 @@ const shouldReloadBusinesses = () => {
   if (!state.businesses?.length) return true;
   const ageMs = nowMs() - (Number(state.businessesLoadedAt) || 0);
   return ageMs > 10 * 60 * 1000; // 10 minutes
+};
+
+const shouldReloadPromoCodes = () => {
+  if (!state.promoCodes?.length) return true;
+  const ageMs = nowMs() - (Number(state.promoCodesLoadedAt) || 0);
+  return ageMs > 5 * 60 * 1000; // 5 minutes
 };
 
 const sessionState = {
@@ -787,11 +904,6 @@ const parseMoneyToCents = (value) => {
   return Math.round(parsed * 100);
 };
 
-const calculateCashbackCents = (commissionCents) => {
-  if (!Number.isFinite(commissionCents) || commissionCents <= 0) return 0;
-  return Math.round(commissionCents * CASHBACK_RATE);
-};
-
 const updateStatusPill = (el, status) => {
   const normalized = status || "pending";
   el.textContent = normalized;
@@ -830,6 +942,12 @@ const setTestStatus = (message, isError = false) => {
   if (!ui.testStatus) return;
   ui.testStatus.textContent = message || "";
   ui.testStatus.style.color = isError ? "var(--danger)" : "var(--muted)";
+};
+
+const setPromoStatus = (message, isError = false) => {
+  if (!ui.promoStatus) return;
+  ui.promoStatus.textContent = message || "";
+  ui.promoStatus.style.color = isError ? "var(--danger)" : "var(--muted)";
 };
 
 const getBillingPeriodForDate = (dateValue) => {
@@ -978,6 +1096,260 @@ const loadBusinesses = async () => {
   }
 };
 
+const parsePercentToBps = (value) => {
+  const raw = Number(String(value || "").trim());
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  return Math.round(raw * 100);
+};
+
+const toStartOfDayIso = (dateValue) => {
+  const date = String(dateValue || "").trim();
+  if (!date) return null;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+};
+
+const toEndOfDayIso = (dateValue) => {
+  const date = String(dateValue || "").trim();
+  if (!date) return null;
+  const parsed = new Date(`${date}T23:59:59.999Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+};
+
+const loadPromoCodes = async () => {
+  if (!supabaseClient) return;
+  let data = null;
+  let error = null;
+  try {
+    const sp = new URLSearchParams();
+    sp.append("select", "id,code,cashback_rate_bps,active,starts_at,ends_at,created_at,updated_at");
+    sp.append("order", "created_at.desc");
+    sp.append("limit", "60");
+    const result = await postgrestGetJson({
+      path: "promo_codes",
+      label: "loadPromoCodes",
+      timeoutMs: DB_TIMEOUT_MS,
+      searchParams: sp,
+    });
+    data = result?.data ?? null;
+    error = result?.error ?? null;
+  } catch (err) {
+    error = err;
+  }
+
+  if (error?.message && String(error.message).toLowerCase().includes("jwt")) {
+    await ensureSession({ force: true });
+    try {
+      const sp = new URLSearchParams();
+      sp.append("select", "id,code,cashback_rate_bps,active,starts_at,ends_at,created_at,updated_at");
+      sp.append("order", "created_at.desc");
+      sp.append("limit", "60");
+      const retry = await postgrestGetJson({
+        path: "promo_codes",
+        label: "loadPromoCodesRetry",
+        timeoutMs: DB_TIMEOUT_MS,
+        searchParams: sp,
+      });
+      data = retry?.data ?? null;
+      error = retry?.error ?? null;
+    } catch (err) {
+      error = err;
+    }
+  }
+
+  if (error) {
+    const message = error.message || "Unable to load promo codes.";
+    const status = Number(error.status) || null;
+    const lower = String(message).toLowerCase();
+    logDebug("loadPromoCodes error", { message, status });
+    // Don't block the dashboard if promo codes aren't available yet.
+    if (
+      status === 404 ||
+      lower.includes("could not find") ||
+      lower.includes("promo_codes") ||
+      lower.includes("relation") ||
+      lower.includes("schema cache")
+    ) {
+      setPromoStatus(
+        "Promo codes are not set up in the database yet. Run migration 20260209_promo_codes.sql.",
+        true,
+      );
+    } else {
+      setPromoStatus(message, true);
+    }
+    return;
+  }
+
+  state.promoCodes = Array.isArray(data) ? data : [];
+  state.promoCodesLoadedAt = nowMs();
+  setPromoStatus("");
+  renderPromoCodes();
+};
+
+const createPromoCode = async () => {
+  if (!supabaseClient) {
+    setPromoStatus("Supabase is not configured.", true);
+    return;
+  }
+  const rawCode = String(ui.promoCode?.value || "").trim();
+  const code = rawCode.replace(/\s+/g, "").toUpperCase();
+  const bps = parsePercentToBps(ui.promoRate?.value);
+  const active = String(ui.promoActive?.value || "true") === "true";
+  const startsAt = toStartOfDayIso(ui.promoStart?.value);
+  const endsAt = toEndOfDayIso(ui.promoEnd?.value);
+
+  if (!code) {
+    setPromoStatus("Enter a promo code.", true);
+    return;
+  }
+  if (!/^[A-Z0-9_-]{3,32}$/.test(code)) {
+    setPromoStatus("Promo code must be 3-32 characters (A-Z, 0-9, _ or -).", true);
+    return;
+  }
+  if (!bps) {
+    setPromoStatus("Enter a cashback rate greater than 0.", true);
+    return;
+  }
+  if (bps > 5000) {
+    setPromoStatus("Cashback rate cannot exceed 50%.", true);
+    return;
+  }
+  if (startsAt && endsAt && String(startsAt) > String(endsAt)) {
+    setPromoStatus("Start date must be before end date.", true);
+    return;
+  }
+
+  setPromoStatus("Creating promo code...");
+  if (ui.promoCreate) ui.promoCreate.disabled = true;
+  try {
+    const { data, error } = await postgrestWriteJson({
+      path: "promo_codes",
+      method: "POST",
+      label: "createPromoCode",
+      timeoutMs: DB_TIMEOUT_MS,
+      acceptObject: true,
+      body: {
+        code,
+        cashback_rate_bps: bps,
+        active,
+        starts_at: startsAt,
+        ends_at: endsAt,
+      },
+      searchParams: new URLSearchParams({
+        select: "id,code,cashback_rate_bps,active,starts_at,ends_at,created_at,updated_at",
+      }),
+    });
+
+    if (error) {
+      const raw = String(error?.raw || "");
+      const msg = String(error?.message || "Unable to create promo code.");
+      const lower = `${msg} ${raw}`.toLowerCase();
+      if (lower.includes("duplicate") || lower.includes("already")) {
+        setPromoStatus("That promo code already exists.", true);
+      } else if (
+        lower.includes("could not find") ||
+        lower.includes("promo_codes") ||
+        lower.includes("relation") ||
+        lower.includes("schema cache")
+      ) {
+        setPromoStatus(
+          "Promo codes are not set up in the database yet. Run migration 20260209_promo_codes.sql.",
+          true,
+        );
+      } else if (lower.includes("forbidden") || lower.includes("permission")) {
+        setPromoStatus("Forbidden. You need an admin account.", true);
+      } else {
+        setPromoStatus(msg, true);
+      }
+      return;
+    }
+
+    const created = data || null;
+    if (created?.id) {
+      // Optimistic prepend to avoid waiting on a reload.
+      state.promoCodes = [created, ...(Array.isArray(state.promoCodes) ? state.promoCodes : [])];
+      state.promoCodesLoadedAt = nowMs();
+      renderPromoCodes();
+    } else {
+      await loadPromoCodes();
+    }
+
+    setPromoStatus(`Promo code created: ${code} (${(bps / 100).toFixed(2)}%).`);
+    // Keep the code in the input for easy re-copy; clear dates/rate for speed.
+    if (ui.promoRate) ui.promoRate.value = "";
+    if (ui.promoStart) ui.promoStart.value = "";
+    if (ui.promoEnd) ui.promoEnd.value = "";
+  } catch (err) {
+    setPromoStatus(err?.message || "Unable to create promo code.", true);
+  } finally {
+    if (ui.promoCreate) ui.promoCreate.disabled = false;
+  }
+};
+
+const copyToClipboard = async (text) => {
+  const value = String(text || "");
+  if (!value) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    const input = document.createElement("input");
+    input.value = value;
+    input.setAttribute("readonly", "true");
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(input);
+    return ok;
+  } catch {
+    return false;
+  }
+};
+
+const updatePromoActive = async ({ promoId, nextActive }) => {
+  if (!supabaseClient) return;
+  setPromoStatus("Updating promo code...");
+  const { data, error } = await postgrestWriteJson({
+    path: "promo_codes",
+    method: "PATCH",
+    label: "updatePromoActive",
+    timeoutMs: DB_TIMEOUT_MS,
+    acceptObject: true,
+    searchParams: new URLSearchParams({
+      id: `eq.${promoId}`,
+      select: "id,code,cashback_rate_bps,active,starts_at,ends_at,created_at,updated_at",
+    }),
+    body: { active: Boolean(nextActive) },
+  }).catch((err) => ({ data: null, error: { message: err?.message || "unknown" } }));
+
+  if (error) {
+    setPromoStatus(error?.message || "Unable to update promo code.", true);
+    return;
+  }
+
+  const updated = data || null;
+  if (updated?.id) {
+    state.promoCodes = (Array.isArray(state.promoCodes) ? state.promoCodes : []).map((row) =>
+      row.id === updated.id ? updated : row,
+    );
+    state.promoCodesLoadedAt = nowMs();
+    renderPromoCodes();
+    setPromoStatus("");
+  } else {
+    await loadPromoCodes();
+    setPromoStatus("");
+  }
+};
+
 const loadReceipts = async () => {
   if (!supabaseClient) return;
   let data = null;
@@ -987,11 +1359,14 @@ const loadReceipts = async () => {
       "id",
       "storage_path",
       "uploaded_at",
+      "user_id",
+      "business_id",
       "receipt_total_cents",
       "commission_due_cents",
       "review_status",
       "review_notes",
       "reviewed_at",
+      "cashback_events (amount_cents, status, cashback_rate_bps, promo_code:promo_codes (code, cashback_rate_bps))",
       "business:businesses (id, name)",
       "redemption:redemptions (id, created_at, offer:offers (id, title))",
     ].join(",");
@@ -1017,11 +1392,14 @@ const loadReceipts = async () => {
         "id",
         "storage_path",
         "uploaded_at",
+        "user_id",
+        "business_id",
         "receipt_total_cents",
         "commission_due_cents",
         "review_status",
         "review_notes",
         "reviewed_at",
+        "cashback_events (amount_cents, status, cashback_rate_bps, promo_code:promo_codes (code, cashback_rate_bps))",
         "business:businesses (id, name)",
         "redemption:redemptions (id, created_at, offer:offers (id, title))",
       ].join(",");
@@ -1071,6 +1449,9 @@ const refreshAll = async ({ silent } = {}) => {
     // Businesses are relatively static; avoid reloading them on every focus/refresh cycle.
     if (shouldReloadBusinesses()) {
       await loadBusinesses();
+    }
+    if (shouldReloadPromoCodes()) {
+      await loadPromoCodes();
     }
     await loadReceipts();
     if (state.selected?.id) {
@@ -1214,20 +1595,29 @@ const renderReceipts = () => {
   ui.receiptsBody.innerHTML = "";
   ui.receiptsMeta.textContent = `${state.filtered.length} receipts`;
   state.filtered.forEach((receipt) => {
+    const cashbackEvent = getReceiptCashbackEvent(receipt);
+    const cashbackCents = Number(cashbackEvent?.amount_cents) || 0;
+    const promoCode = cashbackEvent?.promo_code?.code
+      ? String(cashbackEvent.promo_code.code)
+      : null;
+    const rateBps = Number(cashbackEvent?.cashback_rate_bps) || 0;
+    const ratePct = rateBps ? (rateBps / 100).toFixed(2) : null;
+    const cashbackTitleParts = [];
+    if (promoCode) cashbackTitleParts.push(`Promo ${promoCode}`);
+    if (ratePct) cashbackTitleParts.push(`${ratePct}% of commission`);
+    const cashbackTitle = cashbackTitleParts.join(" • ");
     const row = document.createElement("tr");
     row.dataset.id = receipt.id;
     if (state.selected?.id === receipt.id) {
       row.classList.add("active");
     }
     row.innerHTML = `
-      <td>${receipt.business?.name || "--"}</td>
-      <td>${receipt.redemption?.offer?.title || "--"}</td>
+      <td>${escapeHtml(receipt.business?.name || "--")}</td>
+      <td>${escapeHtml(receipt.redemption?.offer?.title || "--")}</td>
       <td>${formatDate(receipt.uploaded_at)}</td>
       <td>${formatCurrency(receipt.receipt_total_cents)}</td>
       <td>${formatCurrency(receipt.commission_due_cents)}</td>
-      <td>${formatCurrency(
-        calculateCashbackCents(Number(receipt.commission_due_cents) || 0),
-      )}</td>
+      <td title="${escapeHtml(cashbackTitle)}">${formatCurrency(cashbackCents)}</td>
       <td><span class="status-pill ${receipt.review_status || "pending"}">${receipt.review_status || "pending"}</span></td>
     `;
     row.addEventListener("click", () => selectReceipt(receipt.id));
@@ -1259,11 +1649,45 @@ const selectReceipt = async (receiptId, options = {}) => {
     receipt.commission_due_cents != null
       ? (receipt.commission_due_cents / 100).toFixed(2)
       : "";
-  const cashbackCents = calculateCashbackCents(
-    Number(receipt.commission_due_cents) || 0,
+  const cashbackEvent = getReceiptCashbackEvent(receipt);
+  const eventCashbackCents = Number(cashbackEvent?.amount_cents) || 0;
+  const eventRateBps = Number(cashbackEvent?.cashback_rate_bps) || 0;
+  const promoCode = cashbackEvent?.promo_code?.code
+    ? String(cashbackEvent.promo_code.code)
+    : null;
+  const commissionCents = Number(receipt.commission_due_cents) || 0;
+  const estimatedCashbackCents = calculateCashbackCents(
+    commissionCents,
+    CASHBACK_BASE_RATE_BPS,
   );
+  const shouldEstimate =
+    !eventCashbackCents &&
+    receipt.review_status === "verified" &&
+    commissionCents > 0;
+  const cashbackCents = eventCashbackCents || (shouldEstimate ? estimatedCashbackCents : 0);
+
   ui.detailCashback.value =
-    receipt.commission_due_cents != null ? (cashbackCents / 100).toFixed(2) : "";
+    cashbackCents > 0 ? (cashbackCents / 100).toFixed(2) : "";
+
+  if (ui.detailCashbackHelp) {
+    const rateBps =
+      eventRateBps ||
+      (eventCashbackCents && commissionCents
+        ? Math.round((eventCashbackCents * 10000) / commissionCents)
+        : shouldEstimate
+          ? CASHBACK_BASE_RATE_BPS
+          : 0);
+    const parts = [];
+    if (rateBps > 0) {
+      parts.push(`Rate: ${(rateBps / 100).toFixed(2)}% of commission`);
+    }
+    if (promoCode) {
+      parts.push(`Promo: ${promoCode}`);
+    } else if (shouldEstimate) {
+      parts.push("Estimated (promo may change)");
+    }
+    ui.detailCashbackHelp.textContent = parts.join(" • ");
+  }
   ui.detailNotes.value = receipt.review_notes || "";
   setDetailError("");
   if (!sameReceipt) {
@@ -1423,9 +1847,8 @@ const renderBusinessSummary = () => {
     const totalCents = Number(receipt.receipt_total_cents) || 0;
     current.gross += totalCents;
     current.commission += Number(receipt.commission_due_cents) || 0;
-    current.cashback += calculateCashbackCents(
-      Number(receipt.commission_due_cents) || 0,
-    );
+    const cashbackEvent = getReceiptCashbackEvent(receipt);
+    current.cashback += Number(cashbackEvent?.amount_cents) || 0;
     totals.set(businessName, current);
   });
   ui.businessSummary.innerHTML = "";
@@ -1466,6 +1889,56 @@ const renderActivitySummary = () => {
     ui.activitySummary.innerHTML =
       '<p class="notice">No recent receipts yet.</p>';
   }
+};
+
+const formatPromoWindow = (promo) => {
+  const start = promo?.starts_at ? new Date(promo.starts_at) : null;
+  const end = promo?.ends_at ? new Date(promo.ends_at) : null;
+  if (!start && !end) return "No date limits";
+  if (start && end) return `${start.toISOString().slice(0, 10)} to ${end.toISOString().slice(0, 10)}`;
+  if (start) return `Starts ${start.toISOString().slice(0, 10)}`;
+  return `Ends ${end.toISOString().slice(0, 10)}`;
+};
+
+const renderPromoCodes = () => {
+  if (!ui.promoList) return;
+  ui.promoList.innerHTML = "";
+  const promos = Array.isArray(state.promoCodes) ? state.promoCodes : [];
+  if (!promos.length) {
+    ui.promoList.innerHTML = '<p class="notice">No promo codes yet.</p>';
+    return;
+  }
+
+  promos.forEach((promo) => {
+    const item = document.createElement("div");
+    item.className = "summary-item";
+    const rateBps = Number(promo?.cashback_rate_bps) || CASHBACK_BASE_RATE_BPS;
+    const ratePct = (rateBps / 100).toFixed(2);
+    const active = promo?.active === true;
+    const windowText = formatPromoWindow(promo);
+    const code = String(promo?.code || "").trim() || "(missing code)";
+
+    const toggleText = active ? "Deactivate" : "Activate";
+    const statusText = active ? "Active" : "Inactive";
+
+    item.innerHTML = `
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
+        <div style="display:grid; gap:4px;">
+          <h4 style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <span>${escapeHtml(code)}</span>
+            <span class="pill" style="padding:6px 10px; font-size:12px; ${active ? "" : "opacity:0.7;"}">${statusText}</span>
+            <span class="pill" style="padding:6px 10px; font-size:12px;">${ratePct}%</span>
+          </h4>
+          <p>${escapeHtml(windowText)}</p>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button class="button secondary" data-action="promo-copy" data-id="${promo.id}">Copy</button>
+          <button class="button outline" data-action="promo-toggle" data-id="${promo.id}" data-next="${active ? "false" : "true"}">${toggleText}</button>
+        </div>
+      </div>
+    `;
+    ui.promoList.appendChild(item);
+  });
 };
 
 const getDefaultTestDate = () => {
@@ -1928,7 +2401,7 @@ const exportCsv = () => {
       formatDateTime(receipt.uploaded_at),
       (receipt.receipt_total_cents || 0) / 100,
       (receipt.commission_due_cents || 0) / 100,
-      calculateCashbackCents(Number(receipt.commission_due_cents) || 0) / 100,
+      (Number(getReceiptCashbackEvent(receipt)?.amount_cents) || 0) / 100,
       receipt.review_status || "pending",
     ]),
   ];
@@ -2008,9 +2481,12 @@ const attachListeners = () => {
     const rate = (Number(ui.filterRate.value) || state.defaultRate) / 100;
     const commissionCents = Math.round(totalCents * rate);
     if (ui.detailCommission) ui.detailCommission.value = (commissionCents / 100).toFixed(2);
-    if (ui.detailCashback) ui.detailCashback.value = (calculateCashbackCents(commissionCents) / 100).toFixed(
+    if (ui.detailCashback) ui.detailCashback.value = (calculateCashbackCents(commissionCents, CASHBACK_BASE_RATE_BPS) / 100).toFixed(
       2,
     );
+    if (ui.detailCashbackHelp) {
+      ui.detailCashbackHelp.textContent = `Estimated at ${(CASHBACK_BASE_RATE_BPS / 100).toFixed(2)}% of commission (promo may change)`;
+    }
   });
   if (ui.detailCommission) ui.detailCommission.addEventListener("input", () => {
     const commissionCents = parseMoneyToCents(ui.detailCommission.value);
@@ -2018,9 +2494,12 @@ const attachListeners = () => {
       if (ui.detailCashback) ui.detailCashback.value = "";
       return;
     }
-    if (ui.detailCashback) ui.detailCashback.value = (calculateCashbackCents(commissionCents) / 100).toFixed(
+    if (ui.detailCashback) ui.detailCashback.value = (calculateCashbackCents(commissionCents, CASHBACK_BASE_RATE_BPS) / 100).toFixed(
       2,
     );
+    if (ui.detailCashbackHelp) {
+      ui.detailCashbackHelp.textContent = `Estimated at ${(CASHBACK_BASE_RATE_BPS / 100).toFixed(2)}% of commission (promo may change)`;
+    }
   });
 
   if (ui.detailSave) ui.detailSave.addEventListener("click", () => saveReceipt());
@@ -2033,6 +2512,35 @@ const attachListeners = () => {
   }
   if (ui.testCharge) {
     ui.testCharge.addEventListener("click", chargeNow);
+  }
+
+  if (ui.promoCreate) {
+    ui.promoCreate.addEventListener("click", createPromoCode);
+  }
+  if (ui.promoList) {
+    ui.promoList.addEventListener("click", async (event) => {
+      const button = event?.target?.closest?.("button[data-action]");
+      if (!button) return;
+      const action = button.getAttribute("data-action") || "";
+      const promoId = button.getAttribute("data-id") || "";
+      if (!promoId) return;
+
+      if (action === "promo-copy") {
+        const promo = (Array.isArray(state.promoCodes) ? state.promoCodes : []).find(
+          (row) => row.id === promoId,
+        );
+        const ok = await copyToClipboard(promo?.code || "");
+        setPromoStatus(ok ? "Copied promo code." : "Unable to copy promo code.", !ok);
+        if (ok) setTimeout(() => setPromoStatus(""), 1200);
+        return;
+      }
+
+      if (action === "promo-toggle") {
+        const next = button.getAttribute("data-next");
+        const nextActive = String(next) === "true";
+        await updatePromoActive({ promoId, nextActive });
+      }
+    });
   }
 
   if (ui.detailOpen) ui.detailOpen.addEventListener("click", () => {

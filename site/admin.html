@@ -192,8 +192,9 @@
                     <input id="detail-commission" type="number" step="0.01" />
                   </label>
                   <label class="field">
-                    <span>Customer cashback (5% of commission)</span>
+                    <span id="detail-cashback-label">Customer cashback</span>
                     <input id="detail-cashback" type="number" step="0.01" readonly />
+                    <span class="field-help" id="detail-cashback-help"></span>
                   </label>
                   <label class="field">
                     <span>Status</span>
@@ -225,6 +226,51 @@
             <div class="summary-card">
               <h3>Business totals</h3>
               <div class="summary-list" id="business-summary"></div>
+            </div>
+            <div class="summary-card">
+              <h3>Promo codes</h3>
+              <p class="notice">
+                Create promo codes that boost customer cashback (as a % of the
+                commission). Promo codes apply at verification time.
+              </p>
+              <div class="form-grid">
+                <label class="field">
+                  <span>Code</span>
+                  <input id="promo-code" type="text" placeholder="WELCOME10" />
+                </label>
+                <label class="field">
+                  <span>Cashback rate (% of commission)</span>
+                  <input
+                    id="promo-rate"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    placeholder="10"
+                  />
+                </label>
+                <label class="field">
+                  <span>Status</span>
+                  <select id="promo-active">
+                    <option value="true">Active</option>
+                    <option value="false">Inactive</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Starts (optional)</span>
+                  <input id="promo-start" type="date" />
+                </label>
+                <label class="field">
+                  <span>Ends (optional)</span>
+                  <input id="promo-end" type="date" />
+                </label>
+              </div>
+              <div class="cta-row">
+                <button class="button secondary" id="promo-create">
+                  Create promo code
+                </button>
+              </div>
+              <p class="notice" id="promo-status"></p>
+              <div class="summary-list" id="promo-list"></div>
             </div>
               <div class="summary-card">
                 <h3>Invoice charger</h3>
@@ -303,8 +349,8 @@
       </div>
     </div>
 
-    <script src="/admin-config.js?v=20260208h"></script>
+    <script src="/admin-config.js?v=20260209a"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="/admin.js?v=20260208h" defer></script>
+    <script src="/admin.js?v=20260209a" defer></script>
   </body>
 </html>
