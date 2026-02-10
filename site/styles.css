@@ -477,14 +477,29 @@ h1 {
 /* Column sizing: allow long text (Business/Offer) to wrap; keep numbers/dates tight. */
 .admin .receipt-table th:nth-child(1),
 .admin .receipt-table td:nth-child(1) {
-  width: 18%;
+  width: 16%;
   word-break: break-word;
 }
 
 .admin .receipt-table th:nth-child(2),
 .admin .receipt-table td:nth-child(2) {
-  width: 28%;
+  width: 34%;
   word-break: break-word;
+}
+
+.admin .offer-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.admin .offer-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .admin .receipt-table th:nth-child(3),

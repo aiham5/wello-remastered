@@ -2014,23 +2014,28 @@ const renderReceipts = () => {
     }
     const cashbackTitle = cashbackTitleParts.join(" | ");
     const promoBadge = promoCode
-      ? `<span class="promo-pill">${escapeHtml(promoCode)}${ratePct ? ` ${ratePct}%` : ""}</span>`
+      ? `<span class="promo-pill" title="${escapeHtml(cashbackTitle || "")}">${escapeHtml(promoCode)}${ratePct ? ` ${ratePct}%` : ""}</span>`
       : "";
-    const cashbackCell = `<div class="cashback-cell"><span>${formatCurrency(cashbackCents)}</span>${promoBadge}</div>`;
-    const row = document.createElement("tr");
+    const cashbackCell = `<div class="cashback-cell"><span>${formatCurrency(cashbackCents)}</span></div>`;
+    const row = document.createElement("tr"); 
     row.dataset.id = receipt.id;
     if (state.selected?.id === receipt.id) {
       row.classList.add("active");
     }
-    row.innerHTML = `
-      <td>${escapeHtml(receipt.business?.name || "--")}</td>
-      <td>${escapeHtml(receipt.redemption?.offer?.title || "--")}</td>
-      <td>${formatDate(receipt.uploaded_at)}</td>
-      <td>${formatCurrency(receipt.receipt_total_cents)}</td>
-      <td>${formatCurrency(receipt.commission_due_cents)}</td>
-      <td title="${escapeHtml(cashbackTitle)}">${cashbackCell}</td>
-      <td><span class="status-pill ${receipt.review_status || "pending"}">${receipt.review_status || "pending"}</span></td>
-    `;
+    row.innerHTML = ` 
+      <td>${escapeHtml(receipt.business?.name || "--")}</td> 
+      <td>
+        <div class="offer-cell">
+          <span class="offer-title">${escapeHtml(receipt.redemption?.offer?.title || "--")}</span>
+          ${promoBadge}
+        </div>
+      </td> 
+      <td>${formatDate(receipt.uploaded_at)}</td> 
+      <td>${formatCurrency(receipt.receipt_total_cents)}</td> 
+      <td>${formatCurrency(receipt.commission_due_cents)}</td> 
+      <td title="${escapeHtml(cashbackTitle)}">${cashbackCell}</td> 
+      <td><span class="status-pill ${receipt.review_status || "pending"}">${receipt.review_status || "pending"}</span></td> 
+    `; 
     row.addEventListener("click", () => selectReceipt(receipt.id));
     ui.receiptsBody.appendChild(row);
   });
