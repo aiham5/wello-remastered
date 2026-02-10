@@ -269,6 +269,38 @@ h1 {
   color: var(--muted);
 }
 
+.notice.error {
+  color: var(--danger);
+}
+
+.cashback-cell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.promo-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #16a34a;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(22, 163, 74, 0.18);
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 18px 0;
+}
+
 .admin-container {
   padding-bottom: 96px;
 }

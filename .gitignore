@@ -4,3 +4,11 @@ node_modules/
 .env.*
 !.env.example
 supabase/.temp/
+
+# Firebase / Push credentials
+google-services.json
+android/app/google-services.json
+GoogleService-Info.plist
+**/GoogleService-Info.plist
+firebase-service-account*.json
+**/firebase-service-account*.json

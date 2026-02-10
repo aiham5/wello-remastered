@@ -1,4 +1,4 @@
-package com.aihamh1.wello
+package com.wellopartners.wello
 
 import android.os.Build
 import android.os.Bundle
@@ -59,3 +59,4 @@ class MainActivity : ReactActivity() {
       super.invokeDefaultOnBackPressed()
   }
 }
+

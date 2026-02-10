@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+.env
+.env.*
+!.env.example
+supabase/.temp/
+
+# Allow the Firebase config into EAS build uploads (keep it out of git).
+!android/app/google-services.json
+

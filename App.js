@@ -44,9 +44,11 @@ import { LinearGradient } from "expo-linear-gradient";
 import * as Font from "expo-font";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import Constants from "expo-constants";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as FileSystem from "expo-file-system";
+import * as Clipboard from "expo-clipboard";
 import { toByteArray } from "base64-js";
 import { createClient } from "@supabase/supabase-js";
 import * as Location from "expo-location";
@@ -4784,8 +4786,9 @@ export default function App() {
   }, [createBusinessForm.address]);
 
   useEffect(() => {
+    if (!authUserId) return;
     registerForPushNotificationsAsync();
-  }, [registerForPushNotificationsAsync]);
+  }, [authUserId, registerForPushNotificationsAsync]);
 
   useEffect(() => {
     loadNotificationPreferences();
@@ -4819,25 +4822,52 @@ export default function App() {
     async (token) => {
       if (!authUserId || !token) return;
       if (!ensureSupabaseReady(() => null)) return;
-      await supabase.from("notification_tokens").upsert({
-        user_id: authUserId,
-        expo_push_token: token,
-        platform: Platform.OS,
-        device_info:
-          Device.modelName || Device.deviceName || Device.osName || Platform.OS,
-        last_seen_at: new Date().toISOString(),
-      });
+      const deviceInfo =
+        Device.modelName || Device.deviceName || Device.osName || Platform.OS;
+
+      // Professional behavior: register via Edge Function using service role.
+      // This avoids RLS issues when a device token needs to move between accounts.
+      const { error: fnError } = await supabase.functions.invoke(
+        "push-register-token",
+        {
+          body: {
+            expoPushToken: token,
+            platform: Platform.OS,
+            deviceInfo,
+          },
+        },
+      );
+
+      if (!fnError) return;
+
+      // Fallback (keeps dev builds usable if the function isn't deployed yet).
+      await supabase.from("notification_tokens").upsert(
+        {
+          user_id: authUserId,
+          expo_push_token: token,
+          platform: Platform.OS,
+          device_info: deviceInfo,
+          last_seen_at: new Date().toISOString(),
+        },
+        { onConflict: "expo_push_token" },
+      );
     },
     [authUserId],
   );
 
   const registerForPushNotificationsAsync = useCallback(async () => {
-    if (!authUserId) return;
     if (!Device.isDevice) {
       setNotificationPermissionStatus("unsupported");
       return;
     }
     try {
+      setTokenError(null);
+      if (Platform.OS === "android") {
+        await Notifications.setNotificationChannelAsync("default", {
+          name: "default",
+          importance: Notifications.AndroidImportance.DEFAULT,
+        });
+      }
       const { status: existingStatus } =
         await Notifications.getPermissionsAsync();
       let finalStatus = existingStatus;
@@ -4847,16 +4877,33 @@ export default function App() {
       }
       if (finalStatus !== "granted") {
         setNotificationPermissionStatus("denied");
+        setTokenError(
+          "Notifications are disabled. Enable them in Settings, then tap Refresh token.",
+        );
         return;
       }
       setNotificationPermissionStatus("granted");
-      const tokenData = await Notifications.getExpoPushTokenAsync();
+      const projectId =
+        Constants?.expoConfig?.extra?.eas?.projectId ||
+        Constants?.easConfig?.projectId ||
+        "0359ea52-8164-4fc8-bbc3-7b1ee9d1e5bb";
+      const tokenData = await Notifications.getExpoPushTokenAsync({
+        projectId,
+      });
       const token = tokenData.data;
       setExpoPushToken(token);
       await upsertNotificationToken(token);
     } catch (error) {
       setNotificationPermissionStatus("denied");
-      setTokenError(error?.message || "Unable to register for notifications.");
+      const raw = String(error?.message || "");
+      const isFirebaseInitError =
+        Platform.OS === "android" &&
+        raw.toLowerCase().includes("default firebaseapp is not initialized");
+      setTokenError(
+        isFirebaseInitError
+          ? "Android push isn't configured yet (FCM). Add google-services.json (Firebase) to the app config and rebuild the dev build."
+          : raw || "Unable to register for notifications.",
+      );
     }
   }, [authUserId, upsertNotificationToken]);
 
@@ -13340,6 +13387,78 @@ export default function App() {
                                       ? "Device unsupported"
                                       : "Pending"}
                               </Text>
+                              <View style={styles.pushTokenRow}>
+                                <View style={styles.pushTokenTextWrap}>
+                                  <Text style={styles.pushTokenLabel}>
+                                    Expo push token
+                                  </Text>
+                                  <Text
+                                    style={styles.pushTokenValue}
+                                    numberOfLines={2}
+                                  >
+                                    {expoPushToken || "Not registered yet"}
+                                  </Text>
+                                </View>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.pushTokenCopyButton,
+                                    !expoPushToken &&
+                                      styles.pushTokenCopyButtonDisabled,
+                                  ]}
+                                  onPress={async () => {
+                                    if (!expoPushToken) return;
+                                    try {
+                                      await Clipboard.setStringAsync(
+                                        expoPushToken,
+                                      );
+                                      Alert.alert(
+                                        "Copied",
+                                        "Push token copied to clipboard.",
+                                      );
+                                    } catch (e) {
+                                      Alert.alert(
+                                        "Copy failed",
+                                        "Unable to copy token.",
+                                      );
+                                    }
+                                  }}
+                                  disabled={!expoPushToken}
+                                >
+                                  <Text style={styles.pushTokenCopyText}>
+                                    Copy
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                              <TouchableOpacity
+                                style={styles.pushTokenRefreshButton}
+                                onPress={registerForPushNotificationsAsync}
+                              >
+                                <Ionicons
+                                  name="refresh"
+                                  size={14}
+                                  color={COLORS.ink}
+                                />
+                                <Text style={styles.pushTokenRefreshText}>
+                                  Refresh token
+                                </Text>
+                              </TouchableOpacity>
+                              {notificationPermissionStatus === "denied" ? (
+                                <TouchableOpacity
+                                  style={styles.pushTokenRefreshButton}
+                                  onPress={() => {
+                                    Linking.openSettings().catch(() => {});
+                                  }}
+                                >
+                                  <Ionicons
+                                    name="settings-outline"
+                                    size={14}
+                                    color={COLORS.ink}
+                                  />
+                                  <Text style={styles.pushTokenRefreshText}>
+                                    Open settings
+                                  </Text>
+                                </TouchableOpacity>
+                              ) : null}
                               {tokenError && (
                                 <Text style={styles.formError}>
                                   {tokenError}
@@ -16674,6 +16793,71 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 8,
+  },
+  pushTokenRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    backgroundColor: COLORS.mint,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 6,
+  },
+  pushTokenTextWrap: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  pushTokenLabel: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  pushTokenValue: {
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    lineHeight: 15,
+  },
+  pushTokenCopyButton: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 72,
+  },
+  pushTokenCopyButtonDisabled: {
+    opacity: 0.55,
+  },
+  pushTokenCopyText: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  pushTokenRefreshButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  pushTokenRefreshText: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
   },
   remoteNotice: {
     backgroundColor: COLORS.mint,

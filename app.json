@@ -18,10 +18,10 @@
       "**/*"
     ],
     "ios": {
-      "bundleIdentifier": "com.aihamh1.wello",
+      "bundleIdentifier": "com.wellopartners.wello",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Wello uses your location to show nearby businesses and offers.",
-        "NSCameraUsageDescription": "Wello uses the camera to scan QR codes for offer redemption.",
+        "NSCameraUsageDescription": "Wello uses the camera to take photos of receipts and offers.",
         "NSPhotoLibraryUsageDescription": "Wello needs photo access to upload offer images."
       }
     },
@@ -38,12 +38,13 @@
         "foregroundImage": "./assets/logo/wello-logo.jpeg",
         "backgroundColor": "#F6F2E9"
       },
-      "package": "com.aihamh1.wello"
+      "package": "com.wellopartners.wello"
     },
     "plugins": [
       "expo-font",
       "expo-camera",
-      "expo-image-picker"
+      "expo-image-picker",
+      "expo-notifications"
     ],
     "extra": {
       "eas": {

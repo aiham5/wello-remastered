@@ -112,6 +112,12 @@ const ui = {
   promoCreate: document.getElementById("promo-create"),
   promoStatus: document.getElementById("promo-status"),
   promoList: document.getElementById("promo-list"),
+  promoPushCode: document.getElementById("promo-push-code"),
+  promoPushAudience: document.getElementById("promo-push-audience"),
+  promoPushTitle: document.getElementById("promo-push-title"),
+  promoPushBody: document.getElementById("promo-push-body"),
+  promoPushSend: document.getElementById("promo-push-send"),
+  promoPushStatus: document.getElementById("promo-push-status"),
 };
 
 if (!supabaseUrl || !supabaseAnonKey) {
@@ -349,6 +355,7 @@ const state = {
   filtered: [],
   businesses: [],
   promoCodes: [],
+  userPromosById: {},
   selected: null,
   defaultRate: 10,
   businessesLoadedAt: 0,
@@ -443,6 +450,118 @@ const calculateCashbackCents = (commissionCents, cashbackRateBps) => {
   const bps = Number(cashbackRateBps) || CASHBACK_BASE_RATE_BPS;
   if (cents <= 0 || bps <= 0) return 0;
   return Math.round((cents * bps) / 10000);
+};
+
+const formatRatePct = (bps) => {
+  const n = Number(bps) || 0;
+  if (!n) return "0.00";
+  return (n / 100).toFixed(2);
+};
+
+const isPromoActiveAt = (promo, atIso) => {
+  if (!promo) return false;
+  if (promo.active === false) return false;
+  const at = atIso ? new Date(atIso) : new Date();
+  if (Number.isNaN(at.getTime())) return false;
+  const starts = promo.starts_at ? new Date(promo.starts_at) : null;
+  const ends = promo.ends_at ? new Date(promo.ends_at) : null;
+  if (starts && !Number.isNaN(starts.getTime()) && at < starts) return false;
+  if (ends && !Number.isNaN(ends.getTime()) && at > ends) return false;
+  return true;
+};
+
+const getUserPromoForId = (userId) => {
+  const uid = String(userId || "").trim();
+  if (!uid) return null;
+  return state.userPromosById?.[uid] || null;
+};
+
+const getEffectiveCashbackMetaForReceipt = (receipt) => {
+  const cashbackEvent = getReceiptCashbackEvent(receipt);
+  const eventRateBps = Number(cashbackEvent?.cashback_rate_bps) || 0;
+  const eventPromoCode = cashbackEvent?.promo_code?.code
+    ? String(cashbackEvent.promo_code.code)
+    : null;
+  if (eventRateBps > 0) {
+    return { rateBps: eventRateBps, promoCode: eventPromoCode, source: "event" };
+  }
+
+  const userPromo = getUserPromoForId(receipt?.user_id);
+  if (userPromo && isPromoActiveAt(userPromo, receipt?.uploaded_at || null)) {
+    const rateBps = Number(userPromo.cashback_rate_bps) || CASHBACK_BASE_RATE_BPS;
+    const promoCode = userPromo?.code ? String(userPromo.code) : null;
+    return { rateBps, promoCode, source: "user_promo" };
+  }
+
+  return { rateBps: CASHBACK_BASE_RATE_BPS, promoCode: null, source: "base" };
+};
+
+// For receipts being verified "now", promo eligibility should reflect the current time,
+// not when the receipt was uploaded.
+const getEffectiveCashbackMetaForReceiptAt = (receipt, atIso) => {
+  const cashbackEvent = getReceiptCashbackEvent(receipt);
+  const eventRateBps = Number(cashbackEvent?.cashback_rate_bps) || 0;
+  const eventPromoCode = cashbackEvent?.promo_code?.code
+    ? String(cashbackEvent.promo_code.code)
+    : null;
+  if (eventRateBps > 0) {
+    return { rateBps: eventRateBps, promoCode: eventPromoCode, source: "event" };
+  }
+
+  const userPromo = getUserPromoForId(receipt?.user_id);
+  if (userPromo && isPromoActiveAt(userPromo, atIso)) {
+    const rateBps = Number(userPromo.cashback_rate_bps) || CASHBACK_BASE_RATE_BPS;
+    const promoCode = userPromo?.code ? String(userPromo.code) : null;
+    return { rateBps, promoCode, source: "user_promo" };
+  }
+
+  return { rateBps: CASHBACK_BASE_RATE_BPS, promoCode: null, source: "base" };
+};
+
+const userPromoInFlight = new Map(); // userId -> Promise<void>
+const loadUserPromoForId = async (userId) => {
+  const uid = String(userId || "").trim();
+  if (!uid) return;
+  if (state.userPromosById?.[uid]) return;
+  if (userPromoInFlight.has(uid)) return userPromoInFlight.get(uid);
+  if (!supabaseClient) return;
+
+  const task = (async () => {
+    try {
+      const sp = new URLSearchParams();
+      sp.append("select", "id,promo_code:promo_codes(id,code,cashback_rate_bps,active,starts_at,ends_at)");
+      sp.append("id", `eq.${uid}`);
+      sp.append("limit", "1");
+      const result = await postgrestGetJson({
+        path: "profiles",
+        label: "loadUserPromo",
+        timeoutMs: DB_TIMEOUT_MS,
+        searchParams: sp,
+      });
+      const row = result?.data || null;
+      const promo = row?.promo_code || null;
+      if (!promo?.id) return;
+      state.userPromosById = state.userPromosById || {};
+      state.userPromosById[uid] = {
+        id: String(promo.id),
+        code: String(promo.code || "").trim(),
+        cashback_rate_bps: Number(promo.cashback_rate_bps) || CASHBACK_BASE_RATE_BPS,
+        active: promo.active !== false,
+        starts_at: promo.starts_at || null,
+        ends_at: promo.ends_at || null,
+      };
+    } catch (error) {
+      // Best-effort only; policies may block reading other users' profiles.
+      logDebug("loadUserPromo skipped", { message: error?.message || "unknown" });
+    }
+  })();
+
+  userPromoInFlight.set(uid, task);
+  try {
+    await task;
+  } finally {
+    userPromoInFlight.delete(uid);
+  }
 };
 
 const callEdgeFunctionJson = async (functionName, body, { timeoutMs, label } = {}) => {
@@ -1350,6 +1469,66 @@ const updatePromoActive = async ({ promoId, nextActive }) => {
   }
 };
 
+const setPromoPushStatus = (message, isError = false) => {
+  if (!ui.promoPushStatus) return;
+  ui.promoPushStatus.textContent = message || "";
+  ui.promoPushStatus.classList.toggle("error", Boolean(isError));
+};
+
+const sendPromoPush = async () => {
+  if (!supabaseClient) {
+    setPromoPushStatus("Supabase is not configured.", true);
+    return;
+  }
+  const promoCodeId = String(ui.promoPushCode?.value || "").trim();
+  const audience = String(ui.promoPushAudience?.value || "all").trim();
+  if (!promoCodeId) {
+    setPromoPushStatus("Select a promo code first.", true);
+    return;
+  }
+
+  const promo = (Array.isArray(state.promoCodes) ? state.promoCodes : []).find(
+    (p) => String(p.id) === promoCodeId,
+  );
+  const code = String(promo?.code || "").trim();
+  const rateBps = Number(promo?.cashback_rate_bps) || CASHBACK_BASE_RATE_BPS;
+  const ratePct = (rateBps / 100).toFixed(2);
+
+  const titleRaw = String(ui.promoPushTitle?.value || "").trim();
+  const bodyRaw = String(ui.promoPushBody?.value || "").trim();
+  const title = titleRaw || (code ? `Promo: ${code}` : "Limited-time promo");
+  const body =
+    bodyRaw ||
+    (code
+      ? `Use code ${code} to earn ${ratePct}% cashback on verified receipts.`
+      : `Open Wello to apply the promo code.`);
+
+  setPromoPushStatus("Sending notification...");
+  if (ui.promoPushSend) ui.promoPushSend.disabled = true;
+  try {
+    const result = await callEdgeFunctionJson(
+      "admin-send-promo-push",
+      { promoCodeId, audience, title, body },
+      { timeoutMs: EDGE_TIMEOUT_MS, label: "sendPromoPush" },
+    );
+    if (result?.error) {
+      setPromoPushStatus(result.error || "Unable to send notification.", true);
+      logDebug("promo push failed", { status: result.status, raw: result.raw || "" });
+      return;
+    }
+    const sent = Number(result?.data?.sent) || 0;
+    const errors = Number(result?.data?.errors) || 0;
+    setPromoPushStatus(
+      `Sent to ${sent} device${sent === 1 ? "" : "s"}${errors ? ` (${errors} error${errors === 1 ? "" : "s"})` : ""}.`,
+    );
+    setTimeout(() => setPromoPushStatus(""), 2500);
+  } catch (err) {
+    setPromoPushStatus(err?.message || "Unable to send notification.", true);
+  } finally {
+    if (ui.promoPushSend) ui.promoPushSend.disabled = false;
+  }
+};
+
 const loadReceipts = async () => {
   if (!supabaseClient) return;
   let data = null;
@@ -1606,6 +1785,10 @@ const renderReceipts = () => {
     if (promoCode) cashbackTitleParts.push(`Promo ${promoCode}`);
     if (ratePct) cashbackTitleParts.push(`${ratePct}% of commission`);
     const cashbackTitle = cashbackTitleParts.join(" • ");
+    const promoBadge = promoCode
+      ? `<span class="promo-pill">${escapeHtml(promoCode)}${ratePct ? ` ${ratePct}%` : ""}</span>`
+      : "";
+    const cashbackCell = `<div class="cashback-cell"><span>${formatCurrency(cashbackCents)}</span>${promoBadge}</div>`;
     const row = document.createElement("tr");
     row.dataset.id = receipt.id;
     if (state.selected?.id === receipt.id) {
@@ -1617,7 +1800,7 @@ const renderReceipts = () => {
       <td>${formatDate(receipt.uploaded_at)}</td>
       <td>${formatCurrency(receipt.receipt_total_cents)}</td>
       <td>${formatCurrency(receipt.commission_due_cents)}</td>
-      <td title="${escapeHtml(cashbackTitle)}">${formatCurrency(cashbackCents)}</td>
+      <td title="${escapeHtml(cashbackTitle)}">${cashbackCell}</td>
       <td><span class="status-pill ${receipt.review_status || "pending"}">${receipt.review_status || "pending"}</span></td>
     `;
     row.addEventListener("click", () => selectReceipt(receipt.id));
@@ -1656,9 +1839,13 @@ const selectReceipt = async (receiptId, options = {}) => {
     ? String(cashbackEvent.promo_code.code)
     : null;
   const commissionCents = Number(receipt.commission_due_cents) || 0;
+  const metaNow = getEffectiveCashbackMetaForReceiptAt(
+    receipt,
+    new Date().toISOString(),
+  );
   const estimatedCashbackCents = calculateCashbackCents(
     commissionCents,
-    CASHBACK_BASE_RATE_BPS,
+    metaNow.rateBps,
   );
   const shouldEstimate =
     !eventCashbackCents &&
@@ -1669,23 +1856,28 @@ const selectReceipt = async (receiptId, options = {}) => {
   ui.detailCashback.value =
     cashbackCents > 0 ? (cashbackCents / 100).toFixed(2) : "";
 
+  if (ui.detailCashbackLabel) {
+    const pct = formatRatePct(metaNow.rateBps);
+    ui.detailCashbackLabel.textContent = metaNow.promoCode
+      ? `Customer cashback (${pct}% • ${metaNow.promoCode})`
+      : `Customer cashback (${pct}% of commission)`;
+  }
+
   if (ui.detailCashbackHelp) {
     const rateBps =
       eventRateBps ||
       (eventCashbackCents && commissionCents
         ? Math.round((eventCashbackCents * 10000) / commissionCents)
         : shouldEstimate
-          ? CASHBACK_BASE_RATE_BPS
+          ? metaNow.rateBps
           : 0);
     const parts = [];
     if (rateBps > 0) {
       parts.push(`Rate: ${(rateBps / 100).toFixed(2)}% of commission`);
     }
-    if (promoCode) {
-      parts.push(`Promo: ${promoCode}`);
-    } else if (shouldEstimate) {
-      parts.push("Estimated (promo may change)");
-    }
+    const effectivePromo = promoCode || (shouldEstimate ? metaNow.promoCode : null);
+    if (effectivePromo) parts.push(`Promo: ${effectivePromo}`);
+    if (shouldEstimate && !eventCashbackCents) parts.push("Estimated");
     ui.detailCashbackHelp.textContent = parts.join(" • ");
   }
   ui.detailNotes.value = receipt.review_notes || "";
@@ -1904,6 +2096,21 @@ const renderPromoCodes = () => {
   if (!ui.promoList) return;
   ui.promoList.innerHTML = "";
   const promos = Array.isArray(state.promoCodes) ? state.promoCodes : [];
+  if (ui.promoPushCode) {
+    const selected = String(ui.promoPushCode.value || "");
+    ui.promoPushCode.innerHTML = '<option value="">Select a promo code</option>';
+    promos.forEach((promo) => {
+      const code = String(promo?.code || "").trim();
+      if (!code) return;
+      const rateBps = Number(promo?.cashback_rate_bps) || CASHBACK_BASE_RATE_BPS;
+      const ratePct = (rateBps / 100).toFixed(2);
+      const option = document.createElement("option");
+      option.value = String(promo.id);
+      option.textContent = `${code} (${ratePct}%)`;
+      ui.promoPushCode.appendChild(option);
+    });
+    if (selected) ui.promoPushCode.value = selected;
+  }
   if (!promos.length) {
     ui.promoList.innerHTML = '<p class="notice">No promo codes yet.</p>';
     return;
@@ -2480,12 +2687,26 @@ const attachListeners = () => {
     }
     const rate = (Number(ui.filterRate.value) || state.defaultRate) / 100;
     const commissionCents = Math.round(totalCents * rate);
+    const selected = state.selected;
+    const metaNow = selected
+      ? getEffectiveCashbackMetaForReceiptAt(selected, new Date().toISOString())
+      : { rateBps: CASHBACK_BASE_RATE_BPS, promoCode: null, source: "base" };
     if (ui.detailCommission) ui.detailCommission.value = (commissionCents / 100).toFixed(2);
-    if (ui.detailCashback) ui.detailCashback.value = (calculateCashbackCents(commissionCents, CASHBACK_BASE_RATE_BPS) / 100).toFixed(
-      2,
-    );
+    if (ui.detailCashback) {
+      const cashbackCents = calculateCashbackCents(commissionCents, metaNow.rateBps);
+      ui.detailCashback.value = (cashbackCents / 100).toFixed(2);
+    }
     if (ui.detailCashbackHelp) {
-      ui.detailCashbackHelp.textContent = `Estimated at ${(CASHBACK_BASE_RATE_BPS / 100).toFixed(2)}% of commission (promo may change)`;
+      const pct = formatRatePct(metaNow.rateBps);
+      ui.detailCashbackHelp.textContent = metaNow.promoCode
+        ? `Estimated at ${pct}% of commission | Promo: ${metaNow.promoCode}`
+        : `Estimated at ${pct}% of commission`;
+    }
+    if (ui.detailCashbackLabel) {
+      const pct = formatRatePct(metaNow.rateBps);
+      ui.detailCashbackLabel.textContent = metaNow.promoCode
+        ? `Customer cashback (${pct}% | ${metaNow.promoCode})`
+        : `Customer cashback (${pct}% of commission)`;
     }
   });
   if (ui.detailCommission) ui.detailCommission.addEventListener("input", () => {
@@ -2494,11 +2715,25 @@ const attachListeners = () => {
       if (ui.detailCashback) ui.detailCashback.value = "";
       return;
     }
-    if (ui.detailCashback) ui.detailCashback.value = (calculateCashbackCents(commissionCents, CASHBACK_BASE_RATE_BPS) / 100).toFixed(
-      2,
-    );
+    const selected = state.selected;
+    const metaNow = selected
+      ? getEffectiveCashbackMetaForReceiptAt(selected, new Date().toISOString())
+      : { rateBps: CASHBACK_BASE_RATE_BPS, promoCode: null, source: "base" };
+    if (ui.detailCashback) {
+      const cashbackCents = calculateCashbackCents(commissionCents, metaNow.rateBps);
+      ui.detailCashback.value = (cashbackCents / 100).toFixed(2);
+    }
     if (ui.detailCashbackHelp) {
-      ui.detailCashbackHelp.textContent = `Estimated at ${(CASHBACK_BASE_RATE_BPS / 100).toFixed(2)}% of commission (promo may change)`;
+      const pct = formatRatePct(metaNow.rateBps);
+      ui.detailCashbackHelp.textContent = metaNow.promoCode
+        ? `Estimated at ${pct}% of commission | Promo: ${metaNow.promoCode}`
+        : `Estimated at ${pct}% of commission`;
+    }
+    if (ui.detailCashbackLabel) {
+      const pct = formatRatePct(metaNow.rateBps);
+      ui.detailCashbackLabel.textContent = metaNow.promoCode
+        ? `Customer cashback (${pct}% | ${metaNow.promoCode})`
+        : `Customer cashback (${pct}% of commission)`;
     }
   });
 
@@ -2516,6 +2751,9 @@ const attachListeners = () => {
 
   if (ui.promoCreate) {
     ui.promoCreate.addEventListener("click", createPromoCode);
+  }
+  if (ui.promoPushSend) {
+    ui.promoPushSend.addEventListener("click", sendPromoPush);
   }
   if (ui.promoList) {
     ui.promoList.addEventListener("click", async (event) => {

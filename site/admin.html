@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260210a" />
   </head>
   <body class="admin">
     <div class="page">
@@ -271,6 +271,52 @@
               </div>
               <p class="notice" id="promo-status"></p>
               <div class="summary-list" id="promo-list"></div>
+
+              <hr class="divider" />
+              <h4>Send promo notification</h4>
+              <p class="notice">
+                Send a push notification to customers about a promo code. This
+                works for installed apps (no app update needed).
+              </p>
+              <div class="form-grid">
+                <label class="field">
+                  <span>Promo code</span>
+                  <select id="promo-push-code">
+                    <option value="">Select a promo code</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Audience</span>
+                  <select id="promo-push-audience">
+                    <option value="all">All customers</option>
+                    <option value="new_offer_opt_in">
+                      Customers with "New offers" enabled
+                    </option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Title (optional)</span>
+                  <input
+                    id="promo-push-title"
+                    type="text"
+                    placeholder="Limited-time promo"
+                  />
+                </label>
+                <label class="field">
+                  <span>Message (optional)</span>
+                  <input
+                    id="promo-push-body"
+                    type="text"
+                    placeholder="Open Wello to apply the code."
+                  />
+                </label>
+              </div>
+              <div class="cta-row">
+                <button class="button outline" id="promo-push-send">
+                  Send notification
+                </button>
+              </div>
+              <p class="notice" id="promo-push-status"></p>
             </div>
               <div class="summary-card">
                 <h3>Invoice charger</h3>
@@ -351,6 +397,6 @@
 
     <script src="/admin-config.js?v=20260209a"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="/admin.js?v=20260209a" defer></script>
+    <script src="/admin.js?v=20260210a" defer></script>
   </body>
 </html>
