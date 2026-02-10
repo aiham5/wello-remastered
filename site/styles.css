@@ -56,12 +56,17 @@ body {
   left: -200px;
 }
 
-.container {
-  position: relative;
-  z-index: 1;
-  width: min(1100px, 92%);
-  margin: 0 auto;
-  padding: 56px 0 72px;
+.container { 
+  position: relative; 
+  z-index: 1; 
+  width: min(1100px, 92%); 
+  margin: 0 auto; 
+  padding: 56px 0 72px; 
+} 
+
+/* Admin pages need more horizontal real estate for wide tables. */
+.admin .container.admin-container {
+  width: min(1480px, 95%);
 }
 
 .nav {
@@ -401,10 +406,15 @@ h1 {
   resize: vertical;
 }
 
-.receipts-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-  gap: 20px;
+.receipts-layout { 
+  display: grid; 
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); 
+  gap: 20px; 
+} 
+
+/* Give the receipts table more space vs. the detail panel on desktop. */
+.admin .receipts-layout {
+  grid-template-columns: minmax(0, 2.6fr) minmax(360px, 1fr);
 }
 
 .table-card,
@@ -431,21 +441,63 @@ h1 {
   flex-wrap: wrap;
 }
 
-.table-scroll {
-  overflow-x: auto;
+.table-scroll { 
+  overflow-x: auto; 
+} 
+
+/* Prefer wrapping over horizontal scroll on desktop admin. */
+.admin .table-scroll {
+  overflow-x: visible;
 }
 
-.receipt-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
+.receipt-table { 
+  width: 100%; 
+  border-collapse: collapse; 
+  font-size: 14px; 
+} 
+
+/* Keep the receipts table readable without needing horizontal scroll. */
+.admin .receipt-table {
+  table-layout: fixed;
 }
 
-.receipt-table th,
-.receipt-table td {
-  padding: 12px 10px;
-  text-align: left;
-  border-bottom: 1px solid var(--line);
+.receipt-table th, 
+.receipt-table td { 
+  padding: 12px 10px; 
+  text-align: left; 
+  border-bottom: 1px solid var(--line); 
+} 
+
+.admin .receipt-table th,
+.admin .receipt-table td {
+  vertical-align: top;
+  padding: 10px 10px;
+}
+
+/* Column sizing: allow long text (Business/Offer) to wrap; keep numbers/dates tight. */
+.admin .receipt-table th:nth-child(1),
+.admin .receipt-table td:nth-child(1) {
+  width: 18%;
+  word-break: break-word;
+}
+
+.admin .receipt-table th:nth-child(2),
+.admin .receipt-table td:nth-child(2) {
+  width: 28%;
+  word-break: break-word;
+}
+
+.admin .receipt-table th:nth-child(3),
+.admin .receipt-table td:nth-child(3),
+.admin .receipt-table th:nth-child(4),
+.admin .receipt-table td:nth-child(4),
+.admin .receipt-table th:nth-child(5),
+.admin .receipt-table td:nth-child(5),
+.admin .receipt-table th:nth-child(6),
+.admin .receipt-table td:nth-child(6),
+.admin .receipt-table th:nth-child(7),
+.admin .receipt-table td:nth-child(7) {
+  white-space: nowrap;
 }
 
 .receipt-table tbody tr {
@@ -675,6 +727,15 @@ body.modal-open {
 @media (max-width: 980px) {
   .receipts-layout {
     grid-template-columns: 1fr;
+  }
+
+  /* On small screens, horizontal scroll is still better than a mangled table. */
+  .admin .table-scroll {
+    overflow-x: auto;
+  }
+
+  .admin .receipt-table {
+    table-layout: auto;
   }
 }
 
