@@ -360,6 +360,8 @@ const state = {
   promoCodes: [],
   userPromosById: {},
   selected: null,
+  detailDraft: null,
+  detailDirty: false,
   defaultRate: 10,
   businessesLoadedAt: 0,
   promoCodesLoadedAt: 0,
@@ -388,6 +390,32 @@ const abortRecovery = {
   inFlight: false,
   lastAt: 0,
 };
+
+const clearDetailDraft = () => {
+  state.detailDirty = false;
+  state.detailDraft = null;
+};
+
+const setDetailDraftFromUI = () => {
+  if (!state.selected?.id) return;
+  state.detailDirty = true;
+  state.detailDraft = {
+    receiptId: state.selected.id,
+    total: ui.detailTotal?.value ?? "",
+    notes: ui.detailNotes?.value ?? "",
+    status: ui.detailStatusSelect?.value ?? "pending",
+    updatedAt: nowMs(),
+  };
+};
+
+const getActiveDetailDraft = (receiptId) => {
+  const id = String(receiptId || "").trim();
+  if (!id) return null;
+  if (!state.detailDirty) return null;
+  if (!state.detailDraft?.receiptId) return null;
+  return state.detailDraft.receiptId === id ? state.detailDraft : null;
+};
+
 const AUTO_REFRESH_MS = 30000;
 const LIVE_DEBOUNCE_MS = 1200;
 const CASHBACK_BASE_RATE_BPS = 500; // 5% of commission
@@ -493,8 +521,26 @@ const getUserPromoForId = (userId) => {
   return state.userPromosById?.[uid] || null;
 };
 
+const rebuildPromoCodeIndex = () => {
+  const list = Array.isArray(state.promoCodes) ? state.promoCodes : [];
+  const byId = {};
+  for (const promo of list) {
+    const id = promo?.id ? String(promo.id) : "";
+    if (id) byId[id] = promo;
+  }
+  state.promoCodesById = byId;
+};
+
+const getPromoById = (promoId) => {
+  const pid = String(promoId || "").trim();
+  if (!pid) return null;
+  return state.promoCodesById?.[pid] || null;
+};
+
 const getAppliedPromoForReceipt = (receipt) => {
-  const promo = receipt?.applied_promo || null;
+  // Prefer the latest promo record loaded into the admin UI (consistent across renders).
+  // Fall back to the embedded join if the promo isn't in the local index (e.g. older promo not in the last 60).
+  const promo = getPromoById(receipt?.promo_code_id) || receipt?.applied_promo || null;
   if (!promo?.id) return null;
   return {
     id: String(promo.id),
@@ -509,9 +555,12 @@ const getAppliedPromoForReceipt = (receipt) => {
 const getEffectiveCashbackMetaForReceipt = (receipt) => {
   const cashbackEvent = getReceiptCashbackEvent(receipt);
   const eventRateBps = Number(cashbackEvent?.cashback_rate_bps) || 0;
-  const eventPromoCode = cashbackEvent?.promo_code?.code
-    ? String(cashbackEvent.promo_code.code)
-    : null;
+  const eventPromoCode =
+    cashbackEvent?.promo_code?.code
+      ? String(cashbackEvent.promo_code.code)
+      : cashbackEvent?.promo_code_id
+        ? String(getPromoById(cashbackEvent.promo_code_id)?.code || "") || null
+        : null;
   if (eventRateBps > 0) {
     return { rateBps: eventRateBps, promoCode: eventPromoCode, source: "event" };
   }
@@ -531,9 +580,12 @@ const getEffectiveCashbackMetaForReceipt = (receipt) => {
 const getEffectiveCashbackMetaForReceiptAt = (receipt, atIso) => {
   const cashbackEvent = getReceiptCashbackEvent(receipt);
   const eventRateBps = Number(cashbackEvent?.cashback_rate_bps) || 0;
-  const eventPromoCode = cashbackEvent?.promo_code?.code
-    ? String(cashbackEvent.promo_code.code)
-    : null;
+  const eventPromoCode =
+    cashbackEvent?.promo_code?.code
+      ? String(cashbackEvent.promo_code.code)
+      : cashbackEvent?.promo_code_id
+        ? String(getPromoById(cashbackEvent.promo_code_id)?.code || "") || null
+        : null;
   if (eventRateBps > 0) {
     return { rateBps: eventRateBps, promoCode: eventPromoCode, source: "event" };
   }
@@ -562,9 +614,12 @@ const getEffectivePromoMetaForReceipt = (receipt) => {
   // Fallback: if an event exists, it is authoritative for already-verified receipts.
   const cashbackEvent = getReceiptCashbackEvent(receipt);
   const eventRateBps = Number(cashbackEvent?.cashback_rate_bps) || 0;
-  const eventPromoCode = cashbackEvent?.promo_code?.code
-    ? String(cashbackEvent.promo_code.code)
-    : null;
+  const eventPromoCode =
+    cashbackEvent?.promo_code?.code
+      ? String(cashbackEvent.promo_code.code)
+      : cashbackEvent?.promo_code_id
+        ? String(getPromoById(cashbackEvent.promo_code_id)?.code || "") || null
+        : null;
   if (eventPromoCode && eventRateBps > 0) {
     return {
       promoId: cashbackEvent?.promo_code_id ? String(cashbackEvent.promo_code_id) : null,
@@ -1361,6 +1416,7 @@ const loadPromoCodes = async () => {
 
   state.promoCodes = Array.isArray(data) ? data : [];
   state.promoCodesLoadedAt = nowMs();
+  rebuildPromoCodeIndex();
   setPromoStatus("");
   renderPromoCodes();
 };
@@ -1448,6 +1504,7 @@ const createPromoCode = async () => {
       // Optimistic prepend to avoid waiting on a reload.
       state.promoCodes = [created, ...(Array.isArray(state.promoCodes) ? state.promoCodes : [])];
       state.promoCodesLoadedAt = nowMs();
+      rebuildPromoCodeIndex();
       renderPromoCodes();
     } else {
       await loadPromoCodes();
@@ -1519,6 +1576,7 @@ const updatePromoActive = async ({ promoId, nextActive }) => {
       row.id === updated.id ? updated : row,
     );
     state.promoCodesLoadedAt = nowMs();
+    rebuildPromoCodeIndex();
     renderPromoCodes();
     setPromoStatus("");
   } else {
@@ -1587,34 +1645,63 @@ const sendPromoPush = async () => {
   }
 };
 
+const isMissingRelationshipInSchemaCache = ({ message, parent, child }) => {
+  const msg = String(message || "").toLowerCase();
+  if (!msg) return false;
+  if (!msg.includes("schema cache")) return false;
+  if (!msg.includes("could not find a relationship")) return false;
+  if (parent && !msg.includes(String(parent).toLowerCase())) return false;
+  if (child && !msg.includes(String(child).toLowerCase())) return false;
+  return true;
+};
+
+const RECEIPTS_SELECT_RICH = [
+  "id",
+  "storage_path",
+  "uploaded_at",
+  "user_id",
+  "business_id",
+  "promo_code_id",
+  "receipt_total_cents",
+  "commission_due_cents",
+  "review_status",
+  "review_notes",
+  "reviewed_at",
+  "applied_promo:promo_codes (id, code, cashback_rate_bps, active, starts_at, ends_at)",
+  "cashback_events (amount_cents, status, cashback_rate_bps, cashback_basis, platform_subsidy_cents, promo_code_id, promo_code:promo_codes (id, code, cashback_rate_bps))",
+  "business:businesses (id, name)",
+  "redemption:redemptions (id, created_at, offer:offers (id, title))",
+].join(",");
+
+const RECEIPTS_SELECT_FALLBACK = [
+  "id",
+  "storage_path",
+  "uploaded_at",
+  "user_id",
+  "business_id",
+  "promo_code_id",
+  "receipt_total_cents",
+  "commission_due_cents",
+  "review_status",
+  "review_notes",
+  "reviewed_at",
+  // No applied_promo join here (FK may not exist yet).
+  "cashback_events (amount_cents, status, cashback_rate_bps, cashback_basis, platform_subsidy_cents, promo_code_id)",
+  "business:businesses (id, name)",
+  "redemption:redemptions (id, created_at, offer:offers (id, title))",
+].join(",");
+
 const loadReceipts = async () => {
   if (!supabaseClient) return;
   let data = null;
   let error = null;
   try {
-    const select = [
-      "id",
-      "storage_path",
-      "uploaded_at",
-      "user_id",
-      "business_id",
-      "promo_code_id",
-      "receipt_total_cents",
-      "commission_due_cents",
-      "review_status",
-      "review_notes",
-      "reviewed_at",
-      "applied_promo:promo_codes (id, code, cashback_rate_bps, active, starts_at, ends_at)",
-      "cashback_events (amount_cents, status, cashback_rate_bps, cashback_basis, platform_subsidy_cents, promo_code_id, promo_code:promo_codes (id, code, cashback_rate_bps))",
-      "business:businesses (id, name)",
-      "redemption:redemptions (id, created_at, offer:offers (id, title))",
-    ].join(",");
     const result = await postgrestGetJson({
       path: "receipt_uploads",
       label: "loadReceipts",
       timeoutMs: DB_TIMEOUT_MS,
       searchParams: new URLSearchParams({
-        select,
+        select: RECEIPTS_SELECT_RICH,
         order: "uploaded_at.desc",
         limit: "400",
       }),
@@ -1624,38 +1711,79 @@ const loadReceipts = async () => {
   } catch (err) {
     error = err;
   }
+
+  if (
+    error?.message &&
+    isMissingRelationshipInSchemaCache({
+      message: error.message,
+      parent: "receipt_uploads",
+      child: "promo_codes",
+    })
+  ) {
+    logDebug("loadReceipts fallback (missing receipt_uploads->promo_codes FK)", {
+      message: error.message,
+    });
+    try {
+      const fallback = await postgrestGetJson({
+        path: "receipt_uploads",
+        label: "loadReceiptsFallback",
+        timeoutMs: DB_TIMEOUT_MS,
+        searchParams: new URLSearchParams({
+          select: RECEIPTS_SELECT_FALLBACK,
+          order: "uploaded_at.desc",
+          limit: "400",
+        }),
+      });
+      data = fallback?.data ?? null;
+      error = fallback?.error ?? null;
+    } catch (err) {
+      error = err;
+    }
+  }
   if (error?.message && error.message.toLowerCase().includes("jwt")) {
     await ensureSession({ force: true });
     try {
-      const select = [
-        "id",
-        "storage_path",
-        "uploaded_at",
-        "user_id",
-        "business_id",
-        "promo_code_id",
-        "receipt_total_cents",
-        "commission_due_cents",
-        "review_status",
-        "review_notes",
-        "reviewed_at",
-        "applied_promo:promo_codes (id, code, cashback_rate_bps, active, starts_at, ends_at)",
-        "cashback_events (amount_cents, status, cashback_rate_bps, cashback_basis, platform_subsidy_cents, promo_code_id, promo_code:promo_codes (id, code, cashback_rate_bps))",
-        "business:businesses (id, name)",
-        "redemption:redemptions (id, created_at, offer:offers (id, title))",
-      ].join(",");
       const retry = await postgrestGetJson({
         path: "receipt_uploads",
         label: "loadReceiptsRetry",
         timeoutMs: DB_TIMEOUT_MS,
         searchParams: new URLSearchParams({
-          select,
+          select: RECEIPTS_SELECT_RICH,
           order: "uploaded_at.desc",
           limit: "400",
         }),
       });
       data = retry?.data ?? null;
       error = retry?.error ?? null;
+    } catch (err) {
+      error = err;
+    }
+  }
+
+  if (
+    error?.message &&
+    isMissingRelationshipInSchemaCache({
+      message: error.message,
+      parent: "receipt_uploads",
+      child: "promo_codes",
+    })
+  ) {
+    logDebug("loadReceipts retry fallback (missing receipt_uploads->promo_codes FK)", {
+      message: error.message,
+    });
+    try {
+      const fallback = await postgrestGetJson({
+        path: "receipt_uploads",
+        label: "loadReceiptsRetryFallback",
+        timeoutMs: DB_TIMEOUT_MS,
+        searchParams: new URLSearchParams({
+          select: RECEIPTS_SELECT_FALLBACK,
+          order: "uploaded_at.desc",
+          limit: "400",
+        }),
+      });
+      data = fallback?.data ?? null;
+      error = fallback?.error ?? null;
     } catch (err) {
       error = err;
     }
@@ -1696,7 +1824,23 @@ const refreshAll = async ({ silent } = {}) => {
     }
     await loadReceipts();
     if (state.selected?.id) {
-      selectReceipt(state.selected.id, { forceImage: false, skipImage: true });
+      const preserveDraft =
+        Boolean(state.detailDirty) &&
+        state.detailDraft?.receiptId === state.selected.id;
+      if (!preserveDraft) {
+        // Preserve any in-progress draft values (even if not marked "dirty" yet) so
+        // auto-refresh / tab-focus doesn't wipe what the admin is typing.
+        selectReceipt(state.selected.id, {
+          preserveDraft: true,
+          forceImage: false,
+          skipImage: true,
+        });
+      } else {
+        // Do not clobber in-progress edits on auto-refresh/tab focus.
+        logDebug("refreshAll skipped selectReceipt (draft dirty)", {
+          receiptId: state.selected.id,
+        });
+      }
     }
     logDebug("refreshAll done");
     refreshState.lastAt = nowMs();
@@ -1847,20 +1991,28 @@ const renderReceipts = () => {
     const promoMeta = getEffectivePromoMetaForReceipt(receipt);
     const promoCode = promoMeta?.promoCode ? String(promoMeta.promoCode) : null;
     const promoRateBps = Number(promoMeta?.rateBps) || 0;
-    const isPromo = promoRateBps > 0 && totalCents > 0;
+    const hasPromo = Boolean(promoCode) && promoRateBps > 0;
+    const canComputePromoCashback = hasPromo && totalCents > 0;
 
-    const estimatedCashbackCents = isPromo
+    const estimatedCashbackCents = canComputePromoCashback
       ? calculatePromoDiscountCents(totalCents, promoRateBps)
       : calculateCashbackCents(commissionCents, CASHBACK_BASE_RATE_BPS);
 
     const cashbackCents = eventCashbackCents || estimatedCashbackCents || 0;
-    const ratePct = (isPromo ? promoRateBps : CASHBACK_BASE_RATE_BPS)
-      ? ((isPromo ? promoRateBps : CASHBACK_BASE_RATE_BPS) / 100).toFixed(2)
-      : null;
+    const displayRateBps = hasPromo ? promoRateBps : CASHBACK_BASE_RATE_BPS;
+    const ratePct = displayRateBps ? (displayRateBps / 100).toFixed(2) : null;
     const cashbackTitleParts = [];
     if (promoCode) cashbackTitleParts.push(`Promo ${promoCode}`);
-    if (ratePct) cashbackTitleParts.push(isPromo ? `${ratePct}% of receipt total` : `${ratePct}% of commission`);
-    const cashbackTitle = cashbackTitleParts.join(" • ");
+    if (ratePct) {
+      if (hasPromo) {
+        cashbackTitleParts.push(
+          `${ratePct}% of receipt total${totalCents > 0 ? "" : " (enter total to calculate)"}`,
+        );
+      } else {
+        cashbackTitleParts.push(`${ratePct}% of commission`);
+      }
+    }
+    const cashbackTitle = cashbackTitleParts.join(" | ");
     const promoBadge = promoCode
       ? `<span class="promo-pill">${escapeHtml(promoCode)}${ratePct ? ` ${ratePct}%` : ""}</span>`
       : "";
@@ -1891,6 +2043,11 @@ const selectReceipt = async (receiptId, options = {}) => {
   const sameReceipt = state.selected?.id === receiptId;
   const hasImage = Boolean(ui.detailImage.getAttribute("src"));
   closeImageModal();
+  if (!sameReceipt) {
+    clearDetailDraft();
+  }
+  const draft =
+    sameReceipt && options.preserveDraft ? getActiveDetailDraft(receiptId) : null;
   state.selected = receipt;
   ui.detailEmpty.classList.add("is-hidden");
   ui.detailContent.classList.remove("is-hidden");
@@ -1898,11 +2055,17 @@ const selectReceipt = async (receiptId, options = {}) => {
   ui.detailSubtitle.textContent = `Uploaded ${formatDateTime(
     receipt.uploaded_at,
   )}`;
-  updateStatusPill(ui.detailStatus, receipt.review_status || "pending");
-  ui.detailStatusSelect.value = receipt.review_status || "pending";
-  const totalCents = Number(receipt?.receipt_total_cents) || 0;
-  ui.detailTotal.value =
-    receipt.receipt_total_cents != null
+  const statusValue = draft?.status || receipt.review_status || "pending";
+  updateStatusPill(ui.detailStatus, statusValue);
+  ui.detailStatusSelect.value = statusValue;
+
+  const storedTotalCents = Number(receipt?.receipt_total_cents) || 0;
+  const draftTotalCents = draft ? parseMoneyToCents(draft.total) : null;
+  const totalCents =
+    draft && draftTotalCents != null ? draftTotalCents : storedTotalCents;
+  ui.detailTotal.value = draft
+    ? String(draft.total ?? "")
+    : receipt.receipt_total_cents != null
       ? (receipt.receipt_total_cents / 100).toFixed(2)
       : "";
 
@@ -2011,9 +2174,9 @@ const selectReceipt = async (receiptId, options = {}) => {
         )}, expected ${formatCurrency(computedCommissionCents)})`,
       );
     }
-    ui.detailCashbackHelp.textContent = parts.join(" • ");
+    ui.detailCashbackHelp.textContent = parts.join(" | ");
   }
-  ui.detailNotes.value = receipt.review_notes || "";
+  ui.detailNotes.value = draft ? String(draft.notes ?? "") : receipt.review_notes || "";
   setDetailError("");
   if (!sameReceipt) {
     ui.detailImage.removeAttribute("src");
@@ -2609,7 +2772,7 @@ const saveReceipt = async (options = {}) => {
     reviewed_by: userId,
   };
 
-  const select = [
+  const selectRich = [
     "id",
     "storage_path",
     "uploaded_at",
@@ -2625,13 +2788,28 @@ const saveReceipt = async (options = {}) => {
     "cashback_events:cashback_events (id, amount_cents, cashback_rate_bps, cashback_basis, platform_subsidy_cents, promo_code_id, status, promo_code:promo_codes (id, code, cashback_rate_bps))",
   ].join(",");
 
+  const selectFallback = [
+    "id",
+    "storage_path",
+    "uploaded_at",
+    "receipt_total_cents",
+    "commission_due_cents",
+    "promo_code_id",
+    "review_status",
+    "review_notes",
+    "reviewed_at",
+    "business:businesses (id, name)",
+    "redemption:redemptions (id, created_at, offer:offers (id, title))",
+    "cashback_events:cashback_events (id, amount_cents, cashback_rate_bps, cashback_basis, platform_subsidy_cents, promo_code_id, status)",
+  ].join(",");
+
   try {
     console.log("Saving receipt review", { receiptId: receipt.id, updates });
 
     let result = await postgrestUpdateReceipt({
       receiptId: receipt.id,
       updates,
-      select,
+      select: selectRich,
     });
 
     // Retry once on JWT-ish errors by forcing a session refresh.
@@ -2641,7 +2819,7 @@ const saveReceipt = async (options = {}) => {
       result = await postgrestUpdateReceipt({
         receiptId: receipt.id,
         updates,
-        select,
+        select: selectRich,
       });
     }
 
@@ -2649,11 +2827,29 @@ const saveReceipt = async (options = {}) => {
     let error = result?.error || null;
 
     const message = String(error?.message || "").toLowerCase();
+    const isReceiptPromoJoinMissing = isMissingRelationshipInSchemaCache({
+      message: error?.message || "",
+      parent: "receipt_uploads",
+      child: "promo_codes",
+    });
     const isSchemaCacheError =
       message.includes("schema cache") ||
       String(error?.code || "").toLowerCase().includes("pgrst") ||
       message.includes("could not find the") ||
       (message.includes("column") && message.includes("receipt_uploads"));
+
+    if (error && isReceiptPromoJoinMissing) {
+      logDebug("saveReceipt fallback select (missing receipt_uploads->promo_codes FK)", {
+        message: error.message,
+      });
+      const second = await postgrestUpdateReceipt({
+        receiptId: receipt.id,
+        updates,
+        select: selectFallback,
+      });
+      data = second?.data || null;
+      error = second?.error || null;
+    }
 
     if (error && isSchemaCacheError) {
       const retryUpdates = { ...updates };
@@ -2668,7 +2864,7 @@ const saveReceipt = async (options = {}) => {
       const second = await postgrestUpdateReceipt({
         receiptId: receipt.id,
         updates: retryUpdates,
-        select,
+        select: isReceiptPromoJoinMissing ? selectFallback : selectRich,
       });
       data = second?.data || null;
       error = second?.error || null;
@@ -2691,6 +2887,7 @@ const saveReceipt = async (options = {}) => {
       item.id === receipt.id ? data : item,
     );
     state.selected = data;
+    clearDetailDraft();
     applyFilters();
     selectReceipt(data.id);
     setDetailError("Saved.");
@@ -2818,6 +3015,7 @@ const attachListeners = () => {
   }
 
   if (ui.detailTotal) ui.detailTotal.addEventListener("input", () => {
+    setDetailDraftFromUI();
     const totalCents = parseMoneyToCents(ui.detailTotal.value);
     const selected = state.selected;
     const promoMeta = selected
@@ -2849,7 +3047,9 @@ const attachListeners = () => {
     }
 
     const commissionCents = calculateCommissionCents(totalCents);
-    const isPromo = Boolean(promoCode) && promoRateBps > 0 && totalCents > 0;
+    // Promo eligibility is independent of whether a total has been entered.
+    // The total only affects whether we can compute the promo cashback amount.
+    const isPromo = Boolean(promoCode) && promoRateBps > 0;
     if (ui.detailCommission) ui.detailCommission.value = (commissionCents / 100).toFixed(2);
     if (ui.detailCashback) {
       const cashbackCents = isPromo
@@ -2882,7 +3082,7 @@ const attachListeners = () => {
       parts.push(`Merchant commission: 10% (${formatCurrency(commissionCents)})`);
       if (subsidyCents > 0) parts.push(`Platform subsidy: ${formatCurrency(subsidyCents)}`);
       parts.push("Estimated");
-      ui.detailCashbackHelp.textContent = parts.join(" • ");
+      ui.detailCashbackHelp.textContent = parts.join(" | ");
     }
     if (ui.detailCashbackLabel) {
       if (isPromo) {
@@ -2895,6 +3095,15 @@ const attachListeners = () => {
         )}% of commission)`;
       }
     }
+  });
+
+  if (ui.detailNotes) ui.detailNotes.addEventListener("input", () => {
+    setDetailDraftFromUI();
+  });
+
+  if (ui.detailStatusSelect) ui.detailStatusSelect.addEventListener("change", () => {
+    setDetailDraftFromUI();
+    updateStatusPill(ui.detailStatus, ui.detailStatusSelect.value);
   });
 
   if (ui.detailSave) ui.detailSave.addEventListener("click", () => saveReceipt());
