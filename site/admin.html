@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css?v=20260210a" />
+    <link rel="stylesheet" href="/styles.css?v=20260210b" />
   </head>
   <body class="admin">
     <div class="page">
@@ -125,8 +125,8 @@
                 <input id="filter-end" type="date" />
               </label>
               <label class="field">
-                <span>Default commission rate (%)</span>
-                <input id="filter-rate" type="number" min="0" step="0.25" />
+                <span>Commission rate (fixed)</span>
+                <input id="filter-rate" type="number" min="0" step="0.25" value="10" disabled />
               </label>
             </div>
           </div>
@@ -184,17 +184,30 @@
                 </div>
                 <div class="detail-form">
                   <label class="field">
+                    <span>Applied promo</span>
+                    <input id="detail-promo" type="text" readonly />
+                    <span class="field-help" id="detail-promo-help"></span>
+                  </label>
+                  <label class="field">
                     <span>Receipt total ($)</span>
                     <input id="detail-total" type="number" step="0.01" />
                   </label>
                   <label class="field">
                     <span>Commission due ($)</span>
-                    <input id="detail-commission" type="number" step="0.01" />
+                    <input id="detail-commission" type="number" step="0.01" readonly />
+                    <span class="field-help">Fixed platform commission: 10% (merchant is never charged more).</span>
                   </label>
                   <label class="field">
                     <span id="detail-cashback-label">Customer cashback</span>
                     <input id="detail-cashback" type="number" step="0.01" readonly />
                     <span class="field-help" id="detail-cashback-help"></span>
+                  </label>
+                  <label class="field">
+                    <span>Platform subsidy ($)</span>
+                    <input id="detail-subsidy" type="number" step="0.01" readonly />
+                    <span class="field-help">
+                      Extra discount funded by Wello when promo exceeds the 10% commission.
+                    </span>
                   </label>
                   <label class="field">
                     <span>Status</span>
@@ -230,8 +243,9 @@
             <div class="summary-card">
               <h3>Promo codes</h3>
               <p class="notice">
-                Create promo codes that boost customer cashback (as a % of the
-                commission). Promo codes apply at verification time.
+                Create promo codes that give customers a % off their receipt
+                total. The merchant commission is always capped at 10%; any
+                promo beyond 10% is funded by Wello.
               </p>
               <div class="form-grid">
                 <label class="field">
@@ -239,7 +253,7 @@
                   <input id="promo-code" type="text" placeholder="WELCOME10" />
                 </label>
                 <label class="field">
-                  <span>Cashback rate (% of commission)</span>
+                  <span>Promo rate (% off receipt total)</span>
                   <input
                     id="promo-rate"
                     type="number"
@@ -397,6 +411,6 @@
 
     <script src="/admin-config.js?v=20260209a"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="/admin.js?v=20260210a" defer></script>
+    <script src="/admin.js?v=20260210b" defer></script>
   </body>
 </html>
