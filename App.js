@@ -152,6 +152,8 @@ const AUTO_VERIFY_RETRY_MS = 1000 * 60 * 20;
 const AUTO_VERIFY_LOCAL_COOLDOWN_MS = 1000 * 60 * 2;
 const AUTO_VERIFY_MAX_REDEMPTION_AGE_MS = 1000 * 60 * 60 * 24;
 const HISTORY_VERIFY_HIGHLIGHT_MS = 1000 * 15;
+const CASHOUT_ACCOUNT_COLLAPSE_COUNT = 3;
+const DEFAULT_PAYOUT_SWITCH_LIMIT = 2;
 const TIME_OPTIONS = [
   "12:00",
   "12:30",
@@ -646,15 +648,6 @@ const formatHistoryTimestamp = (value) => {
   return `${dateLabel} \u00b7 ${timeLabel}`;
 };
 
-const HISTORY_ACCENT_PALETTE = [
-  "#0EA5E9", // sky
-  "#22C55E", // green
-  "#F97316", // orange
-  "#A855F7", // violet
-  "#F43F5E", // rose
-  "#14B8A6", // teal
-];
-
 const hexToRgba = (hex, alpha) => {
   const raw = String(hex || "").replace("#", "").trim();
   const normalized =
@@ -669,21 +662,6 @@ const hexToRgba = (hex, alpha) => {
   const g = parseInt(normalized.slice(2, 4), 16);
   const b = parseInt(normalized.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-};
-
-const stableHash = (value) => {
-  const input = String(value || "");
-  let hash = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    hash = (hash << 5) - hash + input.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash);
-};
-
-const pickHistoryAccent = (key) => {
-  const idx = stableHash(key) % HISTORY_ACCENT_PALETTE.length;
-  return HISTORY_ACCENT_PALETTE[idx];
 };
 
 const getInitials = (value) => {
@@ -702,6 +680,26 @@ const formatOfferDate = (value) => {
   if (!value) return "Date unavailable";
   const date = new Date(value);
   return date.toLocaleDateString();
+};
+
+const formatShortDate = (value) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+};
+
+const formatCashoutAccountType = (subtype, type) => {
+  const value = String(subtype || type || "bank").trim();
+  if (!value) return "Bank";
+  return value
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
 };
 
 const formatReceiptTime = (value) => {
@@ -893,6 +891,30 @@ const withTimeout = (promise, ms, label) =>
       setTimeout(() => reject(new Error(`${label} timeout`)), ms),
     ),
   ]);
+
+const formatPlaidFunctionError = (parsed, fallbackMessage) => {
+  const code = String(
+    parsed?.plaid_error_code || parsed?.code || "",
+  ).toUpperCase();
+  switch (code) {
+    case "NO_AUTH_ACCOUNTS":
+      return "No checking or savings account was shared. Link a bank and select a checking or savings account.";
+    case "ITEM_LOGIN_REQUIRED":
+      return "Your bank connection needs to be relinked.";
+    case "INVALID_ACCESS_TOKEN":
+      return "Bank connection expired. Please relink your bank.";
+    case "INSUFFICIENT_CREDENTIALS":
+      return "Bank permissions are incomplete. Please relink and allow required access.";
+    case "INSTITUTION_NOT_RESPONDING":
+      return "Your bank is temporarily unavailable. Try again shortly.";
+    default:
+      return (
+        String(parsed?.error || parsed?.message || "").trim() ||
+        String(fallbackMessage || "").trim() ||
+        "Verification request failed."
+      );
+  }
+};
 
 const safeLocalSignOut = async () => {
   try {
@@ -1208,13 +1230,13 @@ const callPlaidFunction = async (functionName, payload) => {
     } catch {
       parsed = null;
     }
-    const baseErrorMessage =
-      parsed?.error ||
-      parsed?.message ||
+    const baseErrorMessage = formatPlaidFunctionError(
+      parsed,
       err?.message ||
-      (status
-        ? `Verification request failed (${status}).`
-        : "Verification request failed.");
+        (status
+          ? `Verification request failed (${status}).`
+          : "Verification request failed."),
+    );
     return {
       ok: false,
       status,
@@ -1259,8 +1281,9 @@ const callPlaidFunction = async (functionName, payload) => {
         functionName,
         status: attempt.status,
         error: attempt.errorMessage,
+        plaidErrorCode:
+          attempt.parsed?.plaid_error_code || attempt.parsed?.code || null,
         parsed: attempt.parsed,
-        raw: attempt.rawText,
       });
       return {
         data: null,
@@ -2705,9 +2728,89 @@ export default function App() {
     selectedPayoutAccountId: null,
     selectedPayoutLabel: null,
     selectedPayoutSyncedAt: null,
+    payoutSwitchPolicy: {
+      monthlyLimit: DEFAULT_PAYOUT_SWITCH_LIMIT,
+      switchesUsed: 0,
+      switchesRemaining: DEFAULT_PAYOUT_SWITCH_LIMIT,
+      monthResetsAt: null,
+      canSwitch: true,
+    },
     error: null,
   });
+  const [showAllCashoutBanks, setShowAllCashoutBanks] = useState(false);
+  const [cashoutBankPickerOpen, setCashoutBankPickerOpen] = useState(false);
   const [plaidLinkAction, setPlaidLinkAction] = useState("idle");
+  const cashoutAccountSelection = useMemo(() => {
+    const selectedPayoutAccountId = String(
+      cashoutStatus.selectedPayoutAccountId ||
+        plaidLinkState.selectedPayoutAccountId ||
+        "",
+    ).trim();
+    const accounts = Array.isArray(plaidLinkState.linkedAccounts)
+      ? plaidLinkState.linkedAccounts.filter(
+          (account) => String(account?.accountId || "").trim().length > 0,
+        )
+      : [];
+    const sortedAccounts = [...accounts].sort((a, b) => {
+      const aId = String(a?.accountId || "").trim();
+      const bId = String(b?.accountId || "").trim();
+      const aSelected =
+        (selectedPayoutAccountId && aId === selectedPayoutAccountId) ||
+        Boolean(a?.selectedForPayout);
+      const bSelected =
+        (selectedPayoutAccountId && bId === selectedPayoutAccountId) ||
+        Boolean(b?.selectedForPayout);
+      if (aSelected !== bSelected) return aSelected ? -1 : 1;
+      const aInstitution = String(a?.institutionName || "").trim();
+      const bInstitution = String(b?.institutionName || "").trim();
+      return aInstitution.localeCompare(bInstitution);
+    });
+    const selectedAccount =
+      sortedAccounts.find((account) => {
+        const accountId = String(account?.accountId || "").trim();
+        if (!accountId) return false;
+        return (
+          (selectedPayoutAccountId && accountId === selectedPayoutAccountId) ||
+          Boolean(account?.selectedForPayout)
+        );
+      }) || null;
+    const candidateAccounts = selectedAccount
+      ? sortedAccounts.filter((account) => {
+          const accountId = String(account?.accountId || "").trim();
+          return accountId && accountId !== selectedAccount.accountId;
+        })
+      : sortedAccounts;
+    const visibleAccounts = showAllCashoutBanks
+      ? candidateAccounts
+      : candidateAccounts.slice(0, CASHOUT_ACCOUNT_COLLAPSE_COUNT);
+    return {
+      selectedAccount,
+      visibleAccounts,
+      hiddenCount: Math.max(candidateAccounts.length - visibleAccounts.length, 0),
+      hasMore: candidateAccounts.length > CASHOUT_ACCOUNT_COLLAPSE_COUNT,
+      totalCount: sortedAccounts.length,
+      selectedPayoutAccountId,
+    };
+  }, [
+    cashoutStatus.selectedPayoutAccountId,
+    plaidLinkState.linkedAccounts,
+    plaidLinkState.selectedPayoutAccountId,
+    showAllCashoutBanks,
+  ]);
+  const cashoutPayoutStatusCopy = useMemo(() => {
+    if (cashoutStatus.payoutsEnabled) return "Ready";
+    if (cashoutStatus.bankSelected) return "Verification needed";
+    return "Select payout bank";
+  }, [cashoutStatus.bankSelected, cashoutStatus.payoutsEnabled]);
+  const cashoutSwitchesRemaining = Math.max(
+    Number(plaidLinkState.payoutSwitchPolicy?.switchesRemaining) || 0,
+    0,
+  );
+  const cashoutSwitchResetLabel = formatShortDate(
+    plaidLinkState.payoutSwitchPolicy?.monthResetsAt,
+  );
+  const showCashoutBankOptions =
+    cashoutBankPickerOpen || !cashoutAccountSelection.selectedAccount;
   const [verificationPrompt, setVerificationPrompt] = useState({
     visible: false,
     title: "",
@@ -2716,6 +2819,8 @@ export default function App() {
     secondaryLabel: "Later",
     entry: null,
   });
+  const [postRedeemBankPromptOpen, setPostRedeemBankPromptOpen] =
+    useState(false);
   const [receiptUploadOverlay, setReceiptUploadOverlay] = useState({
     visible: false,
     phase: "idle", // idle | uploading | success | error
@@ -3738,9 +3843,34 @@ export default function App() {
         });
         return;
       }
+      const selectedPayoutAccountId = String(
+        cashoutStatus.selectedPayoutAccountId ||
+          plaidLinkState.selectedPayoutAccountId ||
+          "",
+      ).trim();
+      const isAlreadySelected =
+        selectedPayoutAccountId && selectedPayoutAccountId === plaidAccountId;
+      const switchesRemaining = Math.max(
+        Number(plaidLinkState.payoutSwitchPolicy?.switchesRemaining) ||
+          DEFAULT_PAYOUT_SWITCH_LIMIT,
+        0,
+      );
+      if (!isAlreadySelected && switchesRemaining <= 0) {
+        const resetLabel = formatShortDate(
+          plaidLinkState.payoutSwitchPolicy?.monthResetsAt,
+        );
+        setCashoutActionStatus({
+          loading: false,
+          error: resetLabel
+            ? `Payout bank switch limit reached. You can switch again on ${resetLabel}.`
+            : "Payout bank switch limit reached for this month.",
+          success: null,
+        });
+        return;
+      }
 
       setCashoutActionStatus({ loading: true, error: null, success: null });
-      const { data, error, status } = await callPlaidFunction(
+      const { data, error, status, details } = await callPlaidFunction(
         "plaid-set-cashout-account",
         { plaidAccountId },
       );
@@ -3761,6 +3891,22 @@ export default function App() {
         return;
       }
       if (error || !data?.selected) {
+        const isSwitchLimitError =
+          details?.reason === "cashout_switch_limit_reached";
+        if (isSwitchLimitError) {
+          const resetLabel = formatShortDate(
+            details?.payoutSwitchPolicy?.monthResetsAt,
+          );
+          setCashoutActionStatus({
+            loading: false,
+            error: resetLabel
+              ? `Payout bank switch limit reached. You can switch again on ${resetLabel}.`
+              : "Payout bank switch limit reached for this month.",
+            success: null,
+          });
+          await loadPlaidLinkState({ silent: true });
+          return;
+        }
         setCashoutActionStatus({
           loading: false,
           error:
@@ -3772,8 +3918,6 @@ export default function App() {
         return;
       }
 
-      await loadCashoutStatus({ silent: true });
-      await loadPlaidLinkState({ silent: true });
       const payoutsReady = Boolean(data?.payoutsEnabled);
       const primaryMessage =
         data?.copy?.primary ||
@@ -3785,8 +3929,22 @@ export default function App() {
         error: null,
         success: primaryMessage,
       });
+      setCashoutBankPickerOpen(false);
+      setShowAllCashoutBanks(false);
+      void Promise.allSettled([
+        loadCashoutStatus({ silent: true }),
+        loadPlaidLinkState({ silent: true }),
+      ]);
     },
-    [isSignedIn, loadCashoutStatus, loadPlaidLinkState],
+    [
+      isSignedIn,
+      loadCashoutStatus,
+      loadPlaidLinkState,
+      cashoutStatus.selectedPayoutAccountId,
+      plaidLinkState.selectedPayoutAccountId,
+      plaidLinkState.payoutSwitchPolicy?.switchesRemaining,
+      plaidLinkState.payoutSwitchPolicy?.monthResetsAt,
+    ],
   );
 
   const handleCashoutManage = useCallback(async () => {
@@ -4298,61 +4456,89 @@ export default function App() {
       if (!silent) {
         setRemoteStatus({ loading: true, error: null });
       }
-      const { data, error } = await supabase
-        .from("businesses")
-        .select(
-          [
-            "id",
-            "owner_id",
-            "name",
-            "address",
-            "city",
-            "state",
-            "postal_code",
-            "phone",
-            "category_key",
-            "category_label",
-            "offer_highlight",
-            "hours",
-            "tags",
-            "latitude",
-            "longitude",
-            "qr_code",
-            "is_open",
-            "approval_status",
-            "status",
-            "stripe_account_id",
-            "stripe_customer_id",
-            "stripe_payment_method_id",
-            "stripe_payment_method_brand",
-            "stripe_payment_method_last4",
-            "stripe_charges_enabled",
-            "stripe_payouts_enabled",
-            "stripe_onboarded_at",
-            "commission_rate_cents",
-            "commission_enabled",
-            "created_at",
-          ].join(","),
-        )
-        .order("created_at", { ascending: false });
+      try {
+        const { data, error } = await supabase
+          .from("businesses")
+          .select(
+            [
+              "id",
+              "owner_id",
+              "name",
+              "address",
+              "city",
+              "state",
+              "postal_code",
+              "phone",
+              "category_key",
+              "category_label",
+              "offer_highlight",
+              "hours",
+              "tags",
+              "latitude",
+              "longitude",
+              "qr_code",
+              "is_open",
+              "approval_status",
+              "status",
+              "stripe_account_id",
+              "stripe_customer_id",
+              "stripe_payment_method_id",
+              "stripe_payment_method_brand",
+              "stripe_payment_method_last4",
+              "stripe_charges_enabled",
+              "stripe_payouts_enabled",
+              "stripe_onboarded_at",
+              "commission_rate_cents",
+              "commission_enabled",
+              "created_at",
+            ].join(","),
+          )
+          .order("created_at", { ascending: false });
 
-      if (error) {
+        if (error) {
+          if (!silent) {
+            setRemoteStatus({
+              loading: false,
+              error: error.message || "Unable to load businesses.",
+            });
+          } else {
+            setRemoteStatus((prev) =>
+              prev.loading
+                ? {
+                    loading: false,
+                    error: error.message || "Unable to load businesses.",
+                  }
+                : prev,
+            );
+          }
+          return;
+        }
+
+        const mapped = Array.isArray(data) ? data.map(mapSupabaseBusiness) : [];
+        if (mapped.length) {
+          mergeBusinesses(mapped);
+          hydrateBusinessCoordinatesRef.current?.(mapped);
+        }
+        if (!silent) {
+          setRemoteStatus({ loading: false, error: null });
+        } else {
+          setRemoteStatus((prev) =>
+            prev.loading || prev.error ? { loading: false, error: null } : prev,
+          );
+        }
+      } catch (err) {
+        const message =
+          err?.message || "Unable to load businesses. Check your connection.";
         if (!silent) {
           setRemoteStatus({
             loading: false,
-            error: error.message || "Unable to load businesses.",
+            error: message,
           });
+        } else {
+          setRemoteStatus((prev) =>
+            prev.loading ? { loading: false, error: message } : prev,
+          );
         }
-        return;
-      }
-
-      const mapped = Array.isArray(data) ? data.map(mapSupabaseBusiness) : [];
-      if (mapped.length) {
-        mergeBusinesses(mapped);
-        hydrateBusinessCoordinatesRef.current?.(mapped);
-      }
-      if (!silent) {
-        setRemoteStatus({ loading: false, error: null });
       }
     },
     [mergeBusinesses],
@@ -4955,6 +5141,13 @@ export default function App() {
     const list = Array.from(grouped.values());
     list.forEach((group) => {
       group.entries.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      group.totalCashbackEarnedCents = group.entries.reduce((total, entry) => {
+        const cents = Number(entry?.receipt?.cashbackCents) || 0;
+        if (cents <= 0) return total;
+        const status = String(entry?.receipt?.cashbackStatus || "").toLowerCase();
+        if (status === "reversed" || status === "failed") return total;
+        return total + cents;
+      }, 0);
       const businessKey = group.businessId || group.key;
       const hasReview = reviewedBusinessIds.has(String(businessKey));
       group.pendingEntries = hasReview ? [] : group.entries.slice(0, 1);
@@ -5179,9 +5372,23 @@ export default function App() {
       selectedPayoutAccountId: null,
       selectedPayoutLabel: null,
       selectedPayoutSyncedAt: null,
+      payoutSwitchPolicy: {
+        monthlyLimit: DEFAULT_PAYOUT_SWITCH_LIMIT,
+        switchesUsed: 0,
+        switchesRemaining: DEFAULT_PAYOUT_SWITCH_LIMIT,
+        monthResetsAt: null,
+        canSwitch: true,
+      },
       error: null,
     });
+    setShowAllCashoutBanks(false);
+    setCashoutBankPickerOpen(false);
   }, [authUserId, isSignedIn]);
+
+  useEffect(() => {
+    setShowAllCashoutBanks(false);
+    setCashoutBankPickerOpen(false);
+  }, [plaidLinkState.linkedAccounts.length]);
 
   useEffect(() => {
     if (activeTab === "admin" && !isStaff) {
@@ -5985,6 +6192,7 @@ export default function App() {
     setBusinessDetail(null);
     setBusinessDetailStatus({ loading: false, error: null });
     setBusinessDetailReviews([]);
+    setPostRedeemBankPromptOpen(false);
   };
 
   const runRedeemGate = async (business) => {
@@ -6326,6 +6534,9 @@ export default function App() {
         return false;
       }
       setScannerStatus("success");
+      if (!plaidLinkState.linked && plaidLinkAction === "idle") {
+        setPostRedeemBankPromptOpen(true);
+      }
       loadRedemptions({ silent: true });
       return true;
     } catch (error) {
@@ -7389,39 +7600,64 @@ export default function App() {
       if (!silent) {
         setOfferStatus({ loading: true, error: null });
       }
-      const { data, error } = await supabase
-        .from("offers")
-        .select(
-          [
-            "id",
-            "business_id",
-            "title",
-            "description",
-            "offer_type",
-            "image_url",
-            "active",
-            "approval_status",
-            "redemption_limit_period",
-            "redemption_limit_count",
-            "created_at",
-            "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, is_open, approval_status, status)",
-          ].join(","),
-        )
-        .eq("active", true)
-        .eq("approval_status", "approved")
-        .order("created_at", { ascending: false });
-      if (error) {
+      try {
+        const { data, error } = await supabase
+          .from("offers")
+          .select(
+            [
+              "id",
+              "business_id",
+              "title",
+              "description",
+              "offer_type",
+              "image_url",
+              "active",
+              "approval_status",
+              "redemption_limit_period",
+              "redemption_limit_count",
+              "created_at",
+              "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, is_open, approval_status, status)",
+            ].join(","),
+          )
+          .eq("active", true)
+          .eq("approval_status", "approved")
+          .order("created_at", { ascending: false });
+        if (error) {
+          if (!silent) {
+            setOfferStatus({
+              loading: false,
+              error: error.message || "Unable to load offers.",
+            });
+          } else {
+            setOfferStatus((prev) =>
+              prev.loading
+                ? { loading: false, error: error.message || "Unable to load offers." }
+                : prev,
+            );
+          }
+          return;
+        }
+        mergeOffers((data || []).map(mapSupabaseOffer));
+        if (!silent) {
+          setOfferStatus({ loading: false, error: null });
+        } else {
+          setOfferStatus((prev) =>
+            prev.loading || prev.error ? { loading: false, error: null } : prev,
+          );
+        }
+      } catch (err) {
+        const message =
+          err?.message || "Unable to load offers. Check your connection.";
         if (!silent) {
           setOfferStatus({
             loading: false,
-            error: error.message || "Unable to load offers.",
+            error: message,
           });
+        } else {
+          setOfferStatus((prev) =>
+            prev.loading ? { loading: false, error: message } : prev,
+          );
         }
-        return;
-      }
-      mergeOffers((data || []).map(mapSupabaseOffer));
-      if (!silent) {
-        setOfferStatus({ loading: false, error: null });
       }
     },
     [mergeOffers],
@@ -7887,6 +8123,13 @@ export default function App() {
           selectedPayoutAccountId: null,
           selectedPayoutLabel: null,
           selectedPayoutSyncedAt: null,
+          payoutSwitchPolicy: {
+            monthlyLimit: DEFAULT_PAYOUT_SWITCH_LIMIT,
+            switchesUsed: 0,
+            switchesRemaining: DEFAULT_PAYOUT_SWITCH_LIMIT,
+            monthResetsAt: null,
+            canSwitch: true,
+          },
           error: null,
         });
         return;
@@ -7905,6 +8148,19 @@ export default function App() {
         }
         return;
       }
+      const monthlyLimit = Math.max(
+        Number(data?.payoutSwitchPolicy?.monthlyLimit) ||
+          DEFAULT_PAYOUT_SWITCH_LIMIT,
+        1,
+      );
+      const switchesUsed = Math.max(
+        Number(data?.payoutSwitchPolicy?.switchesUsed) || 0,
+        0,
+      );
+      const switchesRemaining =
+        data?.payoutSwitchPolicy?.switchesRemaining != null
+          ? Math.max(Number(data.payoutSwitchPolicy.switchesRemaining) || 0, 0)
+          : Math.max(monthlyLimit - switchesUsed, 0);
       setPlaidLinkState({
         loading: false,
         linked: Boolean(data?.linked),
@@ -7940,6 +8196,16 @@ export default function App() {
         selectedPayoutSyncedAt: data?.payoutSelection?.syncedAt
           ? new Date(data.payoutSelection.syncedAt).getTime()
           : null,
+        payoutSwitchPolicy: {
+          monthlyLimit,
+          switchesUsed,
+          switchesRemaining,
+          monthResetsAt: data?.payoutSwitchPolicy?.monthResetsAt || null,
+          canSwitch:
+            data?.payoutSwitchPolicy?.canSwitch != null
+              ? Boolean(data.payoutSwitchPolicy.canSwitch)
+              : switchesRemaining > 0,
+        },
         error: null,
       });
     },
@@ -9931,6 +10197,9 @@ export default function App() {
       setHistoryVerifyNotice(null);
       setHighlightedHistoryEntryId(null);
     }
+    if (plaidLinkState.linked) {
+      setPostRedeemBankPromptOpen(false);
+    }
   }, [plaidLinkState.linked, plaidLinkState.linkedSinceMs]);
 
   useEffect(() => {
@@ -10660,6 +10929,50 @@ export default function App() {
                       height={SCANNER_CARD_HEIGHT}
                     />
                   )}
+                </View>
+              </View>
+            </Modal>
+
+            <Modal
+              transparent
+              visible={postRedeemBankPromptOpen}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={() => setPostRedeemBankPromptOpen(false)}
+            >
+              <View style={styles.noticeOverlay}>
+                <View style={styles.noticeCard}>
+                  <Text style={styles.noticeTitle}>
+                    Faster verification available
+                  </Text>
+                  <Text style={styles.noticeBody}>
+                    Link a bank to enable faster automatic purchase
+                    verification. Some cards or banks may still require receipt
+                    upload.
+                  </Text>
+                  <View style={styles.verificationPromptActions}>
+                    <TouchableOpacity
+                      style={styles.primaryButton}
+                      onPress={() => {
+                        setPostRedeemBankPromptOpen(false);
+                        void handleLinkPurchaseVerificationBank();
+                      }}
+                      disabled={plaidLinkAction !== "idle"}
+                    >
+                      <Text style={styles.primaryButtonText}>
+                        {plaidLinkAction === "linking"
+                          ? "Opening..."
+                          : "Link bank now"}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.secondaryButton}
+                      onPress={() => setPostRedeemBankPromptOpen(false)}
+                    >
+                      <Text style={styles.secondaryButtonText}>Maybe later</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </View>
             </Modal>
@@ -13423,17 +13736,76 @@ export default function App() {
                               </Text>
                             )}
                             <View style={styles.receiptNoticeCard}>
-                              <Text style={styles.receiptNoticeTitle}>
-                                Purchase verification
-                              </Text>
+                              <View style={styles.receiptNoticeHeader}>
+                                <View style={styles.receiptNoticeIconWrap}>
+                                  <Ionicons
+                                    name="shield-checkmark-outline"
+                                    size={18}
+                                    color="#0B2147"
+                                  />
+                                </View>
+                                <View style={styles.receiptNoticeHeaderCopy}>
+                                  <Text style={styles.receiptNoticeTitle}>
+                                    Purchase verification
+                                  </Text>
+                                </View>
+                              </View>
+                              <View
+                                style={[
+                                  styles.receiptNoticeActionBar,
+                                ]}
+                              >
+                                <TouchableOpacity
+                                  style={[
+                                    styles.receiptNoticeActionButton,
+                                    styles.receiptNoticeActionButtonPrimary,
+                                    (plaidLinkState.loading ||
+                                      plaidLinkAction !== "idle") &&
+                                      styles.receiptNoticeActionButtonDisabled,
+                                  ]}
+                                  onPress={handleLinkPurchaseVerificationBank}
+                                  disabled={
+                                    plaidLinkState.loading ||
+                                    plaidLinkAction !== "idle"
+                                  }
+                                >
+                                  <Text style={styles.receiptNoticeActionPrimaryText}>
+                                    {plaidLinkAction === "linking"
+                                      ? "Opening Plaid Link..."
+                                      : plaidLinkState.linked
+                                        ? "Link another bank"
+                                        : "Link bank for auto verification"}
+                                  </Text>
+                                </TouchableOpacity>
+                                {plaidLinkState.linked && (
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.receiptNoticeActionButton,
+                                      styles.receiptNoticeActionButtonSecondary,
+                                      (plaidLinkState.loading ||
+                                        plaidLinkAction !== "idle") &&
+                                        styles.receiptNoticeActionButtonDisabled,
+                                    ]}
+                                    onPress={handleUnlinkLinkedBanks}
+                                    disabled={
+                                      plaidLinkState.loading ||
+                                      plaidLinkAction !== "idle"
+                                    }
+                                  >
+                                    <Text
+                                      style={styles.receiptNoticeActionSecondaryText}
+                                    >
+                                      {plaidLinkAction === "unlinking"
+                                        ? "Updating..."
+                                        : "Unlink linked banks"}
+                                    </Text>
+                                  </TouchableOpacity>
+                                )}
+                              </View>
                               <Text style={styles.receiptNoticeBody}>
-                                {PLAID_AUTO_VERIFY_COPY}
-                              </Text>
-                              <Text style={styles.receiptNoticeBody}>
-                                {PLAID_FALLBACK_COPY}
-                              </Text>
-                              <Text style={styles.receiptNoticeBody}>
-                                {PLAID_PENDING_COPY}
+                                Auto verification uses linked-bank transaction
+                                data. If a transaction cannot be matched, upload
+                                a receipt.
                               </Text>
                               <Text style={styles.receiptNoticeMeta}>
                                 {plaidLinkState.loading
@@ -13447,52 +13819,35 @@ export default function App() {
                                   {plaidLinkState.error}
                                 </Text>
                               )}
-                              <View style={styles.receiptNoticeActionRow}>
-                                <TouchableOpacity
-                                  style={styles.receiptNoticeLinkButton}
-                                  onPress={handleLinkPurchaseVerificationBank}
-                                  disabled={
-                                    plaidLinkState.loading ||
-                                    plaidLinkAction !== "idle"
-                                  }
-                                >
-                                  <Text style={styles.receiptNoticeLinkButtonText}>
-                                    {plaidLinkAction === "linking"
-                                      ? "Opening Plaid Link..."
-                                      : plaidLinkState.linked
-                                        ? "Link another bank"
-                                        : "Link bank for auto verification"}
-                                  </Text>
-                                </TouchableOpacity>
-                                {plaidLinkState.linked && (
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.receiptNoticeLinkButton,
-                                      styles.receiptNoticeLinkButtonSecondary,
-                                    ]}
-                                    onPress={handleUnlinkLinkedBanks}
-                                    disabled={
-                                      plaidLinkState.loading ||
-                                      plaidLinkAction !== "idle"
-                                    }
-                                  >
-                                    <Text style={styles.receiptNoticeLinkButtonText}>
-                                      {plaidLinkAction === "unlinking"
-                                        ? "Updating..."
-                                        : "Unlink linked banks"}
-                                    </Text>
-                                  </TouchableOpacity>
-                                )}
-                              </View>
                             </View>
                             {pendingReceiptCount > 0 && (
-                              <View style={styles.receiptNoticeCard}>
-                                <Text style={styles.receiptNoticeTitle}>
-                                  Receipts needed
-                                </Text>
+                              <View
+                                style={[
+                                  styles.receiptNoticeCard,
+                                  styles.receiptNoticeCardMuted,
+                                ]}
+                              >
+                                <View style={styles.receiptNoticeHeader}>
+                                  <View
+                                    style={[
+                                      styles.receiptNoticeIconWrap,
+                                      styles.receiptNoticeIconWrapMuted,
+                                    ]}
+                                  >
+                                    <Ionicons
+                                      name="document-text-outline"
+                                      size={18}
+                                      color="#475569"
+                                    />
+                                  </View>
+                                  <View style={styles.receiptNoticeHeaderCopy}>
+                                    <Text style={styles.receiptNoticeTitle}>
+                                      Receipts needed
+                                    </Text>
+                                  </View>
+                                </View>
                                 <Text style={styles.receiptNoticeBody}>
-                                  Upload within 24 hours to verify recent
-                                  redemptions.
+                                  Upload receipts within 24 hours.
                                 </Text>
                               </View>
                             )}
@@ -13518,19 +13873,14 @@ export default function App() {
                                   const isExpanded = Boolean(
                                     expandedHistoryGroups[group.key],
                                   );
-                                  const accentKey =
-                                    group.businessId ||
-                                    group.key ||
-                                    group.businessName ||
-                                    "wello";
-                                  const accentColor = pickHistoryAccent(
-                                    accentKey,
-                                  );
+                                  const accentColor = "#64748B";
+                                  const earnedTotalCents =
+                                    Number(group.totalCashbackEarnedCents) || 0;
+                                  const pendingTotal =
+                                    Number(group.pendingCount || 0) +
+                                    Number(group.receiptPendingCount || 0);
                                   const initials = getInitials(
                                     group.businessName,
-                                  );
-                                  const hasReview = reviewedBusinessIds.has(
-                                    String(group.businessId || group.key),
                                   );
                                   const entriesWithReceipt =
                                     group.entries.filter((entry) =>
@@ -13540,6 +13890,10 @@ export default function App() {
                                     group.entries.filter(
                                       (entry) => !entry.receipt?.id,
                                     );
+                                  const orderedEntries = [
+                                    ...entriesWithoutReceipt,
+                                    ...entriesWithReceipt,
+                                  ];
                                   const renderHistoryEntry = (entry) => {
                                     const offerTitle =
                                       entry.offer?.title || "Redeemed offer";
@@ -13559,11 +13913,6 @@ export default function App() {
                                       entry.purchaseVerification || null;
                                     const verificationStatus =
                                       purchaseVerification?.status || null;
-                                    const verificationReason =
-                                      formatPurchaseVerificationReason(
-                                        purchaseVerification?.reasonCode,
-                                        purchaseVerification?.reasonDetail,
-                                      );
                                     const canUploadReceipt =
                                       needsReceipt &&
                                       (receiptWindowOpen ||
@@ -13574,49 +13923,33 @@ export default function App() {
                                     const cashbackCents = Number(
                                       entry.receipt?.cashbackCents,
                                     );
-                                    const toneColor = (() => {
+                                    const statusCopy = (() => {
                                       if (needsReceipt) {
                                         if (verificationStatus === "pending") {
-                                          return "#A16207";
-                                        }
-                                        return canUploadReceipt
-                                          ? "#2563EB"
-                                          : "#DC2626";
-                                      }
-                                      if (cashbackStatus === "reversed") {
-                                        return "#B42318";
-                                      }
-                                      if (
-                                        Number.isFinite(cashbackCents) &&
-                                        cashbackCents > 0
-                                      ) {
-                                        return "#16A34A";
-                                      }
-                                      return accentColor;
-                                    })();
-                                    const cashbackLine = (() => {
-                                      if (!hasReceipt) {
-                                        if (verificationStatus === "pending") {
                                           return {
-                                            icon: "time",
-                                            text: "Verification pending",
-                                            variant: "pending",
+                                            icon: "time-outline",
+                                            text: "Bank verification pending",
+                                            tone: "pending",
                                           };
                                         }
-                                        if (verificationStatus === "rejected") {
+                                        if (canUploadReceipt) {
                                           return {
-                                            icon: "alert-circle",
-                                            text: "Receipt required",
-                                            variant: "reversed",
+                                            icon: "document-text-outline",
+                                            text: "Receipt needed",
+                                            tone: "info",
                                           };
                                         }
-                                        return null;
+                                        return {
+                                          icon: "close-circle-outline",
+                                          text: "Receipt window expired",
+                                          tone: "danger",
+                                        };
                                       }
                                       if (cashbackStatus === "reversed") {
                                         return {
-                                          icon: "alert-circle",
+                                          icon: "alert-circle-outline",
                                           text: "Cashback reversed",
-                                          variant: "reversed",
+                                          tone: "danger",
                                         };
                                       }
                                       if (
@@ -13624,17 +13957,15 @@ export default function App() {
                                         cashbackCents > 0
                                       ) {
                                         return {
-                                          icon: "cash",
-                                          text: `Cashback +${formatCurrencyFromCents(
-                                            cashbackCents,
-                                          )}`,
-                                          variant: "earned",
+                                          icon: "cash-outline",
+                                          text: `Cashback +${formatCurrencyFromCents(cashbackCents)}`,
+                                          tone: "success",
                                         };
                                       }
                                       return {
-                                        icon: "time",
-                                        text: "Cashback pending",
-                                        variant: "pending",
+                                        icon: "checkmark-circle-outline",
+                                        text: "Verified",
+                                        tone: "neutral",
                                       };
                                     })();
                                     return (
@@ -13644,16 +13975,6 @@ export default function App() {
                                           styles.historyEntry,
                                           entry.id === highlightedHistoryEntryId &&
                                             styles.historyEntryHighlighted,
-                                          {
-                                            borderColor: hexToRgba(
-                                              toneColor,
-                                              0.18,
-                                            ),
-                                            backgroundColor: hexToRgba(
-                                              toneColor,
-                                              0.06,
-                                            ),
-                                          },
                                         ]}
                                       >
                                         <View style={styles.historyEntryRow}>
@@ -13664,14 +13985,6 @@ export default function App() {
                                             >
                                               {offerTitle}
                                             </Text>
-                                            {Boolean(entry.offer?.description) && (
-                                              <Text
-                                                style={styles.historyEntrySubtitle}
-                                                numberOfLines={2}
-                                              >
-                                                {entry.offer?.description}
-                                              </Text>
-                                            )}
                                           </View>
                                           <View style={styles.historyEntryMeta}>
                                             <View
@@ -13691,256 +14004,78 @@ export default function App() {
                                                 )}
                                               </Text>
                                             </View>
-                                            {cashbackLine && (
-                                              <View
-                                                style={[
-                                                  styles.historyCashbackPill,
-                                                  cashbackLine.variant ===
-                                                    "earned" &&
-                                                    styles.historyCashbackPillEarned,
-                                                  cashbackLine.variant ===
-                                                    "pending" &&
-                                                    styles.historyCashbackPillPending,
-                                                  cashbackLine.variant ===
-                                                    "reversed" &&
-                                                    styles.historyCashbackPillReversed,
-                                                ]}
-                                              >
-                                                <Ionicons
-                                                  name={cashbackLine.icon}
-                                                  size={18}
-                                                  color={
-                                                    cashbackLine.variant ===
-                                                    "earned"
-                                                      ? "#047857"
-                                                      : cashbackLine.variant ===
-                                                          "reversed"
-                                                        ? "#B42318"
-                                                        : COLORS.muted
-                                                  }
-                                                />
-                                                <Text
-                                                  style={[
-                                                    styles.historyCashbackPillText,
-                                                    cashbackLine.variant ===
-                                                      "earned" &&
-                                                      styles.historyCashbackPillTextEarned,
-                                                    cashbackLine.variant ===
-                                                      "reversed" &&
-                                                      styles.historyCashbackPillTextReversed,
-                                                  ]}
-                                                  numberOfLines={1}
-                                                >
-                                                  {cashbackLine.text}
-                                                </Text>
-                                              </View>
-                                            )}
                                           </View>
                                         </View>
-                                        <View style={styles.historyFlagsRow}>
-                                          {!hasReview &&
-                                            entry.id === group.entries[0]?.id && (
-                                              <View
-                                                style={[
-                                                  styles.historyFlagChip,
-                                                  {
-                                                    backgroundColor: hexToRgba(
-                                                      accentColor,
-                                                      0.1,
-                                                    ),
-                                                    borderColor: hexToRgba(
-                                                      accentColor,
-                                                      0.25,
-                                                    ),
-                                                  },
-                                                ]}
-                                              >
-                                                <Ionicons
-                                                  name="star"
-                                                  size={14}
-                                                  color={accentColor}
-                                                />
-                                                <Text
-                                                  style={[
-                                                    styles.historyFlagChipText,
-                                                    { color: accentColor },
-                                                  ]}
-                                                  numberOfLines={1}
-                                                >
-                                                  Review
-                                                </Text>
-                                              </View>
-                                            )}
-                                          {needsReceipt && (
-                                            <View
-                                              style={[
-                                                styles.historyFlagChip,
-                                                verificationStatus === "pending"
-                                                  ? styles.historyFlagChipWarn
-                                                  : canUploadReceipt
-                                                    ? styles.historyFlagChipInfo
-                                                    : styles.historyFlagChipDanger,
-                                              ]}
-                                            >
-                                              <Ionicons
-                                                name={
-                                                  verificationStatus === "pending"
-                                                    ? "time-outline"
-                                                    : canUploadReceipt
-                                                      ? "document-text-outline"
-                                                      : "close-circle"
-                                                }
-                                                size={12}
-                                                color={
-                                                  verificationStatus === "pending"
-                                                    ? "#92400E"
-                                                    : canUploadReceipt
-                                                      ? "#1D4ED8"
-                                                      : "#B42318"
-                                                }
-                                              />
-                                              <Text
-                                                style={[
-                                                  styles.historyFlagChipText,
-                                                  verificationStatus === "pending"
-                                                    ? styles.historyFlagChipTextWarn
-                                                    : canUploadReceipt
-                                                      ? styles.historyFlagChipTextInfo
-                                                      : styles.historyFlagChipTextDanger,
-                                                ]}
-                                                numberOfLines={1}
-                                              >
-                                                {verificationStatus === "pending"
-                                                  ? "Bank check pending"
-                                                  : canUploadReceipt
-                                                    ? "Receipt needed"
-                                                    : "Receipt expired"}
-                                              </Text>
-                                            </View>
-                                          )}
-                                          {needsReceipt &&
-                                            verificationStatus === "rejected" && (
-                                              <View
-                                                style={[
-                                                  styles.historyFlagChip,
-                                                  styles.historyFlagChipInfo,
-                                                ]}
-                                              >
-                                                <Ionicons
-                                                  name="document-outline"
-                                                  size={12}
-                                                  color="#1D4ED8"
-                                                />
-                                                <Text
-                                                  style={[
-                                                    styles.historyFlagChipText,
-                                                    styles.historyFlagChipTextInfo,
-                                                  ]}
-                                                  numberOfLines={1}
-                                                >
-                                                  Receipt fallback ready
-                                                </Text>
-                                              </View>
-                                            )}
-                                        </View>
-                                        {needsReceipt && Boolean(verificationReason) && (
-                                          <Text style={styles.historyVerificationText}>
-                                            {verificationReason}
+                                        <View style={styles.historyStatusRow}>
+                                          <Ionicons
+                                            name={statusCopy.icon}
+                                            size={14}
+                                            color={
+                                              statusCopy.tone === "success"
+                                                ? "#166534"
+                                                : statusCopy.tone === "pending"
+                                                  ? "#92400E"
+                                                  : COLORS.muted
+                                            }
+                                          />
+                                          <Text
+                                            style={[
+                                              styles.historyStatusText,
+                                              statusCopy.tone === "success" &&
+                                                styles.historyStatusTextSuccess,
+                                              statusCopy.tone === "pending" &&
+                                                styles.historyStatusTextPending,
+                                            ]}
+                                          >
+                                            {statusCopy.text}
                                           </Text>
-                                        )}
-                                        {needsReceipt &&
-                                          canUploadReceipt &&
-                                          isAutoVerifying && (
-                                            <View style={styles.historyUploadHint}>
-                                              <Ionicons
-                                                name="sync-outline"
-                                                size={14}
-                                                color={COLORS.muted}
-                                              />
-                                              <Text style={styles.historyUploadHintText}>
-                                                Checking linked bank transactions...
-                                              </Text>
-                                            </View>
-                                          )}
-                                        {needsReceipt &&
-                                          canUploadReceipt &&
-                                          isUploadingReceipt && (
-                                          <View style={styles.historyUploadHint}>
-                                            <Ionicons
-                                              name="cloud-upload-outline"
-                                              size={14}
-                                              color={COLORS.muted}
-                                            />
-                                            <Text style={styles.historyUploadHintText}>
-                                              Uploading receipt...
-                                            </Text>
-                                          </View>
-                                          )}
+                                        </View>
                                         {needsReceipt && canUploadReceipt && (
                                           <View style={styles.historyActionRow}>
                                             <TouchableOpacity
                                               style={[
-                                                styles.receiptUploadButton,
-                                                styles.historyVerifyButton,
+                                                styles.historyPrimaryAction,
                                                 (isAutoVerifying ||
                                                   isUploadingReceipt) &&
-                                                  styles.receiptUploadButtonDisabled,
+                                                  styles.historyPrimaryActionDisabled,
                                               ]}
-                                              onPress={() =>
-                                                handleAutoVerifyPurchase(entry)
-                                              }
+                                              onPress={() => promptReceiptUpload(entry)}
                                               disabled={
                                                 isAutoVerifying || isUploadingReceipt
                                               }
                                             >
                                               <Ionicons
-                                                name="search-outline"
-                                                size={16}
-                                                color={COLORS.ink}
-                                              />
-                                              <Text
-                                                style={styles.historyVerifyButtonText}
-                                              >
-                                                {isAutoVerifying
-                                                  ? "Checking..."
-                                                  : "Auto verify"}
-                                              </Text>
-                                            </TouchableOpacity>
-                                            <TouchableOpacity
-                                              style={[
-                                                styles.receiptUploadButton,
-                                                isUploadingReceipt &&
-                                                  styles.receiptUploadButtonDisabled,
-                                                styles.historyReceiptUploadButton,
-                                                {
-                                                  borderColor: hexToRgba(
-                                                    toneColor,
-                                                    0.22,
-                                                  ),
-                                                },
-                                              ]}
-                                              onPress={() =>
-                                                promptReceiptUpload(entry)
-                                              }
-                                              disabled={
-                                                isUploadingReceipt || isAutoVerifying
-                                              }
-                                            >
-                                              <Ionicons
                                                 name="document-text-outline"
-                                                size={16}
-                                                color={COLORS.ink}
+                                                size={15}
+                                                color={COLORS.white}
                                               />
                                               <Text
-                                                style={
-                                                  styles.historyReceiptUploadButtonText
-                                                }
+                                                style={styles.historyPrimaryActionText}
                                               >
                                                 {isUploadingReceipt
                                                   ? "Uploading..."
                                                   : "Upload receipt"}
                                               </Text>
                                             </TouchableOpacity>
+                                            {plaidLinkState.linked && (
+                                              <TouchableOpacity
+                                                style={styles.historyInlineAction}
+                                                onPress={() =>
+                                                  handleAutoVerifyPurchase(entry)
+                                                }
+                                                disabled={
+                                                  isAutoVerifying || isUploadingReceipt
+                                                }
+                                              >
+                                                <Text
+                                                  style={styles.historyInlineActionText}
+                                                >
+                                                  {isAutoVerifying
+                                                    ? "Checking bank..."
+                                                    : "Try auto verify"}
+                                                </Text>
+                                              </TouchableOpacity>
+                                            )}
                                           </View>
                                         )}
                                       </View>
@@ -14000,41 +14135,23 @@ export default function App() {
                                               {group.businessName}
                                             </Text>
                                             <View style={styles.historyGroupSubRow}>
-                                              <Ionicons
-                                                name="time-outline"
-                                                size={12}
-                                                color={COLORS.muted}
-                                              />
                                               <Text
                                                 style={styles.historyGroupSub}
                                                 numberOfLines={1}
                                               >
-                                                {group.entries.length} redeemed{" "}
-                                                {"\u00b7"} Last{" "}
-                                                {formatHistoryTimestamp(
-                                                  group.lastRedeemed,
-                                                )}
+                                                {group.entries.length} redeemed
                                               </Text>
                                             </View>
                                           </View>
                                         </View>
 
                                         <View style={styles.historyGroupActions}>
-                                          {group.pendingCount > 0 && (
-                                            <View style={styles.historyReviewBadge}>
+                                          {pendingTotal > 0 && (
+                                            <View style={styles.historyPendingSummary}>
                                               <Text
-                                                style={styles.historyReviewBadgeText}
+                                                style={styles.historyPendingSummaryText}
                                               >
-                                                {group.pendingCount}
-                                              </Text>
-                                            </View>
-                                          )}
-                                          {group.receiptPendingCount > 0 && (
-                                            <View style={styles.historyReceiptBadge}>
-                                              <Text
-                                                style={styles.historyReceiptBadgeText}
-                                              >
-                                                {group.receiptPendingCount}
+                                                {pendingTotal} Pending
                                               </Text>
                                             </View>
                                           )}
@@ -14051,186 +14168,49 @@ export default function App() {
                                           </View>
                                         </View>
                                       </Pressable>
+                                      {earnedTotalCents > 0 && (
+                                        <View style={styles.historyGroupEarnedBar}>
+                                          <Text
+                                            style={styles.historyGroupEarnedBarText}
+                                          >
+                                            Total cashback earned:{" "}
+                                            {formatCurrencyFromCents(
+                                              earnedTotalCents,
+                                            )}
+                                          </Text>
+                                        </View>
+                                      )}
                                       {isExpanded && (
-                                        <View style={styles.historyEntries}>
+                                        <View
+                                          style={[
+                                            styles.historyEntries,
+                                            earnedTotalCents > 0 &&
+                                              styles.historyEntriesAfterEarnedBar,
+                                          ]}
+                                        >
                                           {group.pendingCount > 0 && (
-                                            <Pressable
-                                              style={({ pressed }) => [
-                                                styles.historyReviewButton,
-                                                {
-                                                  borderColor: hexToRgba(
-                                                    accentColor,
-                                                    0.25,
-                                                  ),
-                                                  backgroundColor: hexToRgba(
-                                                    accentColor,
-                                                    0.10,
-                                                  ),
-                                                },
-                                                pressed &&
-                                                  styles.historyReviewButtonPressed,
-                                              ]}
+                                            <TouchableOpacity
+                                              style={styles.historyReviewLink}
                                               onPress={() =>
                                                 handleOpenReview(group)
                                               }
                                             >
-                                              <View
-                                                style={
-                                                  styles.historyReviewButtonLeft
-                                                }
-                                              >
-                                                <View
-                                                  style={[
-                                                    styles.historyReviewIcon,
-                                                    {
-                                                      backgroundColor:
-                                                        hexToRgba(
-                                                          accentColor,
-                                                          0.16,
-                                                        ),
-                                                      borderColor: hexToRgba(
-                                                        accentColor,
-                                                        0.28,
-                                                      ),
-                                                    },
-                                                  ]}
-                                                >
-                                                  <Ionicons
-                                                    name="star"
-                                                    size={16}
-                                                    color={accentColor}
-                                                  />
-                                                </View>
-                                                <View>
-                                                  <Text
-                                                    style={styles.historyReviewText}
-                                                  >
-                                                    Leave a review
-                                                  </Text>
-                                                  <Text
-                                                    style={
-                                                      styles.historyReviewSubtext
-                                                    }
-                                                  >
-                                                    Takes about 10 seconds.
-                                                  </Text>
-                                                </View>
-                                              </View>
+                                              <Ionicons
+                                                name="star-outline"
+                                                size={14}
+                                                color="#1E3A8A"
+                                              />
+                                              <Text style={styles.historyReviewLinkText}>
+                                                Leave a review
+                                              </Text>
                                               <Ionicons
                                                 name="chevron-forward"
-                                                size={18}
+                                                size={16}
                                                 color={COLORS.muted}
                                               />
-                                            </Pressable>
+                                            </TouchableOpacity>
                                           )}
-                                          {entriesWithoutReceipt.length > 0 && (
-                                            <View style={styles.historySection}>
-                                              <View
-                                                style={[
-                                                  styles.historySectionHeader,
-                                                  {
-                                                    borderColor: hexToRgba(
-                                                      "#2563EB",
-                                                      0.18,
-                                                    ),
-                                                    backgroundColor: hexToRgba(
-                                                      "#2563EB",
-                                                      0.08,
-                                                    ),
-                                                  },
-                                                ]}
-                                              >
-                                                <View
-                                                  style={
-                                                    styles.historySectionTitleRow
-                                                  }
-                                                >
-                                                  <Ionicons
-                                                    name="document-text-outline"
-                                                    size={14}
-                                                    color={"#1D4ED8"}
-                                                  />
-                                                  <Text
-                                                    style={
-                                                      styles.historySectionTitle
-                                                    }
-                                                  >
-                                                    Needs receipt
-                                                  </Text>
-                                                </View>
-                                                <View
-                                                  style={
-                                                    styles.historySectionCount
-                                                  }
-                                                >
-                                                  <Text
-                                                    style={
-                                                      styles.historySectionCountText
-                                                    }
-                                                  >
-                                                    {entriesWithoutReceipt.length}
-                                                  </Text>
-                                                </View>
-                                              </View>
-                                              {entriesWithoutReceipt.map(
-                                                renderHistoryEntry,
-                                              )}
-                                            </View>
-                                          )}
-                                          {entriesWithReceipt.length > 0 && (
-                                            <View style={styles.historySection}>
-                                              <View
-                                                style={[
-                                                  styles.historySectionHeader,
-                                                  {
-                                                    borderColor: hexToRgba(
-                                                      "#16A34A",
-                                                      0.18,
-                                                    ),
-                                                    backgroundColor: hexToRgba(
-                                                      "#16A34A",
-                                                      0.08,
-                                                    ),
-                                                  },
-                                                ]}
-                                              >
-                                                <View
-                                                  style={
-                                                    styles.historySectionTitleRow
-                                                  }
-                                                >
-                                                  <Ionicons
-                                                    name="checkmark-circle-outline"
-                                                    size={14}
-                                                    color={"#16A34A"}
-                                                  />
-                                                  <Text
-                                                    style={
-                                                      styles.historySectionTitle
-                                                    }
-                                                  >
-                                                    Receipt uploaded
-                                                  </Text>
-                                                </View>
-                                                <View
-                                                  style={
-                                                    styles.historySectionCount
-                                                  }
-                                                >
-                                                  <Text
-                                                    style={
-                                                      styles.historySectionCountText
-                                                    }
-                                                  >
-                                                    {entriesWithReceipt.length}
-                                                  </Text>
-                                                </View>
-                                              </View>
-                                              {entriesWithReceipt.map(
-                                                renderHistoryEntry,
-                                              )}
-                                            </View>
-                                          )}
+                                          {orderedEntries.map(renderHistoryEntry)}
                                         </View>
                                       )}
                                     </View>
@@ -14415,178 +14395,167 @@ export default function App() {
                                   Bank account
                                 </Text>
                               </View>
-                              <Text style={styles.sectionBody}>
-                                Choose a payout bank from your linked Plaid
-                                accounts. Stripe still handles all payout money
-                                movement.
-                              </Text>
-                              {cashoutStatus.selectedPayoutLabel && (
-                                <Text style={styles.cashoutSelectedLabel}>
-                                  Selected payout bank:{" "}
-                                  {cashoutStatus.selectedPayoutLabel}
+                              <View style={styles.cashoutStatusLine}>
+                                <View
+                                  style={[
+                                    styles.cashoutStatusDot,
+                                    cashoutStatus.payoutsEnabled
+                                      ? styles.cashoutStatusDotReady
+                                      : styles.cashoutStatusDotMuted,
+                                  ]}
+                                />
+                                <Text style={styles.cashoutStatusLineText}>
+                                  {cashoutPayoutStatusCopy}
+                                </Text>
+                              </View>
+                              {(showCashoutBankOptions ||
+                                cashoutSwitchesRemaining <= 1) && (
+                                <Text style={styles.cashoutPolicyText}>
+                                  Switches left: {cashoutSwitchesRemaining}
+                                  {cashoutSwitchesRemaining <= 0 &&
+                                  cashoutSwitchResetLabel
+                                    ? ` \u00b7 resets ${cashoutSwitchResetLabel}`
+                                    : ""}
                                 </Text>
                               )}
-                              <View style={styles.cashoutStatusRow}>
-                                <View
-                                  style={[
-                                    styles.cashoutPill,
-                                    plaidLinkState.linked
-                                      ? styles.cashoutPillActive
-                                      : styles.cashoutPillMuted,
-                                  ]}
-                                  accessibilityLabel={
-                                    plaidLinkState.linked
-                                      ? "Linked bank available"
-                                      : "No linked bank"
-                                  }
-                                >
-                                  <Ionicons
-                                    name={
-                                      plaidLinkState.linked
-                                        ? "link-outline"
-                                        : "alert-circle-outline"
-                                    }
-                                    size={16}
-                                    color={
-                                      plaidLinkState.linked
-                                        ? COLORS.ink
-                                        : COLORS.muted
-                                    }
-                                  />
-                                </View>
-                                <View
-                                  style={[
-                                    styles.cashoutPill,
-                                    cashoutStatus.bankSelected
-                                      ? styles.cashoutPillActive
-                                      : styles.cashoutPillMuted,
-                                  ]}
-                                  accessibilityLabel={
-                                    cashoutStatus.bankSelected
-                                      ? "Payout bank selected"
-                                      : "Payout bank not selected"
-                                  }
-                                >
-                                  <Ionicons
-                                    name="card-outline"
-                                    size={16}
-                                    color={
-                                      cashoutStatus.bankSelected
-                                        ? COLORS.ink
-                                        : COLORS.muted
-                                    }
-                                  />
-                                </View>
-                                <View
-                                  style={[
-                                    styles.cashoutPill,
-                                    cashoutStatus.payoutsEnabled
-                                      ? styles.cashoutPillActive
-                                      : styles.cashoutPillMuted,
-                                  ]}
-                                  accessibilityLabel={
-                                    cashoutStatus.payoutsEnabled
-                                      ? "Payouts ready"
-                                      : cashoutStatus.bankSelected
-                                        ? "Payouts pending verification"
-                                        : "Payouts locked"
-                                  }
-                                >
-                                  <Ionicons
-                                    name={
-                                      cashoutStatus.payoutsEnabled
-                                        ? "checkmark-circle-outline"
-                                        : cashoutStatus.bankSelected
-                                          ? "time-outline"
-                                          : "lock-closed-outline"
-                                    }
-                                    size={16}
-                                    color={
-                                      cashoutStatus.payoutsEnabled
-                                        ? COLORS.ink
-                                        : COLORS.muted
-                                    }
-                                  />
-                                </View>
-                              </View>
                               {plaidLinkState.linkedAccounts.length > 0 ? (
                                 <View style={styles.cashoutLinkedAccountList}>
-                                  {plaidLinkState.linkedAccounts.map((account) => {
-                                    const accountId = String(account?.accountId || "");
-                                    const isSelected =
-                                      String(
-                                        cashoutStatus.selectedPayoutAccountId || "",
-                                      ) === accountId ||
-                                      Boolean(account?.selectedForPayout);
-                                    const accountLabel = [
-                                      account?.institutionName || "Linked bank",
-                                      account?.name || "Bank account",
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" - ");
-                                    const accountMetaParts = [];
-                                    if (account?.subtype) {
-                                      accountMetaParts.push(account.subtype);
-                                    }
-                                    if (account?.mask) {
-                                      accountMetaParts.push(`****${account.mask}`);
-                                    }
-                                    return (
-                                      <View
-                                        key={accountId}
-                                        style={[
-                                          styles.cashoutLinkedAccountRow,
-                                          isSelected &&
-                                            styles.cashoutLinkedAccountRowSelected,
-                                        ]}
-                                      >
-                                        <View style={styles.cashoutLinkedAccountMain}>
-                                          <Text
-                                            style={styles.cashoutLinkedAccountTitle}
-                                            numberOfLines={1}
-                                          >
-                                            {accountLabel}
-                                          </Text>
-                                          {accountMetaParts.length > 0 && (
-                                            <Text style={styles.cashoutLinkedAccountMeta}>
-                                              {accountMetaParts.join(" - ")}
-                                            </Text>
+                                  {cashoutAccountSelection.selectedAccount && (
+                                    <View style={styles.cashoutSelectedAccountCard}>
+                                      <View style={styles.cashoutLinkedAccountMain}>
+                                        <Text
+                                          style={styles.cashoutLinkedAccountTitle}
+                                          numberOfLines={1}
+                                        >
+                                          {String(
+                                            cashoutAccountSelection.selectedAccount
+                                              ?.institutionName || "Linked bank",
+                                          ).trim() || "Linked bank"}
+                                        </Text>
+                                        <Text style={styles.cashoutLinkedAccountMeta}>
+                                          {formatCashoutAccountType(
+                                            cashoutAccountSelection.selectedAccount
+                                              ?.subtype,
+                                            cashoutAccountSelection.selectedAccount
+                                              ?.type,
                                           )}
-                                        </View>
+                                          {cashoutAccountSelection.selectedAccount
+                                            ?.mask
+                                            ? ` \u00b7 ****${cashoutAccountSelection.selectedAccount.mask}`
+                                            : ""}
+                                        </Text>
+                                      </View>
+                                      <Text style={styles.cashoutSelectedAccountTag}>
+                                        Selected
+                                      </Text>
+                                    </View>
+                                  )}
+                                  {cashoutAccountSelection.visibleAccounts.length >
+                                    0 && (
+                                    <TouchableOpacity
+                                      style={styles.cashoutChangeBankButton}
+                                      onPress={() =>
+                                        setCashoutBankPickerOpen((prev) => !prev)
+                                      }
+                                    >
+                                      <Text
+                                        style={styles.cashoutChangeBankButtonText}
+                                      >
+                                        {showCashoutBankOptions
+                                          ? "Hide banks"
+                                          : "Change bank"}
+                                      </Text>
+                                      <Ionicons
+                                        name={
+                                          showCashoutBankOptions
+                                            ? "chevron-up"
+                                            : "chevron-down"
+                                        }
+                                        size={16}
+                                        color={COLORS.muted}
+                                      />
+                                    </TouchableOpacity>
+                                  )}
+                                  {showCashoutBankOptions && (
+                                    <View style={styles.cashoutLinkedAccountOptions}>
+                                      {cashoutAccountSelection.visibleAccounts.map(
+                                        (account) => {
+                                          const accountId = String(
+                                            account?.accountId || "",
+                                          ).trim();
+                                          const disabled =
+                                            cashoutActionStatus.loading ||
+                                            cashoutSwitchesRemaining <= 0;
+                                          return (
+                                            <TouchableOpacity
+                                              key={accountId}
+                                              style={styles.cashoutLinkedAccountRow}
+                                              onPress={() =>
+                                                handleSelectCashoutBank(account)
+                                              }
+                                              disabled={disabled}
+                                            >
+                                              <View
+                                                style={
+                                                  styles.cashoutLinkedAccountMain
+                                                }
+                                              >
+                                                <Text
+                                                  style={
+                                                    styles.cashoutLinkedAccountTitle
+                                                  }
+                                                  numberOfLines={1}
+                                                >
+                                                  {String(
+                                                    account?.institutionName ||
+                                                      "Linked bank",
+                                                  ).trim() || "Linked bank"}
+                                                </Text>
+                                                <Text
+                                                  style={
+                                                    styles.cashoutLinkedAccountMeta
+                                                  }
+                                                >
+                                                  {formatCashoutAccountType(
+                                                    account?.subtype,
+                                                    account?.type,
+                                                  )}
+                                                  {account?.mask
+                                                    ? ` \u00b7 ****${account.mask}`
+                                                    : ""}
+                                                </Text>
+                                              </View>
+                                              <Ionicons
+                                                name="radio-button-off-outline"
+                                                size={18}
+                                                color={COLORS.muted}
+                                              />
+                                            </TouchableOpacity>
+                                          );
+                                        },
+                                      )}
+                                      {cashoutAccountSelection.hasMore && (
                                         <TouchableOpacity
-                                          style={[
-                                            styles.cashoutLinkedAccountButton,
-                                            isSelected &&
-                                              styles.cashoutLinkedAccountButtonSelected,
-                                          ]}
+                                          style={styles.cashoutShowMoreButton}
                                           onPress={() =>
-                                            !isSelected &&
-                                            handleSelectCashoutBank(account)
-                                          }
-                                          disabled={
-                                            cashoutActionStatus.loading || isSelected
+                                            setShowAllCashoutBanks((prev) => !prev)
                                           }
                                         >
                                           <Text
-                                            style={[
-                                              styles.cashoutLinkedAccountButtonText,
-                                              isSelected &&
-                                                styles.cashoutLinkedAccountButtonTextSelected,
-                                            ]}
+                                            style={styles.cashoutShowMoreButtonText}
                                           >
-                                            {isSelected
-                                              ? "Selected"
-                                              : "Use for payouts"}
+                                            {showAllCashoutBanks
+                                              ? "Show fewer"
+                                              : `More banks (${cashoutAccountSelection.hiddenCount})`}
                                           </Text>
                                         </TouchableOpacity>
-                                      </View>
-                                    );
-                                  })}
+                                      )}
+                                    </View>
+                                  )}
                                 </View>
                               ) : (
                                 <Text style={styles.cashoutStatusText}>
-                                  Link a bank with Plaid to choose your payout
-                                  destination.
+                                  Link a bank to choose payouts.
                                 </Text>
                               )}
                               {cashoutStatusState.loading && (
@@ -14627,9 +14596,7 @@ export default function App() {
                                   <Text style={styles.primaryButtonText}>
                                     {plaidLinkAction === "linking"
                                       ? "Opening Plaid Link..."
-                                      : plaidLinkState.linked
-                                        ? "Link another bank"
-                                        : "Link bank account"}
+                                      : "Link bank"}
                                   </Text>
                                 </TouchableOpacity>
                                 {cashoutStatus.connected &&
@@ -14640,7 +14607,7 @@ export default function App() {
                                     disabled={cashoutActionStatus.loading}
                                   >
                                     <Text style={styles.secondaryButtonText}>
-                                      Complete payout verification
+                                      Verify payouts
                                     </Text>
                                   </TouchableOpacity>
                                 )}
@@ -14651,7 +14618,7 @@ export default function App() {
                                     disabled={cashoutActionStatus.loading}
                                   >
                                     <Text style={styles.secondaryButtonText}>
-                                      Manage Stripe payout details
+                                      Payout settings
                                     </Text>
                                   </TouchableOpacity>
                                 )}
@@ -16634,24 +16601,25 @@ const styles = StyleSheet.create({
   },
   navContainer: {
     alignSelf: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.92)",
+    backgroundColor: "rgba(255, 255, 255, 0.97)",
     borderRadius: IS_COMPACT ? 16 : 18,
-    paddingHorizontal: NAV_PADDING,
-    paddingBottom: NAV_PADDING,
-    paddingTop: NAV_PADDING + 6,
+    paddingHorizontal: NAV_PADDING - 2,
+    paddingBottom: NAV_PADDING - 2,
+    paddingTop: NAV_PADDING,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
+    borderColor: "rgba(15, 23, 42, 0.06)",
     shadowColor: COLORS.shadow,
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 10 },
     elevation: 4,
   },
   navRow: {
     flexDirection: "row",
     paddingHorizontal: 2,
-    paddingTop: 6,
-    paddingBottom: 2,
+    paddingVertical: 2,
+    borderRadius: 12,
+    backgroundColor: "#F6F8FC",
   },
   locateRow: {
     alignItems: "flex-end",
@@ -17129,24 +17097,22 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     alignItems: "center",
-    backgroundColor: COLORS.white,
-    borderRadius: 999,
+    backgroundColor: "transparent",
+    borderRadius: 12,
     paddingVertical: IS_COMPACT ? 6 : 8,
     paddingHorizontal: Platform.select({
       ios: IS_COMPACT ? 10 : 14,
       android: IS_COMPACT ? 10 : 12,
       default: IS_COMPACT ? 12 : 16,
     }),
-    borderWidth: 1,
-    borderColor: COLORS.sand,
+    borderWidth: 0,
     position: "relative",
   },
   navPillSpaced: {
     marginLeft: NAV_GAP,
   },
   navPillActive: {
-    backgroundColor: COLORS.pine,
-    borderColor: COLORS.pine,
+    backgroundColor: "#0B2147",
   },
   navPillText: {
     fontSize: Platform.select({
@@ -17154,7 +17120,7 @@ const styles = StyleSheet.create({
       android: IS_COMPACT ? 11 : 12,
       default: IS_COMPACT ? 12 : 13,
     }),
-    color: COLORS.muted,
+    color: "#5A6473",
     fontFamily: FONT_MEDIUM,
     lineHeight: Platform.select({
       ios: IS_COMPACT ? 16 : 18,
@@ -18976,29 +18942,60 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
   },
   receiptNoticeCard: {
-    backgroundColor: "#FFF7E6",
-    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#F1D4A8",
+    borderColor: "rgba(15, 23, 42, 0.1)",
     padding: 12,
     marginBottom: 12,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2,
+  },
+  receiptNoticeCardMuted: {
+    backgroundColor: "#F8FAFC",
+  },
+  receiptNoticeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  receiptNoticeHeaderCopy: {
+    flex: 1,
+  },
+  receiptNoticeIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: "rgba(11, 33, 71, 0.14)",
+    backgroundColor: "#ECF3FF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  receiptNoticeIconWrapMuted: {
+    borderColor: "rgba(100, 116, 139, 0.2)",
+    backgroundColor: "#EEF2F7",
   },
   receiptNoticeTitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    marginBottom: 4,
+    marginBottom: 2,
   },
   receiptNoticeBody: {
     fontSize: 11,
-    color: COLORS.muted,
+    color: "#556072",
     fontFamily: FONT_TEXT,
     lineHeight: 16,
   },
   receiptNoticeMeta: {
     marginTop: 8,
     fontSize: 11,
-    color: COLORS.muted,
+    color: "#334155",
     fontFamily: FONT_MEDIUM,
   },
   receiptNoticeMetaError: {
@@ -19007,28 +19004,47 @@ const styles = StyleSheet.create({
     color: "#B42318",
     fontFamily: FONT_MEDIUM,
   },
-  receiptNoticeActionRow: {
-    marginTop: 10,
+  receiptNoticeActionBar: {
+    marginBottom: 10,
     flexDirection: "row",
-    flexWrap: "wrap",
+    alignItems: "stretch",
     gap: 8,
-  },
-  receiptNoticeLinkButton: {
-    alignSelf: "flex-start",
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(29, 78, 216, 0.25)",
-    borderRadius: 999,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    backgroundColor: "#EFF6FF",
+    borderColor: "rgba(11, 33, 71, 0.1)",
+    backgroundColor: "#F5F8FC",
+    padding: 4,
+    height: 46,
   },
-  receiptNoticeLinkButtonSecondary: {
-    backgroundColor: "#F8FAFC",
-    borderColor: "rgba(100, 116, 139, 0.3)",
+  receiptNoticeActionButton: {
+    flexGrow: 1,
+    flexBasis: 0,
+    minHeight: 34,
+    borderRadius: 9,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
   },
-  receiptNoticeLinkButtonText: {
+  receiptNoticeActionButtonPrimary: {
+    backgroundColor: "#0B2147",
+    borderColor: "#0B2147",
+  },
+  receiptNoticeActionButtonSecondary: {
+    backgroundColor: COLORS.white,
+    borderColor: "rgba(71, 85, 105, 0.24)",
+  },
+  receiptNoticeActionButtonDisabled: {
+    opacity: 0.6,
+  },
+  receiptNoticeActionPrimaryText: {
     fontSize: 11,
-    color: "#1D4ED8",
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM,
+  },
+  receiptNoticeActionSecondaryText: {
+    fontSize: 11,
+    color: "#334155",
     fontFamily: FONT_MEDIUM,
   },
   historyVerifyNoticeCard: {
@@ -19219,13 +19235,10 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   historyGroupSubRow: {
-    marginTop: 4,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+    marginTop: 3,
   },
   historyGroupSub: {
-    fontSize: 12,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -19233,6 +19246,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  historyGroupEarnedBar: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.sand,
+    backgroundColor: "#F6FBF8",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  historyGroupEarnedBarText: {
+    fontSize: 11,
+    color: "#2F6F4F",
+    fontFamily: FONT_MEDIUM,
   },
   historyGroupChevron: {
     width: 28,
@@ -19244,19 +19269,37 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  historyReviewBadge: {
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: "#D62246",
+  historyPendingSummary: {
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(146, 64, 14, 0.18)",
+    backgroundColor: "#FFFBEB",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 4,
+    paddingHorizontal: 9,
   },
-  historyReviewBadgeText: {
+  historyPendingSummaryText: {
     fontSize: 10,
-    color: COLORS.white,
+    color: "#92400E",
     fontFamily: FONT_MEDIUM,
+  },
+  historyReviewLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    alignSelf: "flex-start",
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(30, 58, 138, 0.18)",
+    backgroundColor: "#EEF2FF",
+  },
+  historyReviewLinkText: {
+    fontSize: 12,
+    fontFamily: FONT_MEDIUM,
+    color: "#1E3A8A",
   },
   historyEntries: {
     borderTopWidth: 1,
@@ -19265,6 +19308,9 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     paddingTop: 12,
     gap: 10,
+  },
+  historyEntriesAfterEarnedBar: {
+    borderTopWidth: 0,
   },
   historySection: {
     gap: 8,
@@ -19450,38 +19496,28 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
-  cashoutStatusRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginTop: 12,
-  },
-  cashoutPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: "#EEF2F7",
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
+  cashoutStatusLine: {
+    marginTop: 10,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    gap: 8,
   },
-  cashoutPillActive: {
-    backgroundColor: "#DFF4E9",
-    borderColor: "rgba(20, 83, 45, 0.15)",
+  cashoutStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
-  cashoutPillMuted: {
-    backgroundColor: "#EEF2F7",
-    borderColor: "rgba(15, 23, 42, 0.08)",
+  cashoutStatusDotReady: {
+    backgroundColor: "#15803D",
   },
-  cashoutPillText: {
+  cashoutStatusDotMuted: {
+    backgroundColor: "#94A3B8",
+  },
+  cashoutStatusLineText: {
+    flex: 1,
     fontSize: 11,
-    color: COLORS.muted,
+    color: "#334155",
     fontFamily: FONT_MEDIUM,
-  },
-  cashoutPillTextActive: {
-    color: COLORS.ink,
   },
   cashoutStatusHint: {
     flexDirection: "row",
@@ -19494,30 +19530,62 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
-  cashoutSelectedLabel: {
-    marginTop: 10,
-    fontSize: 11,
-    color: COLORS.ink,
-    fontFamily: FONT_MEDIUM,
+  cashoutPolicyText: {
+    marginTop: 4,
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
   },
   cashoutLinkedAccountList: {
     marginTop: 12,
     gap: 8,
   },
-  cashoutLinkedAccountRow: {
+  cashoutSelectedAccountCard: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     borderWidth: 1,
-    borderColor: COLORS.sand,
+    borderColor: "rgba(15, 23, 42, 0.08)",
     borderRadius: 12,
-    paddingVertical: 9,
-    paddingHorizontal: 10,
-    backgroundColor: COLORS.white,
+    paddingVertical: 10,
+    paddingHorizontal: 11,
+    backgroundColor: "#F8FAFC",
   },
-  cashoutLinkedAccountRowSelected: {
-    borderColor: "rgba(20, 83, 45, 0.2)",
-    backgroundColor: "#ECFDF5",
+  cashoutSelectedAccountTag: {
+    fontSize: 10,
+    color: "#334155",
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutChangeBankButton: {
+    marginTop: 2,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.10)",
+    backgroundColor: COLORS.white,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  cashoutChangeBankButtonText: {
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutLinkedAccountOptions: {
+    gap: 8,
+  },
+  cashoutLinkedAccountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 11,
+    backgroundColor: COLORS.white,
   },
   cashoutLinkedAccountMain: {
     flex: 1,
@@ -19533,25 +19601,14 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
-  cashoutLinkedAccountButton: {
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    borderWidth: 1,
-    borderColor: COLORS.sand,
-    borderRadius: 999,
-    backgroundColor: COLORS.white,
+  cashoutShowMoreButton: {
+    paddingVertical: 4,
+    alignItems: "flex-start",
   },
-  cashoutLinkedAccountButtonSelected: {
-    borderColor: "rgba(20, 83, 45, 0.18)",
-    backgroundColor: "#DFF4E9",
-  },
-  cashoutLinkedAccountButtonText: {
-    fontSize: 10,
+  cashoutShowMoreButtonText: {
+    fontSize: 11,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-  },
-  cashoutLinkedAccountButtonTextSelected: {
-    color: "#14532D",
   },
   cashoutErrorText: {
     marginTop: 8,
@@ -19571,19 +19628,19 @@ const styles = StyleSheet.create({
   },
   historyEntry: {
     position: "relative",
-    paddingVertical: 12,
+    paddingVertical: 10,
     paddingHorizontal: 12,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: COLORS.sand,
-    backgroundColor: COLORS.mint,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
   },
   historyEntryHighlighted: {
     shadowColor: "#2563EB",
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 3,
+    shadowOpacity: 0.14,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
   },
   historyEntryRow: {
     flexDirection: "row",
@@ -19596,7 +19653,7 @@ const styles = StyleSheet.create({
   },
   historyEntryTitle: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -19619,7 +19676,24 @@ const styles = StyleSheet.create({
   },
   historyEntryMeta: {
     alignItems: "flex-end",
-    gap: 4,
+    gap: 2,
+  },
+  historyStatusRow: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  historyStatusText: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  historyStatusTextSuccess: {
+    color: "#166534",
+  },
+  historyStatusTextPending: {
+    color: "#92400E",
   },
   historyCashbackPill: {
     flexDirection: "row",
@@ -19673,13 +19747,6 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
-  historyVerificationText: {
-    marginTop: 8,
-    fontSize: 11,
-    color: COLORS.muted,
-    fontFamily: FONT_TEXT,
-    lineHeight: 16,
-  },
   historyFlagChip: {
     flexDirection: "row",
     alignItems: "center",
@@ -19730,20 +19797,6 @@ const styles = StyleSheet.create({
     marginTop: 6,
     lineHeight: 16,
   },
-  historyReceiptBadge: {
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: "#F97316",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 4,
-  },
-  historyReceiptBadgeText: {
-    fontSize: 10,
-    color: COLORS.white,
-    fontFamily: FONT_MEDIUM,
-  },
   receiptUploadButton: {
     marginTop: 8,
     paddingVertical: 8,
@@ -19768,11 +19821,37 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   historyActionRow: {
-    marginTop: 8,
+    marginTop: 10,
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
+    gap: 10,
     alignItems: "center",
+  },
+  historyPrimaryAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: "#0B2147",
+    minWidth: 150,
+  },
+  historyPrimaryActionDisabled: {
+    opacity: 0.6,
+  },
+  historyPrimaryActionText: {
+    fontSize: 11,
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM,
+  },
+  historyInlineAction: {
+    paddingVertical: 6,
+  },
+  historyInlineActionText: {
+    fontSize: 11,
+    color: "#1D4ED8",
+    fontFamily: FONT_MEDIUM,
   },
   historyVerifyButton: {
     flexDirection: "row",

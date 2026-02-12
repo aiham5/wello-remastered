@@ -10,6 +10,10 @@ const PLAID_WEBHOOK_URL = Deno.env.get("PLAID_WEBHOOK_URL") ?? "";
 const PLAID_REDIRECT_URI = Deno.env.get("PLAID_REDIRECT_URI") ?? "";
 const PLAID_ANDROID_PACKAGE_NAME =
   Deno.env.get("PLAID_ANDROID_PACKAGE_NAME") ?? "";
+const PLAID_REQUEST_TIMEOUT_MS = Math.max(
+  Number(Deno.env.get("PLAID_REQUEST_TIMEOUT_MS") || 15000) || 15000,
+  5000,
+);
 
 const PLAID_BASE_URL = (() => {
   switch (PLAID_ENV) {
@@ -38,17 +42,34 @@ const plaidRequest = async <T>(
   payload: Record<string, unknown>,
 ): Promise<T> => {
   ensurePlaidEnv();
-  const response = await fetch(`${PLAID_BASE_URL}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      client_id: PLAID_CLIENT_ID,
-      secret: PLAID_SECRET,
-      ...payload,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PLAID_REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${PLAID_BASE_URL}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        client_id: PLAID_CLIENT_ID,
+        secret: PLAID_SECRET,
+        ...payload,
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (String((error as { name?: string })?.name || "") === "AbortError") {
+      throw new HttpError(
+        "Bank verification request timed out. Please try again.",
+        504,
+        { reason: "plaid_timeout" },
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const text = await response.text();
   let parsed: Record<string, unknown> = {};

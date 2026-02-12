@@ -1,0 +1,73 @@
+project_id = "qrohvdlntdowewhkwfub"
+
+[functions.admin-add-commission-to-stripe]
+verify_jwt = false
+
+[functions.admin-create-test-commission]
+verify_jwt = false
+
+[functions.admin-run-monthly-invoices]
+verify_jwt = false
+
+[functions.admin-send-promo-push]
+verify_jwt = false
+
+[functions.plaid-create-link-token]
+verify_jwt = false
+
+[functions.plaid-exchange-public-token]
+verify_jwt = false
+
+[functions.plaid-get-link-status]
+verify_jwt = false
+
+[functions.plaid-set-cashout-account]
+verify_jwt = false
+
+[functions.plaid-unlink-bank]
+verify_jwt = false
+
+[functions.plaid-verify-purchase]
+verify_jwt = false
+
+[functions.promo-apply]
+verify_jwt = false
+
+[functions.promo-get]
+verify_jwt = false
+
+[functions.push-dispatch]
+verify_jwt = false
+
+[functions.push-register-token]
+verify_jwt = false
+
+[functions.r2-presign]
+verify_jwt = false
+
+[functions.stripe-create-account-link]
+verify_jwt = false
+
+[functions.stripe-create-cashout-link]
+verify_jwt = false
+
+[functions.stripe-create-cashout-login-link]
+verify_jwt = false
+
+[functions.stripe-create-cashout-payout]
+verify_jwt = false
+
+[functions.stripe-create-login-link]
+verify_jwt = false
+
+[functions.stripe-create-monthly-invoices]
+verify_jwt = false
+
+[functions.stripe-create-setup-session]
+verify_jwt = false
+
+[functions.stripe-get-cashout-status]
+verify_jwt = false
+
+[functions.stripe-webhook]
+verify_jwt = false

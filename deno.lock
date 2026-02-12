@@ -1,0 +1,49 @@
+{
+  "version": "5",
+  "redirects": {
+    "https://esm.sh/@supabase/supabase-js@2": "https://esm.sh/@supabase/supabase-js@2.95.3"
+  },
+  "remote": {
+    "https://deno.land/std@0.224.0/async/delay.ts": "f90dd685b97c2f142b8069082993e437b1602b8e2561134827eeb7c12b95c499",
+    "https://deno.land/std@0.224.0/http/server.ts": "f9313804bf6467a1704f45f76cb6cd0a3396a3b31c316035e6a4c2035d1ea514",
+    "https://esm.sh/@supabase/supabase-js@2.95.3": "1f2684e4be12043f36ea7decd22a2ba0c3367cf6c474b99a051f1e7148e88176",
+    "https://esm.sh/stripe@14.25.0?target=deno": "d51f866ea5a2e00948bbd0fbcd10e389f0a74811d5320874d08fde4ff54e6ccc"
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@gorhom/bottom-sheet@^5.2.8",
+        "npm:@react-native-async-storage/async-storage@^2.2.0",
+        "npm:@supabase/supabase-js@^2.90.1",
+        "npm:@types/react@~19.1.10",
+        "npm:babel-preset-expo@~54.0.10",
+        "npm:base64-js@^1.5.1",
+        "npm:dotenv@^16.5.0",
+        "npm:expo-camera@~17.0.10",
+        "npm:expo-clipboard@^8.0.8",
+        "npm:expo-dev-client@~6.0.20",
+        "npm:expo-device@~8.0.10",
+        "npm:expo-file-system@^19.0.21",
+        "npm:expo-font@~14.0.11",
+        "npm:expo-image-manipulator@~14.0.8",
+        "npm:expo-image-picker@^17.0.10",
+        "npm:expo-linear-gradient@~15.0.8",
+        "npm:expo-location@~19.0.8",
+        "npm:expo-notifications@~0.32.16",
+        "npm:expo@~54.0.33",
+        "npm:qrcode@^1.5.4",
+        "npm:react-native-confetti-cannon@^1.5.2",
+        "npm:react-native-gesture-handler@2.28",
+        "npm:react-native-maps@1.20.1",
+        "npm:react-native-plaid-link-sdk@^12.7.0",
+        "npm:react-native-reanimated@~4.1.1",
+        "npm:react-native-safe-area-context@5.6",
+        "npm:react-native-url-polyfill@3",
+        "npm:react-native-worklets@0.5.1",
+        "npm:react-native@0.81.5",
+        "npm:react@19.1.0",
+        "npm:typescript@~5.9.2"
+      ]
+    }
+  }
+}
