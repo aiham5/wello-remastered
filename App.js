@@ -148,6 +148,10 @@ const LIVE_DEBOUNCE_MS = 1200;
 const RECEIPT_PREVIEW_HEIGHT = Math.min(SCREEN_HEIGHT * 0.78, 760);
 const RECEIPT_PREVIEW_WIDTH = Math.min(SCREEN_WIDTH - 24, 720);
 const RECEIPT_PREVIEW_MAX_ZOOM = 6;
+const AUTO_VERIFY_RETRY_MS = 1000 * 60 * 20;
+const AUTO_VERIFY_LOCAL_COOLDOWN_MS = 1000 * 60 * 2;
+const AUTO_VERIFY_MAX_REDEMPTION_AGE_MS = 1000 * 60 * 60 * 24;
+const HISTORY_VERIFY_HIGHLIGHT_MS = 1000 * 15;
 const TIME_OPTIONS = [
   "12:00",
   "12:30",
@@ -2622,9 +2626,13 @@ export default function App() {
   });
   const [cashoutStatus, setCashoutStatus] = useState({
     connected: false,
+    bankSelected: false,
     payoutsEnabled: false,
     detailsSubmitted: false,
     accountId: null,
+    selectedPayoutAccountId: null,
+    selectedPayoutLabel: null,
+    selectedPayoutSyncedAt: null,
     requirementsDue: [],
     disabledReason: null,
   });
@@ -2686,10 +2694,17 @@ export default function App() {
     error: null,
     success: null,
   });
+  const [historyVerifyNotice, setHistoryVerifyNotice] = useState(null);
+  const [highlightedHistoryEntryId, setHighlightedHistoryEntryId] = useState(null);
   const [plaidLinkState, setPlaidLinkState] = useState({
     loading: false,
     linked: false,
     linkedCount: 0,
+    linkedSinceMs: null,
+    linkedAccounts: [],
+    selectedPayoutAccountId: null,
+    selectedPayoutLabel: null,
+    selectedPayoutSyncedAt: null,
     error: null,
   });
   const [plaidLinkAction, setPlaidLinkAction] = useState("idle");
@@ -2709,6 +2724,9 @@ export default function App() {
   });
   const [receiptUploadConfetti, setReceiptUploadConfetti] = useState(false);
   const receiptUploadTimersRef = useRef({ hide: null, confetti: null });
+  const historyVerifyNoticeTimerRef = useRef(null);
+  const autoVerifyAttemptedAtRef = useRef(new Map());
+  const autoVerifyInFlightRef = useRef(false);
   const [receiptDebug, setReceiptDebug] = useState(null);
   const [businessReceiptStatus, setBusinessReceiptStatus] = useState({
     loading: false,
@@ -2793,6 +2811,10 @@ export default function App() {
       const timers = receiptUploadTimersRef.current;
       if (timers.hide) clearTimeout(timers.hide);
       if (timers.confetti) clearTimeout(timers.confetti);
+      if (historyVerifyNoticeTimerRef.current) {
+        clearTimeout(historyVerifyNoticeTimerRef.current);
+        historyVerifyNoticeTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -3558,9 +3580,18 @@ export default function App() {
       }
       setCashoutStatus({
         connected: Boolean(data?.connected),
+        bankSelected:
+          data?.bankSelected != null
+            ? Boolean(data.bankSelected)
+            : Boolean(data?.selectedPayoutAccountId),
         payoutsEnabled: Boolean(data?.payoutsEnabled),
         detailsSubmitted: Boolean(data?.detailsSubmitted),
         accountId: data?.accountId || null,
+        selectedPayoutAccountId: data?.selectedPayoutAccountId || null,
+        selectedPayoutLabel: data?.selectedPayoutLabel || null,
+        selectedPayoutSyncedAt: data?.selectedPayoutSyncedAt
+          ? new Date(data.selectedPayoutSyncedAt).getTime()
+          : null,
         requirementsDue: Array.isArray(data?.requirementsDue)
           ? data.requirementsDue
           : [],
@@ -3680,6 +3711,84 @@ export default function App() {
     Linking.openURL(data.url).catch(() => null);
   }, []);
 
+  const handleSelectCashoutBank = useCallback(
+    async (account) => {
+      if (!isSignedIn) {
+        setCashoutActionStatus({
+          loading: false,
+          error: "Sign in to choose a payout bank.",
+          success: null,
+        });
+        return;
+      }
+      const plaidAccountId = String(account?.accountId || "").trim();
+      if (!plaidAccountId) {
+        setCashoutActionStatus({
+          loading: false,
+          error: "Choose a valid linked bank account.",
+          success: null,
+        });
+        return;
+      }
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setCashoutActionStatus({
+          loading: false,
+          error: "Supabase is not configured for payouts.",
+          success: null,
+        });
+        return;
+      }
+
+      setCashoutActionStatus({ loading: true, error: null, success: null });
+      const { data, error, status } = await callPlaidFunction(
+        "plaid-set-cashout-account",
+        { plaidAccountId },
+      );
+      const errorText = String(error || "").toLowerCase();
+      const isAuthFailure =
+        status === 401 ||
+        errorText.includes("invalid jwt") ||
+        errorText.includes("jwt expired") ||
+        errorText.includes("unauthorized") ||
+        errorText.includes("missing authorization") ||
+        errorText.includes("401");
+      if (error && isAuthFailure) {
+        setCashoutActionStatus({
+          loading: false,
+          error: "Session invalid. Please sign in again.",
+          success: null,
+        });
+        return;
+      }
+      if (error || !data?.selected) {
+        setCashoutActionStatus({
+          loading: false,
+          error:
+            typeof error === "string"
+              ? error
+              : error?.message || data?.error || "Unable to set payout bank.",
+          success: null,
+        });
+        return;
+      }
+
+      await loadCashoutStatus({ silent: true });
+      await loadPlaidLinkState({ silent: true });
+      const payoutsReady = Boolean(data?.payoutsEnabled);
+      const primaryMessage =
+        data?.copy?.primary ||
+        (payoutsReady
+          ? "Payout bank selected. Cashouts are ready."
+          : "Payout bank selected. Complete Stripe verification to enable payouts.");
+      setCashoutActionStatus({
+        loading: false,
+        error: null,
+        success: primaryMessage,
+      });
+    },
+    [isSignedIn, loadCashoutStatus, loadPlaidLinkState],
+  );
+
   const handleCashoutManage = useCallback(async () => {
     if (!cashoutStatus.connected) {
       setCashoutActionStatus({
@@ -3747,10 +3856,14 @@ export default function App() {
       });
       return;
     }
-    if (!cashoutStatus.connected || !cashoutStatus.payoutsEnabled) {
+    if (
+      !cashoutStatus.connected ||
+      !cashoutStatus.bankSelected ||
+      !cashoutStatus.payoutsEnabled
+    ) {
       setCashoutActionStatus({
         loading: false,
-        error: "Link and verify a bank account first.",
+        error: "Choose and verify a payout bank first.",
         success: null,
       });
       return;
@@ -3847,6 +3960,7 @@ export default function App() {
     setCashoutAmountText("");
   }, [
     cashoutStatus.connected,
+    cashoutStatus.bankSelected,
     cashoutStatus.payoutsEnabled,
     cashbackBalance.availableCents,
     cashoutAmountText,
@@ -4937,6 +5051,13 @@ export default function App() {
     [redemptionHistory],
   );
   const pendingHistoryCount = pendingReviewCount + pendingReceiptCount;
+  const highlightedHistoryEntry = useMemo(() => {
+    if (!highlightedHistoryEntryId) return null;
+    return (
+      redemptionHistory.find((entry) => entry.id === highlightedHistoryEntryId) ||
+      null
+    );
+  }, [redemptionHistory, highlightedHistoryEntryId]);
 
   useEffect(() => {
     if (!businesses.length) return;
@@ -5013,18 +5134,35 @@ export default function App() {
     if (activeTab === "cashout" && isSignedIn) {
       loadCashoutStatus({});
       loadCashbackBalance({});
+      loadPlaidLinkState({ silent: true });
     }
   }, [
     activeTab,
     isSignedIn,
     loadCashoutStatus,
     loadCashbackBalance,
+    loadPlaidLinkState,
     SUPABASE_URL,
     SUPABASE_ANON_KEY,
   ]);
 
   useEffect(() => {
     if (isSignedIn && authUserId) return;
+    setCashoutStatus({
+      connected: false,
+      bankSelected: false,
+      payoutsEnabled: false,
+      detailsSubmitted: false,
+      accountId: null,
+      selectedPayoutAccountId: null,
+      selectedPayoutLabel: null,
+      selectedPayoutSyncedAt: null,
+      requirementsDue: [],
+      disabledReason: null,
+    });
+    setCashoutStatusState({ loading: false, error: null });
+    setCashoutActionStatus({ loading: false, error: null, success: null });
+    setCashoutAmountText("");
     setCashbackBalance({
       availableCents: 0,
       paidCents: 0,
@@ -5036,6 +5174,11 @@ export default function App() {
       loading: false,
       linked: false,
       linkedCount: 0,
+      linkedSinceMs: null,
+      linkedAccounts: [],
+      selectedPayoutAccountId: null,
+      selectedPayoutLabel: null,
+      selectedPayoutSyncedAt: null,
       error: null,
     });
   }, [authUserId, isSignedIn]);
@@ -7739,6 +7882,11 @@ export default function App() {
           loading: false,
           linked: false,
           linkedCount: 0,
+          linkedSinceMs: null,
+          linkedAccounts: [],
+          selectedPayoutAccountId: null,
+          selectedPayoutLabel: null,
+          selectedPayoutSyncedAt: null,
           error: null,
         });
         return;
@@ -7761,10 +7909,65 @@ export default function App() {
         loading: false,
         linked: Boolean(data?.linked),
         linkedCount: Number(data?.linkedCount) || 0,
+        linkedSinceMs: data?.linkedSince
+          ? new Date(data.linkedSince).getTime()
+          : null,
+        linkedAccounts: Array.isArray(data?.accounts)
+          ? data.accounts
+              .map((account) => {
+                const accountId = String(
+                  account?.accountId || account?.plaidAccountId || "",
+                ).trim();
+                if (!accountId) return null;
+                return {
+                  accountId,
+                  itemId: String(account?.itemId || "").trim() || null,
+                  institutionName:
+                    String(account?.institutionName || "").trim() || null,
+                  name: String(account?.name || "").trim() || "Bank account",
+                  mask: String(account?.mask || "").trim() || null,
+                  subtype: String(account?.subtype || "").trim() || null,
+                  type: String(account?.type || "").trim() || null,
+                  selectedForPayout: Boolean(account?.selectedForPayout),
+                };
+              })
+              .filter(Boolean)
+          : [],
+        selectedPayoutAccountId:
+          String(data?.payoutSelection?.selectedAccountId || "").trim() || null,
+        selectedPayoutLabel:
+          String(data?.payoutSelection?.label || "").trim() || null,
+        selectedPayoutSyncedAt: data?.payoutSelection?.syncedAt
+          ? new Date(data.payoutSelection.syncedAt).getTime()
+          : null,
         error: null,
       });
     },
     [isSignedIn],
+  );
+
+  const setHistoryVerificationNotice = useCallback(
+    (entry, title, message, variant = "info") => {
+      if (!entry?.id) return;
+      const groupKey = entry.businessId || entry.business?.name || "Wello business";
+      setExpandedHistoryGroups((prev) => ({ ...prev, [groupKey]: true }));
+      setHighlightedHistoryEntryId(entry.id);
+      setHistoryVerifyNotice({
+        id: `${entry.id}:${Date.now()}`,
+        entryId: entry.id,
+        title: String(title || "Purchase verification update").trim(),
+        message: String(message || "").trim(),
+        variant,
+      });
+      if (historyVerifyNoticeTimerRef.current) {
+        clearTimeout(historyVerifyNoticeTimerRef.current);
+      }
+      historyVerifyNoticeTimerRef.current = setTimeout(() => {
+        setHighlightedHistoryEntryId((prev) => (prev === entry.id ? null : prev));
+        historyVerifyNoticeTimerRef.current = null;
+      }, HISTORY_VERIFY_HIGHLIGHT_MS);
+    },
+    [],
   );
 
   const handleLinkPurchaseVerificationBank = useCallback(async () => {
@@ -7918,29 +8121,40 @@ export default function App() {
         "Linked bank removed. Receipt upload is available for verification.",
     });
     await loadPlaidLinkState({ silent: true });
+    await loadCashoutStatus({ silent: true });
     setPlaidLinkAction("idle");
-  }, [isSignedIn, loadPlaidLinkState]);
+  }, [isSignedIn, loadPlaidLinkState, loadCashoutStatus]);
 
   const handleAutoVerifyPurchase = useCallback(
-    async (entry) => {
+    async (entry, options = {}) => {
+      const interactive = options?.interactive !== false;
+      const source = interactive ? "manual" : "auto";
       if (!entry?.id || !entry?.businessId) return;
       if (
         !ensureSupabaseReady((message) =>
           setPurchaseVerifyStatus({
             loading: false,
             targetId: null,
-            error: message,
+            error: interactive ? message : null,
             success: null,
           }),
         )
       ) {
+        if (!interactive) {
+          setHistoryVerificationNotice(
+            entry,
+            "Auto verification unavailable",
+            "Automatic verification is temporarily unavailable. Upload a receipt to continue.",
+            "warning",
+          );
+        }
         return;
       }
       if (!authUserId) {
         setPurchaseVerifyStatus({
           loading: false,
           targetId: null,
-          error: "Sign in to verify purchases.",
+          error: interactive ? "Sign in to verify purchases." : null,
           success: null,
         });
         return;
@@ -7965,9 +8179,17 @@ export default function App() {
         setPurchaseVerifyStatus({
           loading: false,
           targetId: null,
-          error,
+          error: interactive ? error : null,
           success: null,
         });
+        if (!interactive) {
+          setHistoryVerificationNotice(
+            entry,
+            "Auto verification unavailable",
+            "Automatic verification is temporarily unavailable. Upload a receipt to continue.",
+            "warning",
+          );
+        }
         return;
       }
 
@@ -7980,8 +8202,15 @@ export default function App() {
           loading: false,
           targetId: null,
           error: null,
-          success: "Purchase verified. Cashback will follow normal payout rules.",
+          success:
+            source === "auto"
+              ? "Purchase automatically verified. Cashback will follow normal payout rules."
+              : "Purchase verified. Cashback will follow normal payout rules.",
         });
+        if (source === "auto") {
+          setHistoryVerifyNotice(null);
+          setHighlightedHistoryEntryId(null);
+        }
         await Promise.all([
           loadRedemptions({ silent: true }),
           loadCashbackBalance({ silent: true }),
@@ -7999,7 +8228,7 @@ export default function App() {
             "Verification is pending. You can wait or upload a receipt now.",
         });
         await loadRedemptions({ silent: true });
-        if (data?.fallbackRequired) {
+        if (data?.fallbackRequired && interactive) {
           setVerificationPrompt({
             visible: true,
             title: "Verification pending",
@@ -8011,6 +8240,17 @@ export default function App() {
             secondaryLabel: "Wait",
             entry,
           });
+        }
+        if (data?.fallbackRequired && !interactive) {
+          setHistoryVerificationNotice(
+            entry,
+            "Verification pending",
+            mergeVerificationCopy(
+              data?.message || PLAID_PENDING_COPY,
+              PLAID_FALLBACK_COPY,
+            ),
+            "info",
+          );
         }
         return;
       }
@@ -8025,16 +8265,30 @@ export default function App() {
           "Automatic verification needs a receipt fallback.",
       });
       await loadRedemptions({ silent: true });
-      setVerificationPrompt({
-        visible: true,
-        title: "Receipt needed",
-        message: mergeVerificationCopy(fallbackMessage, PLAID_FALLBACK_COPY),
-        primaryLabel: "Upload receipt",
-        secondaryLabel: "Later",
-        entry,
-      });
+      if (interactive) {
+        setVerificationPrompt({
+          visible: true,
+          title: "Receipt needed",
+          message: mergeVerificationCopy(fallbackMessage, PLAID_FALLBACK_COPY),
+          primaryLabel: "Upload receipt",
+          secondaryLabel: "Later",
+          entry,
+        });
+      } else {
+        setHistoryVerificationNotice(
+          entry,
+          "Receipt needed",
+          mergeVerificationCopy(fallbackMessage, PLAID_FALLBACK_COPY),
+          "warning",
+        );
+      }
     },
-    [authUserId, loadRedemptions, loadCashbackBalance],
+    [
+      authUserId,
+      loadRedemptions,
+      loadCashbackBalance,
+      setHistoryVerificationNotice,
+    ],
   );
 
   const handleUploadReceipt = async (entry, source = "library") => {
@@ -9663,10 +9917,21 @@ export default function App() {
         error: null,
         success: null,
       });
+      setHistoryVerifyNotice(null);
+      setHighlightedHistoryEntryId(null);
+      autoVerifyAttemptedAtRef.current.clear();
       return;
     }
     loadRedemptions({ silent: true });
   }, [isSignedIn, showHistoryTab, loadRedemptions]);
+
+  useEffect(() => {
+    autoVerifyAttemptedAtRef.current.clear();
+    if (!plaidLinkState.linked) {
+      setHistoryVerifyNotice(null);
+      setHighlightedHistoryEntryId(null);
+    }
+  }, [plaidLinkState.linked, plaidLinkState.linkedSinceMs]);
 
   useEffect(() => {
     if (!isSignedIn || !showHistoryTab) {
@@ -9680,6 +9945,74 @@ export default function App() {
     receiptNoticeShownRef.current = true;
     setReceiptNoticeOpen(true);
   }, [activeTab, isSignedIn, showHistoryTab, pendingReceiptCount]);
+
+  useEffect(() => {
+    if (activeTab !== "history") return;
+    if (!isSignedIn || !showHistoryTab) return;
+    if (!plaidLinkState.linked) return;
+    if (!plaidLinkState.linkedSinceMs) return;
+    if (redemptionStatus.loading || purchaseVerifyStatus.loading) return;
+    if (autoVerifyInFlightRef.current) return;
+
+    const now = Date.now();
+    const linkedSinceMs = Number(plaidLinkState.linkedSinceMs) || 0;
+    const eligible = redemptionHistory.find((entry) => {
+      if (!entry?.id || !entry?.businessId) return false;
+      if (entry.receipt?.id) return false;
+      const createdAt = Number(entry.createdAt) || 0;
+      if (!createdAt) return false;
+      // Only auto-check redemptions created after the user linked a bank.
+      if (createdAt < linkedSinceMs) return false;
+      // Avoid sweeping older backlog items; keep auto-check focused on new activity.
+      if (now - createdAt > AUTO_VERIFY_MAX_REDEMPTION_AGE_MS) return false;
+
+      const recentAttempt = autoVerifyAttemptedAtRef.current.get(entry.id) || 0;
+      if (now - recentAttempt < AUTO_VERIFY_LOCAL_COOLDOWN_MS) return false;
+
+      const verification = entry.purchaseVerification || null;
+      if (String(verification?.source || "").toLowerCase() === "receipt") {
+        return false;
+      }
+      if (!verification?.status) return true;
+
+      const status = String(verification.status || "").toLowerCase();
+      const reasonCode = String(verification.reasonCode || "").toLowerCase();
+      const lastCheckedAt = Number(verification.lastCheckedAt) || 0;
+      const ageMs = lastCheckedAt > 0 ? now - lastCheckedAt : Number.MAX_SAFE_INTEGER;
+
+      if (status === "pending" && ageMs >= AUTO_VERIFY_RETRY_MS) {
+        return true;
+      }
+      if (
+        status === "rejected" &&
+        (reasonCode === "transaction_pending" ||
+          reasonCode === "transaction_delayed") &&
+        ageMs >= AUTO_VERIFY_RETRY_MS
+      ) {
+        return true;
+      }
+      return false;
+    });
+
+    if (!eligible) return;
+    autoVerifyInFlightRef.current = true;
+    autoVerifyAttemptedAtRef.current.set(eligible.id, now);
+    handleAutoVerifyPurchase(eligible, { interactive: false })
+      .catch(() => null)
+      .finally(() => {
+        autoVerifyInFlightRef.current = false;
+      });
+  }, [
+    activeTab,
+    isSignedIn,
+    showHistoryTab,
+    plaidLinkState.linked,
+    plaidLinkState.linkedSinceMs,
+    redemptionStatus.loading,
+    purchaseVerifyStatus.loading,
+    redemptionHistory,
+    handleAutoVerifyPurchase,
+  ]);
 
   useEffect(() => {
     if (!businessDetailOpen || !businessDetail?.id) return;
@@ -13027,6 +13360,63 @@ export default function App() {
                                 {purchaseVerifyStatus.success}
                               </Text>
                             )}
+                            {historyVerifyNotice && (
+                              <View
+                                style={[
+                                  styles.historyVerifyNoticeCard,
+                                  historyVerifyNotice.variant === "warning"
+                                    ? styles.historyVerifyNoticeCardWarn
+                                    : styles.historyVerifyNoticeCardInfo,
+                                ]}
+                              >
+                                <View style={styles.historyVerifyNoticeHeader}>
+                                  <View style={styles.historyVerifyNoticeHeaderLeft}>
+                                    <Ionicons
+                                      name={
+                                        historyVerifyNotice.variant === "warning"
+                                          ? "alert-circle-outline"
+                                          : "information-circle-outline"
+                                      }
+                                      size={16}
+                                      color={
+                                        historyVerifyNotice.variant === "warning"
+                                          ? "#B45309"
+                                          : "#1D4ED8"
+                                      }
+                                    />
+                                    <Text style={styles.historyVerifyNoticeTitle}>
+                                      {historyVerifyNotice.title}
+                                    </Text>
+                                  </View>
+                                  <TouchableOpacity
+                                    onPress={() => setHistoryVerifyNotice(null)}
+                                  >
+                                    <Ionicons
+                                      name="close"
+                                      size={16}
+                                      color={COLORS.muted}
+                                    />
+                                  </TouchableOpacity>
+                                </View>
+                                <Text style={styles.historyVerifyNoticeBody}>
+                                  {historyVerifyNotice.message}
+                                </Text>
+                                {highlightedHistoryEntry && (
+                                  <View style={styles.historyVerifyNoticeActions}>
+                                    <TouchableOpacity
+                                      style={styles.secondaryButton}
+                                      onPress={() =>
+                                        promptReceiptUpload(highlightedHistoryEntry)
+                                      }
+                                    >
+                                      <Text style={styles.secondaryButtonText}>
+                                        Upload receipt for highlighted redemption
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                )}
+                              </View>
+                            )}
                             {receiptDebug && (
                               <Text style={styles.cashoutErrorText}>
                                 {receiptDebug}
@@ -13252,6 +13642,8 @@ export default function App() {
                                         key={entry.id}
                                         style={[
                                           styles.historyEntry,
+                                          entry.id === highlightedHistoryEntryId &&
+                                            styles.historyEntryHighlighted,
                                           {
                                             borderColor: hexToRgba(
                                               toneColor,
@@ -13976,6 +14368,7 @@ export default function App() {
                                   styles.primaryButton,
                                   { marginTop: 12 },
                                   (!cashoutStatus.connected ||
+                                    !cashoutStatus.bankSelected ||
                                     !cashoutStatus.payoutsEnabled ||
                                     cashoutPreview.mode === "invalid" ||
                                     (Number(cashbackBalance.availableCents) ||
@@ -13986,6 +14379,7 @@ export default function App() {
                                 onPress={handleCashoutPayout}
                                 disabled={
                                   !cashoutStatus.connected ||
+                                  !cashoutStatus.bankSelected ||
                                   !cashoutStatus.payoutsEnabled ||
                                   cashoutPreview.mode === "invalid" ||
                                   (Number(cashbackBalance.availableCents) ||
@@ -14022,32 +14416,62 @@ export default function App() {
                                 </Text>
                               </View>
                               <Text style={styles.sectionBody}>
-                                Link a bank account to receive payouts. Cashouts
-                                are available once per week.
+                                Choose a payout bank from your linked Plaid
+                                accounts. Stripe still handles all payout money
+                                movement.
                               </Text>
+                              {cashoutStatus.selectedPayoutLabel && (
+                                <Text style={styles.cashoutSelectedLabel}>
+                                  Selected payout bank:{" "}
+                                  {cashoutStatus.selectedPayoutLabel}
+                                </Text>
+                              )}
                               <View style={styles.cashoutStatusRow}>
                                 <View
                                   style={[
                                     styles.cashoutPill,
-                                    cashoutStatus.connected
+                                    plaidLinkState.linked
                                       ? styles.cashoutPillActive
                                       : styles.cashoutPillMuted,
                                   ]}
                                   accessibilityLabel={
-                                    cashoutStatus.connected
-                                      ? "Bank account linked"
-                                      : "Bank account not linked"
+                                    plaidLinkState.linked
+                                      ? "Linked bank available"
+                                      : "No linked bank"
                                   }
                                 >
                                   <Ionicons
                                     name={
-                                      cashoutStatus.connected
+                                      plaidLinkState.linked
                                         ? "link-outline"
                                         : "alert-circle-outline"
                                     }
                                     size={16}
                                     color={
-                                      cashoutStatus.connected
+                                      plaidLinkState.linked
+                                        ? COLORS.ink
+                                        : COLORS.muted
+                                    }
+                                  />
+                                </View>
+                                <View
+                                  style={[
+                                    styles.cashoutPill,
+                                    cashoutStatus.bankSelected
+                                      ? styles.cashoutPillActive
+                                      : styles.cashoutPillMuted,
+                                  ]}
+                                  accessibilityLabel={
+                                    cashoutStatus.bankSelected
+                                      ? "Payout bank selected"
+                                      : "Payout bank not selected"
+                                  }
+                                >
+                                  <Ionicons
+                                    name="card-outline"
+                                    size={16}
+                                    color={
+                                      cashoutStatus.bankSelected
                                         ? COLORS.ink
                                         : COLORS.muted
                                     }
@@ -14063,7 +14487,7 @@ export default function App() {
                                   accessibilityLabel={
                                     cashoutStatus.payoutsEnabled
                                       ? "Payouts ready"
-                                      : cashoutStatus.connected
+                                      : cashoutStatus.bankSelected
                                         ? "Payouts pending verification"
                                         : "Payouts locked"
                                   }
@@ -14072,7 +14496,7 @@ export default function App() {
                                     name={
                                       cashoutStatus.payoutsEnabled
                                         ? "checkmark-circle-outline"
-                                        : cashoutStatus.connected
+                                        : cashoutStatus.bankSelected
                                           ? "time-outline"
                                           : "lock-closed-outline"
                                     }
@@ -14085,6 +14509,86 @@ export default function App() {
                                   />
                                 </View>
                               </View>
+                              {plaidLinkState.linkedAccounts.length > 0 ? (
+                                <View style={styles.cashoutLinkedAccountList}>
+                                  {plaidLinkState.linkedAccounts.map((account) => {
+                                    const accountId = String(account?.accountId || "");
+                                    const isSelected =
+                                      String(
+                                        cashoutStatus.selectedPayoutAccountId || "",
+                                      ) === accountId ||
+                                      Boolean(account?.selectedForPayout);
+                                    const accountLabel = [
+                                      account?.institutionName || "Linked bank",
+                                      account?.name || "Bank account",
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" - ");
+                                    const accountMetaParts = [];
+                                    if (account?.subtype) {
+                                      accountMetaParts.push(account.subtype);
+                                    }
+                                    if (account?.mask) {
+                                      accountMetaParts.push(`****${account.mask}`);
+                                    }
+                                    return (
+                                      <View
+                                        key={accountId}
+                                        style={[
+                                          styles.cashoutLinkedAccountRow,
+                                          isSelected &&
+                                            styles.cashoutLinkedAccountRowSelected,
+                                        ]}
+                                      >
+                                        <View style={styles.cashoutLinkedAccountMain}>
+                                          <Text
+                                            style={styles.cashoutLinkedAccountTitle}
+                                            numberOfLines={1}
+                                          >
+                                            {accountLabel}
+                                          </Text>
+                                          {accountMetaParts.length > 0 && (
+                                            <Text style={styles.cashoutLinkedAccountMeta}>
+                                              {accountMetaParts.join(" - ")}
+                                            </Text>
+                                          )}
+                                        </View>
+                                        <TouchableOpacity
+                                          style={[
+                                            styles.cashoutLinkedAccountButton,
+                                            isSelected &&
+                                              styles.cashoutLinkedAccountButtonSelected,
+                                          ]}
+                                          onPress={() =>
+                                            !isSelected &&
+                                            handleSelectCashoutBank(account)
+                                          }
+                                          disabled={
+                                            cashoutActionStatus.loading || isSelected
+                                          }
+                                        >
+                                          <Text
+                                            style={[
+                                              styles.cashoutLinkedAccountButtonText,
+                                              isSelected &&
+                                                styles.cashoutLinkedAccountButtonTextSelected,
+                                            ]}
+                                          >
+                                            {isSelected
+                                              ? "Selected"
+                                              : "Use for payouts"}
+                                          </Text>
+                                        </TouchableOpacity>
+                                      </View>
+                                    );
+                                  })}
+                                </View>
+                              ) : (
+                                <Text style={styles.cashoutStatusText}>
+                                  Link a bank with Plaid to choose your payout
+                                  destination.
+                                </Text>
+                              )}
                               {cashoutStatusState.loading && (
                                 <View style={styles.cashoutStatusHint}>
                                   <ActivityIndicator
@@ -14114,15 +14618,32 @@ export default function App() {
                               <View style={styles.cashoutButtonStack}>
                                 <TouchableOpacity
                                   style={styles.primaryButton}
-                                  onPress={handleCashoutConnect}
-                                  disabled={cashoutActionStatus.loading}
+                                  onPress={handleLinkPurchaseVerificationBank}
+                                  disabled={
+                                    cashoutActionStatus.loading ||
+                                    plaidLinkAction !== "idle"
+                                  }
                                 >
                                   <Text style={styles.primaryButtonText}>
-                                    {cashoutStatus.connected
-                                      ? "Update bank account"
-                                      : "Link bank account"}
+                                    {plaidLinkAction === "linking"
+                                      ? "Opening Plaid Link..."
+                                      : plaidLinkState.linked
+                                        ? "Link another bank"
+                                        : "Link bank account"}
                                   </Text>
                                 </TouchableOpacity>
+                                {cashoutStatus.connected &&
+                                  !cashoutStatus.payoutsEnabled && (
+                                  <TouchableOpacity
+                                    style={styles.secondaryButton}
+                                    onPress={handleCashoutConnect}
+                                    disabled={cashoutActionStatus.loading}
+                                  >
+                                    <Text style={styles.secondaryButtonText}>
+                                      Complete payout verification
+                                    </Text>
+                                  </TouchableOpacity>
+                                )}
                                 {cashoutStatus.connected && (
                                   <TouchableOpacity
                                     style={styles.secondaryButton}
@@ -14130,7 +14651,7 @@ export default function App() {
                                     disabled={cashoutActionStatus.loading}
                                   >
                                     <Text style={styles.secondaryButtonText}>
-                                      Update payout details
+                                      Manage Stripe payout details
                                     </Text>
                                   </TouchableOpacity>
                                 )}
@@ -18510,6 +19031,47 @@ const styles = StyleSheet.create({
     color: "#1D4ED8",
     fontFamily: FONT_MEDIUM,
   },
+  historyVerifyNoticeCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    marginBottom: 12,
+  },
+  historyVerifyNoticeCardInfo: {
+    backgroundColor: "#EFF6FF",
+    borderColor: "rgba(29, 78, 216, 0.25)",
+  },
+  historyVerifyNoticeCardWarn: {
+    backgroundColor: "#FFF7E6",
+    borderColor: "rgba(180, 83, 9, 0.24)",
+  },
+  historyVerifyNoticeHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+  },
+  historyVerifyNoticeHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flex: 1,
+  },
+  historyVerifyNoticeTitle: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  historyVerifyNoticeBody: {
+    marginTop: 8,
+    fontSize: 11,
+    lineHeight: 16,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  historyVerifyNoticeActions: {
+    marginTop: 10,
+  },
   noticeOverlay: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.55)",
@@ -18932,6 +19494,65 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
+  cashoutSelectedLabel: {
+    marginTop: 10,
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutLinkedAccountList: {
+    marginTop: 12,
+    gap: 8,
+  },
+  cashoutLinkedAccountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 12,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    backgroundColor: COLORS.white,
+  },
+  cashoutLinkedAccountRowSelected: {
+    borderColor: "rgba(20, 83, 45, 0.2)",
+    backgroundColor: "#ECFDF5",
+  },
+  cashoutLinkedAccountMain: {
+    flex: 1,
+  },
+  cashoutLinkedAccountTitle: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutLinkedAccountMeta: {
+    marginTop: 2,
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutLinkedAccountButton: {
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 999,
+    backgroundColor: COLORS.white,
+  },
+  cashoutLinkedAccountButtonSelected: {
+    borderColor: "rgba(20, 83, 45, 0.18)",
+    backgroundColor: "#DFF4E9",
+  },
+  cashoutLinkedAccountButtonText: {
+    fontSize: 10,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutLinkedAccountButtonTextSelected: {
+    color: "#14532D",
+  },
   cashoutErrorText: {
     marginTop: 8,
     fontSize: 11,
@@ -18956,6 +19577,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.mint,
+  },
+  historyEntryHighlighted: {
+    shadowColor: "#2563EB",
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
   },
   historyEntryRow: {
     flexDirection: "row",

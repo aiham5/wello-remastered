@@ -157,7 +157,14 @@ serve(async (req) => {
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select(
-        "stripe_cashout_account_id, stripe_cashout_payouts_enabled, stripe_cashout_onboarded_at",
+        [
+          "stripe_cashout_account_id",
+          "stripe_cashout_payouts_enabled",
+          "stripe_cashout_onboarded_at",
+          "stripe_cashout_plaid_account_id",
+          "stripe_cashout_account_label",
+          "stripe_cashout_bank_synced_at",
+        ].join(","),
       )
       .eq("id", userId)
       .maybeSingle();
@@ -168,14 +175,25 @@ serve(async (req) => {
       });
     }
 
-    const accountId = profile.stripe_cashout_account_id;
+    const profileRow = (profile || {}) as Record<string, unknown>;
+    const accountId = String(profileRow.stripe_cashout_account_id || "").trim();
+    const selectedPlaidAccountId = String(
+      profileRow.stripe_cashout_plaid_account_id || "",
+    ).trim();
+    const selectedPayoutLabel = String(
+      profileRow.stripe_cashout_account_label || "",
+    ).trim();
     if (!accountId) {
       return new Response(
         JSON.stringify({
           connected: false,
+          bankSelected: false,
           payoutsEnabled: false,
           detailsSubmitted: false,
           accountId: null,
+          selectedPayoutAccountId: null,
+          selectedPayoutLabel: null,
+          selectedPayoutSyncedAt: null,
         }),
         { status: 200 },
       );
@@ -198,9 +216,13 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         connected: true,
+        bankSelected: Boolean(selectedPlaidAccountId),
         payoutsEnabled,
         detailsSubmitted,
         accountId,
+        selectedPayoutAccountId: selectedPlaidAccountId || null,
+        selectedPayoutLabel: selectedPayoutLabel || null,
+        selectedPayoutSyncedAt: profileRow.stripe_cashout_bank_synced_at || null,
         requirementsDue: account.requirements?.currently_due ?? [],
         disabledReason: account.requirements?.disabled_reason ?? null,
       }),

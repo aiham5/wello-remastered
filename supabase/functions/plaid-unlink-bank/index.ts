@@ -35,6 +35,9 @@ serve(async (req) => {
     }
 
     const targets = Array.isArray(items) ? items : [];
+    const targetItemIds = targets
+      .map((item) => String(item?.plaid_item_id || "").trim())
+      .filter(Boolean);
     let unlinkedCount = 0;
     for (const item of targets) {
       const accessToken = String(item?.plaid_access_token || "").trim();
@@ -60,6 +63,34 @@ serve(async (req) => {
         })
         .eq("id", item.id);
       if (!updateError) unlinkedCount += 1;
+    }
+
+    if (targetItemIds.length > 0) {
+      await supabase
+        .from("plaid_linked_accounts")
+        .update({ status: "revoked" })
+        .eq("user_id", userId)
+        .in("plaid_item_id", targetItemIds);
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("stripe_cashout_plaid_item_id")
+        .eq("id", userId)
+        .maybeSingle();
+
+      const selectedItemId = String(profile?.stripe_cashout_plaid_item_id || "").trim();
+      if (selectedItemId && targetItemIds.includes(selectedItemId)) {
+        await supabase
+          .from("profiles")
+          .update({
+            stripe_cashout_plaid_item_id: null,
+            stripe_cashout_plaid_account_id: null,
+            stripe_cashout_account_label: null,
+            stripe_cashout_external_account_id: null,
+            stripe_cashout_bank_synced_at: null,
+          })
+          .eq("id", userId);
+      }
     }
 
     return json({

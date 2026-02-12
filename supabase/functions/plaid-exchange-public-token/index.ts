@@ -7,6 +7,7 @@ import {
 } from "../_shared/auth.ts";
 import {
   plaidExchangePublicToken,
+  plaidGetAccounts,
   plaidGetInstitutionById,
   plaidGetItem,
 } from "../_shared/plaid.ts";
@@ -30,6 +31,7 @@ serve(async (req) => {
 
     const exchange = await plaidExchangePublicToken(publicToken);
     const item = await plaidGetItem(exchange.access_token);
+    const accounts = await plaidGetAccounts(exchange.access_token);
     const institutionId = item?.item?.institution_id || null;
 
     let institutionName: string | null = null;
@@ -65,11 +67,104 @@ serve(async (req) => {
       throw new HttpError(upsertError.message || "Unable to save linked bank.", 500);
     }
 
+    const accountRows = (Array.isArray(accounts.accounts) ? accounts.accounts : [])
+      .filter((account) => String(account?.account_id || "").trim().length > 0)
+      .map((account) => ({
+        user_id: userId,
+        plaid_item_id: exchange.item_id,
+        plaid_account_id: String(account.account_id).trim(),
+        account_name: String(
+          account.official_name || account.name || account.subtype || "Bank account",
+        ).trim(),
+        account_mask: String(account.mask || "").trim() || null,
+        account_subtype: String(account.subtype || "").trim() || null,
+        account_type: String(account.type || "").trim() || null,
+        status: "active",
+      }));
+
+    if (accountRows.length > 0) {
+      const { error: accountUpsertError } = await supabase
+        .from("plaid_linked_accounts")
+        .upsert(accountRows, {
+          onConflict: "plaid_item_id,plaid_account_id",
+        });
+      if (accountUpsertError) {
+        throw new HttpError(
+          accountUpsertError.message || "Unable to save linked account details.",
+          500,
+        );
+      }
+
+      const keepIds = new Set(accountRows.map((row) => row.plaid_account_id));
+      const { data: activeRows } = await supabase
+        .from("plaid_linked_accounts")
+        .select("id, plaid_account_id")
+        .eq("user_id", userId)
+        .eq("plaid_item_id", exchange.item_id)
+        .eq("status", "active");
+      const staleIds = (Array.isArray(activeRows) ? activeRows : [])
+        .filter((row) => !keepIds.has(String(row?.plaid_account_id || "").trim()))
+        .map((row) => row.id)
+        .filter(Boolean);
+      if (staleIds.length > 0) {
+        await supabase
+          .from("plaid_linked_accounts")
+          .update({ status: "revoked" })
+          .in("id", staleIds);
+      }
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("stripe_cashout_plaid_item_id, stripe_cashout_plaid_account_id")
+        .eq("id", userId)
+        .maybeSingle();
+      const selectedItemId = String(profile?.stripe_cashout_plaid_item_id || "").trim();
+      const selectedAccountId = String(
+        profile?.stripe_cashout_plaid_account_id || "",
+      ).trim();
+      if (
+        selectedItemId === exchange.item_id &&
+        selectedAccountId &&
+        !keepIds.has(selectedAccountId)
+      ) {
+        await supabase
+          .from("profiles")
+          .update({
+            stripe_cashout_plaid_item_id: null,
+            stripe_cashout_plaid_account_id: null,
+            stripe_cashout_account_label: null,
+            stripe_cashout_external_account_id: null,
+            stripe_cashout_bank_synced_at: null,
+          })
+          .eq("id", userId);
+      }
+    } else {
+      await supabase
+        .from("plaid_linked_accounts")
+        .update({ status: "revoked" })
+        .eq("user_id", userId)
+        .eq("plaid_item_id", exchange.item_id)
+        .eq("status", "active");
+
+      await supabase
+        .from("profiles")
+        .update({
+          stripe_cashout_plaid_item_id: null,
+          stripe_cashout_plaid_account_id: null,
+          stripe_cashout_account_label: null,
+          stripe_cashout_external_account_id: null,
+          stripe_cashout_bank_synced_at: null,
+        })
+        .eq("id", userId)
+        .eq("stripe_cashout_plaid_item_id", exchange.item_id);
+    }
+
     return json({
       linked: true,
       itemId: exchange.item_id,
       institutionId,
       institutionName,
+      linkedAccountCount: accountRows.length,
       copy: {
         primary:
           "Cashback is automatically verified when purchases are visible through your linked bank.",

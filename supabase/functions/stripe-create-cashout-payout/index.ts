@@ -81,7 +81,9 @@ Deno.serve(async (req) => {
 
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
-      .select("stripe_cashout_account_id, stripe_cashout_payouts_enabled")
+      .select(
+        "stripe_cashout_account_id, stripe_cashout_payouts_enabled, stripe_cashout_plaid_account_id",
+      )
       .eq("id", userId)
       .maybeSingle();
     if (profileError || !profile) {
@@ -94,6 +96,15 @@ Deno.serve(async (req) => {
     if (!accountId) {
       return new Response(
         JSON.stringify({ error: "Link a bank account before cashing out." }),
+        { status: 400 },
+      );
+    }
+    const selectedPayoutAccountId = String(
+      profile.stripe_cashout_plaid_account_id || "",
+    ).trim();
+    if (!selectedPayoutAccountId) {
+      return new Response(
+        JSON.stringify({ error: "Choose a payout bank from linked accounts first." }),
         { status: 400 },
       );
     }

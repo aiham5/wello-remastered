@@ -19,6 +19,8 @@ const PENDING_COPY =
   "Cashback may appear as pending while verification completes.";
 const AUTO_COPY =
   "Cashback is automatically verified when purchases are visible through your linked bank.";
+const PLAID_ENV = (Deno.env.get("PLAID_ENV") ?? "sandbox").toLowerCase();
+const IDENTITY_ENFORCED = PLAID_ENV !== "sandbox";
 
 type Candidate = {
   plaidItemId: string;
@@ -537,6 +539,7 @@ serve(async (req) => {
       });
     }
 
+    let identityCheckBypassedSandbox = false;
     const { data: profile } = await supabase
       .from("profiles")
       .select("full_name")
@@ -561,7 +564,7 @@ serve(async (req) => {
             )
           );
         });
-        if (!hasNameOverlap) {
+        if (!hasNameOverlap && IDENTITY_ENFORCED) {
           const verification = await createOrUpdateVerification({
             source: "plaid",
             status: "rejected",
@@ -593,6 +596,9 @@ serve(async (req) => {
             fallbackRequired: true,
             fallbackMessage: FALLBACK_COPY,
           });
+        }
+        if (!hasNameOverlap && !IDENTITY_ENFORCED) {
+          identityCheckBypassedSandbox = true;
         }
       }
     }
@@ -727,7 +733,9 @@ serve(async (req) => {
       source: "plaid",
       status: "confirmed",
       reason_code: null,
-      reason_detail: "Matched posted transaction.",
+      reason_detail: identityCheckBypassedSandbox
+        ? "Matched posted transaction (sandbox identity mismatch bypassed)."
+        : "Matched posted transaction.",
       receipt_upload_id: receiptUpsert.id,
       expected_amount_cents: expectedAmountCents,
       matched_amount_cents: selected.amountCents,
@@ -740,13 +748,17 @@ serve(async (req) => {
       last_checked_at: nowIso,
       confirmed_at: nowIso,
     });
-    await insertAttempt("matched_posted", null, {
+    await insertAttempt(
+      "matched_posted",
+      identityCheckBypassedSandbox ? "identity_check_bypassed_sandbox" : null,
+      {
       verificationId: verification?.id || null,
       candidateCount: allCandidates.length,
       postedCandidateCount: postedCandidates.length,
       bestScore: selected.score,
       matched: selected,
-    });
+      },
+    );
 
     return json({
       verificationStatus: "confirmed",

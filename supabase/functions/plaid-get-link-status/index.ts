@@ -31,9 +31,83 @@ serve(async (req) => {
     const active = (Array.isArray(data) ? data : []).filter(
       (item) => item.status === "active",
     );
+    const activeItemIds = active
+      .map((item) => String(item?.plaid_item_id || "").trim())
+      .filter(Boolean);
+
+    let linkedAccounts: Array<Record<string, unknown>> = [];
+    if (activeItemIds.length > 0) {
+      const { data: accountsData, error: accountsError } = await supabase
+        .from("plaid_linked_accounts")
+        .select(
+          "plaid_item_id, plaid_account_id, account_name, account_mask, account_subtype, account_type, status, created_at",
+        )
+        .eq("user_id", userId)
+        .eq("status", "active")
+        .in("plaid_item_id", activeItemIds)
+        .order("created_at", { ascending: true });
+      if (accountsError) {
+        throw new HttpError(
+          accountsError.message || "Unable to load linked bank accounts.",
+          500,
+        );
+      }
+      linkedAccounts = Array.isArray(accountsData) ? accountsData : [];
+    }
+
+    const { data: profileData } = await supabase
+      .from("profiles")
+      .select(
+        "stripe_cashout_plaid_account_id, stripe_cashout_account_label, stripe_cashout_bank_synced_at",
+      )
+      .eq("id", userId)
+      .maybeSingle();
+
+    const selectedPayoutAccountId = String(
+      profileData?.stripe_cashout_plaid_account_id || "",
+    ).trim();
+    const linkedSince = active
+      .map((item) => String(item.created_at || "").trim())
+      .filter(Boolean)
+      .sort()[0] || null;
+
+    const institutionByItemId = new Map<string, string | null>();
+    active.forEach((item) => {
+      const itemId = String(item?.plaid_item_id || "").trim();
+      if (!itemId) return;
+      institutionByItemId.set(
+        itemId,
+        String(item?.institution_name || "").trim() || null,
+      );
+    });
+
     return json({
       linked: active.length > 0,
       linkedCount: active.length,
+      linkedSince,
+      linkedAccountCount: linkedAccounts.length,
+      accounts: linkedAccounts.map((account) => {
+        const itemId = String(account?.plaid_item_id || "").trim();
+        const accountId = String(account?.plaid_account_id || "").trim();
+        const mask = String(account?.account_mask || "").trim() || null;
+        return {
+          itemId,
+          accountId,
+          institutionName: institutionByItemId.get(itemId) || null,
+          name: String(account?.account_name || "").trim() || "Bank account",
+          mask,
+          subtype: String(account?.account_subtype || "").trim() || null,
+          type: String(account?.account_type || "").trim() || null,
+          selectedForPayout:
+            Boolean(selectedPayoutAccountId) &&
+            selectedPayoutAccountId === accountId,
+        };
+      }),
+      payoutSelection: {
+        selectedAccountId: selectedPayoutAccountId || null,
+        label: String(profileData?.stripe_cashout_account_label || "").trim() || null,
+        syncedAt: profileData?.stripe_cashout_bank_synced_at || null,
+      },
       items: active.map((item) => ({
         itemId: item.plaid_item_id,
         institutionId: item.institution_id || null,

@@ -83,6 +83,15 @@ export type PlaidTransaction = {
   name?: string | null;
 };
 
+export type PlaidAccount = {
+  account_id: string;
+  name?: string | null;
+  official_name?: string | null;
+  mask?: string | null;
+  type?: string | null;
+  subtype?: string | null;
+};
+
 export const plaidCreateLinkToken = (payload: {
   userId: string;
   email?: string | null;
@@ -231,3 +240,31 @@ export const plaidGetIdentity = async (
     return [];
   }
 };
+
+export const plaidGetAccounts = async (
+  accessToken: string,
+): Promise<{ accounts: PlaidAccount[]; requestId: string | null }> => {
+  const response = await plaidRequest<{
+    accounts?: PlaidAccount[];
+    request_id?: string;
+  }>("/accounts/get", {
+    access_token: accessToken,
+  });
+
+  return {
+    accounts: Array.isArray(response?.accounts) ? response.accounts : [],
+    requestId: response?.request_id || null,
+  };
+};
+
+export const plaidCreateStripeBankAccountToken = (
+  accessToken: string,
+  accountId: string,
+) =>
+  plaidRequest<{
+    stripe_bank_account_token: string;
+    request_id: string;
+  }>("/processor/stripe/bank_account_token/create", {
+    access_token: accessToken,
+    account_id: accountId,
+  });
