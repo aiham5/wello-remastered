@@ -81,11 +81,16 @@ Deno.serve(async (req) => {
   const adminClient = createAdminClient();
   const { data: profile, error: profileError } = await adminClient
     .from("profiles")
-    .select("promo_code_id")
+    .select("role, promo_code_id")
     .eq("id", userId)
     .maybeSingle();
   if (profileError) {
     return json(req, 500, { error: profileError.message || "Profile load failed" });
+  }
+
+  if (profile?.role && String(profile.role) !== "consumer") {
+    // Promo codes are a consumer-only feature.
+    return json(req, 200, { ok: true, cashbackRateBps: 500, promo: null });
   }
 
   const promoId = profile?.promo_code_id || null;
@@ -121,4 +126,3 @@ Deno.serve(async (req) => {
     promo: { id: promo.id, code: promo.code, cashbackRateBps: rateBps },
   });
 });
-

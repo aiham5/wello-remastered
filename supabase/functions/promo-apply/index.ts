@@ -85,6 +85,16 @@ Deno.serve(async (req) => {
 
   const adminClient = createAdminClient();
 
+  const { data: profile, error: profileError } = await adminClient
+    .from("profiles")
+    .select("role")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (profileError) {
+    return json(req, 500, { error: profileError.message || "Profile load failed" });
+  }
+
   // Allow clearing promo codes by sending blank.
   if (!rawCode) {
     const { error } = await adminClient
@@ -93,6 +103,12 @@ Deno.serve(async (req) => {
       .eq("id", userId);
     if (error) return json(req, 500, { error: error.message || "Update failed" });
     return json(req, 200, { ok: true, cleared: true, cashbackRateBps: 500 });
+  }
+
+  if (profile?.role && String(profile.role) !== "consumer") {
+    return json(req, 403, {
+      error: "Promo codes are available on personal accounts only.",
+    });
   }
 
   const codeClean = rawCode.replace(/\s+/g, "").toUpperCase();
