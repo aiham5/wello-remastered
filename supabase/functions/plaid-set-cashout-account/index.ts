@@ -15,6 +15,10 @@ const DEFAULT_MONTHLY_SWITCH_LIMIT = Math.max(
   Number(Deno.env.get("CASHOUT_BANK_SWITCH_MONTHLY_LIMIT") || 2) || 2,
   1,
 );
+const CASHOUT_SWITCH_LIMIT_DISABLED = /^(1|true|yes|on)$/i.test(
+  String(Deno.env.get("CASHOUT_BANK_SWITCH_LIMIT_DISABLED") || "").trim(),
+);
+const TEST_UNLIMITED_SWITCH_LIMIT = 9999;
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -61,6 +65,19 @@ const isRecoverableCashoutAccountError = (
   );
 };
 
+const getStripeErrorMeta = (error: unknown) => {
+  const anyError = error as {
+    code?: string;
+    type?: string;
+    message?: string;
+  };
+  return {
+    code: String(anyError?.code || "").trim() || null,
+    type: String(anyError?.type || "").trim() || null,
+    message: String(anyError?.message || "").trim() || null,
+  };
+};
+
 const retrieveAccountWithTimeout = async (
   accountId: string,
   timeoutMs = 2500,
@@ -89,6 +106,15 @@ type PayoutSwitchPolicy = {
 const parseSwitchPolicyRow = (
   row: Record<string, unknown> | null | undefined,
 ): PayoutSwitchPolicy => {
+  if (CASHOUT_SWITCH_LIMIT_DISABLED) {
+    return {
+      monthlyLimit: TEST_UNLIMITED_SWITCH_LIMIT,
+      switchesUsed: 0,
+      switchesRemaining: TEST_UNLIMITED_SWITCH_LIMIT,
+      monthResetsAt: null,
+      canSwitch: true,
+    };
+  }
   const monthlyLimit = Math.max(
     Number(row?.monthly_limit) || DEFAULT_MONTHLY_SWITCH_LIMIT,
     1,
@@ -129,6 +155,18 @@ const loadSwitchPolicy = async (
   const row = Array.isArray(policyRows) ? policyRows[0] : policyRows;
   return parseSwitchPolicyRow(row || null);
 };
+
+const defaultSwitchPolicy = (): PayoutSwitchPolicy => ({
+  monthlyLimit: CASHOUT_SWITCH_LIMIT_DISABLED
+    ? TEST_UNLIMITED_SWITCH_LIMIT
+    : DEFAULT_MONTHLY_SWITCH_LIMIT,
+  switchesUsed: 0,
+  switchesRemaining: CASHOUT_SWITCH_LIMIT_DISABLED
+    ? TEST_UNLIMITED_SWITCH_LIMIT
+    : DEFAULT_MONTHLY_SWITCH_LIMIT,
+  monthResetsAt: null,
+  canSwitch: true,
+});
 
 serve(async (req) => {
   if (req.method !== "POST") {
@@ -204,6 +242,9 @@ serve(async (req) => {
           "stripe_cashout_account_id",
           "stripe_cashout_external_account_id",
           "stripe_cashout_plaid_account_id",
+          "stripe_cashout_account_label",
+          "stripe_cashout_bank_synced_at",
+          "stripe_cashout_onboarded_at",
           "stripe_cashout_payouts_enabled",
         ].join(","),
       )
@@ -217,11 +258,25 @@ serve(async (req) => {
     const previousSelectedPlaidAccountId = String(
       profileRow.stripe_cashout_plaid_account_id || "",
     ).trim();
-    let switchPolicy = await loadSwitchPolicy(supabase, userId);
+    const existingStripeAccountId = String(
+      profileRow.stripe_cashout_account_id || "",
+    ).trim();
+    const existingExternalAccountId = String(
+      profileRow.stripe_cashout_external_account_id || "",
+    ).trim();
+    const existingPayoutsEnabled = Boolean(
+      profileRow.stripe_cashout_payouts_enabled,
+    );
+    const existingOnboardedAt = String(
+      profileRow.stripe_cashout_onboarded_at || "",
+    ).trim();
+    let switchPolicy = defaultSwitchPolicy();
     if (
+      !CASHOUT_SWITCH_LIMIT_DISABLED &&
       previousSelectedPlaidAccountId &&
       previousSelectedPlaidAccountId !== plaidAccountId
     ) {
+      switchPolicy = await loadSwitchPolicy(supabase, userId);
       const { data: consumeRows, error: consumeError } = await supabase.rpc(
         "consume_cashout_bank_switch",
         {
@@ -258,12 +313,44 @@ serve(async (req) => {
       }
     }
 
+    // Fast path: the selected payout bank is already active on Stripe.
+    if (
+      previousSelectedPlaidAccountId === plaidAccountId &&
+      existingStripeAccountId &&
+      existingExternalAccountId
+    ) {
+      const detailsSubmitted = Boolean(existingOnboardedAt) || existingPayoutsEnabled;
+      return json({
+        selected: true,
+        connected: true,
+        payoutsEnabled: existingPayoutsEnabled,
+        detailsSubmitted,
+        onboardingRequired: !existingPayoutsEnabled,
+        accountId: existingStripeAccountId,
+        selectedAccountId: plaidAccountId,
+        selectedAccountLabel:
+          String(profileRow.stripe_cashout_account_label || "").trim() || null,
+        requirementsDue: [],
+        disabledReason: null,
+        payoutSwitchPolicy: switchPolicy,
+        selectedPayoutSyncedAt: profileRow.stripe_cashout_bank_synced_at || null,
+        copy: {
+          primary: existingPayoutsEnabled
+            ? "Payout bank selected. Cashouts are ready."
+            : "Payout bank selected. Stripe may still require one-time verification.",
+          secondary:
+            "Cashback payouts still move through Stripe; Plaid is used to choose your bank.",
+        },
+      });
+    }
+
     const stripeToken = await plaidCreateStripeBankAccountToken(
       accessToken,
       plaidAccountId,
     );
 
     let accountId = String(profileRow.stripe_cashout_account_id || "").trim();
+    const hasExistingStripeAccount = Boolean(accountId);
     if (!accountId) {
       const replacement = await createManagedCashoutAccount(
         userId,
@@ -279,17 +366,58 @@ serve(async (req) => {
       return String(external?.id || "").trim() || null;
     };
 
+    const createOrUpdateExternalForAccount = async (targetAccountId: string) => {
+      try {
+        return await createExternalForAccount(targetAccountId);
+      } catch (initialError) {
+        const initialMeta = getStripeErrorMeta(initialError);
+        // Fallback path: some Stripe account configurations accept external account
+        // updates via account update payload even when createExternalAccount fails.
+        try {
+          const updated = await stripe.accounts.update(targetAccountId, {
+            external_account: stripeToken.stripe_bank_account_token,
+          });
+          const fallbackExternalId = String(
+            (updated as { default_external_account?: string | null })
+              ?.default_external_account || "",
+          ).trim();
+          if (fallbackExternalId) return fallbackExternalId;
+        } catch {
+          // Keep original error context for deterministic handling below.
+        }
+        throw Object.assign(initialError as object, {
+          _welloStripeMeta: initialMeta,
+        });
+      }
+    };
+
     let externalAccountId: string | null = null;
     try {
-      externalAccountId = await createExternalForAccount(accountId);
+      externalAccountId = await createOrUpdateExternalForAccount(accountId);
     } catch (error) {
       if (isRecoverableCashoutAccountError(error)) {
+        const stripeMeta = getStripeErrorMeta(
+          (error as { _welloStripeMeta?: unknown })?._welloStripeMeta || error,
+        );
+        if (hasExistingStripeAccount) {
+          throw new HttpError(
+            "Unable to switch payout bank on your verified Stripe account right now. Please retry in a moment or use Stripe verification again.",
+            409,
+            {
+              reason: "stripe_account_reauth_required",
+              stripeAccountId: accountId,
+              stripeErrorCode: stripeMeta.code,
+              stripeErrorType: stripeMeta.type,
+              stripeErrorMessage: stripeMeta.message,
+            },
+          );
+        }
         const replacement = await createManagedCashoutAccount(
           userId,
           String(profileRow.email || "").trim() || null,
         );
         accountId = replacement.id;
-        externalAccountId = await createExternalForAccount(accountId);
+        externalAccountId = await createOrUpdateExternalForAccount(accountId);
       } else {
         throw error;
       }
@@ -304,7 +432,7 @@ serve(async (req) => {
     const detailsSubmitted =
       account && typeof account === "object"
         ? Boolean((account as { details_submitted?: boolean })?.details_submitted)
-        : false;
+        : Boolean(existingOnboardedAt);
     const requirementsDue =
       account && typeof account === "object"
       && Array.isArray((account as { requirements?: { currently_due?: string[] } })?.requirements?.currently_due)
@@ -328,8 +456,8 @@ serve(async (req) => {
         stripe_cashout_account_id: accountId,
         stripe_cashout_payouts_enabled: payoutsEnabled,
         stripe_cashout_onboarded_at: payoutsEnabled
-          ? new Date().toISOString()
-          : null,
+          ? existingOnboardedAt || new Date().toISOString()
+          : existingOnboardedAt || null,
         stripe_cashout_plaid_item_id: plaidItemId,
         stripe_cashout_plaid_account_id: plaidAccountId,
         stripe_cashout_account_label: label || null,

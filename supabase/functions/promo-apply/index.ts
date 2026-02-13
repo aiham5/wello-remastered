@@ -102,7 +102,7 @@ Deno.serve(async (req) => {
       .update({ promo_code_id: null })
       .eq("id", userId);
     if (error) return json(req, 500, { error: error.message || "Update failed" });
-    return json(req, 200, { ok: true, cleared: true, cashbackRateBps: 500 });
+    return json(req, 200, { ok: true, cleared: true, cashbackRateBps: 750 });
   }
 
   if (profile?.role && String(profile.role) !== "consumer") {
@@ -151,7 +151,7 @@ Deno.serve(async (req) => {
     return json(req, 400, { error: "Promo code expired" });
   }
 
-  const rateBps = Number(resolved.cashback_rate_bps) || 500;
+  const rateBps = Number(resolved.cashback_rate_bps) || 750;
   const { error: updateError } = await adminClient
     .from("profiles")
     .update({ promo_code_id: resolved.id })

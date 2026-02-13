@@ -2,6 +2,7 @@
   "expo": {
     "name": "Wello",
     "slug": "wello",
+    "scheme": "wello",
     "version": "1.0.0",
     "orientation": "portrait",
     "backgroundColor": "#F6F2E9",

@@ -19,6 +19,34 @@ const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
 
+const getExternalBankSnapshot = (account: Stripe.Account) => {
+  const accountWithExternals = account as Stripe.Account & {
+    default_external_account?: string | null;
+    external_accounts?: { data?: Array<Record<string, unknown>> };
+  };
+  const externalAccounts = Array.isArray(accountWithExternals.external_accounts?.data)
+    ? accountWithExternals.external_accounts?.data || []
+    : [];
+  const bankAccounts = externalAccounts.filter((item) =>
+    String(item?.object || "").trim().toLowerCase() === "bank_account"
+  );
+  const defaultExternalId = String(
+    accountWithExternals.default_external_account || "",
+  ).trim();
+  const selectedBank = (defaultExternalId
+    ? bankAccounts.find((item) => String(item?.id || "").trim() === defaultExternalId)
+    : null) || bankAccounts[0] || null;
+  const externalAccountId = String(
+    selectedBank?.id || defaultExternalId || "",
+  ).trim() || null;
+  const bankName = String(selectedBank?.bank_name || "Bank account").trim();
+  const last4 = String(selectedBank?.last4 || "").trim();
+  const label = externalAccountId
+    ? `${bankName}${last4 ? ` ••••${last4}` : ""}`
+    : null;
+  return { externalAccountId, label };
+};
+
 serve(async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -74,7 +102,8 @@ serve(async (req) => {
       JSON.stringify({
         error: "Invalid signature",
         secretCount: webhookSecrets.length,
-        invalidReason: lastError?.message ?? null,
+        invalidReason:
+          (lastError as { message?: string } | null)?.message ?? null,
       }),
       { status: 400 },
     );
@@ -122,13 +151,18 @@ serve(async (req) => {
     const purpose = account.metadata?.purpose;
     const cashoutUserId = account.metadata?.user_id;
     if (purpose === "consumer_cashout" && cashoutUserId) {
+      const bankSnapshot = getExternalBankSnapshot(account);
+      const syncedAt = new Date().toISOString();
       await supabase
         .from("profiles")
         .update({
           stripe_cashout_payouts_enabled: account.payouts_enabled ?? false,
           stripe_cashout_onboarded_at: account.payouts_enabled
-            ? new Date().toISOString()
+            ? syncedAt
             : null,
+          stripe_cashout_external_account_id: bankSnapshot.externalAccountId,
+          stripe_cashout_account_label: bankSnapshot.label,
+          stripe_cashout_bank_synced_at: syncedAt,
         })
         .eq("id", cashoutUserId);
     } else {
@@ -142,6 +176,45 @@ serve(async (req) => {
             : null,
         })
         .eq("stripe_account_id", account.id);
+    }
+  }
+
+  if (
+    event.type === "account.external_account.created" ||
+    event.type === "account.external_account.updated" ||
+    event.type === "account.external_account.deleted"
+  ) {
+    const connectedAccountId = String(event.account || "").trim();
+    if (connectedAccountId) {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("stripe_cashout_account_id", connectedAccountId)
+        .maybeSingle();
+      if (profile?.id) {
+        try {
+          const account = await stripe.accounts.retrieve(connectedAccountId);
+          const bankSnapshot = getExternalBankSnapshot(account);
+          const syncedAt = new Date().toISOString();
+          await supabase
+            .from("profiles")
+            .update({
+              stripe_cashout_external_account_id: bankSnapshot.externalAccountId,
+              stripe_cashout_account_label: bankSnapshot.label,
+              stripe_cashout_bank_synced_at: syncedAt,
+              stripe_cashout_payouts_enabled: account.payouts_enabled ?? false,
+              stripe_cashout_onboarded_at: account.payouts_enabled
+                ? syncedAt
+                : null,
+            })
+            .eq("id", profile.id);
+        } catch (externalSyncError) {
+          console.warn(
+            "stripe-webhook external account sync failed",
+            externalSyncError,
+          );
+        }
+      }
     }
   }
 

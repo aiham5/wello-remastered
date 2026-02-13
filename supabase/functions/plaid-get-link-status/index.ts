@@ -11,6 +11,10 @@ const DEFAULT_MONTHLY_SWITCH_LIMIT = Math.max(
   Number(Deno.env.get("CASHOUT_BANK_SWITCH_MONTHLY_LIMIT") || 2) || 2,
   1,
 );
+const CASHOUT_SWITCH_LIMIT_DISABLED = /^(1|true|yes|on)$/i.test(
+  String(Deno.env.get("CASHOUT_BANK_SWITCH_LIMIT_DISABLED") || "").trim(),
+);
+const TEST_UNLIMITED_SWITCH_LIMIT = 9999;
 
 serve(async (req) => {
   if (req.method !== "POST") {
@@ -67,31 +71,41 @@ serve(async (req) => {
       .eq("id", userId)
       .maybeSingle();
 
-    const { data: switchPolicyRows, error: switchPolicyError } = await supabase.rpc(
-      "get_cashout_bank_switch_policy",
-      {
-        p_user_id: userId,
-        p_monthly_limit: DEFAULT_MONTHLY_SWITCH_LIMIT,
-      },
-    );
-    if (switchPolicyError) {
-      throw new HttpError(
-        switchPolicyError.message || "Unable to load payout switch policy.",
-        500,
+    let switchPolicyRow: Record<string, unknown> | null = null;
+    let monthlyLimit = DEFAULT_MONTHLY_SWITCH_LIMIT;
+    let switchesUsed = 0;
+    let switchesRemaining = DEFAULT_MONTHLY_SWITCH_LIMIT;
+    if (CASHOUT_SWITCH_LIMIT_DISABLED) {
+      monthlyLimit = TEST_UNLIMITED_SWITCH_LIMIT;
+      switchesUsed = 0;
+      switchesRemaining = TEST_UNLIMITED_SWITCH_LIMIT;
+    } else {
+      const { data: switchPolicyRows, error: switchPolicyError } = await supabase.rpc(
+        "get_cashout_bank_switch_policy",
+        {
+          p_user_id: userId,
+          p_monthly_limit: DEFAULT_MONTHLY_SWITCH_LIMIT,
+        },
       );
+      if (switchPolicyError) {
+        throw new HttpError(
+          switchPolicyError.message || "Unable to load payout switch policy.",
+          500,
+        );
+      }
+      switchPolicyRow = Array.isArray(switchPolicyRows)
+        ? switchPolicyRows[0]
+        : switchPolicyRows;
+      monthlyLimit = Math.max(
+        Number(switchPolicyRow?.monthly_limit) || DEFAULT_MONTHLY_SWITCH_LIMIT,
+        1,
+      );
+      switchesUsed = Math.max(Number(switchPolicyRow?.switches_used) || 0, 0);
+      switchesRemaining =
+        switchPolicyRow?.switches_remaining != null
+          ? Math.max(Number(switchPolicyRow.switches_remaining) || 0, 0)
+          : Math.max(monthlyLimit - switchesUsed, 0);
     }
-    const switchPolicyRow = Array.isArray(switchPolicyRows)
-      ? switchPolicyRows[0]
-      : switchPolicyRows;
-    const monthlyLimit = Math.max(
-      Number(switchPolicyRow?.monthly_limit) || DEFAULT_MONTHLY_SWITCH_LIMIT,
-      1,
-    );
-    const switchesUsed = Math.max(Number(switchPolicyRow?.switches_used) || 0, 0);
-    const switchesRemaining =
-      switchPolicyRow?.switches_remaining != null
-        ? Math.max(Number(switchPolicyRow.switches_remaining) || 0, 0)
-        : Math.max(monthlyLimit - switchesUsed, 0);
 
     const selectedPayoutAccountId = String(
       profileData?.stripe_cashout_plaid_account_id || "",
@@ -142,8 +156,10 @@ serve(async (req) => {
         monthlyLimit,
         switchesUsed,
         switchesRemaining,
-        monthResetsAt: switchPolicyRow?.month_resets_at || null,
-        canSwitch: switchesRemaining > 0,
+        monthResetsAt: CASHOUT_SWITCH_LIMIT_DISABLED
+          ? null
+          : switchPolicyRow?.month_resets_at || null,
+        canSwitch: CASHOUT_SWITCH_LIMIT_DISABLED || switchesRemaining > 0,
       },
       items: active.map((item) => ({
         itemId: item.plaid_item_id,

@@ -115,14 +115,20 @@ const PLAID_FALLBACK_COPY =
   "Some cards or banks may require receipt upload for verification.";
 const PLAID_PENDING_COPY =
   "Cashback may appear as pending while verification completes.";
-const COMMISSION_RATE_PERCENT = 10;
-const CASHBACK_RATE_PERCENT = 5;
-const CASHBACK_BASE_RATE_BPS = 500;
+const COMMISSION_RATE_PERCENT = 15;
+const CASHBACK_RATE_PERCENT = 7.5;
+const CASHBACK_BASE_RATE_BPS = 750;
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
 const GOOGLE_PLACES_KEY = getEnv("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY");
 const SUPABASE_URL = getEnv("EXPO_PUBLIC_SUPABASE_URL");
 const SUPABASE_ANON_KEY = getEnv("EXPO_PUBLIC_SUPABASE_ANON_KEY");
+const APP_SCHEME_RAW = Constants.expoConfig?.scheme;
+const APP_SCHEME = Array.isArray(APP_SCHEME_RAW)
+  ? String(APP_SCHEME_RAW[0] || "wello").trim() || "wello"
+  : String(APP_SCHEME_RAW || "wello").trim() || "wello";
+const AUTH_CALLBACK_PATH = "auth/callback";
+const GOOGLE_AUTH_REDIRECT_URL = `${APP_SCHEME}://${AUTH_CALLBACK_PATH}`;
 const PLAID_ANDROID_PACKAGE_NAME =
   Constants.expoConfig?.android?.package ||
   Constants.manifest2?.extra?.expoClient?.android?.package ||
@@ -152,7 +158,6 @@ const AUTO_VERIFY_RETRY_MS = 1000 * 60 * 20;
 const AUTO_VERIFY_LOCAL_COOLDOWN_MS = 1000 * 60 * 2;
 const AUTO_VERIFY_MAX_REDEMPTION_AGE_MS = 1000 * 60 * 60 * 24;
 const HISTORY_VERIFY_HIGHLIGHT_MS = 1000 * 15;
-const CASHOUT_ACCOUNT_COLLAPSE_COUNT = 3;
 const DEFAULT_PAYOUT_SWITCH_LIMIT = 2;
 const TIME_OPTIONS = [
   "12:00",
@@ -479,6 +484,7 @@ const MAP_REGION = {
   latitudeDelta: 0.055,
   longitudeDelta: 0.045,
 };
+const MAP_REGION_EPSILON = 0.00003;
 
 const mapSupabaseBusiness = (row, index) => {
   const categoryKey = row.category_key || "restaurant";
@@ -502,7 +508,7 @@ const mapSupabaseBusiness = (row, index) => {
     offer: row.offer_highlight || "New offer available",
     distance: "--",
     rating: Number.isFinite(Number(row.rating)) ? Number(row.rating) : null,
-    tags: Array.isArray(row.tags) && row.tags.length ? row.tags : ["local"],
+    tags: Array.isArray(row.tags) && row.tags.length ? row.tags : [],
     isOpen: row.is_open ?? true,
     hours: row.hours || "Hours available upon request",
     phone: row.phone || "",
@@ -692,16 +698,6 @@ const formatShortDate = (value) => {
   });
 };
 
-const formatCashoutAccountType = (subtype, type) => {
-  const value = String(subtype || type || "bank").trim();
-  if (!value) return "Bank";
-  return value
-    .split(/[_\s-]+/)
-    .filter(Boolean)
-    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
-    .join(" ");
-};
-
 const formatReceiptTime = (value) => {
   if (!value) return "--";
   return new Date(value).toLocaleTimeString([], {
@@ -866,6 +862,32 @@ const normalizeTagsInput = (value) =>
     .split(",")
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean);
+
+const parseAuthCallbackParams = (url) => {
+  const value = String(url || "");
+  const hashIndex = value.indexOf("#");
+  const queryIndex = value.indexOf("?");
+  const queryPart =
+    queryIndex >= 0
+      ? value.slice(queryIndex + 1, hashIndex >= 0 ? hashIndex : undefined)
+      : "";
+  const hashPart = hashIndex >= 0 ? value.slice(hashIndex + 1) : "";
+  const merged = [queryPart, hashPart].filter(Boolean).join("&");
+  const params = new URLSearchParams(merged);
+  return {
+    code: params.get("code") || null,
+    accessToken: params.get("access_token") || null,
+    refreshToken: params.get("refresh_token") || null,
+    error:
+      params.get("error_description") || params.get("error") || params.get("message") || null,
+  };
+};
+
+const sanitizeBusinessTags = (tags) =>
+  (Array.isArray(tags) ? tags : [])
+    .map((tag) => String(tag || "").trim())
+    .filter(Boolean)
+    .filter((tag) => tag.toLowerCase() !== "local");
 
 const clampValue = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -2215,7 +2237,7 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
     openFromHours === null
       ? (item.isOpen ?? item.business?.isOpen ?? true)
       : openFromHours;
-  const tags = Array.isArray(item.tags) ? item.tags : [];
+  const tags = sanitizeBusinessTags(item.tags);
   const visibleTags = tags.slice(0, 2);
   const extraTagCount = tags.length - visibleTags.length;
   const cashbackLabel = useMemo(() => {
@@ -2349,6 +2371,8 @@ export default function App() {
   const [fontsLoaded, setFontsLoaded] = useState(false);
   const [fontError, setFontError] = useState(null);
   const mapRef = useRef(null);
+  const mapReadyRef = useRef(false);
+  const pendingMapRegionRef = useRef(null);
   const cardListRef = useRef(null);
   const sheetScrollRef = useRef(null);
   const bottomSheetRef = useRef(null);
@@ -2436,6 +2460,15 @@ export default function App() {
     reason: null,
     distanceMeters: null,
   });
+
+  const animateMapToRegion = useCallback((nextRegion, duration = 700) => {
+    if (!nextRegion) return;
+    if (mapRef.current && mapReadyRef.current) {
+      mapRef.current.animateToRegion(nextRegion, duration);
+      return;
+    }
+    pendingMapRegionRef.current = { nextRegion, duration };
+  }, []);
   const [redeemGateBusy, setRedeemGateBusy] = useState(false);
   const redemptionLoggedRef = useRef(false);
   const [notificationPreferences, setNotificationPreferences] = useState(
@@ -2737,80 +2770,12 @@ export default function App() {
     },
     error: null,
   });
-  const [showAllCashoutBanks, setShowAllCashoutBanks] = useState(false);
-  const [cashoutBankPickerOpen, setCashoutBankPickerOpen] = useState(false);
   const [plaidLinkAction, setPlaidLinkAction] = useState("idle");
-  const cashoutAccountSelection = useMemo(() => {
-    const selectedPayoutAccountId = String(
-      cashoutStatus.selectedPayoutAccountId ||
-        plaidLinkState.selectedPayoutAccountId ||
-        "",
-    ).trim();
-    const accounts = Array.isArray(plaidLinkState.linkedAccounts)
-      ? plaidLinkState.linkedAccounts.filter(
-          (account) => String(account?.accountId || "").trim().length > 0,
-        )
-      : [];
-    const sortedAccounts = [...accounts].sort((a, b) => {
-      const aId = String(a?.accountId || "").trim();
-      const bId = String(b?.accountId || "").trim();
-      const aSelected =
-        (selectedPayoutAccountId && aId === selectedPayoutAccountId) ||
-        Boolean(a?.selectedForPayout);
-      const bSelected =
-        (selectedPayoutAccountId && bId === selectedPayoutAccountId) ||
-        Boolean(b?.selectedForPayout);
-      if (aSelected !== bSelected) return aSelected ? -1 : 1;
-      const aInstitution = String(a?.institutionName || "").trim();
-      const bInstitution = String(b?.institutionName || "").trim();
-      return aInstitution.localeCompare(bInstitution);
-    });
-    const selectedAccount =
-      sortedAccounts.find((account) => {
-        const accountId = String(account?.accountId || "").trim();
-        if (!accountId) return false;
-        return (
-          (selectedPayoutAccountId && accountId === selectedPayoutAccountId) ||
-          Boolean(account?.selectedForPayout)
-        );
-      }) || null;
-    const candidateAccounts = selectedAccount
-      ? sortedAccounts.filter((account) => {
-          const accountId = String(account?.accountId || "").trim();
-          return accountId && accountId !== selectedAccount.accountId;
-        })
-      : sortedAccounts;
-    const visibleAccounts = showAllCashoutBanks
-      ? candidateAccounts
-      : candidateAccounts.slice(0, CASHOUT_ACCOUNT_COLLAPSE_COUNT);
-    return {
-      selectedAccount,
-      visibleAccounts,
-      hiddenCount: Math.max(candidateAccounts.length - visibleAccounts.length, 0),
-      hasMore: candidateAccounts.length > CASHOUT_ACCOUNT_COLLAPSE_COUNT,
-      totalCount: sortedAccounts.length,
-      selectedPayoutAccountId,
-    };
-  }, [
-    cashoutStatus.selectedPayoutAccountId,
-    plaidLinkState.linkedAccounts,
-    plaidLinkState.selectedPayoutAccountId,
-    showAllCashoutBanks,
-  ]);
   const cashoutPayoutStatusCopy = useMemo(() => {
     if (cashoutStatus.payoutsEnabled) return "Ready";
     if (cashoutStatus.bankSelected) return "Verification needed";
-    return "Select payout bank";
+    return "Stripe setup needed";
   }, [cashoutStatus.bankSelected, cashoutStatus.payoutsEnabled]);
-  const cashoutSwitchesRemaining = Math.max(
-    Number(plaidLinkState.payoutSwitchPolicy?.switchesRemaining) || 0,
-    0,
-  );
-  const cashoutSwitchResetLabel = formatShortDate(
-    plaidLinkState.payoutSwitchPolicy?.monthResetsAt,
-  );
-  const showCashoutBankOptions =
-    cashoutBankPickerOpen || !cashoutAccountSelection.selectedAccount;
   const [verificationPrompt, setVerificationPrompt] = useState({
     visible: false,
     title: "",
@@ -2929,6 +2894,21 @@ export default function App() {
     };
   }, []);
 
+  const hasActiveSessionForUser = useCallback(async (userId) => {
+    const targetUserId = String(userId || "").trim();
+    if (!targetUserId) return false;
+    try {
+      const { data } = await withTimeout(
+        supabase.auth.getSession(),
+        3000,
+        "session.check",
+      );
+      return data?.session?.user?.id === targetUserId;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const upsertProfileWithRetry = useCallback(async (payload) => {
     let { error } = await supabase.from("profiles").upsert(payload);
     if (!error) return null;
@@ -2948,6 +2928,10 @@ export default function App() {
 
   const hydrateProfile = useCallback(async (user, roleOverride = null) => {
     if (!user) return "consumer";
+    const sessionIsActive = await hasActiveSessionForUser(user.id);
+    if (!sessionIsActive) {
+      return "consumer";
+    }
     const email = user.email || "";
     if (email) {
       setAuthEmail(email);
@@ -2979,6 +2963,10 @@ export default function App() {
     const profileCompanyValue = data?.company || metadataCompany || "";
 
     if (!data || roleOverride) {
+      const canWriteProfile = await hasActiveSessionForUser(user.id);
+      if (!canWriteProfile) {
+        return nextRole;
+      }
       const upsertError = await upsertProfileWithRetry({
         id: user.id,
         email: profileEmailValue,
@@ -2988,11 +2976,18 @@ export default function App() {
         company: profileCompanyValue || null,
       });
       if (upsertError && !data) {
-        console.warn("Wello profile upsert failed:", upsertError.message);
+        const stillSignedIn = await hasActiveSessionForUser(user.id);
+        if (stillSignedIn) {
+          console.warn("Wello profile upsert failed:", upsertError.message);
+        }
         nextRole = roleOverride || "consumer";
       }
     }
 
+    const canCommitProfile = await hasActiveSessionForUser(user.id);
+    if (!canCommitProfile) {
+      return nextRole;
+    }
     setProfileName(fullName);
     setProfileEmail(profileEmailValue);
     setProfilePhone(profilePhoneValue);
@@ -3000,7 +2995,7 @@ export default function App() {
     setAuthBusinessDraft(metadataDraft);
     setAccountRole(nextRole);
     return nextRole;
-  }, [upsertProfileWithRetry]);
+  }, [upsertProfileWithRetry, hasActiveSessionForUser]);
 
   const cashbackRatePercent = useMemo(() => {
     if (accountRole !== "consumer") return CASHBACK_RATE_PERCENT;
@@ -3182,7 +3177,7 @@ export default function App() {
       loading: false,
       error: null,
       success: nextCode
-        ? `Promo applied. Cashback is now ${(nextRateBps / 100).toFixed(2)}% of commission.`
+        ? `Promo applied. Cashback is now ${(nextRateBps / 100).toFixed(2)}% on eligible purchases.`
         : "Promo updated.",
       code: nextCode,
       cashbackRateBps: nextRateBps,
@@ -3288,6 +3283,8 @@ export default function App() {
         if (!isMounted) return;
         if (session?.user) {
           const nextRole = await hydrateProfile(session.user);
+          const stillActive = await hasActiveSessionForUser(session.user.id);
+          if (!isMounted || !stillActive) return;
           setIsSignedIn(true);
           if (nextRole === "consumer") {
             loadPromoStatus().catch(() => {});
@@ -3320,6 +3317,8 @@ export default function App() {
           if (!isMounted) return;
           if (session?.user) {
             const nextRole = await hydrateProfile(session.user);
+            const stillActive = await hasActiveSessionForUser(session.user.id);
+            if (!isMounted || !stillActive) return;
             setIsSignedIn(true);
             if (nextRole === "consumer") {
               loadPromoStatus().catch(() => {});
@@ -3343,7 +3342,7 @@ export default function App() {
       clearTimeout(safetyTimer);
       authListener?.data?.subscription?.unsubscribe();
     };
-  }, [hydrateProfile, resetAuthState, loadPromoStatus]);
+  }, [hydrateProfile, resetAuthState, loadPromoStatus, hasActiveSessionForUser]);
 
   useEffect(() => {
     let isMounted = true;
@@ -3362,7 +3361,7 @@ export default function App() {
           longitudeDelta: MAP_REGION.longitudeDelta,
         };
         setMapRegion(nextRegion);
-        mapRef.current?.animateToRegion(nextRegion, 700);
+        animateMapToRegion(nextRegion, 700);
       } catch (error) {
         // Keep default region if location lookup fails.
       }
@@ -3371,12 +3370,14 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [animateMapToRegion]);
 
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      mapReadyRef.current = false;
+      pendingMapRegionRef.current = null;
     };
   }, []);
 
@@ -3685,10 +3686,7 @@ export default function App() {
       }
       setCashoutStatus({
         connected: Boolean(data?.connected),
-        bankSelected:
-          data?.bankSelected != null
-            ? Boolean(data.bankSelected)
-            : Boolean(data?.selectedPayoutAccountId),
+        bankSelected: Boolean(data?.bankSelected),
         payoutsEnabled: Boolean(data?.payoutsEnabled),
         detailsSubmitted: Boolean(data?.detailsSubmitted),
         accountId: data?.accountId || null,
@@ -3775,7 +3773,11 @@ export default function App() {
       });
       return;
     }
-    setCashoutActionStatus({ loading: true, error: null, success: null });
+    setCashoutActionStatus({
+      loading: true,
+      error: null,
+      success: "Opening Stripe verification...",
+    });
     const { data, error, status } = await callStripeFunction(
       "stripe-create-cashout-link",
       {},
@@ -3816,142 +3818,11 @@ export default function App() {
     Linking.openURL(data.url).catch(() => null);
   }, []);
 
-  const handleSelectCashoutBank = useCallback(
-    async (account) => {
-      if (!isSignedIn) {
-        setCashoutActionStatus({
-          loading: false,
-          error: "Sign in to choose a payout bank.",
-          success: null,
-        });
-        return;
-      }
-      const plaidAccountId = String(account?.accountId || "").trim();
-      if (!plaidAccountId) {
-        setCashoutActionStatus({
-          loading: false,
-          error: "Choose a valid linked bank account.",
-          success: null,
-        });
-        return;
-      }
-      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-        setCashoutActionStatus({
-          loading: false,
-          error: "Supabase is not configured for payouts.",
-          success: null,
-        });
-        return;
-      }
-      const selectedPayoutAccountId = String(
-        cashoutStatus.selectedPayoutAccountId ||
-          plaidLinkState.selectedPayoutAccountId ||
-          "",
-      ).trim();
-      const isAlreadySelected =
-        selectedPayoutAccountId && selectedPayoutAccountId === plaidAccountId;
-      const switchesRemaining = Math.max(
-        Number(plaidLinkState.payoutSwitchPolicy?.switchesRemaining) ||
-          DEFAULT_PAYOUT_SWITCH_LIMIT,
-        0,
-      );
-      if (!isAlreadySelected && switchesRemaining <= 0) {
-        const resetLabel = formatShortDate(
-          plaidLinkState.payoutSwitchPolicy?.monthResetsAt,
-        );
-        setCashoutActionStatus({
-          loading: false,
-          error: resetLabel
-            ? `Payout bank switch limit reached. You can switch again on ${resetLabel}.`
-            : "Payout bank switch limit reached for this month.",
-          success: null,
-        });
-        return;
-      }
-
-      setCashoutActionStatus({ loading: true, error: null, success: null });
-      const { data, error, status, details } = await callPlaidFunction(
-        "plaid-set-cashout-account",
-        { plaidAccountId },
-      );
-      const errorText = String(error || "").toLowerCase();
-      const isAuthFailure =
-        status === 401 ||
-        errorText.includes("invalid jwt") ||
-        errorText.includes("jwt expired") ||
-        errorText.includes("unauthorized") ||
-        errorText.includes("missing authorization") ||
-        errorText.includes("401");
-      if (error && isAuthFailure) {
-        setCashoutActionStatus({
-          loading: false,
-          error: "Session invalid. Please sign in again.",
-          success: null,
-        });
-        return;
-      }
-      if (error || !data?.selected) {
-        const isSwitchLimitError =
-          details?.reason === "cashout_switch_limit_reached";
-        if (isSwitchLimitError) {
-          const resetLabel = formatShortDate(
-            details?.payoutSwitchPolicy?.monthResetsAt,
-          );
-          setCashoutActionStatus({
-            loading: false,
-            error: resetLabel
-              ? `Payout bank switch limit reached. You can switch again on ${resetLabel}.`
-              : "Payout bank switch limit reached for this month.",
-            success: null,
-          });
-          await loadPlaidLinkState({ silent: true });
-          return;
-        }
-        setCashoutActionStatus({
-          loading: false,
-          error:
-            typeof error === "string"
-              ? error
-              : error?.message || data?.error || "Unable to set payout bank.",
-          success: null,
-        });
-        return;
-      }
-
-      const payoutsReady = Boolean(data?.payoutsEnabled);
-      const primaryMessage =
-        data?.copy?.primary ||
-        (payoutsReady
-          ? "Payout bank selected. Cashouts are ready."
-          : "Payout bank selected. Complete Stripe verification to enable payouts.");
-      setCashoutActionStatus({
-        loading: false,
-        error: null,
-        success: primaryMessage,
-      });
-      setCashoutBankPickerOpen(false);
-      setShowAllCashoutBanks(false);
-      void Promise.allSettled([
-        loadCashoutStatus({ silent: true }),
-        loadPlaidLinkState({ silent: true }),
-      ]);
-    },
-    [
-      isSignedIn,
-      loadCashoutStatus,
-      loadPlaidLinkState,
-      cashoutStatus.selectedPayoutAccountId,
-      plaidLinkState.selectedPayoutAccountId,
-      plaidLinkState.payoutSwitchPolicy?.switchesRemaining,
-      plaidLinkState.payoutSwitchPolicy?.monthResetsAt,
-    ],
-  );
-
   const handleCashoutManage = useCallback(async () => {
     if (!cashoutStatus.connected) {
       setCashoutActionStatus({
         loading: false,
-        error: "Link a bank account first.",
+        error: "Complete Stripe payout setup first.",
         success: null,
       });
       return;
@@ -4021,7 +3892,7 @@ export default function App() {
     ) {
       setCashoutActionStatus({
         loading: false,
-        error: "Choose and verify a payout bank first.",
+        error: "Complete Stripe payout setup before cashing out.",
         success: null,
       });
       return;
@@ -5327,14 +5198,12 @@ export default function App() {
     if (activeTab === "cashout" && isSignedIn) {
       loadCashoutStatus({});
       loadCashbackBalance({});
-      loadPlaidLinkState({ silent: true });
     }
   }, [
     activeTab,
     isSignedIn,
     loadCashoutStatus,
     loadCashbackBalance,
-    loadPlaidLinkState,
     SUPABASE_URL,
     SUPABASE_ANON_KEY,
   ]);
@@ -5381,14 +5250,7 @@ export default function App() {
       },
       error: null,
     });
-    setShowAllCashoutBanks(false);
-    setCashoutBankPickerOpen(false);
   }, [authUserId, isSignedIn]);
-
-  useEffect(() => {
-    setShowAllCashoutBanks(false);
-    setCashoutBankPickerOpen(false);
-  }, [plaidLinkState.linkedAccounts.length]);
 
   useEffect(() => {
     if (activeTab === "admin" && !isStaff) {
@@ -5578,7 +5440,7 @@ export default function App() {
     });
   }, [mapRegion, upsertUserLocation]);
 
-  const ensureSupabaseReady = (setError) => {
+  const ensureSupabaseReady = useCallback((setError) => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setError("Supabase is not configured yet.");
       return false;
@@ -5589,7 +5451,84 @@ export default function App() {
       return false;
     }
     return true;
-  };
+  }, []);
+
+  const handleAuthCallbackUrl = useCallback(
+    async (incomingUrl) => {
+      const url = String(incomingUrl || "");
+      const lowerUrl = url.toLowerCase();
+      const callbackPrefix = `${GOOGLE_AUTH_REDIRECT_URL.toLowerCase()}`;
+      const callbackPrefixTriple = `${APP_SCHEME.toLowerCase()}:///${AUTH_CALLBACK_PATH}`;
+      if (
+        !lowerUrl.startsWith(callbackPrefix) &&
+        !lowerUrl.startsWith(callbackPrefixTriple)
+      ) {
+        return;
+      }
+      if (!ensureSupabaseReady(setSignInError)) return;
+
+      const { code, accessToken, refreshToken, error } =
+        parseAuthCallbackParams(url);
+      if (error) {
+        setSignInError(error);
+        setAuthBusy(false);
+        setAuthView("signin");
+        return;
+      }
+
+      try {
+        setAuthBusy(true);
+        let authError = null;
+        if (accessToken && refreshToken) {
+          const result = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          authError = result?.error || null;
+        } else if (code) {
+          if (typeof supabase.auth.exchangeCodeForSession === "function") {
+            const result = await supabase.auth.exchangeCodeForSession(code);
+            authError = result?.error || null;
+          } else {
+            authError = new Error("OAuth code flow is not available.");
+          }
+        } else {
+          authError = new Error("Google sign-in was canceled.");
+        }
+
+        if (authError) {
+          setSignInError(authError.message || "Unable to sign in with Google.");
+          setAuthView("signin");
+          return;
+        }
+
+        setSignInError(null);
+      } catch (callbackError) {
+        setSignInError(
+          callbackError?.message || "Unable to finish Google sign-in.",
+        );
+        setAuthView("signin");
+      } finally {
+        setAuthBusy(false);
+      }
+    },
+    [ensureSupabaseReady],
+  );
+
+  useEffect(() => {
+    const subscription = Linking.addEventListener("url", ({ url }) => {
+      handleAuthCallbackUrl(url);
+    });
+    Linking.getInitialURL()
+      .then((url) => {
+        if (!url) return;
+        handleAuthCallbackUrl(url);
+      })
+      .catch(() => null);
+    return () => {
+      subscription?.remove?.();
+    };
+  }, [handleAuthCallbackUrl]);
 
   const upsertNotificationToken = useCallback(
     async (token) => {
@@ -5830,6 +5769,33 @@ export default function App() {
           ? "Sign in timed out. Check your connection and try again."
           : raw || "Unable to sign in.";
       setSignInError(friendly);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    if (!ensureSupabaseReady(setSignInError)) return;
+    setSignInError(null);
+    setAuthBusy(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: GOOGLE_AUTH_REDIRECT_URL,
+          skipBrowserRedirect: true,
+          queryParams: {
+            prompt: "select_account",
+          },
+        },
+      });
+      if (error || !data?.url) {
+        setSignInError(error?.message || "Unable to start Google sign-in.");
+        return;
+      }
+      await Linking.openURL(data.url);
+    } catch (error) {
+      setSignInError(error?.message || "Unable to start Google sign-in.");
     } finally {
       setAuthBusy(false);
     }
@@ -6567,13 +6533,52 @@ export default function App() {
       };
       setMapRegion(nextRegion);
       upsertUserLocation(position.coords);
-      mapRef.current?.animateToRegion(nextRegion, 700);
+      animateMapToRegion(nextRegion, 700);
     } catch (error) {
       setLocationError("Unable to find your location.");
     } finally {
       setLocating(false);
     }
   };
+
+  const handleMapRegionChangeComplete = useCallback((nextRegion) => {
+    const latitude = Number(nextRegion?.latitude);
+    const longitude = Number(nextRegion?.longitude);
+    const latitudeDelta = Number(nextRegion?.latitudeDelta);
+    const longitudeDelta = Number(nextRegion?.longitudeDelta);
+    if (
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude) ||
+      !Number.isFinite(latitudeDelta) ||
+      !Number.isFinite(longitudeDelta)
+    ) {
+      return;
+    }
+    setMapRegion((prev) => {
+      if (!prev) {
+        return { latitude, longitude, latitudeDelta, longitudeDelta };
+      }
+      if (
+        Math.abs(prev.latitude - latitude) < MAP_REGION_EPSILON &&
+        Math.abs(prev.longitude - longitude) < MAP_REGION_EPSILON &&
+        Math.abs(prev.latitudeDelta - latitudeDelta) < MAP_REGION_EPSILON &&
+        Math.abs(prev.longitudeDelta - longitudeDelta) < MAP_REGION_EPSILON
+      ) {
+        return prev;
+      }
+      return { latitude, longitude, latitudeDelta, longitudeDelta };
+    });
+  }, []);
+
+  const handleMapReady = useCallback(() => {
+    mapReadyRef.current = true;
+    const pending = pendingMapRegionRef.current;
+    if (!pending || !mapRef.current) return;
+    pendingMapRegionRef.current = null;
+    requestAnimationFrame(() => {
+      mapRef.current?.animateToRegion(pending.nextRegion, pending.duration);
+    });
+  }, []);
 
   const openSheet = (nextTab = "discover") => {
     setActiveTab(nextTab);
@@ -6750,7 +6755,7 @@ export default function App() {
       longitudeDelta: MAP_REGION.longitudeDelta,
     };
     setMapRegion(nextRegion);
-    mapRef.current?.animateToRegion(nextRegion, 500);
+    animateMapToRegion(nextRegion, 500);
   };
 
   const handleMarkerPress = (business) => {
@@ -6875,7 +6880,7 @@ export default function App() {
           state: parsed.state || prev.state,
           postalCode: parsed.postalCode || prev.postalCode,
         }));
-        mapRef.current?.animateToRegion(
+        animateMapToRegion(
           {
             latitude: location.lat,
             longitude: location.lng,
@@ -6895,7 +6900,7 @@ export default function App() {
   const handleSaveTags = async () => {
     if (!ownerBusiness || !tagsDirty) return;
     const tagList = normalizeTagsInput(formData.tags);
-    const nextTags = tagList.length ? tagList : ["local"];
+    const nextTags = tagList.length ? tagList : [];
     setTagSaveStatus({ saving: true, error: null, success: null });
     const updatedBusiness = {
       ...ownerBusiness,
@@ -7047,7 +7052,7 @@ export default function App() {
       category: categoryDisplay,
       categoryKey: nextCategoryKey,
       offer: ownerBusiness.offer,
-      tags: tagList.length ? tagList : ["local"],
+      tags: tagList.length ? tagList : [],
       isOpen: formData.isOpen,
       hours: formData.hours.trim() || ownerBusiness.hours,
       coordinate: hasPendingEdits
@@ -10568,8 +10573,9 @@ export default function App() {
             <MapView
               ref={mapRef}
               style={styles.map}
-              region={mapRegion}
-              onRegionChangeComplete={setMapRegion}
+              initialRegion={MAP_REGION}
+              onMapReady={handleMapReady}
+              onRegionChangeComplete={handleMapRegionChangeComplete}
               customMapStyle={MAP_STYLE}
               showsUserLocation
               showsMyLocationButton={false}
@@ -11193,13 +11199,15 @@ export default function App() {
                                 {offer.title || "Local offer"}
                               </Text>
                               <View style={styles.detailOfferTagRow}>
-                                {(businessDetail.tags || []).map((tag) => (
-                                  <View key={tag} style={styles.detailOfferTag}>
-                                    <Text style={styles.detailOfferTagText}>
-                                      {tag}
-                                    </Text>
-                                  </View>
-                                ))}
+                                {sanitizeBusinessTags(businessDetail.tags).map(
+                                  (tag) => (
+                                    <View key={tag} style={styles.detailOfferTag}>
+                                      <Text style={styles.detailOfferTagText}>
+                                        {tag}
+                                      </Text>
+                                    </View>
+                                  ),
+                                )}
                               </View>
                               {offer.description ? (
                                 <Text style={styles.detailOfferText}>
@@ -12000,16 +12008,18 @@ export default function App() {
                                   </View>
                                 )}
                                 <View style={styles.detailOfferTagRow}>
-                                  {(ownerBusiness?.tags || []).map((tag) => (
-                                    <View
-                                      key={tag}
-                                      style={styles.detailOfferTag}
-                                    >
-                                      <Text style={styles.detailOfferTagText}>
-                                        {tag}
-                                      </Text>
-                                    </View>
-                                  ))}
+                                  {sanitizeBusinessTags(ownerBusiness?.tags).map(
+                                    (tag) => (
+                                      <View
+                                        key={tag}
+                                        style={styles.detailOfferTag}
+                                      >
+                                        <Text style={styles.detailOfferTagText}>
+                                          {tag}
+                                        </Text>
+                                      </View>
+                                    ),
+                                  )}
                                 </View>
                                 {offer.description ? (
                                   <Text style={styles.detailOfferText}>
@@ -12524,7 +12534,7 @@ export default function App() {
                               onPress={() =>
                                 openInfoTooltip(
                                   "Payments",
-                                  `Commission is ${COMMISSION_RATE_PERCENT}% of each verified receipt total. Customer cashback is a percentage of that commission (promo codes can increase it). Your commission is billed monthly. The billing portal is for payment methods and invoices.`,
+                                  `Commission is ${COMMISSION_RATE_PERCENT}% of each verified receipt total. Customer cashback defaults to half of that commission (${CASHBACK_RATE_PERCENT}%) and promo codes can increase it. Your commission is billed monthly. The billing portal is for payment methods and invoices.`,
                                 )
                               }
                               hitSlop={{
@@ -14227,8 +14237,8 @@ export default function App() {
                           <View style={styles.authCard}>
                             <Text style={styles.authTitle}>Cash out</Text>
                             <Text style={styles.authSubtitle}>
-                              Sign in to link a bank account and withdraw
-                              cashback.
+                              Sign in to complete Stripe payout setup and
+                              withdraw cashback.
                             </Text>
                             <TouchableOpacity
                               style={styles.authPrimaryButton}
@@ -14408,156 +14418,15 @@ export default function App() {
                                   {cashoutPayoutStatusCopy}
                                 </Text>
                               </View>
-                              {(showCashoutBankOptions ||
-                                cashoutSwitchesRemaining <= 1) && (
-                                <Text style={styles.cashoutPolicyText}>
-                                  Switches left: {cashoutSwitchesRemaining}
-                                  {cashoutSwitchesRemaining <= 0 &&
-                                  cashoutSwitchResetLabel
-                                    ? ` \u00b7 resets ${cashoutSwitchResetLabel}`
-                                    : ""}
-                                </Text>
-                              )}
-                              {plaidLinkState.linkedAccounts.length > 0 ? (
-                                <View style={styles.cashoutLinkedAccountList}>
-                                  {cashoutAccountSelection.selectedAccount && (
-                                    <View style={styles.cashoutSelectedAccountCard}>
-                                      <View style={styles.cashoutLinkedAccountMain}>
-                                        <Text
-                                          style={styles.cashoutLinkedAccountTitle}
-                                          numberOfLines={1}
-                                        >
-                                          {String(
-                                            cashoutAccountSelection.selectedAccount
-                                              ?.institutionName || "Linked bank",
-                                          ).trim() || "Linked bank"}
-                                        </Text>
-                                        <Text style={styles.cashoutLinkedAccountMeta}>
-                                          {formatCashoutAccountType(
-                                            cashoutAccountSelection.selectedAccount
-                                              ?.subtype,
-                                            cashoutAccountSelection.selectedAccount
-                                              ?.type,
-                                          )}
-                                          {cashoutAccountSelection.selectedAccount
-                                            ?.mask
-                                            ? ` \u00b7 ****${cashoutAccountSelection.selectedAccount.mask}`
-                                            : ""}
-                                        </Text>
-                                      </View>
-                                      <Text style={styles.cashoutSelectedAccountTag}>
-                                        Selected
-                                      </Text>
-                                    </View>
-                                  )}
-                                  {cashoutAccountSelection.visibleAccounts.length >
-                                    0 && (
-                                    <TouchableOpacity
-                                      style={styles.cashoutChangeBankButton}
-                                      onPress={() =>
-                                        setCashoutBankPickerOpen((prev) => !prev)
-                                      }
-                                    >
-                                      <Text
-                                        style={styles.cashoutChangeBankButtonText}
-                                      >
-                                        {showCashoutBankOptions
-                                          ? "Hide banks"
-                                          : "Change bank"}
-                                      </Text>
-                                      <Ionicons
-                                        name={
-                                          showCashoutBankOptions
-                                            ? "chevron-up"
-                                            : "chevron-down"
-                                        }
-                                        size={16}
-                                        color={COLORS.muted}
-                                      />
-                                    </TouchableOpacity>
-                                  )}
-                                  {showCashoutBankOptions && (
-                                    <View style={styles.cashoutLinkedAccountOptions}>
-                                      {cashoutAccountSelection.visibleAccounts.map(
-                                        (account) => {
-                                          const accountId = String(
-                                            account?.accountId || "",
-                                          ).trim();
-                                          const disabled =
-                                            cashoutActionStatus.loading ||
-                                            cashoutSwitchesRemaining <= 0;
-                                          return (
-                                            <TouchableOpacity
-                                              key={accountId}
-                                              style={styles.cashoutLinkedAccountRow}
-                                              onPress={() =>
-                                                handleSelectCashoutBank(account)
-                                              }
-                                              disabled={disabled}
-                                            >
-                                              <View
-                                                style={
-                                                  styles.cashoutLinkedAccountMain
-                                                }
-                                              >
-                                                <Text
-                                                  style={
-                                                    styles.cashoutLinkedAccountTitle
-                                                  }
-                                                  numberOfLines={1}
-                                                >
-                                                  {String(
-                                                    account?.institutionName ||
-                                                      "Linked bank",
-                                                  ).trim() || "Linked bank"}
-                                                </Text>
-                                                <Text
-                                                  style={
-                                                    styles.cashoutLinkedAccountMeta
-                                                  }
-                                                >
-                                                  {formatCashoutAccountType(
-                                                    account?.subtype,
-                                                    account?.type,
-                                                  )}
-                                                  {account?.mask
-                                                    ? ` \u00b7 ****${account.mask}`
-                                                    : ""}
-                                                </Text>
-                                              </View>
-                                              <Ionicons
-                                                name="radio-button-off-outline"
-                                                size={18}
-                                                color={COLORS.muted}
-                                              />
-                                            </TouchableOpacity>
-                                          );
-                                        },
-                                      )}
-                                      {cashoutAccountSelection.hasMore && (
-                                        <TouchableOpacity
-                                          style={styles.cashoutShowMoreButton}
-                                          onPress={() =>
-                                            setShowAllCashoutBanks((prev) => !prev)
-                                          }
-                                        >
-                                          <Text
-                                            style={styles.cashoutShowMoreButtonText}
-                                          >
-                                            {showAllCashoutBanks
-                                              ? "Show fewer"
-                                              : `More banks (${cashoutAccountSelection.hiddenCount})`}
-                                          </Text>
-                                        </TouchableOpacity>
-                                      )}
-                                    </View>
-                                  )}
-                                </View>
-                              ) : (
-                                <Text style={styles.cashoutStatusText}>
-                                  Link a bank to choose payouts.
-                                </Text>
-                              )}
+                              <Text style={styles.cashoutStatusText}>
+                                {cashoutStatus.selectedPayoutLabel
+                                  ? `Payout account: ${cashoutStatus.selectedPayoutLabel}`
+                                  : "No Stripe payout bank is on file yet."}
+                              </Text>
+                              <Text style={styles.cashoutPolicyText}>
+                                Plaid is used for purchase verification only.
+                                Payouts are managed in Stripe Connect.
+                              </Text>
                               {cashoutStatusState.loading && (
                                 <View style={styles.cashoutStatusHint}>
                                   <ActivityIndicator
@@ -14585,29 +14454,18 @@ export default function App() {
                                 </Text>
                               )}
                               <View style={styles.cashoutButtonStack}>
-                                <TouchableOpacity
-                                  style={styles.primaryButton}
-                                  onPress={handleLinkPurchaseVerificationBank}
-                                  disabled={
-                                    cashoutActionStatus.loading ||
-                                    plaidLinkAction !== "idle"
-                                  }
-                                >
-                                  <Text style={styles.primaryButtonText}>
-                                    {plaidLinkAction === "linking"
-                                      ? "Opening Plaid Link..."
-                                      : "Link bank"}
-                                  </Text>
-                                </TouchableOpacity>
-                                {cashoutStatus.connected &&
-                                  !cashoutStatus.payoutsEnabled && (
+                                {(!cashoutStatus.connected ||
+                                  !cashoutStatus.bankSelected ||
+                                  !cashoutStatus.payoutsEnabled ||
+                                  cashoutStatus.requirementsDue.length > 0 ||
+                                  !cashoutStatus.detailsSubmitted) && (
                                   <TouchableOpacity
-                                    style={styles.secondaryButton}
+                                    style={styles.primaryButton}
                                     onPress={handleCashoutConnect}
                                     disabled={cashoutActionStatus.loading}
                                   >
-                                    <Text style={styles.secondaryButtonText}>
-                                      Verify payouts
+                                    <Text style={styles.primaryButtonText}>
+                                      Verify payouts with Stripe
                                     </Text>
                                   </TouchableOpacity>
                                 )}
@@ -14645,6 +14503,7 @@ export default function App() {
                                 <TouchableOpacity
                                   style={styles.authPrimaryButton}
                                   onPress={() => setAuthView("signin")}
+                                  disabled={authBusy}
                                 >
                                   <Text style={styles.authButtonText}>
                                     Sign in
@@ -14652,8 +14511,27 @@ export default function App() {
                                 </TouchableOpacity>
 
                                 <TouchableOpacity
+                                  style={[
+                                    styles.authGoogleButton,
+                                    authBusy && styles.authButtonDisabled,
+                                  ]}
+                                  onPress={handleGoogleSignIn}
+                                  disabled={authBusy}
+                                >
+                                  <Ionicons
+                                    name="logo-google"
+                                    size={16}
+                                    color={COLORS.ink}
+                                  />
+                                  <Text style={styles.authGoogleButtonText}>
+                                    Continue with Google
+                                  </Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
                                   style={styles.authSecondaryButton}
                                   onPress={() => setAuthView("signup")}
+                                  disabled={authBusy}
                                 >
                                   <Text style={styles.secondaryButtonText}>
                                     Create new account
@@ -14663,11 +14541,17 @@ export default function App() {
                                 <TouchableOpacity
                                   style={styles.authSecondaryButton}
                                   onPress={() => setAuthView("business")}
+                                  disabled={authBusy}
                                 >
                                   <Text style={styles.secondaryButtonText}>
                                     Create business account
                                   </Text>
                                 </TouchableOpacity>
+                                {signInError && (
+                                  <Text style={styles.formError}>
+                                    {signInError}
+                                  </Text>
+                                )}
                               </View>
                             )}
 
@@ -14690,6 +14574,24 @@ export default function App() {
                                   Access your account to manage listings and
                                   offers.
                                 </Text>
+
+                                <TouchableOpacity
+                                  style={[
+                                    styles.authGoogleButton,
+                                    authBusy && styles.authButtonDisabled,
+                                  ]}
+                                  onPress={handleGoogleSignIn}
+                                  disabled={authBusy}
+                                >
+                                  <Ionicons
+                                    name="logo-google"
+                                    size={16}
+                                    color={COLORS.ink}
+                                  />
+                                  <Text style={styles.authGoogleButtonText}>
+                                    Continue with Google
+                                  </Text>
+                                </TouchableOpacity>
 
                                 <Text style={styles.formLabel}>Email</Text>
                                 <AutoFocusInput
@@ -15785,9 +15687,9 @@ export default function App() {
                             ]
                               .filter(Boolean)
                               .join(", ");
-                            const tagLine = Array.isArray(business.tags)
-                              ? business.tags.filter(Boolean).join(", ")
-                              : "";
+                            const tagLine = sanitizeBusinessTags(
+                              business.tags,
+                            ).join(", ");
                             return (
                               <View key={business.id} style={styles.adminCard}>
                                 <TouchableOpacity
@@ -16365,6 +16267,23 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     alignItems: "center",
     marginTop: 8,
+  },
+  authGoogleButton: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  authGoogleButtonText: {
+    color: COLORS.ink,
+    fontSize: 14,
+    fontFamily: FONT_MEDIUM,
   },
   authButtonDisabled: {
     backgroundColor: "#9AA7B8",
@@ -19587,6 +19506,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     backgroundColor: COLORS.white,
   },
+  cashoutLinkedAccountRowDisabled: {
+    opacity: 0.58,
+  },
   cashoutLinkedAccountMain: {
     flex: 1,
   },
@@ -20453,3 +20375,5 @@ const styles = StyleSheet.create({
     transform: [{ rotate: "45deg" }],
   },
 });
+
+

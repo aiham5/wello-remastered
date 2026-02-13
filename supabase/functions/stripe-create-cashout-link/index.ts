@@ -20,6 +20,9 @@ const CONNECT_REFRESH_URL =
   Deno.env.get("STRIPE_CONNECT_REFRESH_URL") ?? "";
 const CONNECT_RETURN_URL =
   Deno.env.get("STRIPE_CONNECT_RETURN_URL") ?? "";
+const CONNECT_BUSINESS_PROFILE_URL =
+  Deno.env.get("STRIPE_CONNECT_BUSINESS_PROFILE_URL") ??
+  "https://www.wellopartners.com";
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -59,6 +62,42 @@ const decodeJwtHeader = (token: string) => {
   } catch {
     return null;
   }
+};
+
+const normalizeSpace = (value: unknown) =>
+  String(value || "").trim().replace(/\s+/g, " ");
+
+const buildIndividualPrefill = (fullName: unknown) => {
+  const normalized = normalizeSpace(fullName);
+  if (!normalized) return null;
+  const parts = normalized.split(" ").filter(Boolean);
+  if (!parts.length) return null;
+  const firstName = parts[0] || "";
+  const lastName = parts.slice(1).join(" ").trim();
+  const individual: { first_name?: string; last_name?: string } = {};
+  if (firstName) individual.first_name = firstName;
+  if (lastName) individual.last_name = lastName;
+  return Object.keys(individual).length ? individual : null;
+};
+
+const buildConnectPrefill = (profile: {
+  full_name?: string | null;
+  email?: string | null;
+}) => {
+  const email = normalizeSpace(profile?.email);
+  const individual = buildIndividualPrefill(profile?.full_name);
+  const businessProfileUrl = normalizeSpace(CONNECT_BUSINESS_PROFILE_URL);
+  const prefill: {
+    email?: string;
+    individual?: { first_name?: string; last_name?: string };
+    business_profile?: { url: string };
+  } = {};
+  if (email) prefill.email = email;
+  if (individual) prefill.individual = individual;
+  if (businessProfileUrl) {
+    prefill.business_profile = { url: businessProfileUrl };
+  }
+  return prefill;
 };
 
 serve(async (req) => {
@@ -184,6 +223,7 @@ serve(async (req) => {
       });
     }
 
+    const connectPrefill = buildConnectPrefill(profile);
     let accountId = profile.stripe_cashout_account_id;
     if (!accountId) {
       const account = await stripe.accounts.create({
@@ -191,6 +231,13 @@ serve(async (req) => {
         country: "US",
         default_currency: "usd",
         business_type: "individual",
+        ...(connectPrefill.email ? { email: connectPrefill.email } : {}),
+        ...(connectPrefill.individual
+          ? { individual: connectPrefill.individual }
+          : {}),
+        ...(connectPrefill.business_profile
+          ? { business_profile: connectPrefill.business_profile }
+          : {}),
         metadata: {
           purpose: "consumer_cashout",
           user_id: userId,
@@ -204,6 +251,28 @@ serve(async (req) => {
         .from("profiles")
         .update({ stripe_cashout_account_id: accountId })
         .eq("id", userId);
+    } else {
+      const accountUpdates: Stripe.AccountUpdateParams = {};
+      if (connectPrefill.email) accountUpdates.email = connectPrefill.email;
+      if (connectPrefill.individual) {
+        accountUpdates.individual = connectPrefill.individual;
+      }
+      if (connectPrefill.business_profile?.url) {
+        accountUpdates.business_profile = {
+          url: connectPrefill.business_profile.url,
+        };
+      }
+      if (Object.keys(accountUpdates).length > 0) {
+        try {
+          await stripe.accounts.update(accountId, accountUpdates);
+        } catch (updateError) {
+          // Non-blocking: onboarding can still proceed even if prefill update fails.
+          console.warn(
+            "stripe-create-cashout-link prefill update skipped",
+            updateError,
+          );
+        }
+      }
     }
 
     const accountLink = await stripe.accountLinks.create({
