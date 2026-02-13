@@ -1,0 +1,14 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "LKXSM6936H.com.wellopartners.wello",
+        "paths": [
+          "/plaid-link",
+          "/plaid-link/*"
+        ]
+      }
+    ]
+  }
+}

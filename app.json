@@ -20,13 +20,16 @@
     ],
     "ios": {
       "bundleIdentifier": "com.wellopartners.wello",
+      "icon": "./assets/logo/wello-logo.png",
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "NSLocationWhenInUseUsageDescription": "Wello uses your location to show nearby businesses and offers.",
         "NSCameraUsageDescription": "Wello uses the camera to take photos of receipts and offers.",
         "NSPhotoLibraryUsageDescription": "Wello needs photo access to upload offer images."
       }
     },
     "android": {
+      "icon": "./assets/logo/wello-logo.png",
       "permissions": [
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
@@ -45,7 +48,13 @@
       "expo-font",
       "expo-camera",
       "expo-image-picker",
-      "expo-notifications"
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/logo/notification-icon.png",
+          "color": "#0B2147"
+        }
+      ]
     ],
     "extra": {
       "eas": {
