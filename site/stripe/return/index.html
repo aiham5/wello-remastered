@@ -27,18 +27,32 @@
 
         <div class="card-simple">
           <span class="pill">Stripe onboarding</span>
-          <h2>You're all set.</h2>
+          <h2>Redirecting to Wello...</h2>
           <p>
-            Your Stripe onboarding is complete. Return to the Wello app to keep
-            setting up your business profile.
+            Your setup is complete. We are opening the Wello app so you can continue.
           </p>
           <div class="cta-row" style="justify-content:center;">
-            <a class="button primary" href="/">Back to Wello Partners</a>
+            <a id="open-app-btn" class="button primary" href="wello://auth/callback?flow=stripe_return">Open Wello app</a>
             <a class="button secondary" href="mailto:wellopartners@gmail.com">Contact support</a>
           </div>
-          <p class="notice">You can close this tab after returning to the app.</p>
+          <p id="fallback-note" class="notice" hidden>
+            If the app did not open, tap "Open Wello app" above.
+          </p>
         </div>
       </div>
     </div>
+    <script>
+      (function () {
+        var deepLink = "wello://auth/callback?flow=stripe_return";
+        var fallbackNote = document.getElementById("fallback-note");
+        function openApp() {
+          window.location.href = deepLink;
+        }
+        setTimeout(openApp, 120);
+        setTimeout(function () {
+          if (fallbackNote) fallbackNote.hidden = false;
+        }, 1600);
+      })();
+    </script>
   </body>
 </html>

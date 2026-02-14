@@ -9,7 +9,6 @@ import {
   AppState,
   Animated,
   ActivityIndicator,
-  Alert,
   Dimensions,
   FlatList,
   Image,
@@ -19,11 +18,9 @@ import {
   Modal,
   Platform,
   Pressable,
-  RefreshControl,
   ScrollView,
   StatusBar,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -39,6 +36,10 @@ import BottomSheet, {
   BottomSheetScrollView,
   BottomSheetView,
 } from "@gorhom/bottom-sheet";
+import {
+  configureReanimatedLogger,
+  ReanimatedLogLevel,
+} from "react-native-reanimated";
 import MapView, { Marker } from "react-native-maps";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Font from "expo-font";
@@ -71,6 +72,12 @@ import {
 import { getEnv } from "./lib/env";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+if (__DEV__) {
+  configureReanimatedLogger({
+    level: ReanimatedLogLevel.warn,
+    strict: false,
+  });
+}
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -81,6 +88,12 @@ Notifications.setNotificationHandler({
 const IS_COMPACT = SCREEN_WIDTH < 360;
 const IS_NARROW = SCREEN_WIDTH < 420;
 const IS_SHORT = SCREEN_HEIGHT < 700;
+const IS_SAMSUNG_ANDROID =
+  Platform.OS === "android" &&
+  String(Device.manufacturer || Device.brand || "")
+    .toLowerCase()
+    .includes("samsung");
+const DEBUG_DISCOVER_SCROLL = __DEV__;
 const SHEET_MIN = IS_SHORT ? 140 : 160;
 const SHEET_MAX = Math.min(SCREEN_HEIGHT * 0.72, IS_SHORT ? 560 : 620);
 const SAFE_TOP =
@@ -115,6 +128,11 @@ const PLAID_FALLBACK_COPY =
   "Some cards or banks may require receipt upload for verification.";
 const PLAID_PENDING_COPY =
   "Cashback may appear as pending while verification completes.";
+const DISCOVER_DEMO_LAYOUTS = [
+  { key: "editorial_split", label: "Editorial Split" },
+  { key: "editorial_stack", label: "Editorial Stack" },
+  { key: "editorial", label: "Editorial" },
+];
 const COMMISSION_RATE_PERCENT = 15;
 const CASHBACK_RATE_PERCENT = 7.5;
 const CASHBACK_BASE_RATE_BPS = 750;
@@ -128,7 +146,17 @@ const APP_SCHEME = Array.isArray(APP_SCHEME_RAW)
   ? String(APP_SCHEME_RAW[0] || "wello").trim() || "wello"
   : String(APP_SCHEME_RAW || "wello").trim() || "wello";
 const AUTH_CALLBACK_PATH = "auth/callback";
+const DEV_CLIENT_SCHEME = `exp+${APP_SCHEME}`;
 const GOOGLE_AUTH_REDIRECT_URL = `${APP_SCHEME}://${AUTH_CALLBACK_PATH}`;
+const STRIPE_CONNECT_RETURN_URL = "https://www.wellopartners.com/stripe/return";
+const STRIPE_CONNECT_REFRESH_URL =
+  "https://www.wellopartners.com/stripe/refresh";
+const GOOGLE_AUTH_CALLBACK_PREFIXES = [
+  `${APP_SCHEME}://${AUTH_CALLBACK_PATH}`.toLowerCase(),
+  `${APP_SCHEME}:///${AUTH_CALLBACK_PATH}`.toLowerCase(),
+  `${DEV_CLIENT_SCHEME}://${AUTH_CALLBACK_PATH}`.toLowerCase(),
+  `${DEV_CLIENT_SCHEME}:///${AUTH_CALLBACK_PATH}`.toLowerCase(),
+];
 const PLAID_ANDROID_PACKAGE_NAME =
   Constants.expoConfig?.android?.package ||
   Constants.manifest2?.extra?.expoClient?.android?.package ||
@@ -205,7 +233,7 @@ const FONT_TEXT = FONT_REGULAR;
 
 const COLORS = {
   ink: "#0F172A",
-  cream: "#F4F6F9",
+  cream: "#F2F4F8",
   sand: "#D7DEE8",
   mint: "#E3EBF5",
   coral: "#1F4E8C",
@@ -878,10 +906,43 @@ const parseAuthCallbackParams = (url) => {
     code: params.get("code") || null,
     accessToken: params.get("access_token") || null,
     refreshToken: params.get("refresh_token") || null,
+    flow: params.get("flow") || null,
     error:
       params.get("error_description") || params.get("error") || params.get("message") || null,
   };
 };
+
+const NotificationToggle = ({ value, onValueChange, disabled = false }) => {
+  const isOn = Boolean(value);
+  return (
+    <TouchableOpacity
+      activeOpacity={0.85}
+      disabled={disabled}
+      onPress={() => onValueChange(!isOn)}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: isOn, disabled }}
+      style={styles.notificationToggleHitbox}
+    >
+      <View
+        style={[
+          styles.notificationToggleTrack,
+          isOn && styles.notificationToggleTrackActive,
+          disabled && styles.notificationToggleTrackDisabled,
+        ]}
+      >
+        <View
+          style={[
+            styles.notificationToggleThumb,
+            isOn && styles.notificationToggleThumbActive,
+          ]}
+        />
+      </View>
+    </TouchableOpacity>
+  );
+};
+// Fast-refresh compatibility: keep `Switch` defined so stale render branches
+// don't crash while the app updates to NotificationToggle.
+const Switch = NotificationToggle;
 
 const sanitizeBusinessTags = (tags) =>
   (Array.isArray(tags) ? tags : [])
@@ -1252,13 +1313,20 @@ const callPlaidFunction = async (functionName, payload) => {
     } catch {
       parsed = null;
     }
-    const baseErrorMessage = formatPlaidFunctionError(
+    let baseErrorMessage = formatPlaidFunctionError(
       parsed,
       err?.message ||
         (status
           ? `Verification request failed (${status}).`
           : "Verification request failed."),
     );
+    const numericStatus = Number(status) || 0;
+    const hasParsedPayload =
+      parsed && typeof parsed === "object" && Object.keys(parsed).length > 0;
+    if (!hasParsedPayload && [502, 503, 504].includes(numericStatus)) {
+      baseErrorMessage =
+        "Bank linking is temporarily unavailable. Please try again in a moment.";
+    }
     return {
       ok: false,
       status,
@@ -1293,9 +1361,17 @@ const callPlaidFunction = async (functionName, payload) => {
         });
         const refreshedToken = refreshed?.accessToken || "";
         if (refreshedToken) {
+          accessToken = refreshedToken;
           attempt = await runRequest(refreshedToken);
         }
       } catch (_error) {}
+    }
+
+    const transientUpstreamError =
+      !attempt.ok && [502, 503, 504].includes(Number(attempt.status) || 0);
+    if (transientUpstreamError) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      attempt = await runRequest(accessToken);
     }
 
     if (!attempt.ok) {
@@ -2166,7 +2242,7 @@ function formatCashbackRateLabel(percentValue) {
   if (!Number.isFinite(value) || value <= 0) return null;
   const rounded = Math.round(value * 10) / 10;
   const label = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
-  return `${label}% cashback`;
+  return `${label}% Cashback`;
 }
 
 function formatPercentOnlyLabel(percentValue) {
@@ -2177,12 +2253,21 @@ function formatPercentOnlyLabel(percentValue) {
   return `${label}%`;
 }
 
+function getOfferCardSelectionKey(card) {
+  if (!card) return null;
+  const offerId = String(card.offerId || card.id || "").trim();
+  if (offerId) return offerId;
+  const businessId = String(card.businessId || card.business?.id || "").trim();
+  const title = String(card.offerTitle || card.offer || "").trim();
+  if (businessId || title) return `${businessId}:${title}`;
+  return null;
+}
+
 function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
   const category = getCategoryConfig(item.categoryKey);
   const ratingLabel =
     item.rating && Number.isFinite(item.rating) ? item.rating.toFixed(1) : null;
   const offerTitle = item.offerTitle || item.offer;
-  const offerDescription = item.offerDescription || "";
   const offerTypeLabel = item.offerType
     ? normalizeOfferType(item.offerType)
     : "Offer";
@@ -2246,107 +2331,18 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
   return (
     <View style={styles.cardShell}>
       <TouchableOpacity
-        style={[styles.card, selected && styles.cardSelected]}
+        style={[
+          styles.liveEditorialStackCard,
+          selected && styles.liveEditorialStackCardSelected,
+        ]}
         onPress={onPress}
         activeOpacity={0.85}
       >
-        <View style={styles.cardContent}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardName} numberOfLines={1}>
-              {item.name}
-            </Text>
-            <View style={styles.cardHeaderBadges}>
-              {cashbackLabel ? (
-                <View style={styles.cardCashbackBadge}>
-                  <Ionicons
-                    name="cash-outline"
-                    size={13}
-                    color="#065F46"
-                    style={styles.cardCashbackIcon}
-                  />
-                  <Text style={styles.cardCashbackText}>{cashbackLabel}</Text>
-                </View>
-              ) : null}
-              <View style={[styles.cardLimitBadgeTop, limitMeta.badgeStyle]}>
-                <Ionicons
-                  name={limitMeta.icon}
-                  size={15}
-                  color={
-                    StyleSheet.flatten(limitMeta.textStyle)?.color || COLORS.coral
-                  }
-                />
-              </View>
-            </View>
-          </View>
-          <Text style={styles.cardCategory}>{category.display}</Text>
-          {offerTitle ? (
-            <Text style={styles.cardOfferTitle} numberOfLines={1}>
-              {offerTitle}
-            </Text>
-          ) : null}
-          {offerDescription ? (
-            <Text style={styles.cardOffer} numberOfLines={2}>
-              {offerDescription}
-            </Text>
-          ) : null}
-          <TouchableOpacity
-            style={[
-              styles.redeemButton,
-              !isOpen && styles.redeemButtonDisabled,
-            ]}
-            onPress={onRedeem}
-            activeOpacity={0.85}
-            disabled={!isOpen}
-          >
-            <Text
-              style={[
-                styles.redeemButtonText,
-                !isOpen && styles.redeemButtonTextDisabled,
-              ]}
-            >
-              {isOpen ? "Redeem offer" : "Closed now"}
-            </Text>
-          </TouchableOpacity>
-          <Pressable
-            style={({ pressed }) => [
-              styles.directionsButton,
-              pressed && styles.directionsButtonPressed,
-            ]}
-            onPress={() => openMapsForBusiness(item.business || item)}
-          >
-            <Ionicons name="navigate" size={14} color={COLORS.pine} />
-            <Text style={styles.directionsButtonText}>Directions</Text>
-          </Pressable>
-          <View style={styles.cardMetaRow}>
-            <Text style={styles.cardMeta}>{offerTypeLabel}</Text>
-            <Text style={styles.cardMeta}>
-              {ratingLabel ? `Rating ${ratingLabel}` : "Not rated yet"}
-            </Text>
-          </View>
-        </View>
-        <View style={styles.cardMedia}>
-          {tags.length > 0 && (
-            <View style={styles.cardMediaOverlay}>
-              {visibleTags.map((tag) => (
-                <View key={tag} style={[styles.tagPill, styles.tagPillOverlay]}>
-                  <Text style={[styles.tagText, styles.tagTextOverlay]}>
-                    {tag}
-                  </Text>
-                </View>
-              ))}
-              {extraTagCount > 0 && (
-                <View style={[styles.tagPill, styles.tagPillOverlay]}>
-                  <Text style={[styles.tagText, styles.tagTextOverlay]}>
-                    +{extraTagCount}
-                  </Text>
-                </View>
-              )}
-            </View>
-          )}
+        <View style={styles.liveEditorialStackMedia}>
           {item.imageUrl ? (
             <Image
               source={{ uri: item.imageUrl }}
-              style={styles.cardMediaImage}
+              style={styles.liveEditorialStackMediaImage}
               resizeMode="cover"
               onError={(event) => {
                 console.warn("Wello offer image load failed:", {
@@ -2356,11 +2352,110 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
               }}
             />
           ) : (
-            <>
-              <Ionicons name="image-outline" size={18} color={COLORS.muted} />
-              <Text style={styles.cardMediaLabel}>Offer image</Text>
-            </>
+            <View style={styles.liveEditorialStackMediaFallback}>
+              <Ionicons name="image-outline" size={20} color={COLORS.muted} />
+              <Text style={styles.liveEditorialStackMediaLabel}>Offer image</Text>
+            </View>
           )}
+          <LinearGradient
+            colors={["transparent", "rgba(15, 23, 42, 0.74)"]}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={styles.liveEditorialStackShade}
+          />
+          <View style={styles.liveEditorialStackTopRow}>
+            <View style={styles.liveEditorialStackCategoryPill}>
+              <Text style={styles.liveEditorialStackCategoryText}>
+                {category.display}
+              </Text>
+            </View>
+            <View style={styles.liveEditorialStackOfferTypePill}>
+              <Text
+                style={styles.liveEditorialStackOfferTypeText}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
+                {offerTypeLabel}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.liveEditorialStackHeadlineWrap}>
+            <Text style={styles.liveEditorialStackName} numberOfLines={1}>
+              {item.name}
+            </Text>
+            {offerTitle ? (
+              <Text style={styles.liveEditorialStackOffer} numberOfLines={1}>
+                {offerTitle}
+              </Text>
+            ) : null}
+          </View>
+          {tags.length > 0 && (
+            <View style={styles.liveEditorialStackTagRow}>
+              {visibleTags.map((tag) => (
+                <View key={tag} style={styles.liveEditorialStackTagPill}>
+                  <Text style={styles.liveEditorialStackTagText}>{tag}</Text>
+                </View>
+              ))}
+              {extraTagCount > 0 && (
+                <View style={styles.liveEditorialStackTagPill}>
+                  <Text style={styles.liveEditorialStackTagText}>+{extraTagCount}</Text>
+                </View>
+              )}
+            </View>
+          )}
+        </View>
+          <View style={styles.liveEditorialStackPanel}>
+            <View style={styles.liveEditorialStackMetaTopRow}>
+              <View style={styles.liveEditorialStackMetaRow}>
+                <Text style={styles.liveEditorialStackMeta}>{limitMeta.label}</Text>
+              </View>
+              <View style={styles.liveEditorialStackRatingPill}>
+              <Ionicons name="star" size={11} color="#A16207" />
+              <Text style={styles.liveEditorialStackRatingText}>
+                {ratingLabel || "New"}
+              </Text>
+            </View>
+          </View>
+          {selected ? (
+            <View style={styles.liveEditorialStackActionsRow}>
+              <TouchableOpacity
+                style={[
+                  styles.liveEditorialStackRedeemButton,
+                  !isOpen && styles.liveEditorialStackRedeemButtonDisabled,
+                ]}
+                onPress={onRedeem}
+                activeOpacity={0.85}
+                disabled={!isOpen}
+              >
+                <Text
+                  style={[
+                    styles.liveEditorialStackRedeemText,
+                    !isOpen && styles.liveEditorialStackRedeemTextDisabled,
+                  ]}
+                >
+                  {isOpen ? "Redeem offer" : "Closed now"}
+                </Text>
+              </TouchableOpacity>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.liveEditorialStackDirectionsButton,
+                  pressed && styles.liveEditorialStackDirectionsButtonPressed,
+                ]}
+                onPress={() => openMapsForBusiness(item.business || item)}
+              >
+                <Ionicons name="navigate" size={14} color={COLORS.pine} />
+                <Text style={styles.liveEditorialStackDirectionsText}>Directions</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {cashbackLabel ? (
+            <View style={styles.liveEditorialStackCashbackPill}>
+              <Ionicons name="cash-outline" size={12} color="#065F46" />
+              <Text style={styles.liveEditorialStackCashbackText}>
+                {cashbackLabel} Cashback
+              </Text>
+            </View>
+          ) : null}
         </View>
       </TouchableOpacity>
     </View>
@@ -2377,12 +2472,25 @@ export default function App() {
   const sheetScrollRef = useRef(null);
   const bottomSheetRef = useRef(null);
   const sheetIndexRef = useRef(0);
+  const discoverScrollDebugRef = useRef({
+    viewportHeight: 0,
+    contentHeight: 0,
+    lastY: 0,
+    lastScrollLogAt: 0,
+  });
   const isMountedRef = useRef(true);
   const [query, setQuery] = useState("");
+  const [discoverSearchFocused, setDiscoverSearchFocused] = useState(false);
+  const [demoQuery, setDemoQuery] = useState("");
+  const [demoSearchFocused, setDemoSearchFocused] = useState(false);
   const [activeTab, setActiveTab] = useState("discover");
+  const [discoverDemoLayout, setDiscoverDemoLayout] = useState("editorial_split");
   const [activeFilters, setActiveFilters] = useState([]);
   const [showFilters, setShowFilters] = useState(false);
+  const [demoActiveFilters, setDemoActiveFilters] = useState([]);
+  const [showDemoFilters, setShowDemoFilters] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
+  const [selectedOfferCardId, setSelectedOfferCardId] = useState(null);
   const [mapRegion, setMapRegion] = useState(MAP_REGION);
   const initialBusinesses = SUPABASE_URL && SUPABASE_ANON_KEY ? [] : BUSINESSES;
   const initialOffers = SUPABASE_URL && SUPABASE_ANON_KEY ? [] : OFFER_SEEDS;
@@ -2399,6 +2507,7 @@ export default function App() {
   const [sessionReady, setSessionReady] = useState(false);
   const [authEmail, setAuthEmail] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [googleAuthState, setGoogleAuthState] = useState("idle");
   const [signInEmail, setSignInEmail] = useState("");
   const [signInPassword, setSignInPassword] = useState("");
   const [signInError, setSignInError] = useState(null);
@@ -2432,6 +2541,23 @@ export default function App() {
   const businessAddressRequestRef = useRef(0);
   const businessAddressSelectionRef = useRef(false);
   const [authView, setAuthView] = useState("menu");
+  const googleAuthInFlight = googleAuthState !== "idle";
+  const googleAuthButtonLabel = useMemo(() => {
+    if (googleAuthState === "opening") return "Opening Google...";
+    if (googleAuthState === "awaiting_return") return "Waiting for Google...";
+    if (googleAuthState === "finishing") return "Signing in...";
+    return "Continue with Google";
+  }, [googleAuthState]);
+  const googleAuthStatusCopy = useMemo(() => {
+    if (googleAuthState === "opening") {
+      return "Opening secure Google sign-in...";
+    }
+    if (googleAuthState === "awaiting_return") {
+      return "Finish sign-in in Google to return to Wello.";
+    }
+    if (googleAuthState === "finishing") return "";
+    return "";
+  }, [googleAuthState]);
   const [profileName, setProfileName] = useState("");
   const [profileEmail, setProfileEmail] = useState("");
   const [profilePhone, setProfilePhone] = useState("");
@@ -2544,6 +2670,13 @@ export default function App() {
   const [expandedAdminBusinesses, setExpandedAdminBusinesses] = useState({});
   const [showReachTooltip, setShowReachTooltip] = useState(false);
   const [infoTooltip, setInfoTooltip] = useState(null);
+  const [appDialog, setAppDialog] = useState({
+    visible: false,
+    title: "",
+    message: "",
+    dismissOnBackdrop: true,
+    options: [],
+  });
   const [reviewTarget, setReviewTarget] = useState(null);
   const [reviewRating, setReviewRating] = useState(0);
   const [reviewText, setReviewText] = useState("");
@@ -2771,11 +2904,90 @@ export default function App() {
     error: null,
   });
   const [plaidLinkAction, setPlaidLinkAction] = useState("idle");
+  const [historyVerificationExpanded, setHistoryVerificationExpanded] =
+    useState(false);
+  const hasLinkedPlaidBank = useMemo(() => {
+    if (plaidLinkState.linked) return true;
+    if ((Number(plaidLinkState.linkedCount) || 0) > 0) return true;
+    return (Array.isArray(plaidLinkState.linkedAccounts)
+      ? plaidLinkState.linkedAccounts.length
+      : 0) > 0;
+  }, [
+    plaidLinkState.linked,
+    plaidLinkState.linkedCount,
+    plaidLinkState.linkedAccounts,
+  ]);
   const cashoutPayoutStatusCopy = useMemo(() => {
     if (cashoutStatus.payoutsEnabled) return "Ready";
     if (cashoutStatus.bankSelected) return "Verification needed";
     return "Stripe setup needed";
   }, [cashoutStatus.bankSelected, cashoutStatus.payoutsEnabled]);
+  const selectedPayoutAccountDetails = useMemo(() => {
+    const linkedAccounts = Array.isArray(plaidLinkState.linkedAccounts)
+      ? plaidLinkState.linkedAccounts
+      : [];
+    const selectedAccountId = String(
+      cashoutStatus.selectedPayoutAccountId ||
+        plaidLinkState.selectedPayoutAccountId ||
+        "",
+    ).trim();
+    const selectedAccount =
+      linkedAccounts.find((account) => account?.accountId === selectedAccountId) ||
+      linkedAccounts.find((account) => Boolean(account?.selectedForPayout)) ||
+      null;
+
+    if (selectedAccount) {
+      const institutionName = String(
+        selectedAccount.institutionName || "",
+      ).trim();
+      const accountName = String(selectedAccount.name || "").trim();
+      const mask = String(selectedAccount.mask || "").trim();
+      const rawSubtype = String(
+        selectedAccount.subtype || selectedAccount.type || "",
+      ).trim();
+      const subtypeLabel = rawSubtype
+        ? rawSubtype
+            .replace(/[_-]+/g, " ")
+            .toLowerCase()
+            .replace(/\b\w/g, (match) => match.toUpperCase())
+        : "";
+      const title = institutionName || accountName || "Connected bank account";
+      const detailParts = [];
+      if (
+        accountName &&
+        accountName.toLowerCase() !== String(title).toLowerCase()
+      ) {
+        detailParts.push(accountName);
+      }
+      if (mask) detailParts.push(`**** ${mask}`);
+      if (subtypeLabel) detailParts.push(subtypeLabel);
+      return {
+        hasAccount: true,
+        title,
+        detail: detailParts.join(" | ") || "Stripe payout account",
+      };
+    }
+
+    const selectedLabel = String(cashoutStatus.selectedPayoutLabel || "").trim();
+    if (selectedLabel) {
+      return {
+        hasAccount: true,
+        title: selectedLabel,
+        detail: "Stripe payout account",
+      };
+    }
+
+    return {
+      hasAccount: false,
+      title: "No payout bank selected",
+      detail: "Link a bank account to receive cashback payouts.",
+    };
+  }, [
+    cashoutStatus.selectedPayoutAccountId,
+    cashoutStatus.selectedPayoutLabel,
+    plaidLinkState.linkedAccounts,
+    plaidLinkState.selectedPayoutAccountId,
+  ]);
   const [verificationPrompt, setVerificationPrompt] = useState({
     visible: false,
     title: "",
@@ -2839,9 +3051,126 @@ export default function App() {
     const max = "78%";
     return [min, max];
   }, []);
+  const logDiscoverGestureDebug = useCallback(
+    (eventName, payload = {}) => {
+      if (!DEBUG_DISCOVER_SCROLL) return;
+      const debugState = discoverScrollDebugRef.current;
+      const viewportHeight = Math.round(Number(debugState.viewportHeight) || 0);
+      const contentHeight = Math.round(Number(debugState.contentHeight) || 0);
+      const canScroll = contentHeight > viewportHeight + 2;
+      console.log("[DiscoverGestureDebug]", eventName, {
+        tab: activeTab,
+        sheetIndex: sheetIndexRef.current,
+        viewportHeight,
+        contentHeight,
+        canScroll,
+        ...payload,
+      });
+    },
+    [activeTab],
+  );
+  const handleDiscoverScrollLayout = useCallback(
+    (event) => {
+      const nextHeight = Math.round(event?.nativeEvent?.layout?.height || 0);
+      const prevHeight = discoverScrollDebugRef.current.viewportHeight;
+      discoverScrollDebugRef.current.viewportHeight = nextHeight;
+      if (nextHeight !== prevHeight) {
+        logDiscoverGestureDebug("layout", {
+          viewportHeight: nextHeight,
+        });
+      }
+    },
+    [logDiscoverGestureDebug],
+  );
+  const handleDiscoverContentSizeChange = useCallback(
+    (contentWidth, contentHeight) => {
+      const nextHeight = Math.round(contentHeight || 0);
+      const prevHeight = discoverScrollDebugRef.current.contentHeight;
+      discoverScrollDebugRef.current.contentHeight = nextHeight;
+      if (nextHeight !== prevHeight) {
+        logDiscoverGestureDebug("contentSize", {
+          contentWidth: Math.round(contentWidth || 0),
+          contentHeight: nextHeight,
+        });
+      }
+    },
+    [logDiscoverGestureDebug],
+  );
+  const handleDiscoverTouchStart = useCallback(() => {
+    logDiscoverGestureDebug("touchStart");
+  }, [logDiscoverGestureDebug]);
+  const handleDiscoverScrollBeginDrag = useCallback(
+    (event) => {
+      const y = Math.round(event?.nativeEvent?.contentOffset?.y || 0);
+      discoverScrollDebugRef.current.lastY = y;
+      logDiscoverGestureDebug("scrollBeginDrag", { y });
+    },
+    [logDiscoverGestureDebug],
+  );
+  const handleDiscoverScroll = useCallback(
+    (event) => {
+      if (!DEBUG_DISCOVER_SCROLL) return;
+      const y = Math.round(event?.nativeEvent?.contentOffset?.y || 0);
+      discoverScrollDebugRef.current.lastY = y;
+      const now = Date.now();
+      if (now - discoverScrollDebugRef.current.lastScrollLogAt < 400) return;
+      discoverScrollDebugRef.current.lastScrollLogAt = now;
+      logDiscoverGestureDebug("scroll", { y });
+    },
+    [logDiscoverGestureDebug],
+  );
+  const handleDiscoverScrollEndDrag = useCallback(
+    (event) => {
+      const y = Math.round(event?.nativeEvent?.contentOffset?.y || 0);
+      discoverScrollDebugRef.current.lastY = y;
+      logDiscoverGestureDebug("scrollEndDrag", { y });
+    },
+    [logDiscoverGestureDebug],
+  );
+  const handleDiscoverMomentumScrollBegin = useCallback(
+    (event) => {
+      const y = Math.round(event?.nativeEvent?.contentOffset?.y || 0);
+      discoverScrollDebugRef.current.lastY = y;
+      logDiscoverGestureDebug("momentumBegin", { y });
+    },
+    [logDiscoverGestureDebug],
+  );
+  const handleDiscoverMomentumScrollEnd = useCallback(
+    (event) => {
+      const y = Math.round(event?.nativeEvent?.contentOffset?.y || 0);
+      discoverScrollDebugRef.current.lastY = y;
+      logDiscoverGestureDebug("momentumEnd", { y });
+    },
+    [logDiscoverGestureDebug],
+  );
   const handleSheetChange = useCallback((index) => {
-    sheetIndexRef.current = Number.isFinite(index) ? index : 0;
-  }, []);
+    const nextIndex = Number.isFinite(index) ? index : 0;
+    sheetIndexRef.current = nextIndex;
+    logDiscoverGestureDebug("sheetChange", { index: nextIndex });
+  }, [logDiscoverGestureDebug]);
+  const handleSheetAnimate = useCallback(
+    (fromIndex, toIndex) => {
+      if (!DEBUG_DISCOVER_SCROLL) return;
+      console.log("[DiscoverGestureDebug]", "sheetAnimate", {
+        tab: activeTab,
+        fromIndex,
+        toIndex,
+      });
+    },
+    [activeTab],
+  );
+  useEffect(() => {
+    if (!DEBUG_DISCOVER_SCROLL) return;
+    console.log("[DiscoverGestureDebug]", "boot", {
+      platform: Platform.OS,
+      manufacturer: Device.manufacturer || null,
+      brand: Device.brand || null,
+      modelName: Device.modelName || null,
+      isSamsungAndroid: IS_SAMSUNG_ANDROID,
+      snapPoints: sheetSnapPoints,
+      enableContentPanningGesture: false,
+    });
+  }, [sheetSnapPoints]);
   const renderSheetHandle = useCallback(() => {
     return (
       <View style={styles.sheetHandle}>
@@ -3516,7 +3845,11 @@ export default function App() {
     setStripeActionStatus({ loading: true, error: null, success: null });
     const { data, error } = await callStripeFunction(
       "stripe-create-account-link",
-      { businessId: targetBusiness.id },
+      {
+        businessId: targetBusiness.id,
+        returnUrl: STRIPE_CONNECT_RETURN_URL,
+        refreshUrl: STRIPE_CONNECT_REFRESH_URL,
+      },
     );
     if (error || !data?.url) {
       const errorMessage =
@@ -3780,7 +4113,10 @@ export default function App() {
     });
     const { data, error, status } = await callStripeFunction(
       "stripe-create-cashout-link",
-      {},
+      {
+        returnUrl: STRIPE_CONNECT_RETURN_URL,
+        refreshUrl: STRIPE_CONNECT_REFRESH_URL,
+      },
     );
     const errorText = String(error || "").toLowerCase();
     const isAuthFailure =
@@ -3838,7 +4174,10 @@ export default function App() {
     setCashoutActionStatus({ loading: true, error: null, success: null });
     const { data, error, status } = await callStripeFunction(
       "stripe-create-cashout-login-link",
-      {},
+      {
+        returnUrl: STRIPE_CONNECT_RETURN_URL,
+        refreshUrl: STRIPE_CONNECT_REFRESH_URL,
+      },
     );
     const errorText = String(error || "").toLowerCase();
     const isAuthFailure =
@@ -4517,6 +4856,33 @@ export default function App() {
     setInfoTooltip(null);
   }, []);
 
+  const closeAppDialog = useCallback(() => {
+    setAppDialog((prev) => ({ ...prev, visible: false }));
+  }, []);
+
+  const showAppDialog = useCallback(
+    ({ title, message, dismissOnBackdrop = true, options = [] }) => {
+      const normalizedOptions = Array.isArray(options) ? options : [];
+      setAppDialog({
+        visible: true,
+        title: String(title || "").trim(),
+        message: String(message || "").trim(),
+        dismissOnBackdrop,
+        options: normalizedOptions,
+      });
+    },
+    [],
+  );
+
+  const handleAppDialogOptionPress = useCallback((option) => {
+    setAppDialog((prev) => ({ ...prev, visible: false }));
+    if (typeof option?.onPress === "function") {
+      setTimeout(() => {
+        option.onPress();
+      }, 10);
+    }
+  }, []);
+
   useEffect(() => {
     if (Platform.OS !== "android") return;
     let isMounted = true;
@@ -4813,6 +5179,75 @@ export default function App() {
       visibleBusinessIds.has(business.id),
     );
   }, [approvedBusinesses, filteredOfferCards]);
+  const demoOfferCards = useMemo(() => {
+    return (Array.isArray(offerCards) ? offerCards : []).slice(0, 12);
+  }, [offerCards]);
+  const filteredDemoOfferCards = useMemo(() => {
+    const trimmed = demoQuery.trim().toLowerCase();
+    const base = demoOfferCards.filter((card) => {
+      const matchesFilters = demoActiveFilters.every((filterKey) => {
+        switch (filterKey) {
+          case "open":
+            return Boolean(card.isOpen);
+          case "family":
+            return ["cafe", "activity"].includes(
+              String(card.categoryKey || "").toLowerCase(),
+            );
+          default: {
+            if (filterKey.startsWith("tag:")) {
+              const tagValue = filterKey.replace("tag:", "");
+              const tags = Array.isArray(card.tags) ? card.tags : [];
+              return tags
+                .map((tag) => String(tag || "").toLowerCase())
+                .includes(tagValue);
+            }
+            return true;
+          }
+        }
+      });
+      if (!matchesFilters) return false;
+      if (!trimmed) return true;
+      return String(card.searchText || "").includes(trimmed);
+    });
+
+    const wantsTop = demoActiveFilters.includes("top");
+    const wantsNew = demoActiveFilters.includes("new");
+
+    let filtered = base;
+    if (wantsTop) {
+      filtered = filtered.filter(
+        (card) => Number.isFinite(card.rating) && card.rating >= 4.0,
+      );
+      if (!filtered.length) {
+        filtered = base;
+      }
+    }
+    if (wantsNew) {
+      const newFiltered = filtered.filter(
+        (card) =>
+          card.offerCreatedAt &&
+          Date.now() - card.offerCreatedAt <= NEW_WINDOW_MS,
+      );
+      if (newFiltered.length) {
+        filtered = newFiltered;
+      }
+    }
+
+    const sorted = [...filtered];
+    if (wantsTop && wantsNew) {
+      sorted.sort((a, b) => {
+        const ratingDelta = (b.rating || 0) - (a.rating || 0);
+        if (ratingDelta !== 0) return ratingDelta;
+        return (b.offerCreatedAt || 0) - (a.offerCreatedAt || 0);
+      });
+    } else if (wantsTop) {
+      sorted.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    } else if (wantsNew) {
+      sorted.sort((a, b) => (b.offerCreatedAt || 0) - (a.offerCreatedAt || 0));
+    }
+
+    return sorted;
+  }, [demoOfferCards, demoActiveFilters, demoQuery]);
 
   const ownerOffers = useMemo(() => {
     if (!ownerBusiness?.id) return [];
@@ -4903,6 +5338,24 @@ export default function App() {
     }
     return maxWidth;
   }, [visibleTabs.length]);
+  const navNeedsTightFit = useMemo(() => {
+    if (Platform.OS !== "android") return false;
+    const count = visibleTabs.length || 1;
+    if (count < 4) return false;
+    const maxLabelLength = visibleTabs.reduce(
+      (longest, tab) => Math.max(longest, String(tab?.label || "").length),
+      0,
+    );
+    const availableForPills =
+      navContainerWidth -
+      (NAV_PADDING - 2) * 2 -
+      4 -
+      Math.max(0, count - 1) * NAV_GAP;
+    const perPillWidth = availableForPills / count;
+    const textBudget = perPillWidth - (IS_COMPACT ? 16 : 20);
+    const estimatedRequired = maxLabelLength * (IS_COMPACT ? 6.2 : 6.6);
+    return textBudget < estimatedRequired;
+  }, [visibleTabs, navContainerWidth]);
 
   const profileInitials = useMemo(() => {
     const base = (profileName || profileEmail || "W").trim();
@@ -5262,6 +5715,9 @@ export default function App() {
     if (activeTab === "history" && (isOwner || isStaff)) {
       setActiveTab("discover");
     }
+    if (activeTab === "demo") {
+      setActiveTab("discover");
+    }
     if (activeTab === "cashout" && (isOwner || isStaff)) {
       setActiveTab("discover");
     }
@@ -5457,21 +5913,44 @@ export default function App() {
     async (incomingUrl) => {
       const url = String(incomingUrl || "");
       const lowerUrl = url.toLowerCase();
-      const callbackPrefix = `${GOOGLE_AUTH_REDIRECT_URL.toLowerCase()}`;
-      const callbackPrefixTriple = `${APP_SCHEME.toLowerCase()}:///${AUTH_CALLBACK_PATH}`;
-      if (
-        !lowerUrl.startsWith(callbackPrefix) &&
-        !lowerUrl.startsWith(callbackPrefixTriple)
-      ) {
+      const isExpectedCallback = GOOGLE_AUTH_CALLBACK_PREFIXES.some((prefix) =>
+        lowerUrl.startsWith(prefix),
+      );
+      if (!isExpectedCallback) {
         return;
       }
       if (!ensureSupabaseReady(setSignInError)) return;
+      setGoogleAuthState("finishing");
 
-      const { code, accessToken, refreshToken, error } =
+      const { code, accessToken, refreshToken, flow, error } =
         parseAuthCallbackParams(url);
+      const callbackFlow = String(flow || "").toLowerCase();
+      const hasOAuthPayload =
+        Boolean(error) ||
+        Boolean(code) ||
+        Boolean(accessToken) ||
+        Boolean(refreshToken);
+      if (!hasOAuthPayload) {
+        if (callbackFlow === "stripe_return" || callbackFlow === "stripe_refresh") {
+          setCashoutActionStatus((prev) => ({
+            ...prev,
+            loading: false,
+            error: null,
+            success:
+              callbackFlow === "stripe_refresh"
+                ? "Stripe setup interrupted. Continue payout setup to enable cashout."
+                : "Returned from Stripe. Updating payout status...",
+          }));
+          loadCashoutStatus().catch(() => null);
+        }
+        setAuthBusy(false);
+        setGoogleAuthState("idle");
+        return;
+      }
       if (error) {
         setSignInError(error);
         setAuthBusy(false);
+        setGoogleAuthState("idle");
         setAuthView("signin");
         return;
       }
@@ -5479,16 +5958,21 @@ export default function App() {
       try {
         setAuthBusy(true);
         let authError = null;
+        let sessionUser = null;
         if (accessToken && refreshToken) {
           const result = await supabase.auth.setSession({
             access_token: accessToken,
             refresh_token: refreshToken,
           });
           authError = result?.error || null;
+          sessionUser =
+            result?.data?.session?.user || result?.data?.user || null;
         } else if (code) {
           if (typeof supabase.auth.exchangeCodeForSession === "function") {
             const result = await supabase.auth.exchangeCodeForSession(code);
             authError = result?.error || null;
+            sessionUser =
+              result?.data?.session?.user || result?.data?.user || null;
           } else {
             authError = new Error("OAuth code flow is not available.");
           }
@@ -5502,7 +5986,42 @@ export default function App() {
           return;
         }
 
+        if (!sessionUser) {
+          const userResult = await supabase.auth.getUser();
+          sessionUser = userResult?.data?.user || null;
+        }
+        if (!sessionUser?.id) {
+          setSignInError("Unable to finish Google sign-in.");
+          setGoogleAuthState("idle");
+          setAuthView("signin");
+          return;
+        }
+
+        const sessionEmail = sessionUser.email || "";
+        setAuthUserId(sessionUser.id);
+        setAuthEmail(sessionEmail);
+        if (sessionEmail) {
+          setProfileEmail(sessionEmail);
+          setProfileName(formatDisplayName(sessionEmail));
+        }
+        setAccountRole("consumer");
+        setIsSignedIn(true);
+        setAuthView("menu");
         setSignInError(null);
+
+        const nextRole = await hydrateProfile(sessionUser);
+        if (nextRole === "consumer") {
+          loadPromoStatus().catch(() => {});
+        } else {
+          setPromoState((prev) => ({
+            ...prev,
+            loading: false,
+            error: null,
+            success: null,
+            code: null,
+            cashbackRateBps: CASHBACK_BASE_RATE_BPS,
+          }));
+        }
       } catch (callbackError) {
         setSignInError(
           callbackError?.message || "Unable to finish Google sign-in.",
@@ -5510,9 +6029,10 @@ export default function App() {
         setAuthView("signin");
       } finally {
         setAuthBusy(false);
+        setGoogleAuthState("idle");
       }
     },
-    [ensureSupabaseReady],
+    [ensureSupabaseReady, hydrateProfile, loadPromoStatus, loadCashoutStatus],
   );
 
   useEffect(() => {
@@ -5529,6 +6049,23 @@ export default function App() {
       subscription?.remove?.();
     };
   }, [handleAuthCallbackUrl]);
+
+  useEffect(() => {
+    if (googleAuthState !== "awaiting_return") return;
+    let timeoutId = null;
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      timeoutId = setTimeout(() => {
+        setGoogleAuthState((prev) =>
+          prev === "awaiting_return" ? "idle" : prev,
+        );
+      }, 2500);
+    });
+    return () => {
+      subscription.remove();
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [googleAuthState]);
 
   const upsertNotificationToken = useCallback(
     async (token) => {
@@ -5777,6 +6314,7 @@ export default function App() {
   const handleGoogleSignIn = async () => {
     if (!ensureSupabaseReady(setSignInError)) return;
     setSignInError(null);
+    setGoogleAuthState("opening");
     setAuthBusy(true);
     try {
       const { data, error } = await supabase.auth.signInWithOAuth({
@@ -5791,12 +6329,16 @@ export default function App() {
       });
       if (error || !data?.url) {
         setSignInError(error?.message || "Unable to start Google sign-in.");
+        setGoogleAuthState("idle");
+        setAuthBusy(false);
         return;
       }
+      setGoogleAuthState("awaiting_return");
       await Linking.openURL(data.url);
+      setAuthBusy(false);
     } catch (error) {
       setSignInError(error?.message || "Unable to start Google sign-in.");
-    } finally {
+      setGoogleAuthState("idle");
       setAuthBusy(false);
     }
   };
@@ -6258,10 +6800,11 @@ export default function App() {
       return;
     }
     if (accountRole && accountRole !== "consumer") {
-      Alert.alert(
-        "User account required",
-        "Switch to a user account to redeem offers.",
-      );
+      showAppDialog({
+        title: "User account required",
+        message: "Switch to a user account to redeem offers.",
+        options: [{ label: "Got it", variant: "primary" }],
+      });
       return;
     }
     if (businessDetailOpen) {
@@ -6500,7 +7043,7 @@ export default function App() {
         return false;
       }
       setScannerStatus("success");
-      if (!plaidLinkState.linked && plaidLinkAction === "idle") {
+      if (!hasLinkedPlaidBank) {
         setPostRedeemBankPromptOpen(true);
       }
       loadRedemptions({ silent: true });
@@ -6596,6 +7139,7 @@ export default function App() {
 
   const openSheetForBusiness = (business) => {
     setSelectedId(business.id);
+    setSelectedOfferCardId(null);
     openSheet("discover");
     scrollToBusiness(business);
   };
@@ -6728,11 +7272,27 @@ export default function App() {
   hydrateBusinessCoordinatesRef.current = hydrateBusinessCoordinates;
 
   const handleCardPress = async (card) => {
+    const offerCardKey = getOfferCardSelectionKey(card);
+    if (DEBUG_DISCOVER_SCROLL && activeTab === "discover") {
+      console.log("[DiscoverGestureDebug]", "cardPress", {
+        sheetIndex: sheetIndexRef.current,
+        businessId: card?.businessId || null,
+        offerId: card?.offerId || card?.id || null,
+        offerCardKey,
+      });
+    }
     const business = resolveBusinessFromCard(card);
     if (!business) return;
+    const wasSelected = Boolean(
+      offerCardKey && selectedOfferCardId === offerCardKey,
+    );
     trackOfferView(business.id, card?.offerId || card?.id);
-    openSheetForBusiness(business);
-    openBusinessDetail(business);
+    setSelectedId(business.id);
+    setSelectedOfferCardId(offerCardKey || null);
+    openSheet("discover");
+    if (wasSelected) {
+      openBusinessDetail(business);
+    }
     let coordinate = getBusinessCoordinate(business);
     if (!coordinate && business.address) {
       const cached = geocodeCacheRef.current.get(business.id);
@@ -6765,11 +7325,19 @@ export default function App() {
       openSheetForBusiness(business);
     } else {
       setSelectedId(business.id);
+      setSelectedOfferCardId(null);
     }
   };
 
   const toggleFilter = (filterKey) => {
     setActiveFilters((prev) =>
+      prev.includes(filterKey)
+        ? prev.filter((key) => key !== filterKey)
+        : [...prev, filterKey],
+    );
+  };
+  const toggleDemoFilter = (filterKey) => {
+    setDemoActiveFilters((prev) =>
       prev.includes(filterKey)
         ? prev.filter((key) => key !== filterKey)
         : [...prev, filterKey],
@@ -8794,17 +9362,29 @@ export default function App() {
   };
 
   const promptReceiptUpload = (entry) => {
-    Alert.alert("Upload receipt", "Choose an option", [
-      {
-        text: "Take photo",
-        onPress: () => handleUploadReceipt(entry, "camera"),
-      },
-      {
-        text: "Choose from library",
-        onPress: () => handleUploadReceipt(entry, "library"),
-      },
-      { text: "Cancel", style: "cancel" },
-    ]);
+    showAppDialog({
+      title: "Upload receipt",
+      message: "Choose how you want to add your receipt.",
+      options: [
+        {
+          label: "Take photo",
+          icon: "camera-outline",
+          variant: "primary",
+          onPress: () => handleUploadReceipt(entry, "camera"),
+        },
+        {
+          label: "Choose from library",
+          icon: "images-outline",
+          variant: "secondary",
+          onPress: () => handleUploadReceipt(entry, "library"),
+        },
+        {
+          label: "Cancel",
+          icon: "close-outline",
+          variant: "ghost",
+        },
+      ],
+    });
   };
 
   const handleOpenOfferEdit = (offer) => {
@@ -10198,14 +10778,14 @@ export default function App() {
 
   useEffect(() => {
     autoVerifyAttemptedAtRef.current.clear();
-    if (!plaidLinkState.linked) {
+    if (!hasLinkedPlaidBank) {
       setHistoryVerifyNotice(null);
       setHighlightedHistoryEntryId(null);
     }
-    if (plaidLinkState.linked) {
+    if (hasLinkedPlaidBank) {
       setPostRedeemBankPromptOpen(false);
     }
-  }, [plaidLinkState.linked, plaidLinkState.linkedSinceMs]);
+  }, [hasLinkedPlaidBank, plaidLinkState.linkedSinceMs]);
 
   useEffect(() => {
     if (!isSignedIn || !showHistoryTab) {
@@ -10223,7 +10803,7 @@ export default function App() {
   useEffect(() => {
     if (activeTab !== "history") return;
     if (!isSignedIn || !showHistoryTab) return;
-    if (!plaidLinkState.linked) return;
+    if (!hasLinkedPlaidBank) return;
     if (!plaidLinkState.linkedSinceMs) return;
     if (redemptionStatus.loading || purchaseVerifyStatus.loading) return;
     if (autoVerifyInFlightRef.current) return;
@@ -10280,7 +10860,7 @@ export default function App() {
     activeTab,
     isSignedIn,
     showHistoryTab,
-    plaidLinkState.linked,
+    hasLinkedPlaidBank,
     plaidLinkState.linkedSinceMs,
     redemptionStatus.loading,
     purchaseVerifyStatus.loading,
@@ -10671,8 +11251,14 @@ export default function App() {
             />
 
             <View style={styles.topMeta} pointerEvents="box-none">
-              <View style={[styles.navContainer, { width: navContainerWidth }]}>
-                <View style={styles.navRow}>
+              <View
+                style={[
+                  styles.navContainer,
+                  navNeedsTightFit && styles.navContainerTight,
+                  { width: navContainerWidth },
+                ]}
+              >
+                <View style={[styles.navRow, navNeedsTightFit && styles.navRowTight]}>
                   {visibleTabs.map((tab, index) => {
                     const isActive = activeTab === tab.key;
                     return (
@@ -10680,7 +11266,11 @@ export default function App() {
                         key={tab.key}
                         style={[
                           styles.navPill,
-                          index > 0 && styles.navPillSpaced,
+                          navNeedsTightFit && styles.navPillTight,
+                          index > 0 &&
+                            (navNeedsTightFit
+                              ? styles.navPillSpacedTight
+                              : styles.navPillSpaced),
                           isActive && styles.navPillActive,
                         ]}
                         onPress={() => openSheet(tab.key)}
@@ -10688,9 +11278,13 @@ export default function App() {
                         <Text
                           style={[
                             styles.navPillText,
+                            navNeedsTightFit && styles.navPillTextTight,
                             isActive && styles.navPillTextActive,
                           ]}
                           numberOfLines={1}
+                          adjustsFontSizeToFit={Platform.OS === "android"}
+                          minimumFontScale={Platform.OS === "android" ? 0.85 : 1}
+                          maxFontSizeMultiplier={1}
                           allowFontScaling={false}
                         >
                           {tab.label}
@@ -10755,6 +11349,71 @@ export default function App() {
                   <Text style={styles.infoTooltipBody}>
                     {infoTooltip?.body || ""}
                   </Text>
+                </Pressable>
+              </Pressable>
+            </Modal>
+
+            <Modal
+              transparent
+              visible={appDialog.visible}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={closeAppDialog}
+            >
+              <Pressable
+                style={styles.appDialogOverlay}
+                onPress={() => {
+                  if (appDialog.dismissOnBackdrop) {
+                    closeAppDialog();
+                  }
+                }}
+              >
+                <Pressable style={styles.appDialogCard} onPress={() => {}}>
+                  {appDialog.title ? (
+                    <Text style={styles.appDialogTitle}>{appDialog.title}</Text>
+                  ) : null}
+                  {appDialog.message ? (
+                    <Text style={styles.appDialogMessage}>{appDialog.message}</Text>
+                  ) : null}
+                  <View style={styles.appDialogActions}>
+                    {(appDialog.options || []).map((option, index) => {
+                      const variant = option?.variant || "secondary";
+                      return (
+                        <TouchableOpacity
+                          key={`${option?.label || "option"}-${index}`}
+                          style={[
+                            styles.appDialogButton,
+                            variant === "primary" &&
+                              styles.appDialogButtonPrimary,
+                            variant === "ghost" && styles.appDialogButtonGhost,
+                          ]}
+                          onPress={() => handleAppDialogOptionPress(option)}
+                        >
+                          {option?.icon ? (
+                            <Ionicons
+                              name={option.icon}
+                              size={16}
+                              color={
+                                variant === "primary"
+                                  ? COLORS.white
+                                  : COLORS.pine
+                              }
+                            />
+                          ) : null}
+                          <Text
+                            style={[
+                              styles.appDialogButtonText,
+                              variant === "primary" &&
+                                styles.appDialogButtonTextPrimary,
+                            ]}
+                          >
+                            {option?.label || "OK"}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 </Pressable>
               </Pressable>
             </Modal>
@@ -10866,31 +11525,43 @@ export default function App() {
                         <Text style={styles.primaryButtonText}>Done</Text>
                       </TouchableOpacity>
                     ) : scannerStatus === "blocked" ? (
-                      <TouchableOpacity
-                        style={[
-                          styles.secondaryButton,
-                          redeemGateBusy && styles.secondaryButtonDisabled,
-                        ]}
-                        onPress={() => {
-                          if (!redeemGateBusy) {
-                            void (async () => {
-                              const allowed =
-                                await runRedeemGate(scannerBusiness);
-                              if (allowed) {
-                                await redeemOfferInStore(
-                                  scannerBusiness,
-                                  scannerOffer,
-                                );
-                              }
-                            })();
+                      <View style={styles.scannerBlockedActionsRow}>
+                        <TouchableOpacity
+                          style={[
+                            styles.secondaryButton,
+                            styles.scannerActionFlex,
+                            redeemGateBusy && styles.secondaryButtonDisabled,
+                          ]}
+                          onPress={() => {
+                            if (!redeemGateBusy) {
+                              void (async () => {
+                                const allowed =
+                                  await runRedeemGate(scannerBusiness);
+                                if (allowed) {
+                                  await redeemOfferInStore(
+                                    scannerBusiness,
+                                    scannerOffer,
+                                  );
+                                }
+                              })();
+                            }
+                          }}
+                          disabled={redeemGateBusy}
+                        >
+                          <Text style={styles.secondaryButtonText}>
+                            {redeemGateBusy ? "Checking..." : "Check again"}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.secondaryButton, styles.scannerActionFlex]}
+                          onPress={() =>
+                            openMapsForBusiness(scannerBusiness || scannerOffer?.business)
                           }
-                        }}
-                        disabled={redeemGateBusy}
-                      >
-                        <Text style={styles.secondaryButtonText}>
-                          {redeemGateBusy ? "Checking..." : "Check again"}
-                        </Text>
-                      </TouchableOpacity>
+                          disabled={!scannerBusiness && !scannerOffer?.business}
+                        >
+                          <Text style={styles.secondaryButtonText}>Directions</Text>
+                        </TouchableOpacity>
+                      </View>
                     ) : scannerStatus === "checking" ||
                       scannerStatus === "redeeming" ? (
                       <View
@@ -10935,50 +11606,44 @@ export default function App() {
                       height={SCANNER_CARD_HEIGHT}
                     />
                   )}
-                </View>
-              </View>
-            </Modal>
-
-            <Modal
-              transparent
-              visible={postRedeemBankPromptOpen}
-              animationType="fade"
-              presentationStyle="overFullScreen"
-              statusBarTranslucent
-              onRequestClose={() => setPostRedeemBankPromptOpen(false)}
-            >
-              <View style={styles.noticeOverlay}>
-                <View style={styles.noticeCard}>
-                  <Text style={styles.noticeTitle}>
-                    Faster verification available
-                  </Text>
-                  <Text style={styles.noticeBody}>
-                    Link a bank to enable faster automatic purchase
-                    verification. Some cards or banks may still require receipt
-                    upload.
-                  </Text>
-                  <View style={styles.verificationPromptActions}>
-                    <TouchableOpacity
-                      style={styles.primaryButton}
-                      onPress={() => {
-                        setPostRedeemBankPromptOpen(false);
-                        void handleLinkPurchaseVerificationBank();
-                      }}
-                      disabled={plaidLinkAction !== "idle"}
-                    >
-                      <Text style={styles.primaryButtonText}>
-                        {plaidLinkAction === "linking"
-                          ? "Opening..."
-                          : "Link bank now"}
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.secondaryButton}
-                      onPress={() => setPostRedeemBankPromptOpen(false)}
-                    >
-                      <Text style={styles.secondaryButtonText}>Maybe later</Text>
-                    </TouchableOpacity>
-                  </View>
+                  {postRedeemBankPromptOpen && (
+                    <View style={styles.scannerPromptOverlay}>
+                      <View style={styles.scannerPromptCard}>
+                        <Text style={styles.noticeTitle}>
+                          Faster verification available
+                        </Text>
+                        <Text style={styles.noticeBody}>
+                          Link a bank to enable faster automatic purchase
+                          verification. Some cards or banks may still require receipt
+                          upload.
+                        </Text>
+                        <View style={styles.verificationPromptActions}>
+                          <TouchableOpacity
+                            style={styles.primaryButton}
+                            onPress={() => {
+                              setPostRedeemBankPromptOpen(false);
+                              void handleLinkPurchaseVerificationBank();
+                            }}
+                            disabled={plaidLinkAction !== "idle"}
+                          >
+                            <Text style={styles.primaryButtonText}>
+                              {plaidLinkAction === "linking"
+                                ? "Opening..."
+                                : "Link bank now"}
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.secondaryButton}
+                            onPress={() => setPostRedeemBankPromptOpen(false)}
+                          >
+                            <Text style={styles.secondaryButtonText}>
+                              Maybe later
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    </View>
+                  )}
                 </View>
               </View>
             </Modal>
@@ -11182,6 +11847,13 @@ export default function App() {
                             businessDetail?.hours ||
                             businessDetail?.business?.hours ||
                             "";
+                          const detailDescription =
+                            String(
+                              offer?.description ||
+                                offer?.offerDescription ||
+                                offer?.offer_description ||
+                                "",
+                            ).trim();
                           const openFromHours = isBusinessOpenNow(detailHours);
                           const isBusinessOpen =
                             openFromHours === null
@@ -11209,9 +11881,9 @@ export default function App() {
                                   ),
                                 )}
                               </View>
-                              {offer.description ? (
+                              {detailDescription ? (
                                 <Text style={styles.detailOfferText}>
-                                  {offer.description}
+                                  {detailDescription}
                                 </Text>
                               ) : null}
                               <View style={styles.detailOfferMetaRow}>
@@ -12256,29 +12928,43 @@ export default function App() {
               ref={bottomSheetRef}
               snapPoints={sheetSnapPoints}
               onChange={handleSheetChange}
+              onAnimate={handleSheetAnimate}
               handleComponent={renderSheetHandle}
               enablePanDownToClose={false}
               enableOverDrag={false}
               enableDynamicSizing={false}
               enableHandlePanningGesture
+              // Keep sheet drag constrained to the handle so vertical swipes
+              // inside Discover content scroll cards instead of moving the sheet.
               enableContentPanningGesture={false}
               backgroundStyle={styles.sheetBackground}
               keyboardBehavior="extend"
               keyboardBlurBehavior="restore"
+              android_keyboardInputMode="adjustResize"
             >
               <View style={styles.sheetBody}>
               {activeTab === "discover" ? (
-                <BottomSheetScrollView
+                <ScrollView
                   style={styles.sheetScroll}
                   showsVerticalScrollIndicator={false}
-                  contentContainerStyle={styles.sheetScrollContent}
-                  refreshControl={
-                    <RefreshControl
-                      refreshing={refreshing}
-                      onRefresh={handleRefresh}
-                      tintColor={COLORS.pine}
-                    />
-                  }
+                  bounces={Platform.OS === "ios"}
+                  alwaysBounceVertical={Platform.OS === "ios"}
+                  contentContainerStyle={[
+                    styles.sheetScrollContent,
+                    filteredOfferCards.length === 0 && styles.sheetScrollContentEmpty,
+                  ]}
+                  keyboardShouldPersistTaps="handled"
+                  keyboardDismissMode="on-drag"
+                  nestedScrollEnabled
+                  onLayout={handleDiscoverScrollLayout}
+                  onContentSizeChange={handleDiscoverContentSizeChange}
+                  onTouchStart={handleDiscoverTouchStart}
+                  onScrollBeginDrag={handleDiscoverScrollBeginDrag}
+                  onScroll={handleDiscoverScroll}
+                  onScrollEndDrag={handleDiscoverScrollEndDrag}
+                  onMomentumScrollBegin={handleDiscoverMomentumScrollBegin}
+                  onMomentumScrollEnd={handleDiscoverMomentumScrollEnd}
+                  scrollEventThrottle={16}
                 >
                   <View
                     style={[
@@ -12286,18 +12972,63 @@ export default function App() {
                       IS_COMPACT && styles.searchRowCompact,
                     ]}
                   >
-                    <AutoFocusInput
-                      placeholder="Search businesses, offers, or categories"
-                      placeholderTextColor={COLORS.muted}
-                      style={styles.searchInput}
-                      value={query}
-                      onChangeText={setQuery}
-                    />
+                    <View
+                      style={[
+                        styles.searchInputWrap,
+                        discoverSearchFocused && styles.searchInputWrapFocused,
+                      ]}
+                    >
+                      <Ionicons
+                        name="search"
+                        size={16}
+                        color={discoverSearchFocused ? COLORS.pine : COLORS.muted}
+                        style={styles.searchIcon}
+                      />
+                      <AutoFocusInput
+                        placeholder="Search businesses or offers"
+                        placeholderTextColor={COLORS.muted}
+                        style={styles.searchInput}
+                        value={query}
+                        onChangeText={setQuery}
+                        onFocus={() => setDiscoverSearchFocused(true)}
+                        onBlur={() => setDiscoverSearchFocused(false)}
+                        returnKeyType="search"
+                        autoCorrect={false}
+                        autoCapitalize="none"
+                      />
+                      {query.trim().length > 0 && (
+                        <TouchableOpacity
+                          style={styles.searchClearButton}
+                          onPress={() => setQuery("")}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Ionicons
+                            name="close-circle"
+                            size={18}
+                            color={COLORS.muted}
+                          />
+                        </TouchableOpacity>
+                      )}
+                    </View>
                     <TouchableOpacity
-                      style={styles.filterButton}
+                      style={[
+                        styles.filterButton,
+                        showFilters && styles.filterButtonActive,
+                        IS_COMPACT && styles.filterButtonCompact,
+                      ]}
                       onPress={() => setShowFilters((prev) => !prev)}
                     >
-                      <Text style={styles.filterButtonText}>
+                      <Ionicons
+                        name="options-outline"
+                        size={15}
+                        color={showFilters ? COLORS.white : COLORS.ink}
+                      />
+                      <Text
+                        style={[
+                          styles.filterButtonText,
+                          showFilters && styles.filterButtonTextActive,
+                        ]}
+                      >
                         {showFilters ? "Hide" : "Filters"}
                       </Text>
                     </TouchableOpacity>
@@ -12360,31 +13091,452 @@ export default function App() {
                       </Text>
                     </View>
                   ) : (
-                    <FlatList
-                      ref={cardListRef}
-                      data={filteredOfferCards}
-                      keyExtractor={(item) => item.id}
-                      renderItem={({ item }) => (
+                    <View style={styles.demoListStack}>
+                      {filteredOfferCards.map((item, index) => (
                         <OfferCard
+                          key={
+                            item?.id ||
+                            item?.offerId ||
+                            item?.businessId ||
+                            `discover-${index}`
+                          }
                           item={item}
                           onPress={() => handleCardPress(item)}
                           onRedeem={() => handleRedeemOffer(item)}
-                          selected={selectedId === item.businessId}
+                          selected={
+                            selectedOfferCardId === getOfferCardSelectionKey(item)
+                          }
                           cashbackRatePercent={
                             accountRole === "consumer" ? cashbackRatePercent : null
                           }
                         />
+                      ))}
+                    </View>
+                  )}
+                </ScrollView>
+              ) : activeTab === "demo" ? (
+                <BottomSheetScrollView
+                  style={styles.sheetScroll}
+                  showsVerticalScrollIndicator={false}
+                  bounces={Platform.OS === "ios"}
+                  alwaysBounceVertical={Platform.OS === "ios"}
+                  contentContainerStyle={styles.sheetScrollContent}
+                >
+                  <View style={styles.demoIntroCard}>
+                    <View style={styles.demoIntroHeader}>
+                      <Text style={styles.demoIntroTitle}>Discover Layout Lab</Text>
+                      <View style={styles.demoIntroBadge}>
+                        <Text style={styles.demoIntroBadgeText}>Preview</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.demoIntroSubtitle}>
+                      Compare card styles without changing your live Discover feed.
+                    </Text>
+                    <View style={styles.demoIntroMetaRow}>
+                      <Text style={styles.demoIntroMetaText}>
+                        {filteredDemoOfferCards.length} shown
+                      </Text>
+                      <Text style={styles.demoIntroMetaText}>
+                        {demoOfferCards.length} loaded
+                      </Text>
+                    </View>
+                    <View style={styles.demoLayoutSegment}>
+                      <View style={styles.demoLayoutPillRow}>
+                        {DISCOVER_DEMO_LAYOUTS.map((layout) => {
+                          const isSelected = discoverDemoLayout === layout.key;
+                          return (
+                            <TouchableOpacity
+                              key={layout.key}
+                              style={[
+                                styles.demoLayoutPill,
+                                isSelected && styles.demoLayoutPillActive,
+                              ]}
+                              onPress={() => setDiscoverDemoLayout(layout.key)}
+                            >
+                              <Text
+                                style={[
+                                  styles.demoLayoutPillText,
+                                  isSelected && styles.demoLayoutPillTextActive,
+                                ]}
+                              >
+                                {layout.label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  </View>
+
+                  <View
+                    style={[
+                      styles.searchRow,
+                      IS_COMPACT && styles.searchRowCompact,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.searchInputWrap,
+                        demoSearchFocused && styles.searchInputWrapFocused,
+                      ]}
+                    >
+                      <Ionicons
+                        name="search"
+                        size={16}
+                        color={demoSearchFocused ? COLORS.pine : COLORS.muted}
+                        style={styles.searchIcon}
+                      />
+                      <AutoFocusInput
+                        placeholder="Search demo offers"
+                        placeholderTextColor={COLORS.muted}
+                        style={styles.searchInput}
+                        value={demoQuery}
+                        onChangeText={setDemoQuery}
+                        onFocus={() => setDemoSearchFocused(true)}
+                        onBlur={() => setDemoSearchFocused(false)}
+                        returnKeyType="search"
+                        autoCorrect={false}
+                        autoCapitalize="none"
+                      />
+                      {demoQuery.trim().length > 0 && (
+                        <TouchableOpacity
+                          style={styles.searchClearButton}
+                          onPress={() => setDemoQuery("")}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Ionicons
+                            name="close-circle"
+                            size={18}
+                            color={COLORS.muted}
+                          />
+                        </TouchableOpacity>
                       )}
-                      horizontal
-                      showsHorizontalScrollIndicator={false}
-                      contentContainerStyle={styles.cardList}
-                      getItemLayout={(_, index) => ({
-                        length: CARD_WIDTH + CARD_GAP,
-                        offset: (CARD_WIDTH + CARD_GAP) * index,
-                        index,
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.filterButton,
+                        showDemoFilters && styles.filterButtonActive,
+                        IS_COMPACT && styles.filterButtonCompact,
+                      ]}
+                      onPress={() => setShowDemoFilters((prev) => !prev)}
+                    >
+                      <Ionicons
+                        name="options-outline"
+                        size={15}
+                        color={showDemoFilters ? COLORS.white : COLORS.ink}
+                      />
+                      <Text
+                        style={[
+                          styles.filterButtonText,
+                          showDemoFilters && styles.filterButtonTextActive,
+                        ]}
+                      >
+                        {showDemoFilters ? "Hide" : "Filters"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {showDemoFilters && (
+                    <View style={styles.filterRow}>
+                      {FILTERS.map((filter) => {
+                        const isActive = demoActiveFilters.includes(filter.key);
+                        return (
+                          <TouchableOpacity
+                            key={`demo-filter-${filter.key}`}
+                            style={[
+                              styles.filterPill,
+                              isActive && styles.filterPillActive,
+                            ]}
+                            onPress={() => toggleDemoFilter(filter.key)}
+                          >
+                            <Text
+                              style={[
+                                styles.filterText,
+                                isActive && styles.filterTextActive,
+                              ]}
+                            >
+                              {filter.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
                       })}
-                      onScrollToIndexFailed={handleScrollToIndexFailed}
-                    />
+                    </View>
+                  )}
+
+                  {demoOfferCards.length === 0 ? (
+                    <View style={styles.emptyState}>
+                      <Text style={styles.emptyTitle}>No demo cards yet.</Text>
+                      <Text style={styles.emptyCopy}>
+                        Add or approve an offer to preview layout options.
+                      </Text>
+                    </View>
+                  ) : filteredDemoOfferCards.length === 0 ? (
+                    <View style={styles.emptyState}>
+                      <Text style={styles.emptyTitle}>No demo cards match.</Text>
+                      <Text style={styles.emptyCopy}>
+                        Try a different search or reset filters.
+                      </Text>
+                    </View>
+                  ) : discoverDemoLayout === "editorial_split" ? (
+                    <View style={styles.demoListStack}>
+                      {filteredDemoOfferCards.map((item) => {
+                        const category = getCategoryConfig(item.categoryKey);
+                        const offerTitle = item.offerTitle || item.offer || "Offer";
+                        const cashbackLabel =
+                          formatPercentOnlyLabel(cashbackRatePercent) || "Cashback";
+                        const isOpen = item.isOpen !== false;
+                        return (
+                          <View
+                            key={`demo-editorial-split-${item.id}`}
+                            style={styles.demoEditorialSplitCard}
+                          >
+                            <View style={styles.demoEditorialSplitMedia}>
+                              {item.imageUrl ? (
+                                <Image
+                                  source={{ uri: item.imageUrl }}
+                                  style={styles.demoEditorialSplitMediaImage}
+                                  resizeMode="cover"
+                                />
+                              ) : (
+                                <View style={styles.demoEditorialSplitMediaFallback}>
+                                  <Ionicons
+                                    name="image-outline"
+                                    size={20}
+                                    color={COLORS.muted}
+                                  />
+                                </View>
+                              )}
+                              <LinearGradient
+                                colors={["transparent", "rgba(15, 23, 42, 0.5)"]}
+                                start={{ x: 0.5, y: 0 }}
+                                end={{ x: 0.5, y: 1 }}
+                                style={styles.demoEditorialSplitShade}
+                              />
+                              <View style={styles.demoEditorialSplitOverlayRow}>
+                                <View style={styles.demoEditorialSplitCategoryPill}>
+                                  <Text style={styles.demoEditorialSplitCategoryText}>
+                                    {category.display}
+                                  </Text>
+                                </View>
+                                <View style={styles.demoEditorialSplitCashbackPill}>
+                                  <Text style={styles.demoEditorialSplitCashbackText}>
+                                    {cashbackLabel}
+                                  </Text>
+                                </View>
+                              </View>
+                            </View>
+                            <View style={styles.demoEditorialSplitBody}>
+                              <View style={styles.demoEditorialSplitTopRow}>
+                                <Text style={styles.demoEditorialSplitName} numberOfLines={1}>
+                                  {item.name}
+                                </Text>
+                                <Text
+                                  style={[
+                                    styles.demoEditorialSplitOpenText,
+                                    isOpen
+                                      ? styles.demoEditorialSplitOpenTextOpen
+                                      : styles.demoEditorialSplitOpenTextClosed,
+                                  ]}
+                                >
+                                  {isOpen ? "Open now" : "Closed"}
+                                </Text>
+                              </View>
+                              <Text style={styles.demoEditorialSplitOffer} numberOfLines={1}>
+                                {offerTitle}
+                              </Text>
+                              <View style={styles.demoEditorialSplitFooter}>
+                                <Text style={styles.demoPreviewOnlyText}>Preview only</Text>
+                                <Ionicons
+                                  name="chevron-forward"
+                                  size={16}
+                                  color={COLORS.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  ) : discoverDemoLayout === "editorial_stack" ? (
+                    <View style={styles.demoListStack}>
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.demoEditorialSplitHorizontalRail}
+                      >
+                        {filteredDemoOfferCards.map((item) => {
+                          const category = getCategoryConfig(item.categoryKey);
+                          const offerTitle = item.offerTitle || item.offer || "Offer";
+                          const cashbackLabel =
+                            formatPercentOnlyLabel(cashbackRatePercent) || "Cashback";
+                          const isOpen = item.isOpen !== false;
+                          return (
+                            <View
+                              key={`demo-editorial-stack-${item.id}`}
+                              style={[
+                                styles.demoEditorialSplitCard,
+                                styles.demoEditorialSplitHorizontalCard,
+                              ]}
+                            >
+                              <View style={styles.demoEditorialSplitMedia}>
+                                {item.imageUrl ? (
+                                  <Image
+                                    source={{ uri: item.imageUrl }}
+                                    style={styles.demoEditorialSplitMediaImage}
+                                    resizeMode="cover"
+                                  />
+                                ) : (
+                                  <View style={styles.demoEditorialSplitMediaFallback}>
+                                    <Ionicons
+                                      name="image-outline"
+                                      size={20}
+                                      color={COLORS.muted}
+                                    />
+                                  </View>
+                                )}
+                                <LinearGradient
+                                  colors={["transparent", "rgba(15, 23, 42, 0.5)"]}
+                                  start={{ x: 0.5, y: 0 }}
+                                  end={{ x: 0.5, y: 1 }}
+                                  style={styles.demoEditorialSplitShade}
+                                />
+                                <View style={styles.demoEditorialSplitOverlayRow}>
+                                  <View style={styles.demoEditorialSplitCategoryPill}>
+                                    <Text style={styles.demoEditorialSplitCategoryText}>
+                                      {category.display}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.demoEditorialSplitCashbackPill}>
+                                    <Text style={styles.demoEditorialSplitCashbackText}>
+                                      {cashbackLabel}
+                                    </Text>
+                                  </View>
+                                </View>
+                              </View>
+                              <View style={styles.demoEditorialSplitBody}>
+                                <View style={styles.demoEditorialSplitTopRow}>
+                                  <Text style={styles.demoEditorialSplitName} numberOfLines={1}>
+                                    {item.name}
+                                  </Text>
+                                  <Text
+                                    style={[
+                                      styles.demoEditorialSplitOpenText,
+                                      isOpen
+                                        ? styles.demoEditorialSplitOpenTextOpen
+                                        : styles.demoEditorialSplitOpenTextClosed,
+                                    ]}
+                                  >
+                                    {isOpen ? "Open now" : "Closed"}
+                                  </Text>
+                                </View>
+                                <Text style={styles.demoEditorialSplitOffer} numberOfLines={1}>
+                                  {offerTitle}
+                                </Text>
+                                <View style={styles.demoEditorialSplitFooter}>
+                                  <Text style={styles.demoPreviewOnlyText}>Preview only</Text>
+                                  <Ionicons
+                                    name="chevron-forward"
+                                    size={16}
+                                    color={COLORS.muted}
+                                  />
+                                </View>
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </ScrollView>
+                    </View>
+                  ) : (
+                    <View style={styles.demoListStack}>
+                      {filteredDemoOfferCards.map((item) => {
+                        const category = getCategoryConfig(item.categoryKey);
+                        const offerTitle = item.offerTitle || item.offer || "Offer";
+                        const offerDescription = item.offerDescription || "";
+                        const cashbackLabel =
+                          formatPercentOnlyLabel(cashbackRatePercent) || "Cashback";
+                        const isOpen = item.isOpen !== false;
+                        return (
+                          <View
+                            key={`demo-editorial-${item.id}`}
+                            style={styles.demoEditorialCard}
+                          >
+                            <View style={styles.demoEditorialMedia}>
+                              {item.imageUrl ? (
+                                <Image
+                                  source={{ uri: item.imageUrl }}
+                                  style={styles.demoEditorialMediaImage}
+                                  resizeMode="cover"
+                                />
+                              ) : (
+                                <View style={styles.demoEditorialMediaFallback}>
+                                  <Ionicons
+                                    name="image-outline"
+                                    size={20}
+                                    color={COLORS.muted}
+                                  />
+                                </View>
+                              )}
+                              <LinearGradient
+                                colors={["transparent", "rgba(15, 23, 42, 0.76)"]}
+                                start={{ x: 0.5, y: 0 }}
+                                end={{ x: 0.5, y: 1 }}
+                                style={styles.demoEditorialGradient}
+                              />
+                              <View style={styles.demoEditorialContent}>
+                                <View style={styles.demoEditorialTopRow}>
+                                  <View style={styles.demoEditorialCategoryPill}>
+                                    <Text style={styles.demoEditorialCategoryPillText}>
+                                      {category.display}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.demoEditorialCashbackPill}>
+                                    <Text style={styles.demoEditorialCashbackText}>
+                                      {cashbackLabel}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <Text style={styles.demoEditorialName} numberOfLines={1}>
+                                  {item.name}
+                                </Text>
+                                <Text style={styles.demoEditorialOffer} numberOfLines={1}>
+                                  {offerTitle}
+                                </Text>
+                                {offerDescription ? (
+                                  <Text
+                                    style={styles.demoEditorialDescription}
+                                    numberOfLines={2}
+                                  >
+                                    {offerDescription}
+                                  </Text>
+                                ) : null}
+                              </View>
+                            </View>
+                            <View style={styles.demoEditorialFooter}>
+                              <View
+                                style={[
+                                  styles.demoEditorialOpenPill,
+                                  isOpen
+                                    ? styles.demoEditorialOpenPillOpen
+                                    : styles.demoEditorialOpenPillClosed,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.demoEditorialOpenText,
+                                    isOpen
+                                      ? styles.demoEditorialOpenTextOpen
+                                      : styles.demoEditorialOpenTextClosed,
+                                  ]}
+                                >
+                                  {isOpen ? "Open now" : "Closed"}
+                                </Text>
+                              </View>
+                              <Text style={styles.demoPreviewOnlyText}>Preview only</Text>
+                            </View>
+                          </View>
+                        );
+                      })}
+                    </View>
                   )}
                 </BottomSheetScrollView>
               ) : (
@@ -12396,6 +13548,8 @@ export default function App() {
                   <BottomSheetScrollView
                     ref={sheetScrollRef}
                     showsVerticalScrollIndicator={false}
+                    bounces={Platform.OS === "ios"}
+                    alwaysBounceVertical={Platform.OS === "ios"}
                     contentContainerStyle={[
                       styles.sheetScrollContent,
                       { paddingBottom: 24 + keyboardInset },
@@ -13659,9 +14813,6 @@ export default function App() {
                              <Text style={styles.sectionTitleAlt}>
                                 History
                               </Text>
-                              <Text style={styles.sectionBody}>
-                                Your redemptions, grouped by business.
-                              </Text>
                             </View>
                             {redemptionStatus.error && (
                               <Text style={styles.formError}>
@@ -13745,122 +14896,182 @@ export default function App() {
                                 {receiptDebug}
                               </Text>
                             )}
-                            <View style={styles.receiptNoticeCard}>
+                            <View
+                              style={[
+                                styles.receiptNoticeCard,
+                                hasLinkedPlaidBank
+                                  ? styles.receiptNoticeCardReady
+                                  : styles.receiptNoticeCardAttention,
+                              ]}
+                            >
                               <View style={styles.receiptNoticeHeader}>
-                                <View style={styles.receiptNoticeIconWrap}>
-                                  <Ionicons
-                                    name="shield-checkmark-outline"
-                                    size={18}
-                                    color="#0B2147"
-                                  />
+                                <View style={styles.receiptNoticeHeaderLeft}>
+                                  <View style={styles.receiptNoticeIconWrap}>
+                                    <Ionicons
+                                      name="shield-checkmark-outline"
+                                      size={18}
+                                      color="#0B2147"
+                                    />
+                                  </View>
+                                  <View style={styles.receiptNoticeHeaderCopy}>
+                                    <Text style={styles.receiptNoticeTitle}>
+                                      Auto purchase verification
+                                    </Text>
+                                  </View>
                                 </View>
-                                <View style={styles.receiptNoticeHeaderCopy}>
-                                  <Text style={styles.receiptNoticeTitle}>
-                                    Purchase verification
+                                <View
+                                  style={[
+                                    styles.receiptNoticeStatusPill,
+                                    pendingReceiptCount > 0
+                                      ? styles.receiptNoticeStatusPillAlert
+                                      : hasLinkedPlaidBank
+                                        ? styles.receiptNoticeStatusPillReady
+                                        : styles.receiptNoticeStatusPillAttention,
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.receiptNoticeStatusPillText,
+                                      pendingReceiptCount > 0
+                                        ? styles.receiptNoticeStatusPillTextAlert
+                                        : hasLinkedPlaidBank
+                                          ? styles.receiptNoticeStatusPillTextReady
+                                          : styles.receiptNoticeStatusPillTextAttention,
+                                    ]}
+                                  >
+                                    {pendingReceiptCount > 0
+                                      ? "Receipts needed"
+                                      : hasLinkedPlaidBank
+                                      ? "Bank linked"
+                                      : "Action needed"}
                                   </Text>
                                 </View>
                               </View>
-                              <View
-                                style={[
-                                  styles.receiptNoticeActionBar,
-                                ]}
-                              >
-                                <TouchableOpacity
-                                  style={[
-                                    styles.receiptNoticeActionButton,
-                                    styles.receiptNoticeActionButtonPrimary,
-                                    (plaidLinkState.loading ||
-                                      plaidLinkAction !== "idle") &&
-                                      styles.receiptNoticeActionButtonDisabled,
-                                  ]}
-                                  onPress={handleLinkPurchaseVerificationBank}
-                                  disabled={
-                                    plaidLinkState.loading ||
-                                    plaidLinkAction !== "idle"
-                                  }
-                                >
-                                  <Text style={styles.receiptNoticeActionPrimaryText}>
-                                    {plaidLinkAction === "linking"
-                                      ? "Opening Plaid Link..."
-                                      : plaidLinkState.linked
-                                        ? "Link another bank"
-                                        : "Link bank for auto verification"}
+                              {hasLinkedPlaidBank &&
+                              !historyVerificationExpanded ? (
+                                <View style={styles.receiptCollapsedRow}>
+                                  <Text style={styles.receiptCollapsedMeta}>
+                                    {plaidLinkState.loading
+                                      ? "Checking linked bank status..."
+                                      : pendingReceiptCount > 0
+                                        ? `${pendingReceiptCount} receipt${
+                                            pendingReceiptCount === 1 ? "" : "s"
+                                          } waiting`
+                                        : `Linked banks: ${plaidLinkState.linkedCount}`}
                                   </Text>
-                                </TouchableOpacity>
-                                {plaidLinkState.linked && (
                                   <TouchableOpacity
-                                    style={[
-                                      styles.receiptNoticeActionButton,
-                                      styles.receiptNoticeActionButtonSecondary,
-                                      (plaidLinkState.loading ||
-                                        plaidLinkAction !== "idle") &&
-                                        styles.receiptNoticeActionButtonDisabled,
-                                    ]}
-                                    onPress={handleUnlinkLinkedBanks}
+                                    style={styles.receiptCollapsedManageButton}
+                                    onPress={() =>
+                                      setHistoryVerificationExpanded(true)
+                                    }
                                     disabled={
                                       plaidLinkState.loading ||
                                       plaidLinkAction !== "idle"
                                     }
                                   >
-                                    <Text
-                                      style={styles.receiptNoticeActionSecondaryText}
-                                    >
-                                      {plaidLinkAction === "unlinking"
-                                        ? "Updating..."
-                                        : "Unlink linked banks"}
+                                    <Text style={styles.receiptCollapsedManageText}>
+                                      Manage
                                     </Text>
+                                    <Ionicons
+                                      name="chevron-forward"
+                                      size={14}
+                                      color={COLORS.ink}
+                                    />
                                   </TouchableOpacity>
-                                )}
-                              </View>
-                              <Text style={styles.receiptNoticeBody}>
-                                Auto verification uses linked-bank transaction
-                                data. If a transaction cannot be matched, upload
-                                a receipt.
-                              </Text>
-                              <Text style={styles.receiptNoticeMeta}>
-                                {plaidLinkState.loading
-                                  ? "Checking linked bank status..."
-                                  : plaidLinkState.linked
-                                    ? `Linked banks: ${plaidLinkState.linkedCount}`
-                                    : "No linked bank yet. Receipt upload is always available."}
-                              </Text>
-                              {plaidLinkState.error && (
-                                <Text style={styles.receiptNoticeMetaError}>
-                                  {plaidLinkState.error}
-                                </Text>
+                                </View>
+                              ) : (
+                                <>
+                                  <View style={styles.receiptNoticeActionsRow}>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.receiptNoticePrimaryCta,
+                                        (plaidLinkState.loading ||
+                                          plaidLinkAction !== "idle") &&
+                                          styles.receiptNoticeActionButtonDisabled,
+                                      ]}
+                                      onPress={handleLinkPurchaseVerificationBank}
+                                      disabled={
+                                        plaidLinkState.loading ||
+                                        plaidLinkAction !== "idle"
+                                      }
+                                    >
+                                      <Text
+                                        style={styles.receiptNoticeActionPrimaryText}
+                                      >
+                                        {plaidLinkAction === "linking"
+                                          ? "Opening Plaid Link..."
+                                          : hasLinkedPlaidBank
+                                            ? "Link another bank"
+                                            : "Enable auto verification"}
+                                      </Text>
+                                    </TouchableOpacity>
+                                    {hasLinkedPlaidBank && (
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.receiptNoticeSecondaryCta,
+                                          (plaidLinkState.loading ||
+                                            plaidLinkAction !== "idle") &&
+                                            styles.receiptNoticeActionButtonDisabled,
+                                        ]}
+                                        onPress={handleUnlinkLinkedBanks}
+                                        disabled={
+                                          plaidLinkState.loading ||
+                                          plaidLinkAction !== "idle"
+                                        }
+                                      >
+                                        <Text
+                                          style={
+                                            styles.receiptNoticeActionSecondaryText
+                                          }
+                                        >
+                                          {plaidLinkAction === "unlinking"
+                                            ? "Updating..."
+                                            : "Unlink"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    )}
+                                  </View>
+                                  <Text style={styles.receiptNoticeMeta}>
+                                    {plaidLinkState.loading
+                                      ? "Checking linked bank status..."
+                                      : hasLinkedPlaidBank
+                                        ? `Linked banks: ${plaidLinkState.linkedCount}`
+                                        : "No linked bank yet"}
+                                  </Text>
+                                  {plaidLinkState.error && (
+                                    <Text style={styles.receiptNoticeMetaError}>
+                                      {plaidLinkState.error}
+                                    </Text>
+                                  )}
+                                  {pendingReceiptCount > 0 && (
+                                    <View style={styles.receiptCompactMetaRow}>
+                                      <View style={styles.receiptQueuePill}>
+                                        <Ionicons
+                                          name="document-text-outline"
+                                          size={12}
+                                          color="#B42318"
+                                        />
+                                        <Text style={styles.receiptQueuePillText}>
+                                          Receipts needed: {pendingReceiptCount}
+                                        </Text>
+                                      </View>
+                                    </View>
+                                  )}
+                                  {hasLinkedPlaidBank && (
+                                    <TouchableOpacity
+                                      style={styles.receiptCollapseButton}
+                                      onPress={() =>
+                                        setHistoryVerificationExpanded(false)
+                                      }
+                                    >
+                                      <Text style={styles.receiptCollapseButtonText}>
+                                        Collapse
+                                      </Text>
+                                    </TouchableOpacity>
+                                  )}
+                                </>
                               )}
                             </View>
-                            {pendingReceiptCount > 0 && (
-                              <View
-                                style={[
-                                  styles.receiptNoticeCard,
-                                  styles.receiptNoticeCardMuted,
-                                ]}
-                              >
-                                <View style={styles.receiptNoticeHeader}>
-                                  <View
-                                    style={[
-                                      styles.receiptNoticeIconWrap,
-                                      styles.receiptNoticeIconWrapMuted,
-                                    ]}
-                                  >
-                                    <Ionicons
-                                      name="document-text-outline"
-                                      size={18}
-                                      color="#475569"
-                                    />
-                                  </View>
-                                  <View style={styles.receiptNoticeHeaderCopy}>
-                                    <Text style={styles.receiptNoticeTitle}>
-                                      Receipts needed
-                                    </Text>
-                                  </View>
-                                </View>
-                                <Text style={styles.receiptNoticeBody}>
-                                  Upload receipts within 24 hours.
-                                </Text>
-                              </View>
-                            )}
 
                             {redemptionStatus.loading ? (
                               <View style={styles.remoteNotice}>
@@ -14067,7 +15278,7 @@ export default function App() {
                                                   : "Upload receipt"}
                                               </Text>
                                             </TouchableOpacity>
-                                            {plaidLinkState.linked && (
+                                            {hasLinkedPlaidBank && (
                                               <TouchableOpacity
                                                 style={styles.historyInlineAction}
                                                 onPress={() =>
@@ -14418,15 +15629,49 @@ export default function App() {
                                   {cashoutPayoutStatusCopy}
                                 </Text>
                               </View>
-                              <Text style={styles.cashoutStatusText}>
-                                {cashoutStatus.selectedPayoutLabel
-                                  ? `Payout account: ${cashoutStatus.selectedPayoutLabel}`
-                                  : "No Stripe payout bank is on file yet."}
-                              </Text>
-                              <Text style={styles.cashoutPolicyText}>
-                                Plaid is used for purchase verification only.
-                                Payouts are managed in Stripe Connect.
-                              </Text>
+                              <View
+                                style={[
+                                  styles.cashoutSelectedAccountCard,
+                                  !selectedPayoutAccountDetails.hasAccount &&
+                                    styles.cashoutSelectedAccountCardEmpty,
+                                ]}
+                              >
+                                <View
+                                  style={[
+                                    styles.cashoutSelectedAccountIcon,
+                                    !selectedPayoutAccountDetails.hasAccount &&
+                                      styles.cashoutSelectedAccountIconMuted,
+                                  ]}
+                                >
+                                  <Ionicons
+                                    name={
+                                      selectedPayoutAccountDetails.hasAccount
+                                        ? "business-outline"
+                                        : "alert-circle-outline"
+                                    }
+                                    size={14}
+                                    color={
+                                      selectedPayoutAccountDetails.hasAccount
+                                        ? COLORS.pine
+                                        : COLORS.muted
+                                    }
+                                  />
+                                </View>
+                                <View style={styles.cashoutLinkedAccountMain}>
+                                  <Text
+                                    style={styles.cashoutLinkedAccountTitle}
+                                    numberOfLines={1}
+                                  >
+                                    {selectedPayoutAccountDetails.title}
+                                  </Text>
+                                  <Text
+                                    style={styles.cashoutLinkedAccountMeta}
+                                    numberOfLines={1}
+                                  >
+                                    {selectedPayoutAccountDetails.detail}
+                                  </Text>
+                                </View>
+                              </View>
                               {cashoutStatusState.loading && (
                                 <View style={styles.cashoutStatusHint}>
                                   <ActivityIndicator
@@ -14460,24 +15705,103 @@ export default function App() {
                                   cashoutStatus.requirementsDue.length > 0 ||
                                   !cashoutStatus.detailsSubmitted) && (
                                   <TouchableOpacity
-                                    style={styles.primaryButton}
+                                    style={[
+                                      styles.cashoutActionCard,
+                                      styles.cashoutActionCardPrimary,
+                                      cashoutActionStatus.loading &&
+                                        styles.cashoutActionCardDisabled,
+                                    ]}
                                     onPress={handleCashoutConnect}
                                     disabled={cashoutActionStatus.loading}
                                   >
-                                    <Text style={styles.primaryButtonText}>
-                                      Verify payouts with Stripe
-                                    </Text>
+                                    <View style={styles.cashoutActionMain}>
+                                      <View
+                                        style={[
+                                          styles.cashoutActionIconWrap,
+                                          styles.cashoutActionIconWrapPrimary,
+                                        ]}
+                                      >
+                                        <Ionicons
+                                          name="wallet-outline"
+                                          size={15}
+                                          color={COLORS.white}
+                                        />
+                                      </View>
+                                      <View style={styles.cashoutActionCopy}>
+                                        <Text
+                                          style={[
+                                            styles.cashoutActionTitle,
+                                            styles.cashoutActionTitlePrimary,
+                                          ]}
+                                        >
+                                          Link bank
+                                        </Text>
+                                        <Text
+                                          style={[
+                                            styles.cashoutActionSubtitle,
+                                            styles.cashoutActionSubtitlePrimary,
+                                          ]}
+                                        >
+                                          Securely link your Stripe payout account.
+                                        </Text>
+                                      </View>
+                                    </View>
+                                    <Ionicons
+                                      name="chevron-forward"
+                                      size={16}
+                                      color={COLORS.white}
+                                    />
                                   </TouchableOpacity>
                                 )}
-                                {cashoutStatus.connected && (
+                                {cashoutStatus.connected &&
+                                  cashoutStatus.bankSelected && (
                                   <TouchableOpacity
-                                    style={styles.secondaryButton}
+                                    style={[
+                                      styles.cashoutActionCard,
+                                      styles.cashoutActionCardPrimary,
+                                      cashoutActionStatus.loading &&
+                                        styles.cashoutActionCardDisabled,
+                                    ]}
                                     onPress={handleCashoutManage}
                                     disabled={cashoutActionStatus.loading}
                                   >
-                                    <Text style={styles.secondaryButtonText}>
-                                      Payout settings
-                                    </Text>
+                                    <View style={styles.cashoutActionMain}>
+                                      <View
+                                        style={[
+                                          styles.cashoutActionIconWrap,
+                                          styles.cashoutActionIconWrapPrimary,
+                                        ]}
+                                      >
+                                        <Ionicons
+                                          name="settings-outline"
+                                          size={15}
+                                          color={COLORS.white}
+                                        />
+                                      </View>
+                                      <View style={styles.cashoutActionCopy}>
+                                        <Text
+                                          style={[
+                                            styles.cashoutActionTitle,
+                                            styles.cashoutActionTitlePrimary,
+                                          ]}
+                                        >
+                                          Payout settings
+                                        </Text>
+                                        <Text
+                                          style={[
+                                            styles.cashoutActionSubtitle,
+                                            styles.cashoutActionSubtitlePrimary,
+                                          ]}
+                                        >
+                                          Review and update your Stripe payout setup.
+                                        </Text>
+                                      </View>
+                                    </View>
+                                    <Ionicons
+                                      name="chevron-forward"
+                                      size={16}
+                                      color={COLORS.white}
+                                    />
                                   </TouchableOpacity>
                                 )}
                               </View>
@@ -14513,20 +15837,35 @@ export default function App() {
                                 <TouchableOpacity
                                   style={[
                                     styles.authGoogleButton,
-                                    authBusy && styles.authButtonDisabled,
+                                    (authBusy || googleAuthInFlight) &&
+                                      styles.authGoogleButtonBusy,
                                   ]}
                                   onPress={handleGoogleSignIn}
-                                  disabled={authBusy}
+                                  disabled={authBusy || googleAuthInFlight}
                                 >
-                                  <Ionicons
-                                    name="logo-google"
-                                    size={16}
-                                    color={COLORS.ink}
-                                  />
+                                  {googleAuthInFlight ? (
+                                    <ActivityIndicator
+                                      size="small"
+                                      color={COLORS.ink}
+                                    />
+                                  ) : (
+                                    <Ionicons
+                                      name="logo-google"
+                                      size={16}
+                                      color={COLORS.ink}
+                                    />
+                                  )}
                                   <Text style={styles.authGoogleButtonText}>
-                                    Continue with Google
+                                    {googleAuthButtonLabel}
                                   </Text>
                                 </TouchableOpacity>
+                                {googleAuthInFlight && !!googleAuthStatusCopy && (
+                                  <View style={styles.authGoogleStatusRow}>
+                                    <Text style={styles.authGoogleStatusText}>
+                                      {googleAuthStatusCopy}
+                                    </Text>
+                                  </View>
+                                )}
 
                                 <TouchableOpacity
                                   style={styles.authSecondaryButton}
@@ -14578,20 +15917,35 @@ export default function App() {
                                 <TouchableOpacity
                                   style={[
                                     styles.authGoogleButton,
-                                    authBusy && styles.authButtonDisabled,
+                                    (authBusy || googleAuthInFlight) &&
+                                      styles.authGoogleButtonBusy,
                                   ]}
                                   onPress={handleGoogleSignIn}
-                                  disabled={authBusy}
+                                  disabled={authBusy || googleAuthInFlight}
                                 >
-                                  <Ionicons
-                                    name="logo-google"
-                                    size={16}
-                                    color={COLORS.ink}
-                                  />
+                                  {googleAuthInFlight ? (
+                                    <ActivityIndicator
+                                      size="small"
+                                      color={COLORS.ink}
+                                    />
+                                  ) : (
+                                    <Ionicons
+                                      name="logo-google"
+                                      size={16}
+                                      color={COLORS.ink}
+                                    />
+                                  )}
                                   <Text style={styles.authGoogleButtonText}>
-                                    Continue with Google
+                                    {googleAuthButtonLabel}
                                   </Text>
                                 </TouchableOpacity>
+                                {googleAuthInFlight && !!googleAuthStatusCopy && (
+                                  <View style={styles.authGoogleStatusRow}>
+                                    <Text style={styles.authGoogleStatusText}>
+                                      {googleAuthStatusCopy}
+                                    </Text>
+                                  </View>
+                                )}
 
                                 <Text style={styles.formLabel}>Email</Text>
                                 <AutoFocusInput
@@ -15095,18 +16449,19 @@ export default function App() {
                                 <Text style={styles.notificationLabel}>
                                   New offers
                                 </Text>
-                                <Switch
+                                <NotificationToggle
                                   value={notificationPreferences.new_offer}
                                   onValueChange={(value) =>
                                     handlePreferenceToggle("new_offer", value)
                                   }
+                                  disabled={preferencesStatus.loading}
                                 />
                               </View>
                               <View style={styles.notificationRow}>
                                 <Text style={styles.notificationLabel}>
                                   Offers expiring soon
                                 </Text>
-                                <Switch
+                                <NotificationToggle
                                   value={notificationPreferences.expiring_offer}
                                   onValueChange={(value) =>
                                     handlePreferenceToggle(
@@ -15114,13 +16469,14 @@ export default function App() {
                                       value,
                                     )
                                   }
+                                  disabled={preferencesStatus.loading}
                                 />
                               </View>
                               <View style={styles.notificationRow}>
                                 <Text style={styles.notificationLabel}>
                                   Offers nearby
                                 </Text>
-                                <Switch
+                                <NotificationToggle
                                   value={notificationPreferences.nearby_offer}
                                   onValueChange={(value) =>
                                     handlePreferenceToggle(
@@ -15128,19 +16484,9 @@ export default function App() {
                                       value,
                                     )
                                   }
+                                  disabled={preferencesStatus.loading}
                                 />
                               </View>
-                              <Text style={styles.notificationHelp}>
-                                Push permission:{" "}
-                                {notificationPermissionStatus === "granted"
-                                  ? "Enabled"
-                                  : notificationPermissionStatus === "denied"
-                                    ? "Denied"
-                                    : notificationPermissionStatus ===
-                                        "unsupported"
-                                      ? "Device unsupported"
-                                      : "Pending"}
-                              </Text>
                               {notificationPermissionStatus === "denied" ? (
                                 <TouchableOpacity
                                   style={styles.pushTokenRefreshButton}
@@ -16280,10 +17626,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
   },
+  authGoogleButtonBusy: {
+    opacity: 0.8,
+  },
   authGoogleButtonText: {
     color: COLORS.ink,
     fontSize: 14,
     fontFamily: FONT_MEDIUM,
+  },
+  authGoogleStatusRow: {
+    marginTop: 8,
+  },
+  authGoogleStatusText: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
   },
   authButtonDisabled: {
     backgroundColor: "#9AA7B8",
@@ -16533,12 +17891,20 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 10 },
     elevation: 4,
   },
+  navContainerTight: {
+    paddingHorizontal: IS_COMPACT ? 4 : 6,
+    paddingBottom: IS_COMPACT ? 6 : 8,
+    paddingTop: IS_COMPACT ? 8 : 9,
+  },
   navRow: {
     flexDirection: "row",
     paddingHorizontal: 2,
     paddingVertical: 2,
     borderRadius: 12,
     backgroundColor: "#F6F8FC",
+  },
+  navRowTight: {
+    paddingHorizontal: 1,
   },
   locateRow: {
     alignItems: "flex-end",
@@ -16588,6 +17954,25 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
+  },
+  scannerPromptOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    justifyContent: "center",
+    padding: 10,
+    borderRadius: 20,
+  },
+  scannerPromptCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 14,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
   },
   scannerHeader: {
     flexDirection: "row",
@@ -16674,6 +18059,16 @@ const styles = StyleSheet.create({
   },
   scannerActions: {
     marginTop: 12,
+  },
+  scannerBlockedActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  scannerActionFlex: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
   reviewOverlay: {
     flex: 1,
@@ -17027,8 +18422,18 @@ const styles = StyleSheet.create({
     borderWidth: 0,
     position: "relative",
   },
+  navPillTight: {
+    paddingHorizontal: Platform.select({
+      ios: IS_COMPACT ? 10 : 14,
+      android: IS_COMPACT ? 7 : 9,
+      default: IS_COMPACT ? 12 : 16,
+    }),
+  },
   navPillSpaced: {
     marginLeft: NAV_GAP,
+  },
+  navPillSpacedTight: {
+    marginLeft: IS_COMPACT ? 4 : 6,
   },
   navPillActive: {
     backgroundColor: "#0B2147",
@@ -17049,6 +18454,16 @@ const styles = StyleSheet.create({
     textAlign: "center",
     ...Platform.select({
       android: { includeFontPadding: false },
+    }),
+  },
+  navPillTextTight: {
+    ...Platform.select({
+      android: {
+        fontSize: IS_COMPACT ? 10.5 : 11,
+        lineHeight: IS_COMPACT ? 14 : 16,
+        letterSpacing: -0.1,
+      },
+      default: {},
     }),
   },
   navPillTextActive: {
@@ -17332,6 +18747,9 @@ const styles = StyleSheet.create({
   sheetScrollContent: {
     paddingBottom: 24,
   },
+  sheetScrollContentEmpty: {
+    flexGrow: 1,
+  },
   sheetHandle: {
     alignItems: "center",
     paddingTop: 10,
@@ -17359,17 +18777,40 @@ const styles = StyleSheet.create({
     flexDirection: "column",
     alignItems: "stretch",
   },
+  searchInputWrap: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    minHeight: IS_COMPACT ? 44 : 46,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 2,
+  },
+  searchInputWrapFocused: {
+    borderColor: COLORS.pine,
+    shadowOpacity: 0.14,
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
   searchInput: {
     flex: 1,
-    backgroundColor: COLORS.mint,
-    borderRadius: 12,
-    paddingHorizontal: 14,
     paddingVertical: IS_COMPACT ? 8 : 10,
     fontFamily: FONT_TEXT,
     fontSize: IS_COMPACT ? 13 : 14,
     color: COLORS.ink,
-    borderWidth: 1,
-    borderColor: COLORS.sand,
+  },
+  searchClearButton: {
+    marginLeft: 8,
+    alignItems: "center",
+    justifyContent: "center",
   },
   filterButton: {
     backgroundColor: COLORS.white,
@@ -17378,11 +18819,31 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    minHeight: IS_COMPACT ? 44 : 46,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 2,
+  },
+  filterButtonCompact: {
+    width: "100%",
+  },
+  filterButtonActive: {
+    backgroundColor: COLORS.pine,
+    borderColor: COLORS.pine,
   },
   filterButtonText: {
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     fontSize: IS_COMPACT ? 12 : 13,
+  },
+  filterButtonTextActive: {
+    color: COLORS.white,
   },
   statCard: {
     flex: 1,
@@ -17444,6 +18905,716 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
+  },
+  demoIntroCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+    padding: 14,
+    marginBottom: 14,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  demoIntroHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  demoIntroTitle: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  demoIntroBadge: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(11, 33, 71, 0.2)",
+    backgroundColor: "#EAF0FA",
+    height: 24,
+    paddingHorizontal: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoIntroBadgeText: {
+    fontSize: 10,
+    color: "#18407B",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoIntroSubtitle: {
+    marginTop: 7,
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 18,
+  },
+  demoIntroMetaRow: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  demoIntroMetaText: {
+    fontSize: 10,
+    color: "#64748B",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoLayoutSegment: {
+    marginTop: 11,
+    borderRadius: 12,
+    backgroundColor: "#EEF2F7",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    padding: 4,
+  },
+  demoLayoutPillRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  demoLayoutPill: {
+    flex: 1,
+    minHeight: 34,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: "transparent",
+    backgroundColor: "transparent",
+    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoLayoutPillActive: {
+    borderColor: "rgba(11, 33, 71, 0.12)",
+    backgroundColor: COLORS.white,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
+  demoLayoutPillText: {
+    fontSize: 11,
+    color: "#334155",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoLayoutPillTextActive: {
+    color: COLORS.ink,
+  },
+  demoListStack: {
+    gap: 12,
+    paddingBottom: 8,
+  },
+  demoEditorialSplitCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+    overflow: "hidden",
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  demoEditorialSplitMedia: {
+    width: "100%",
+    height: 148,
+    backgroundColor: "#EAF0F7",
+  },
+  demoEditorialSplitMediaImage: {
+    width: "100%",
+    height: "100%",
+  },
+  demoEditorialSplitMediaFallback: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoEditorialSplitShade: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  demoEditorialSplitOverlayRow: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    bottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  demoEditorialSplitCategoryPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.35)",
+    backgroundColor: "rgba(15, 23, 42, 0.48)",
+    height: 23,
+    paddingHorizontal: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoEditorialSplitCategoryText: {
+    fontSize: 10,
+    color: "#E2E8F0",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoEditorialSplitCashbackPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(6, 95, 70, 0.24)",
+    backgroundColor: "#EAF9EF",
+    minHeight: 23,
+    paddingHorizontal: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoEditorialSplitCashbackText: {
+    fontSize: 10,
+    color: "#065F46",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoEditorialSplitBody: {
+    paddingHorizontal: 12,
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
+  demoEditorialSplitTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  demoEditorialSplitName: {
+    flex: 1,
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  demoEditorialSplitOpenText: {
+    fontSize: 10,
+    fontFamily: FONT_MEDIUM,
+  },
+  demoEditorialSplitOpenTextOpen: {
+    color: "#166534",
+  },
+  demoEditorialSplitOpenTextClosed: {
+    color: "#B42318",
+  },
+  demoEditorialSplitOffer: {
+    marginTop: 1,
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  demoEditorialSplitFooter: {
+    marginTop: 3,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  demoEditorialSplitHorizontalRail: {
+    paddingRight: 2,
+    gap: 10,
+  },
+  demoEditorialSplitHorizontalCard: {
+    width: Math.min(360, Math.max(280, Math.round(SCREEN_WIDTH * 0.82))),
+    flexShrink: 0,
+  },
+  demoEditorialStackCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+    overflow: "hidden",
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.07,
+    shadowRadius: 11,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  demoEditorialStackMedia: {
+    width: "100%",
+    height: 152,
+    backgroundColor: "#EAF0F7",
+  },
+  demoEditorialStackMediaImage: {
+    width: "100%",
+    height: "100%",
+  },
+  demoEditorialStackMediaFallback: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoEditorialStackShade: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  demoEditorialStackOverlayRow: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    right: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  demoEditorialStackOpenPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 23,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoEditorialStackOpenPillOpen: {
+    backgroundColor: "#E8F7EE",
+    borderColor: "rgba(21, 128, 61, 0.24)",
+  },
+  demoEditorialStackOpenPillClosed: {
+    backgroundColor: "#FFF1F0",
+    borderColor: "rgba(180, 35, 24, 0.24)",
+  },
+  demoEditorialStackOpenText: {
+    fontSize: 10,
+    fontFamily: FONT_MEDIUM,
+  },
+  demoEditorialStackOpenTextOpen: {
+    color: "#166534",
+  },
+  demoEditorialStackOpenTextClosed: {
+    color: "#B42318",
+  },
+  demoEditorialStackOverlayTextWrap: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    bottom: 12,
+  },
+  demoEditorialStackOverlayName: {
+    fontSize: 16,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  demoEditorialStackOverlayOffer: {
+    marginTop: 3,
+    fontSize: 12,
+    color: "#E2E8F0",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoEditorialStackPanel: {
+    marginTop: -14,
+    marginHorizontal: 10,
+    marginBottom: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.07)",
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
+  demoEditorialStackDescription: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 15,
+  },
+  demoEditorialStackPanelFooter: {
+    marginTop: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  demoEditorialStackCategoryPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(71, 85, 105, 0.2)",
+    backgroundColor: "#F8FAFC",
+    height: 22,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoEditorialStackCategoryText: {
+    fontSize: 10,
+    color: "#475569",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoEditorialStackCashbackPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(6, 95, 70, 0.24)",
+    backgroundColor: "#EAF9EF",
+    height: 23,
+    paddingHorizontal: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoEditorialStackCashbackText: {
+    fontSize: 10,
+    color: "#065F46",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoSpotlightCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+    overflow: "hidden",
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  demoSpotlightMedia: {
+    width: "100%",
+    height: 132,
+    backgroundColor: "#EDF2F8",
+  },
+  demoSpotlightMediaImage: {
+    width: "100%",
+    height: "100%",
+  },
+  demoSpotlightMediaFallback: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoSpotlightBody: {
+    padding: 14,
+  },
+  demoSpotlightTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  demoSpotlightName: {
+    flex: 1,
+    fontSize: 15,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  demoSpotlightOpenPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 22,
+    paddingHorizontal: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoSpotlightOpenPillOpen: {
+    backgroundColor: "#E8F7EE",
+    borderColor: "rgba(21, 128, 61, 0.24)",
+  },
+  demoSpotlightOpenPillClosed: {
+    backgroundColor: "#FFF1F0",
+    borderColor: "rgba(180, 35, 24, 0.24)",
+  },
+  demoSpotlightOpenPillText: {
+    fontSize: 10,
+    fontFamily: FONT_MEDIUM,
+  },
+  demoSpotlightOpenPillTextOpen: {
+    color: "#166534",
+  },
+  demoSpotlightOpenPillTextClosed: {
+    color: "#B42318",
+  },
+  demoSpotlightCategoryPill: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(71, 85, 105, 0.18)",
+    backgroundColor: "#F8FAFC",
+    paddingHorizontal: 8,
+    height: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoSpotlightCategoryPillText: {
+    fontSize: 10,
+    color: "#475569",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoSpotlightOffer: {
+    marginTop: 7,
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  demoSpotlightDescription: {
+    marginTop: 5,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+  },
+  demoSpotlightFooter: {
+    marginTop: 11,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  demoSpotlightCashbackPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(6, 95, 70, 0.25)",
+    backgroundColor: "#EAF9EF",
+    height: 25,
+    paddingHorizontal: 10,
+  },
+  demoSpotlightCashbackText: {
+    fontSize: 10,
+    color: "#065F46",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoPreviewOnlyText: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  demoShowcaseCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+    overflow: "hidden",
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.07,
+    shadowRadius: 11,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  demoShowcaseMedia: {
+    width: "100%",
+    height: 120,
+    backgroundColor: "#EDF2F8",
+  },
+  demoShowcaseMediaImage: {
+    width: "100%",
+    height: "100%",
+  },
+  demoShowcaseMediaFallback: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoShowcaseCashbackPill: {
+    position: "absolute",
+    right: 10,
+    bottom: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(6, 95, 70, 0.24)",
+    backgroundColor: "#EAF9EF",
+    minHeight: 24,
+    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoShowcaseCashbackText: {
+    fontSize: 10,
+    color: "#065F46",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoShowcaseBody: {
+    padding: 12,
+  },
+  demoShowcaseTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  demoShowcaseName: {
+    flex: 1,
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  demoShowcaseOpenText: {
+    fontSize: 10,
+    fontFamily: FONT_MEDIUM,
+  },
+  demoShowcaseOpenTextOpen: {
+    color: "#166534",
+  },
+  demoShowcaseOpenTextClosed: {
+    color: "#B42318",
+  },
+  demoShowcaseCategory: {
+    marginTop: 4,
+    fontSize: 10,
+    color: "#64748B",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoShowcaseOffer: {
+    marginTop: 6,
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  demoShowcaseDescription: {
+    marginTop: 4,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+  },
+  demoShowcaseFooter: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  demoEditorialCard: {
+    borderRadius: 18,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.09)",
+    backgroundColor: COLORS.white,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.09,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  demoEditorialMedia: {
+    width: "100%",
+    height: 176,
+    backgroundColor: "#EAF0F7",
+  },
+  demoEditorialMediaImage: {
+    width: "100%",
+    height: "100%",
+  },
+  demoEditorialMediaFallback: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoEditorialGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  demoEditorialContent: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    bottom: 12,
+  },
+  demoEditorialTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  demoEditorialCategoryPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.34)",
+    backgroundColor: "rgba(15, 23, 42, 0.5)",
+    height: 24,
+    paddingHorizontal: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoEditorialCategoryPillText: {
+    fontSize: 10,
+    color: "#E2E8F0",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoEditorialCashbackPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(6, 95, 70, 0.24)",
+    backgroundColor: "#EAF9EF",
+    minHeight: 24,
+    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoEditorialCashbackText: {
+    fontSize: 10,
+    color: "#065F46",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoEditorialName: {
+    marginTop: 10,
+    fontSize: 15,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  demoEditorialOffer: {
+    marginTop: 3,
+    fontSize: 12,
+    color: "#F8FAFC",
+    fontFamily: FONT_MEDIUM,
+  },
+  demoEditorialDescription: {
+    marginTop: 4,
+    fontSize: 11,
+    color: "#DCE4EE",
+    fontFamily: FONT_TEXT,
+    lineHeight: 15,
+  },
+  demoEditorialFooter: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(15, 23, 42, 0.06)",
+    backgroundColor: COLORS.white,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  demoEditorialOpenPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 23,
+    paddingHorizontal: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoEditorialOpenPillOpen: {
+    backgroundColor: "#E8F7EE",
+    borderColor: "rgba(21, 128, 61, 0.24)",
+  },
+  demoEditorialOpenPillClosed: {
+    backgroundColor: "#FFF1F0",
+    borderColor: "rgba(180, 35, 24, 0.24)",
+  },
+  demoEditorialOpenText: {
+    fontSize: 10,
+    fontFamily: FONT_MEDIUM,
+  },
+  demoEditorialOpenTextOpen: {
+    color: "#166534",
+  },
+  demoEditorialOpenTextClosed: {
+    color: "#B42318",
   },
   analyticsGrid: {
     flexDirection: "row",
@@ -17614,13 +19785,241 @@ const styles = StyleSheet.create({
     paddingRight: 8,
   },
   cardShell: {
-    width: CARD_WIDTH,
-    marginRight: CARD_GAP,
+    width: "100%",
+    marginRight: 0,
     shadowColor: COLORS.shadow,
-    shadowOpacity: 0.6,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.24,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
     elevation: 2,
+  },
+  liveEditorialStackCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    overflow: "hidden",
+  },
+  liveEditorialStackCardSelected: {
+    borderColor: COLORS.coral,
+  },
+  liveEditorialStackMedia: {
+    position: "relative",
+    aspectRatio: OFFER_IMAGE_ASPECT,
+    backgroundColor: "#EFF3F8",
+    overflow: "hidden",
+  },
+  liveEditorialStackMediaImage: {
+    width: "100%",
+    height: "100%",
+  },
+  liveEditorialStackMediaFallback: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  liveEditorialStackMediaLabel: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  liveEditorialStackShade: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  liveEditorialStackTopRow: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    right: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  liveEditorialStackCategoryPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#475569",
+    backgroundColor: "#1E293B",
+    height: 24,
+    paddingHorizontal: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveEditorialStackCategoryText: {
+    fontSize: 10,
+    color: "#E2E8F0",
+    fontFamily: FONT_MEDIUM,
+  },
+  liveEditorialStackOfferTypePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#475569",
+    backgroundColor: "#1E293B",
+    height: 24,
+    paddingHorizontal: 9,
+    maxWidth: "58%",
+    minWidth: 52,
+    flexShrink: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveEditorialStackOfferTypeText: {
+    fontSize: 10,
+    color: "#E2E8F0",
+    fontFamily: FONT_MEDIUM,
+    flexShrink: 1,
+    textAlign: "center",
+  },
+  liveEditorialStackHeadlineWrap: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    bottom: 12,
+  },
+  liveEditorialStackName: {
+    fontSize: 15,
+    color: COLORS.white,
+    fontFamily: FONT_DISPLAY,
+  },
+  liveEditorialStackOffer: {
+    marginTop: 3,
+    fontSize: 12,
+    color: "#DCE4EE",
+    fontFamily: FONT_MEDIUM,
+  },
+  liveEditorialStackTagRow: {
+    position: "absolute",
+    right: 10,
+    bottom: 10,
+    flexDirection: "row",
+    gap: 6,
+  },
+  liveEditorialStackTagPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#475569",
+    backgroundColor: "#1E293B",
+    height: 20,
+    paddingHorizontal: 7,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveEditorialStackTagText: {
+    fontSize: 9,
+    color: "#E2E8F0",
+    fontFamily: FONT_MEDIUM,
+  },
+  liveEditorialStackPanel: {
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 8,
+    gap: 6,
+  },
+  liveEditorialStackMetaTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  liveEditorialStackMetaRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  liveEditorialStackMeta: {
+    fontSize: 10,
+    color: "#64748B",
+    fontFamily: FONT_MEDIUM,
+  },
+  liveEditorialStackRatingPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(161, 98, 7, 0.22)",
+    backgroundColor: "#FEF6E8",
+    minHeight: 24,
+    paddingHorizontal: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  liveEditorialStackRatingText: {
+    fontSize: 10,
+    color: "#A16207",
+    fontFamily: FONT_MEDIUM,
+  },
+  liveEditorialStackActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  liveEditorialStackRedeemButton: {
+    flex: 1,
+    minHeight: 40,
+    borderRadius: 11,
+    backgroundColor: COLORS.pine,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveEditorialStackRedeemButtonDisabled: {
+    backgroundColor: "#E1E8F1",
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+  },
+  liveEditorialStackRedeemText: {
+    fontSize: 12,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  liveEditorialStackRedeemTextDisabled: {
+    color: COLORS.muted,
+  },
+  liveEditorialStackDirectionsButton: {
+    minHeight: 40,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+  },
+  liveEditorialStackDirectionsButtonPressed: {
+    backgroundColor: "#E9EEF6",
+    borderColor: "#C9D4E4",
+    opacity: 0.92,
+  },
+  liveEditorialStackDirectionsText: {
+    fontSize: 11,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+  },
+  liveEditorialStackCashbackPill: {
+    marginTop: 2,
+    marginHorizontal: -12,
+    marginBottom: -8,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(6, 95, 70, 0.24)",
+    backgroundColor: "#EAF9EF",
+    minHeight: 32,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+  },
+  liveEditorialStackCashbackText: {
+    fontSize: 10,
+    color: "#065F46",
+    fontFamily: FONT_MEDIUM,
   },
   card: {
     backgroundColor: COLORS.white,
@@ -18523,17 +20922,54 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 12,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   notificationLabel: {
     fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
+    flex: 1,
   },
-  notificationHelp: {
-    fontSize: 11,
-    color: COLORS.muted,
-    fontFamily: FONT_TEXT,
-    marginTop: 8,
+  notificationToggleHitbox: {
+    padding: 2,
+    marginRight: -2,
+  },
+  notificationToggleTrack: {
+    width: 50,
+    height: 30,
+    borderRadius: 999,
+    backgroundColor: "#D4DCE7",
+    borderWidth: 1,
+    borderColor: "#C7D2E0",
+    paddingHorizontal: 2,
+    justifyContent: "center",
+  },
+  notificationToggleTrackActive: {
+    backgroundColor: "#D5E6FF",
+    borderColor: "#8AA6D6",
+  },
+  notificationToggleTrackDisabled: {
+    opacity: 0.55,
+  },
+  notificationToggleThumb: {
+    width: 24,
+    height: 24,
+    borderRadius: 999,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: "#B6C2D3",
+    alignSelf: "flex-start",
+  },
+  notificationToggleThumbActive: {
+    alignSelf: "flex-end",
+    backgroundColor: COLORS.pine,
+    borderColor: COLORS.pine,
   },
   pushTokenRow: {
     flexDirection: "row",
@@ -18862,58 +21298,92 @@ const styles = StyleSheet.create({
   },
   receiptNoticeCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.1)",
-    padding: 12,
-    marginBottom: 12,
+    padding: 10,
+    marginBottom: 10,
     shadowColor: "#0F172A",
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 2,
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 1,
   },
-  receiptNoticeCardMuted: {
-    backgroundColor: "#F8FAFC",
+  receiptNoticeCardAttention: {
+    borderColor: "rgba(180, 35, 24, 0.24)",
+    backgroundColor: "#FFFBFA",
+  },
+  receiptNoticeCardReady: {
+    borderColor: "rgba(15, 23, 42, 0.1)",
+    backgroundColor: COLORS.white,
   },
   receiptNoticeHeader: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
     gap: 8,
-    marginBottom: 8,
+    marginBottom: 6,
+  },
+  receiptNoticeHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flex: 1,
   },
   receiptNoticeHeaderCopy: {
     flex: 1,
   },
   receiptNoticeIconWrap: {
-    width: 30,
-    height: 30,
-    borderRadius: 9,
+    width: 28,
+    height: 28,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "rgba(11, 33, 71, 0.14)",
     backgroundColor: "#ECF3FF",
     alignItems: "center",
     justifyContent: "center",
   },
-  receiptNoticeIconWrapMuted: {
-    borderColor: "rgba(100, 116, 139, 0.2)",
-    backgroundColor: "#EEF2F7",
-  },
   receiptNoticeTitle: {
     fontSize: 13,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM,
-    marginBottom: 2,
+    fontFamily: FONT_SEMIBOLD,
   },
-  receiptNoticeBody: {
-    fontSize: 11,
-    color: "#556072",
-    fontFamily: FONT_TEXT,
-    lineHeight: 16,
+  receiptNoticeStatusPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    height: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  receiptNoticeStatusPillAttention: {
+    backgroundColor: "#FFF1F0",
+    borderColor: "rgba(180, 35, 24, 0.24)",
+  },
+  receiptNoticeStatusPillReady: {
+    backgroundColor: "#E8F7EE",
+    borderColor: "rgba(21, 128, 61, 0.24)",
+  },
+  receiptNoticeStatusPillText: {
+    fontSize: 9,
+    fontFamily: FONT_MEDIUM,
+  },
+  receiptNoticeStatusPillTextAttention: {
+    color: "#B42318",
+  },
+  receiptNoticeStatusPillAlert: {
+    backgroundColor: "#FEE4E2",
+    borderColor: "rgba(180, 35, 24, 0.28)",
+  },
+  receiptNoticeStatusPillTextAlert: {
+    color: "#B42318",
+  },
+  receiptNoticeStatusPillTextReady: {
+    color: "#166534",
   },
   receiptNoticeMeta: {
-    marginTop: 8,
-    fontSize: 11,
+    marginTop: 6,
+    fontSize: 10,
     color: "#334155",
     fontFamily: FONT_MEDIUM,
   },
@@ -18923,47 +21393,106 @@ const styles = StyleSheet.create({
     color: "#B42318",
     fontFamily: FONT_MEDIUM,
   },
-  receiptNoticeActionBar: {
-    marginBottom: 10,
+  receiptNoticeActionsRow: {
+    marginBottom: 6,
     flexDirection: "row",
-    alignItems: "stretch",
+    alignItems: "center",
     gap: 8,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "rgba(11, 33, 71, 0.1)",
-    backgroundColor: "#F5F8FC",
-    padding: 4,
-    height: 46,
   },
-  receiptNoticeActionButton: {
+  receiptNoticePrimaryCta: {
     flexGrow: 1,
     flexBasis: 0,
-    minHeight: 34,
-    borderRadius: 9,
+    minHeight: 36,
+    borderRadius: 10,
     borderWidth: 1,
+    borderColor: "#0B2147",
+    backgroundColor: "#0B2147",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
   },
-  receiptNoticeActionButtonPrimary: {
-    backgroundColor: "#0B2147",
-    borderColor: "#0B2147",
-  },
-  receiptNoticeActionButtonSecondary: {
+  receiptNoticeSecondaryCta: {
+    minHeight: 36,
+    borderRadius: 10,
+    borderWidth: 1,
     backgroundColor: COLORS.white,
     borderColor: "rgba(71, 85, 105, 0.24)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
   },
   receiptNoticeActionButtonDisabled: {
     opacity: 0.6,
   },
   receiptNoticeActionPrimaryText: {
-    fontSize: 11,
+    fontSize: 10,
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
   },
   receiptNoticeActionSecondaryText: {
-    fontSize: 11,
+    fontSize: 10,
     color: "#334155",
+    fontFamily: FONT_MEDIUM,
+  },
+  receiptCompactMetaRow: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  receiptQueuePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(180, 35, 24, 0.22)",
+    backgroundColor: "#FFF1F0",
+    paddingHorizontal: 9,
+    height: 24,
+  },
+  receiptQueuePillText: {
+    fontSize: 10,
+    color: "#B42318",
+    fontFamily: FONT_MEDIUM,
+  },
+  receiptCollapsedRow: {
+    marginTop: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  receiptCollapsedMeta: {
+    flex: 1,
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  receiptCollapsedManageButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.12)",
+    borderRadius: 999,
+    backgroundColor: "#F8FAFC",
+    height: 28,
+    paddingHorizontal: 10,
+  },
+  receiptCollapsedManageText: {
+    fontSize: 10,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  receiptCollapseButton: {
+    marginTop: 8,
+    alignSelf: "flex-end",
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+  },
+  receiptCollapseButtonText: {
+    fontSize: 10,
+    color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
   historyVerifyNoticeCard: {
@@ -19012,6 +21541,69 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(15, 23, 42, 0.55)",
     justifyContent: "center",
     padding: 20,
+  },
+  appDialogOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.62)",
+    justifyContent: "flex-end",
+    paddingHorizontal: 16,
+    paddingBottom: 22,
+  },
+  appDialogCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 22,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 7,
+  },
+  appDialogTitle: {
+    fontSize: 20,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+    marginBottom: 6,
+  },
+  appDialogMessage: {
+    fontSize: 13,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 19,
+  },
+  appDialogActions: {
+    marginTop: 14,
+    gap: 8,
+  },
+  appDialogButton: {
+    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 12,
+  },
+  appDialogButtonPrimary: {
+    backgroundColor: COLORS.pine,
+    borderColor: COLORS.pine,
+  },
+  appDialogButtonGhost: {
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E2E8F0",
+  },
+  appDialogButtonText: {
+    fontSize: 14,
+    color: COLORS.pine,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  appDialogButtonTextPrimary: {
+    color: COLORS.white,
   },
   noticeCard: {
     backgroundColor: COLORS.white,
@@ -19192,15 +21784,15 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(146, 64, 14, 0.18)",
-    backgroundColor: "#FFFBEB",
+    borderColor: "rgba(180, 35, 24, 0.22)",
+    backgroundColor: "#FFF1F0",
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 9,
   },
   historyPendingSummaryText: {
     fontSize: 10,
-    color: "#92400E",
+    color: "#B42318",
     fontFamily: FONT_MEDIUM,
   },
   historyReviewLink: {
@@ -19449,26 +22041,39 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
-  cashoutPolicyText: {
-    marginTop: 4,
-    fontSize: 10,
-    color: COLORS.muted,
-    fontFamily: FONT_TEXT,
-  },
   cashoutLinkedAccountList: {
     marginTop: 12,
     gap: 8,
   },
   cashoutSelectedAccountCard: {
+    marginTop: 8,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 10,
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.08)",
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 11,
     backgroundColor: "#F8FAFC",
+  },
+  cashoutSelectedAccountCardEmpty: {
+    backgroundColor: "#F8FAFC",
+    borderColor: "rgba(15, 23, 42, 0.08)",
+  },
+  cashoutSelectedAccountIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#D5E6FF",
+    backgroundColor: "#ECF3FF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cashoutSelectedAccountIconMuted: {
+    borderColor: "#E2E8F0",
+    backgroundColor: "#EEF2F7",
   },
   cashoutSelectedAccountTag: {
     fontSize: 10,
@@ -19547,6 +22152,80 @@ const styles = StyleSheet.create({
   cashoutButtonStack: {
     marginTop: 14,
     gap: 10,
+  },
+  cashoutActionCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.10)",
+    backgroundColor: COLORS.white,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  cashoutActionCardPrimary: {
+    backgroundColor: COLORS.pine,
+    borderColor: COLORS.pine,
+  },
+  cashoutActionCardSecondary: {
+    backgroundColor: "#EEF2F8",
+    borderColor: "#D4DCE7",
+  },
+  cashoutActionCardDisabled: {
+    opacity: 0.6,
+  },
+  cashoutActionMain: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
+  },
+  cashoutActionIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EEF2F8",
+    borderWidth: 1,
+    borderColor: "#D6DEE8",
+  },
+  cashoutActionIconWrapPrimary: {
+    backgroundColor: "rgba(255, 255, 255, 0.18)",
+    borderColor: "rgba(255, 255, 255, 0.28)",
+  },
+  cashoutActionIconWrapSecondary: {
+    backgroundColor: "#E3EBF5",
+    borderColor: "#C9D6E5",
+  },
+  cashoutActionCopy: {
+    flex: 1,
+  },
+  cashoutActionTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutActionTitlePrimary: {
+    color: COLORS.white,
+  },
+  cashoutActionTitleSecondary: {
+    color: COLORS.pine,
+  },
+  cashoutActionSubtitle: {
+    marginTop: 2,
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 14,
+  },
+  cashoutActionSubtitlePrimary: {
+    color: "rgba(255, 255, 255, 0.86)",
+  },
+  cashoutActionSubtitleSecondary: {
+    color: "#475569",
   },
   historyEntry: {
     position: "relative",

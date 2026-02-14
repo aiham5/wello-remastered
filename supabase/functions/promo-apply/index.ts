@@ -20,8 +20,6 @@ const allowOrigin = (req: Request) => {
   const allowed = [
     "https://wellopartners.com",
     "https://www.wellopartners.com",
-    "http://localhost:3000",
-    "http://localhost:5173",
   ];
   if (allowed.includes(origin)) return origin;
   // Fall back to wildcard for native clients (no Origin) and dev environments.

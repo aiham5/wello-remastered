@@ -66,7 +66,14 @@ const plaidRequest = async <T>(
         { reason: "plaid_timeout" },
       );
     }
-    throw error;
+    throw new HttpError(
+      "Unable to reach bank verification provider. Please try again.",
+      502,
+      {
+        reason: "plaid_network_error",
+        message: String((error as { message?: string })?.message || ""),
+      },
+    );
   } finally {
     clearTimeout(timeout);
   }

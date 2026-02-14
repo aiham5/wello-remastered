@@ -20,6 +20,10 @@ const CONNECT_REFRESH_URL =
   Deno.env.get("STRIPE_CONNECT_REFRESH_URL") ?? "";
 const CONNECT_RETURN_URL =
   Deno.env.get("STRIPE_CONNECT_RETURN_URL") ?? "";
+const CONNECT_ALLOWED_REDIRECT_PREFIXES = [
+  "https://www.wellopartners.com",
+  "https://wellopartners.com",
+];
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -61,17 +65,44 @@ const decodeJwtHeader = (token: string) => {
   }
 };
 
+const normalizeConnectRedirectUrl = (value: unknown) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return "";
+  }
+  if (parsed.protocol !== "https:") return "";
+  const lower = raw.toLowerCase();
+  const allowed = CONNECT_ALLOWED_REDIRECT_PREFIXES.some((prefix) =>
+    lower.startsWith(prefix.toLowerCase()),
+  );
+  return allowed ? raw : "";
+};
+
 serve(async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
   }
 
+  const body = await req.json().catch(() => ({}));
+  const requestedRefreshUrl = normalizeConnectRedirectUrl(
+    body?.refreshUrl ?? body?.refresh_url,
+  );
+  const requestedReturnUrl = normalizeConnectRedirectUrl(
+    body?.returnUrl ?? body?.return_url,
+  );
+  const refreshUrl = requestedRefreshUrl || CONNECT_REFRESH_URL;
+  const returnUrl = requestedReturnUrl || CONNECT_RETURN_URL;
+
   if (
     !SUPABASE_URL ||
     !SUPABASE_SERVICE_ROLE_KEY ||
     !STRIPE_SECRET_KEY ||
-    !CONNECT_REFRESH_URL ||
-    !CONNECT_RETURN_URL
+    !refreshUrl ||
+    !returnUrl
   ) {
     return new Response("Missing server configuration.", { status: 500 });
   }
@@ -79,7 +110,6 @@ serve(async (req) => {
   try {
     const authHeader =
       req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
-    const body = await req.json().catch(() => ({}));
     const bodyAccessToken =
       typeof body?.accessToken === "string"
         ? body.accessToken
@@ -182,8 +212,8 @@ serve(async (req) => {
 
     const accountLink = await stripe.accountLinks.create({
       account: accountId,
-      refresh_url: CONNECT_REFRESH_URL,
-      return_url: CONNECT_RETURN_URL,
+      refresh_url: refreshUrl,
+      return_url: returnUrl,
       type: "account_onboarding",
       collect: "currently_due",
     });
