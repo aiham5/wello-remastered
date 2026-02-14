@@ -82,7 +82,7 @@ Deno.serve(async (req) => {
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select(
-        "stripe_cashout_account_id, stripe_cashout_payouts_enabled, stripe_cashout_plaid_account_id",
+        "stripe_cashout_account_id, stripe_cashout_payouts_enabled",
       )
       .eq("id", userId)
       .maybeSingle();
@@ -99,16 +99,6 @@ Deno.serve(async (req) => {
         { status: 400 },
       );
     }
-    const selectedPayoutAccountId = String(
-      profile.stripe_cashout_plaid_account_id || "",
-    ).trim();
-    if (!selectedPayoutAccountId) {
-      return new Response(
-        JSON.stringify({ error: "Choose a payout bank from linked accounts first." }),
-        { status: 400 },
-      );
-    }
-
     const account = await stripe.accounts.retrieve(accountId);
     const payoutsEnabled = Boolean(account.payouts_enabled);
     if (!payoutsEnabled) {

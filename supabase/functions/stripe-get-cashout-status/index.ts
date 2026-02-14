@@ -267,7 +267,6 @@ serve(async (req) => {
               "stripe_cashout_payouts_enabled",
               "stripe_cashout_onboarded_at",
               "stripe_cashout_external_account_id",
-              "stripe_cashout_plaid_account_id",
               "stripe_cashout_account_label",
               "stripe_cashout_bank_synced_at",
             ].join(","),

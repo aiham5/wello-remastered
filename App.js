@@ -2923,51 +2923,6 @@ export default function App() {
     return "Stripe setup needed";
   }, [cashoutStatus.bankSelected, cashoutStatus.payoutsEnabled]);
   const selectedPayoutAccountDetails = useMemo(() => {
-    const linkedAccounts = Array.isArray(plaidLinkState.linkedAccounts)
-      ? plaidLinkState.linkedAccounts
-      : [];
-    const selectedAccountId = String(
-      cashoutStatus.selectedPayoutAccountId ||
-        plaidLinkState.selectedPayoutAccountId ||
-        "",
-    ).trim();
-    const selectedAccount =
-      linkedAccounts.find((account) => account?.accountId === selectedAccountId) ||
-      linkedAccounts.find((account) => Boolean(account?.selectedForPayout)) ||
-      null;
-
-    if (selectedAccount) {
-      const institutionName = String(
-        selectedAccount.institutionName || "",
-      ).trim();
-      const accountName = String(selectedAccount.name || "").trim();
-      const mask = String(selectedAccount.mask || "").trim();
-      const rawSubtype = String(
-        selectedAccount.subtype || selectedAccount.type || "",
-      ).trim();
-      const subtypeLabel = rawSubtype
-        ? rawSubtype
-            .replace(/[_-]+/g, " ")
-            .toLowerCase()
-            .replace(/\b\w/g, (match) => match.toUpperCase())
-        : "";
-      const title = institutionName || accountName || "Connected bank account";
-      const detailParts = [];
-      if (
-        accountName &&
-        accountName.toLowerCase() !== String(title).toLowerCase()
-      ) {
-        detailParts.push(accountName);
-      }
-      if (mask) detailParts.push(`**** ${mask}`);
-      if (subtypeLabel) detailParts.push(subtypeLabel);
-      return {
-        hasAccount: true,
-        title,
-        detail: detailParts.join(" | ") || "Stripe payout account",
-      };
-    }
-
     const selectedLabel = String(cashoutStatus.selectedPayoutLabel || "").trim();
     if (selectedLabel) {
       return {
@@ -2980,14 +2935,9 @@ export default function App() {
     return {
       hasAccount: false,
       title: "No payout bank selected",
-      detail: "Link a bank account to receive cashback payouts.",
+      detail: "Complete Stripe payout setup to receive cashback payouts.",
     };
-  }, [
-    cashoutStatus.selectedPayoutAccountId,
-    cashoutStatus.selectedPayoutLabel,
-    plaidLinkState.linkedAccounts,
-    plaidLinkState.selectedPayoutAccountId,
-  ]);
+  }, [cashoutStatus.selectedPayoutLabel]);
   const [verificationPrompt, setVerificationPrompt] = useState({
     visible: false,
     title: "",
@@ -5942,6 +5892,9 @@ export default function App() {
                 : "Returned from Stripe. Updating payout status...",
           }));
           loadCashoutStatus().catch(() => null);
+          setTimeout(() => {
+            loadCashoutStatus({ silent: true }).catch(() => null);
+          }, 1400);
         }
         setAuthBusy(false);
         setGoogleAuthState("idle");
@@ -6032,7 +5985,12 @@ export default function App() {
         setGoogleAuthState("idle");
       }
     },
-    [ensureSupabaseReady, hydrateProfile, loadPromoStatus, loadCashoutStatus],
+    [
+      ensureSupabaseReady,
+      hydrateProfile,
+      loadPromoStatus,
+      loadCashoutStatus,
+    ],
   );
 
   useEffect(() => {
