@@ -1,3 +1,5 @@
+import { createClient } from "npm:@supabase/supabase-js@2.40.0";
+
 export const config = { verify_jwt: false };
 
 const R2_ENDPOINT = Deno.env.get("R2_ENDPOINT") ?? "";
@@ -172,6 +174,31 @@ const fetchWithTimeout = async (
   }
 };
 
+const parseReceiptKey = (key: string) => {
+  const normalized = String(key || "").trim();
+  if (!normalized || normalized.includes("..") || normalized.startsWith("/")) {
+    return null;
+  }
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length !== 4) return null;
+  if (segments[0] !== "receipts") return null;
+  const businessId = segments[1];
+  const redemptionId = segments[2];
+  const fileName = segments[3];
+  if (!businessId || !redemptionId || !fileName) return null;
+  return { key: normalized, businessId, redemptionId, fileName };
+};
+
+const getBodyId = (body: Record<string, unknown>, camel: string, snake: string) => {
+  const value =
+    typeof body?.[camel] === "string"
+      ? body[camel]
+      : typeof body?.[snake] === "string"
+        ? body[snake]
+        : "";
+  return String(value || "").trim();
+};
+
 Deno.serve(async (req) => {
   const corsHeaders = getCorsHeaders(req);
   if (!corsHeaders) {
@@ -197,7 +224,7 @@ Deno.serve(async (req) => {
     !R2_ACCESS_KEY_ID ||
     !R2_SECRET_ACCESS_KEY ||
     !SUPABASE_URL ||
-    (!SUPABASE_ANON_KEY && !SUPABASE_SERVICE_ROLE_KEY)
+    !SUPABASE_SERVICE_ROLE_KEY
   ) {
     return new Response(
       JSON.stringify({ error: "Missing R2 configuration." }),
@@ -258,35 +285,27 @@ Deno.serve(async (req) => {
     }
     if (!userResponse.ok) {
       const raw = await userResponse.text();
-      const payload = (() => {
-        try {
-          const part = token.split(".")[1];
-          if (!part) return null;
-          const base64 = part.replace(/-/g, "+").replace(/_/g, "/");
-          const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
-          return JSON.parse(atob(padded));
-        } catch {
-          return null;
-        }
-      })();
       return new Response(
         JSON.stringify({
           error: "Invalid JWT",
           reason: raw || `auth_status_${userResponse.status}`,
-          debug: {
-            authKeyPrefix: authKey ? authKey.slice(0, 16) : null,
-            hasAuthHeader: Boolean(authHeader),
-            tokenIssuer: payload?.iss || null,
-            tokenSub: payload?.sub || null,
-            tokenExp: payload?.exp || null,
-          },
         }),
         { status: 401, headers: corsHeaders },
       );
     }
+    const user = await userResponse.json().catch(() => null);
+    const userId = String(user?.id || "").trim();
+    if (!userId) {
+      return new Response(
+        JSON.stringify({ error: "Invalid JWT", reason: "missing_user_id" }),
+        { status: 401, headers: corsHeaders },
+      );
+    }
+
     const action = String(body?.action || "").toLowerCase();
     const key = String(body?.key || "").trim();
-    if (!key || key.includes("..") || key.startsWith("/")) {
+    const parsedReceiptKey = parseReceiptKey(key);
+    if (!parsedReceiptKey) {
       return new Response(
         JSON.stringify({ error: "Invalid object key." }),
         { status: 400, headers: corsHeaders },
@@ -306,11 +325,105 @@ Deno.serve(async (req) => {
       );
     }
 
-    const signedUrl = await createPresignedUrl(method, key, expiresIn);
+    const supabaseAdminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    });
+
+    if (action === "upload") {
+      const bodyBusinessId = getBodyId(body, "businessId", "business_id");
+      const bodyRedemptionId = getBodyId(body, "redemptionId", "redemption_id");
+      if (!bodyBusinessId || !bodyRedemptionId) {
+        return new Response(
+          JSON.stringify({
+            error: "Missing receipt upload identifiers.",
+            reason: "missing_business_or_redemption",
+          }),
+          { status: 400, headers: corsHeaders },
+        );
+      }
+      if (
+        parsedReceiptKey.businessId !== bodyBusinessId ||
+        parsedReceiptKey.redemptionId !== bodyRedemptionId
+      ) {
+        return new Response(
+          JSON.stringify({
+            error: "Receipt key does not match redemption context.",
+            reason: "key_context_mismatch",
+          }),
+          { status: 403, headers: corsHeaders },
+        );
+      }
+
+      const { data: redemption, error: redemptionError } = await supabaseAdminClient
+        .from("redemptions")
+        .select("id, business_id, scanned_by")
+        .eq("id", bodyRedemptionId)
+        .eq("business_id", bodyBusinessId)
+        .eq("scanned_by", userId)
+        .maybeSingle();
+      if (redemptionError || !redemption) {
+        return new Response(
+          JSON.stringify({
+            error: "Not allowed to upload for this redemption.",
+            reason: "redemption_not_owned",
+          }),
+          { status: 403, headers: corsHeaders },
+        );
+      }
+    } else {
+      const { data: receipt, error: receiptError } = await supabaseAdminClient
+        .from("receipt_uploads")
+        .select("id, user_id, business_id")
+        .eq("storage_path", parsedReceiptKey.key)
+        .maybeSingle();
+      if (receiptError || !receipt) {
+        return new Response(
+          JSON.stringify({
+            error: "Receipt not found.",
+            reason: "receipt_not_found",
+          }),
+          { status: 404, headers: corsHeaders },
+        );
+      }
+      let allowed = String(receipt.user_id || "") === userId;
+      if (!allowed) {
+        const { data: ownedBusiness } = await supabaseAdminClient
+          .from("businesses")
+          .select("id")
+          .eq("id", receipt.business_id)
+          .eq("owner_id", userId)
+          .maybeSingle();
+        allowed = Boolean(ownedBusiness?.id);
+      }
+      if (!allowed) {
+        const { data: profile } = await supabaseAdminClient
+          .from("profiles")
+          .select("role")
+          .eq("id", userId)
+          .maybeSingle();
+        const role = String(profile?.role || "").toLowerCase();
+        allowed = role === "admin" || role === "supervisor";
+      }
+      if (!allowed) {
+        return new Response(
+          JSON.stringify({
+            error: "Not allowed to access this receipt.",
+            reason: "receipt_access_denied",
+          }),
+          { status: 403, headers: corsHeaders },
+        );
+      }
+    }
+
+    const signedUrl = await createPresignedUrl(method, parsedReceiptKey.key, expiresIn);
     return new Response(
       JSON.stringify({
         signedUrl,
-        key,
+        key: parsedReceiptKey.key,
         action,
         method,
         expiresIn,

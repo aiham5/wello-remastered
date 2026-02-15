@@ -70,19 +70,6 @@ const decodeJwtPayload = (token: string) => {
   }
 };
 
-const decodeJwtHeader = (token: string) => {
-  try {
-    const header = token.split(".")[0];
-    if (!header) return null;
-    const base64 = header.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
-    const json = atob(padded);
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-};
-
 const extractToken = async (req: Request) => {
   const authHeader =
     req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
@@ -101,8 +88,6 @@ const extractToken = async (req: Request) => {
   return {
     body,
     token: String(bodyAccessToken || headerToken || "").trim(),
-    hasAuthHeader: Boolean(headerToken),
-    hasBodyToken: Boolean(bodyAccessToken),
   };
 };
 
@@ -112,27 +97,14 @@ export const authenticateRequest = async (req: Request) => {
   if (!extracted.token) {
     throw new HttpError("Unauthorized", 401, {
       reason: "missing_token",
-      hasAuthHeader: extracted.hasAuthHeader,
-      hasBodyToken: extracted.hasBodyToken,
     });
   }
 
   const tokenPayload = decodeJwtPayload(extracted.token) || {};
-  const tokenHeader = decodeJwtHeader(extracted.token) || {};
   const expectedIssuer = `${SUPABASE_URL.replace(/\/+$/, "")}/auth/v1`;
   if (tokenPayload?.iss && tokenPayload.iss !== expectedIssuer) {
     throw new HttpError("Unauthorized", 401, {
       reason: "project_mismatch",
-      message: "Session belongs to a different Supabase project.",
-      debug: {
-        supabaseUrl: SUPABASE_URL,
-        expectedIssuer,
-        tokenIssuer: tokenPayload?.iss || null,
-        tokenAud: tokenPayload?.aud || null,
-        tokenSub: tokenPayload?.sub || null,
-        tokenKid: tokenHeader?.kid || null,
-        tokenAlg: tokenHeader?.alg || null,
-      },
     });
   }
 
@@ -143,16 +115,6 @@ export const authenticateRequest = async (req: Request) => {
   if (authError || !authData?.user?.id) {
     throw new HttpError("Unauthorized", 401, {
       reason: "invalid_token",
-      message: authError?.message || "Invalid JWT",
-      debug: {
-        supabaseUrl: SUPABASE_URL,
-        expectedIssuer,
-        tokenIssuer: tokenPayload?.iss || null,
-        tokenAud: tokenPayload?.aud || null,
-        tokenSub: tokenPayload?.sub || null,
-        tokenKid: tokenHeader?.kid || null,
-        tokenAlg: tokenHeader?.alg || null,
-      },
     });
   }
 

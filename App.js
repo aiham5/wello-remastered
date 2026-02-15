@@ -7,15 +7,18 @@ import React, {
 } from "react";
 import {
   AppState,
+  ActionSheetIOS,
   Animated,
   ActivityIndicator,
   Dimensions,
   FlatList,
   Image,
+  InteractionManager,
   Keyboard,
   KeyboardAvoidingView,
   Linking,
   Modal,
+  NativeModules,
   Platform,
   Pressable,
   ScrollView,
@@ -24,6 +27,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  TurboModuleRegistry,
   View,
 } from "react-native";
 import {
@@ -93,9 +97,20 @@ const IS_SAMSUNG_ANDROID =
   String(Device.manufacturer || Device.brand || "")
     .toLowerCase()
     .includes("samsung");
-const DEBUG_DISCOVER_SCROLL = __DEV__;
+const DEBUG_DISCOVER_SCROLL = false;
 const DEBUG_DISCOVER_SCROLL_VERBOSE =
   DEBUG_DISCOVER_SCROLL && Platform.OS === "android";
+const DEBUG_RECEIPT_UPLOAD = false;
+const DEBUG_PLAID_LINK = false;
+const APP_DIALOG_ACTION_DELAY_MS = Platform.OS === "ios" ? 260 : 10;
+const logReceiptUploadDebug = (event, payload) => {
+  if (!DEBUG_RECEIPT_UPLOAD) return;
+  if (payload === undefined) {
+    console.log(`[ReceiptUploadDebug] ${event}`);
+    return;
+  }
+  console.log(`[ReceiptUploadDebug] ${event}`, payload);
+};
 const SHEET_MIN = IS_SHORT ? 140 : 160;
 const SHEET_MAX = Math.min(SCREEN_HEIGHT * 0.72, IS_SHORT ? 560 : 620);
 const SAFE_TOP =
@@ -1417,8 +1432,7 @@ const callR2Presign = async (payload) => {
   if (!refreshResult.ok) {
     return { data: null, error: refreshResult.error, status: null };
   }
-  let tokenResult = await getAccessTokenWithFallback(6000);
-  let accessToken = tokenResult.accessToken;
+  let accessToken = (await getAccessTokenWithFallback(6000)).accessToken;
   if (!accessToken) {
     return { data: null, error: "Sign in again to continue.", status: null };
   }
@@ -1436,14 +1450,9 @@ const callR2Presign = async (payload) => {
     });
     if (refreshed?.accessToken) {
       accessToken = refreshed.accessToken;
-      tokenResult = refreshed;
     }
   }
   try {
-    console.log("R2 presign request", {
-      action: payload?.action,
-      key: payload?.key,
-    });
     const runInvoke = async (token) => {
       const response = await withTimeout(
         supabase.functions.invoke("r2-presign", {
@@ -1515,26 +1524,20 @@ const callR2Presign = async (payload) => {
     if (!attempt.ok) {
       console.warn("R2 presign failed", {
         status: attempt.status,
-        message: attempt.parsed?.error || attempt.parsed?.message,
-        raw: attempt.rawText,
+        message: attempt.parsed?.error || attempt.parsed?.message || null,
       });
       return {
         data: null,
         error:
           attempt.parsed?.error ||
           attempt.parsed?.message ||
-          attempt.rawText ||
           "Unable to sign receipt URL.",
         status: attempt.status || null,
       };
     }
-    console.log("R2 presign success", {
-      action: payload?.action,
-      key: payload?.key,
-    });
     return { data: attempt.parsed, error: null, status: attempt.status };
   } catch (error) {
-    console.warn("R2 presign exception", error?.message);
+    console.warn("R2 presign exception");
     return {
       data: null,
       error: error?.message || "Unable to sign receipt URL.",
@@ -1872,10 +1875,7 @@ const RECEIPT_UPLOAD_WINDOW_MS = 1000 * 60 * 60 * 24;
 const RECEIPT_URL_TTL_SECONDS = 60 * 60;
 
 const getImagePickerMediaTypes = () => {
-  if (ImagePicker.MediaType?.Images) {
-    return [ImagePicker.MediaType.Images];
-  }
-  return undefined;
+  return ["images"];
 };
 
 const isImageAsset = (asset) => {
@@ -2071,6 +2071,14 @@ const uploadReceiptImage = async (image, businessId, redemptionId) => {
   const extension = cleanedName.split(".").pop()?.toLowerCase() || "jpg";
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
   const filePath = `receipts/${safeBusinessId}/${safeRedemptionId}/${fileName}`;
+  logReceiptUploadDebug("uploadImageStart", {
+    platform: Platform.OS,
+    businessId: safeBusinessId,
+    redemptionId: safeRedemptionId,
+    filePath,
+    hasUri: Boolean(image?.uri),
+    hasBase64: Boolean(image?.base64),
+  });
 
   try {
     const contentType =
@@ -2096,8 +2104,14 @@ const uploadReceiptImage = async (image, businessId, redemptionId) => {
       action: "upload",
       key: filePath,
       contentType,
+      businessId: safeBusinessId,
+      redemptionId: safeRedemptionId,
     });
     if (signError || !signData?.signedUrl) {
+      logReceiptUploadDebug("uploadImagePresignFailed", {
+        status: signStatus ?? null,
+        error: signError || "missing_signed_url",
+      });
       return {
         path: null,
         error: signError || "Unable to authorize receipt upload.",
@@ -2118,14 +2132,21 @@ const uploadReceiptImage = async (image, businessId, redemptionId) => {
       body: data,
     });
     if (!uploadResponse.ok) {
+      logReceiptUploadDebug("uploadImagePutFailed", {
+        status: uploadResponse.status,
+      });
       return {
         path: null,
         error: "Upload failed.",
         debug: `r2 upload failed (${uploadResponse.status})`,
       };
     }
+    logReceiptUploadDebug("uploadImageSuccess", { filePath });
     return { path: filePath, error: null };
   } catch (error) {
+    logReceiptUploadDebug("uploadImageException", {
+      message: error?.message || "upload_exception",
+    });
     return {
       path: null,
       error: error?.message || "Upload failed.",
@@ -2135,19 +2156,22 @@ const uploadReceiptImage = async (image, businessId, redemptionId) => {
 };
 
 const createReceiptSignedUrl = async (path) => {
-  if (!path) return null;
-  const { data, error } = await callR2Presign({
-    action: "download",
-    key: path,
-  });
-  if (!error && data?.signedUrl) {
-    return data.signedUrl;
+  const normalizedPath = String(path || "").trim();
+  if (!normalizedPath) return null;
+  if (normalizedPath.startsWith("receipts/")) {
+    const { data, error } = await callR2Presign({
+      action: "download",
+      key: normalizedPath,
+    });
+    if (!error && data?.signedUrl) {
+      return data.signedUrl;
+    }
   }
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
   try {
     const { data: legacyData } = await supabase.storage
       .from(LEGACY_RECEIPT_BUCKET)
-      .createSignedUrl(path, RECEIPT_URL_TTL_SECONDS);
+      .createSignedUrl(normalizedPath, RECEIPT_URL_TTL_SECONDS);
     return legacyData?.signedUrl || null;
   } catch {
     return null;
@@ -5196,11 +5220,24 @@ export default function App() {
 
   const handleAppDialogOptionPress = useCallback((option) => {
     setAppDialog((prev) => ({ ...prev, visible: false }));
-    if (typeof option?.onPress === "function") {
-      setTimeout(() => {
-        option.onPress();
-      }, 10);
+    if (typeof option?.onPress !== "function") return;
+    const customDelay =
+      typeof option?.actionDelayMs === "number" &&
+      Number.isFinite(option.actionDelayMs)
+        ? Math.max(0, option.actionDelayMs)
+        : APP_DIALOG_ACTION_DELAY_MS;
+    if (option?.debugTag === "receipt-upload") {
+      logReceiptUploadDebug("dialogOptionPressed", {
+        label: option?.label || "",
+        delayMs: customDelay,
+        platform: Platform.OS,
+      });
     }
+    setTimeout(() => {
+      InteractionManager.runAfterInteractions(() => {
+        option.onPress();
+      });
+    }, customDelay);
   }, []);
 
   useEffect(() => {
@@ -9277,70 +9314,197 @@ export default function App() {
     }
 
     try {
-      await destroyPlaidLink().catch(() => null);
+      const plaidDebug = (...parts) => {
+        if (!DEBUG_PLAID_LINK) return;
+        console.log("[PlaidLinkDebug]", ...parts);
+      };
+      const plaidModuleName =
+        Platform.OS === "android" ? "PlaidAndroid" : "RNLinksdk";
+      const plaidTurboModule = TurboModuleRegistry?.get?.(plaidModuleName);
+      const plaidLegacyModule = NativeModules?.[plaidModuleName];
+      const hasPlaidNativeModule = Boolean(plaidTurboModule || plaidLegacyModule);
+      plaidDebug("start", {
+        platform: Platform.OS,
+        hasAndroidPackage: Boolean(PLAID_ANDROID_PACKAGE_NAME),
+        plaidModuleName,
+        hasPlaidNativeModule,
+        nativePlaidModules: Object.keys(NativeModules || {}).filter((name) =>
+          /plaid|linksdk/i.test(String(name || "")),
+        ),
+      });
+      if (!hasPlaidNativeModule) {
+        setPlaidLinkAction("idle");
+        setPlaidLinkState((prev) => ({
+          ...prev,
+          loading: false,
+          error:
+            "Plaid is not available in this app build. Install a fresh development/standalone build and try again.",
+        }));
+        return;
+      }
+
+      await Promise.race([
+        destroyPlaidLink().catch(() => null),
+        new Promise((resolve) => setTimeout(resolve, 1200)),
+      ]);
+      plaidDebug("destroyDone");
+
+      let linkedSuccessfully = false;
+      let settled = false;
+      let launchWatchdog = null;
+      const clearLaunchWatchdog = () => {
+        if (launchWatchdog) {
+          clearTimeout(launchWatchdog);
+          launchWatchdog = null;
+        }
+      };
+      const settle = (handler) => {
+        if (settled) return;
+        settled = true;
+        if (typeof handler === "function") {
+          handler();
+        }
+      };
+
+      let didOpenAttempt = false;
+      const openLinkSheet = () => {
+        if (didOpenAttempt) return;
+        didOpenAttempt = true;
+        plaidDebug("openAttempt");
+        try {
+          openPlaidLink({
+            logLevel: LinkLogLevel.ERROR,
+            iOSPresentationStyle: LinkIOSPresentationStyle.MODAL,
+            onSuccess: async (success) => {
+              plaidDebug("onSuccess");
+              linkedSuccessfully = true;
+              const publicToken = String(success?.publicToken || "").trim();
+              if (!publicToken) {
+                settle(() => {
+                  clearLaunchWatchdog();
+                  setPlaidLinkAction("idle");
+                  setPlaidLinkState((prev) => ({
+                    ...prev,
+                    loading: false,
+                    error: "Missing public token from Plaid Link.",
+                  }));
+                });
+                return;
+              }
+              const { data: exchangeData, error: exchangeError } =
+                await callPlaidFunction("plaid-exchange-public-token", {
+                  publicToken,
+                });
+              if (exchangeError) {
+                settle(() => {
+                  clearLaunchWatchdog();
+                  setPlaidLinkAction("idle");
+                  setPlaidLinkState((prev) => ({
+                    ...prev,
+                    loading: false,
+                    error: exchangeError,
+                  }));
+                });
+                return;
+              }
+
+              setPurchaseVerifyStatus({
+                loading: false,
+                targetId: null,
+                error: null,
+                success:
+                  exchangeData?.copy?.primary ||
+                  "Bank linked for automatic purchase verification.",
+              });
+              await loadPlaidLinkState({ silent: true });
+              settle(() => {
+                clearLaunchWatchdog();
+                setPlaidLinkAction("idle");
+              });
+            },
+            onExit: (linkExit) => {
+              plaidDebug("onExit", {
+                hasError: Boolean(linkExit?.error),
+                displayMessage: linkExit?.error?.displayMessage || null,
+                errorMessage: linkExit?.error?.errorMessage || null,
+              });
+              const exitMessage =
+                linkExit?.error?.displayMessage ||
+                linkExit?.error?.errorMessage ||
+                null;
+              if (linkedSuccessfully && !exitMessage) {
+                settle(() => {
+                  clearLaunchWatchdog();
+                  setPlaidLinkAction("idle");
+                  setPlaidLinkState((prev) => ({
+                    ...prev,
+                    loading: false,
+                    error: null,
+                  }));
+                });
+                return;
+              }
+              settle(() => {
+                clearLaunchWatchdog();
+                setPlaidLinkAction("idle");
+                setPlaidLinkState((prev) => ({
+                  ...prev,
+                  loading: false,
+                  error: exitMessage || "Bank linking was closed.",
+                }));
+                loadPlaidLinkState({ silent: true });
+              });
+            },
+          });
+          plaidDebug("openCalledReturn");
+        } catch (openError) {
+          plaidDebug("openThrow", {
+            message: openError?.message || String(openError || ""),
+          });
+          settle(() => {
+            clearLaunchWatchdog();
+            setPlaidLinkAction("idle");
+            setPlaidLinkState((prev) => ({
+              ...prev,
+              loading: false,
+              error:
+                openError?.message || "Unable to open Plaid Link in this build.",
+            }));
+          });
+        }
+      };
+
       createPlaidLink({
         token: String(data.linkToken),
         noLoadingState: false,
-      });
-
-      let linkedSuccessfully = false;
-      openPlaidLink({
-        logLevel: LinkLogLevel.ERROR,
-        iOSPresentationStyle: LinkIOSPresentationStyle.MODAL,
-        onSuccess: async (success) => {
-          linkedSuccessfully = true;
-          const publicToken = String(success?.publicToken || "").trim();
-          if (!publicToken) {
-            setPlaidLinkAction("idle");
-            setPlaidLinkState((prev) => ({
-              ...prev,
-              loading: false,
-              error: "Missing public token from Plaid Link.",
-            }));
-            return;
-          }
-          const { data: exchangeData, error: exchangeError } =
-            await callPlaidFunction("plaid-exchange-public-token", {
-              publicToken,
-            });
-          if (exchangeError) {
-            setPlaidLinkAction("idle");
-            setPlaidLinkState((prev) => ({
-              ...prev,
-              loading: false,
-              error: exchangeError,
-            }));
-            return;
-          }
-
-          setPurchaseVerifyStatus({
-            loading: false,
-            targetId: null,
-            error: null,
-            success:
-              exchangeData?.copy?.primary ||
-              "Bank linked for automatic purchase verification.",
-          });
-          await loadPlaidLinkState({ silent: true });
-          setPlaidLinkAction("idle");
+        ...(Platform.OS === "android" ? { logLevel: LinkLogLevel.ERROR } : {}),
+        onLoad: () => {
+          plaidDebug("onLoad");
+          openLinkSheet();
         },
-        onExit: (linkExit) => {
-          const exitMessage =
-            linkExit?.error?.displayMessage ||
-            linkExit?.error?.errorMessage ||
-            null;
-          if (linkedSuccessfully && !exitMessage) {
-            return;
+      });
+      plaidDebug("createCalled");
+      setTimeout(
+        () => {
+          if (!didOpenAttempt) {
+            plaidDebug("onLoadTimeoutFallback");
+            openLinkSheet();
           }
+        },
+        Platform.OS === "android" ? 1500 : 900,
+      );
+
+      launchWatchdog = setTimeout(() => {
+        settle(() => {
           setPlaidLinkAction("idle");
           setPlaidLinkState((prev) => ({
             ...prev,
             loading: false,
-            error: exitMessage,
+            error:
+              "Plaid Link did not open. Rebuild/restart the app and try again.",
           }));
-          loadPlaidLinkState({ silent: true });
-        },
-      });
+        });
+      }, 8000);
     } catch (error) {
       setPlaidLinkAction("idle");
       setPlaidLinkState((prev) => ({
@@ -9548,6 +9712,14 @@ export default function App() {
 
   const handleUploadReceipt = async (entry, source = "library") => {
     if (!entry?.id || !entry.businessId) return;
+    logReceiptUploadDebug("start", {
+      source,
+      entryId: entry?.id || null,
+      businessId: entry?.businessId || null,
+      hasReceipt: Boolean(entry?.receipt?.id),
+      verifyStatus: entry?.purchaseVerification?.status || null,
+      platform: Platform.OS,
+    });
     const showReceiptOverlay = (phase, title, message, { autoHideMs } = {}) => {
       const timers = receiptUploadTimersRef.current;
       if (timers.hide) clearTimeout(timers.hide);
@@ -9585,9 +9757,11 @@ export default function App() {
         }),
       )
     ) {
+      logReceiptUploadDebug("blockedSupabaseNotReady");
       return;
     }
     if (!authUserId) {
+      logReceiptUploadDebug("blockedMissingAuthUser");
       setReceiptUploadStatus({
         uploading: false,
         error: "Sign in to upload receipts.",
@@ -9596,6 +9770,7 @@ export default function App() {
       return;
     }
     if (entry.receipt?.id) {
+      logReceiptUploadDebug("blockedAlreadyUploaded", { entryId: entry.id });
       setReceiptUploadStatus({
         uploading: false,
         error: "Receipt already uploaded.",
@@ -9607,6 +9782,10 @@ export default function App() {
       entry?.purchaseVerification?.status === "pending" ||
       entry?.purchaseVerification?.status === "rejected";
     if (!isReceiptWindowOpen(entry) && !allowFallbackReceipt) {
+      logReceiptUploadDebug("blockedWindowExpired", {
+        entryId: entry.id,
+        allowFallbackReceipt,
+      });
       setReceiptUploadStatus({
         uploading: false,
         error: "Receipt window expired.",
@@ -9619,6 +9798,13 @@ export default function App() {
         ? await ImagePicker.requestCameraPermissionsAsync()
         : await ImagePicker.requestMediaLibraryPermissionsAsync();
     const hasPermission = permission.granted || permission.status === "limited";
+    logReceiptUploadDebug("permissionResult", {
+      source,
+      granted: Boolean(permission?.granted),
+      canAskAgain: Boolean(permission?.canAskAgain),
+      status: permission?.status || null,
+      hasPermission,
+    });
     if (!hasPermission) {
       setReceiptUploadStatus({
         uploading: false,
@@ -9633,136 +9819,216 @@ export default function App() {
         source === "camera"
           ? ImagePicker.launchCameraAsync
           : ImagePicker.launchImageLibraryAsync;
-      const result = await launch({
+      const pickerOptions = {
         ...(mediaTypes ? { mediaTypes } : {}),
         allowsEditing: false,
         quality: 0.85,
         base64: true,
+        ...(Platform.OS === "ios"
+          ? {
+              presentationStyle:
+                ImagePicker.UIImagePickerPresentationStyle?.FULL_SCREEN ||
+                "fullScreen",
+              preferredAssetRepresentationMode:
+                ImagePicker.UIImagePickerPreferredAssetRepresentationMode
+                  ?.Compatible || "compatible",
+            }
+          : {}),
+      };
+      logReceiptUploadDebug("pickerLaunch", {
+        source,
+        hasMediaTypes: Boolean(mediaTypes),
+        mediaTypes,
+        pickerOptions: {
+          allowsEditing: pickerOptions.allowsEditing,
+          quality: pickerOptions.quality,
+          base64: pickerOptions.base64,
+          presentationStyle: pickerOptions.presentationStyle || null,
+          preferredAssetRepresentationMode:
+            pickerOptions.preferredAssetRepresentationMode || null,
+        },
+        appState: AppState.currentState,
       });
-      if (result.canceled) return;
-      const asset = result.assets?.[0];
-      if (!asset?.uri) return;
-      if (!isImageAsset(asset)) {
-        setReceiptUploadStatus({
-          uploading: false,
-          error: "Please select an image file.",
-          targetId: null,
+      const pickerStartedAt = Date.now();
+      let pickerPendingTimer = null;
+      try {
+        pickerPendingTimer = setTimeout(() => {
+          logReceiptUploadDebug("pickerStillPending", {
+            source,
+            elapsedMs: Date.now() - pickerStartedAt,
+            appState: AppState.currentState,
+          });
+        }, 1800);
+        const result = await launch(pickerOptions);
+        logReceiptUploadDebug("pickerResult", {
+          canceled: Boolean(result?.canceled),
+          assetCount: Array.isArray(result?.assets) ? result.assets.length : 0,
+          elapsedMs: Date.now() - pickerStartedAt,
         });
-        return;
-      }
-      const normalized = await normalizeReceiptImage(asset);
-      if (normalized.error || !normalized.image) {
-        setReceiptUploadStatus({
-          uploading: false,
-          error: normalized.error || "Unable to process the receipt image.",
-          targetId: null,
+        if (result.canceled) return;
+        const asset = result.assets?.[0];
+        if (!asset?.uri) {
+          logReceiptUploadDebug("pickerMissingAssetUri");
+          return;
+        }
+        logReceiptUploadDebug("pickerAsset", {
+          width: asset?.width || null,
+          height: asset?.height || null,
+          type: asset?.type || null,
+          mimeType: asset?.mimeType || null,
+          fileName: asset?.fileName || null,
         });
-        return;
-      }
-      setReceiptUploadStatus({
-        uploading: true,
-        error: null,
-        targetId: entry.id,
-      });
-      showReceiptOverlay(
-        "uploading",
-        "Uploading receipt",
-        "Uploading your photo and saving it securely...",
-      );
-      const { path, error, debug } = await uploadReceiptImage(
-        normalized.image,
-        entry.businessId,
-        entry.id,
-      );
-      if (error || !path) {
-        if (debug) {
-          setReceiptDebug(debug);
+        if (!isImageAsset(asset)) {
+          logReceiptUploadDebug("pickerRejectedNonImage", {
+            type: asset?.type || null,
+            mimeType: asset?.mimeType || null,
+          });
+          setReceiptUploadStatus({
+            uploading: false,
+            error: "Please select an image file.",
+            targetId: null,
+          });
+          return;
+        }
+        const normalized = await normalizeReceiptImage(asset);
+        logReceiptUploadDebug("normalizeResult", {
+          ok: Boolean(normalized?.image && !normalized?.error),
+          error: normalized?.error || null,
+          hasBase64: Boolean(normalized?.image?.base64),
+          mimeType: normalized?.image?.mimeType || null,
+        });
+        if (normalized.error || !normalized.image) {
+          setReceiptUploadStatus({
+            uploading: false,
+            error: normalized.error || "Unable to process the receipt image.",
+            targetId: null,
+          });
+          return;
         }
         setReceiptUploadStatus({
-          uploading: false,
-          error: error || "Unable to upload receipt.",
-          targetId: null,
+          uploading: true,
+          error: null,
+          targetId: entry.id,
         });
         showReceiptOverlay(
-          "error",
-          "Upload failed",
-          error || "Unable to upload receipt. Please try again.",
-          { autoHideMs: 2200 },
+          "uploading",
+          "Uploading receipt",
+          "Uploading your photo and saving it securely...",
         );
-        return;
-      }
-      const {
-        data,
-        error: insertError,
-        status: insertStatus,
-      } = await insertReceiptUploadRecord({
-        redemptionId: entry.id,
-        businessId: entry.businessId,
-        userId: authUserId,
-        storagePath: path,
-      });
-      if (insertError || !data) {
-        if (insertError) {
-          setReceiptDebug(
-            `receipt insert failed (${insertStatus ?? "no-status"}): ${insertError}`,
+        const { path, error, debug } = await uploadReceiptImage(
+          normalized.image,
+          entry.businessId,
+          entry.id,
+        );
+        logReceiptUploadDebug("uploadResult", {
+          ok: Boolean(path && !error),
+          path: path || null,
+          error: error || null,
+          debug: debug || null,
+        });
+        if (error || !path) {
+          if (debug) {
+            setReceiptDebug(debug);
+          }
+          setReceiptUploadStatus({
+            uploading: false,
+            error: error || "Unable to upload receipt.",
+            targetId: null,
+          });
+          showReceiptOverlay(
+            "error",
+            "Upload failed",
+            error || "Unable to upload receipt. Please try again.",
+            { autoHideMs: 2200 },
           );
+          return;
         }
+        const {
+          data,
+          error: insertError,
+          status: insertStatus,
+        } = await insertReceiptUploadRecord({
+          redemptionId: entry.id,
+          businessId: entry.businessId,
+          userId: authUserId,
+          storagePath: path,
+        });
+        logReceiptUploadDebug("insertResult", {
+          ok: Boolean(data && !insertError),
+          status: insertStatus ?? null,
+          error: insertError || null,
+          receiptId: data?.id || null,
+        });
+        if (insertError || !data) {
+          if (insertError) {
+            setReceiptDebug(
+              `receipt insert failed (${insertStatus ?? "no-status"}): ${insertError}`,
+            );
+          }
+          setReceiptUploadStatus({
+            uploading: false,
+            error: insertError || "Unable to save receipt.",
+            targetId: null,
+          });
+          showReceiptOverlay(
+            "error",
+            "Upload failed",
+            insertError || "Unable to save receipt. Please try again.",
+            { autoHideMs: 2200 },
+          );
+          return;
+        }
+        setRedemptionHistory((prev) =>
+          prev.map((item) =>
+            item.id === entry.id
+              ? {
+                  ...item,
+                  receipt: {
+                    id: String(data.id),
+                    storagePath: data.storage_path || "",
+                    verificationSource: "receipt",
+                    verificationReference: null,
+                    reviewStatus: "pending",
+                    uploadedAt: data.uploaded_at
+                      ? new Date(data.uploaded_at).getTime()
+                      : Date.now(),
+                  },
+                  purchaseVerification: {
+                    id: item.purchaseVerification?.id || `local-${entry.id}`,
+                    source: "receipt",
+                    status: "pending",
+                    reasonCode: "receipt_under_review",
+                    reasonDetail: "Receipt uploaded and awaiting review.",
+                    lastCheckedAt: Date.now(),
+                    confirmedAt: null,
+                    rejectedAt: null,
+                  },
+                }
+              : item,
+          ),
+        );
         setReceiptUploadStatus({
           uploading: false,
-          error: insertError || "Unable to save receipt.",
+          error: null,
           targetId: null,
         });
+        triggerReceiptConfetti();
         showReceiptOverlay(
-          "error",
-          "Upload failed",
-          insertError || "Unable to save receipt. Please try again.",
-          { autoHideMs: 2200 },
+          "success",
+          "Receipt uploaded",
+          "Thanks! We'll review it shortly.",
+          { autoHideMs: 1600 },
         );
-        return;
+        loadRedemptions({ silent: true });
+      } finally {
+        if (pickerPendingTimer) {
+          clearTimeout(pickerPendingTimer);
+        }
       }
-      setRedemptionHistory((prev) =>
-        prev.map((item) =>
-          item.id === entry.id
-            ? {
-                ...item,
-                receipt: {
-                  id: String(data.id),
-                  storagePath: data.storage_path || "",
-                  verificationSource: "receipt",
-                  verificationReference: null,
-                  reviewStatus: "pending",
-                  uploadedAt: data.uploaded_at
-                    ? new Date(data.uploaded_at).getTime()
-                    : Date.now(),
-                },
-                purchaseVerification: {
-                  id: item.purchaseVerification?.id || `local-${entry.id}`,
-                  source: "receipt",
-                  status: "pending",
-                  reasonCode: "receipt_under_review",
-                  reasonDetail: "Receipt uploaded and awaiting review.",
-                  lastCheckedAt: Date.now(),
-                  confirmedAt: null,
-                  rejectedAt: null,
-                },
-              }
-            : item,
-        ),
-      );
-      setReceiptUploadStatus({
-        uploading: false,
-        error: null,
-        targetId: null,
-      });
-      triggerReceiptConfetti();
-      showReceiptOverlay(
-        "success",
-        "Receipt uploaded",
-        "Thanks! We'll review it shortly.",
-        { autoHideMs: 1600 },
-      );
-      loadRedemptions({ silent: true });
     } catch (error) {
+      logReceiptUploadDebug("exception", {
+        message: error?.message || "upload_exception",
+      });
       setReceiptUploadStatus({
         uploading: false,
         error: error?.message || "Unable to upload receipt.",
@@ -9778,6 +10044,40 @@ export default function App() {
   };
 
   const promptReceiptUpload = (entry) => {
+    logReceiptUploadDebug("dialogOpen", {
+      entryId: entry?.id || null,
+      businessId: entry?.businessId || null,
+      platform: Platform.OS,
+    });
+    if (
+      Platform.OS === "ios" &&
+      ActionSheetIOS &&
+      typeof ActionSheetIOS.showActionSheetWithOptions === "function"
+    ) {
+      logReceiptUploadDebug("actionSheetOpen", {
+        entryId: entry?.id || null,
+        businessId: entry?.businessId || null,
+      });
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: "Upload receipt",
+          message: "Choose how you want to add your receipt.",
+          options: ["Cancel", "Take photo", "Choose from library"],
+          cancelButtonIndex: 0,
+        },
+        (buttonIndex) => {
+          logReceiptUploadDebug("actionSheetSelect", {
+            buttonIndex,
+          });
+          if (buttonIndex === 1) {
+            setTimeout(() => handleUploadReceipt(entry, "camera"), 120);
+          } else if (buttonIndex === 2) {
+            setTimeout(() => handleUploadReceipt(entry, "library"), 120);
+          }
+        },
+      );
+      return;
+    }
     showAppDialog({
       title: "Upload receipt",
       message: "Choose how you want to add your receipt.",
@@ -9786,12 +10086,16 @@ export default function App() {
           label: "Take photo",
           icon: "camera-outline",
           variant: "primary",
+          debugTag: "receipt-upload",
+          actionDelayMs: Platform.OS === "ios" ? 520 : undefined,
           onPress: () => handleUploadReceipt(entry, "camera"),
         },
         {
           label: "Choose from library",
           icon: "images-outline",
           variant: "secondary",
+          debugTag: "receipt-upload",
+          actionDelayMs: Platform.OS === "ios" ? 520 : undefined,
           onPress: () => handleUploadReceipt(entry, "library"),
         },
         {
@@ -13373,6 +13677,16 @@ export default function App() {
               statusBarTranslucent
             >
               <View style={styles.uploadOverlay}>
+                {Platform.OS === "ios" && receiptUploadConfetti ? (
+                  <View style={styles.uploadConfettiLayer} pointerEvents="none">
+                    <ConfettiDrizzle
+                      active={receiptUploadConfetti}
+                      width={SCREEN_WIDTH}
+                      height={SCREEN_HEIGHT}
+                      style={{ borderRadius: 0, overflow: "visible" }}
+                    />
+                  </View>
+                ) : null}
                 <View style={styles.uploadCard}>
                   <View style={styles.uploadIconWrap}>
                     {receiptUploadOverlay.phase === "uploading" ? (
@@ -13412,7 +13726,10 @@ export default function App() {
 
             <Modal
               transparent
-              visible={receiptUploadConfetti}
+              visible={
+                receiptUploadConfetti &&
+                (Platform.OS !== "ios" || !receiptUploadOverlay.visible)
+              }
               animationType="fade"
               presentationStyle="overFullScreen"
               statusBarTranslucent
@@ -22528,6 +22845,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
+  },
+  uploadConfettiLayer: {
+    ...StyleSheet.absoluteFillObject,
   },
   uploadCard: {
     width: "100%",

@@ -20,12 +20,13 @@ Stripe (commission billing):
 - Set these secrets in Supabase:
   - `STRIPE_SECRET_KEY`
   - `STRIPE_WEBHOOK_SECRET`
+  - `BILLING_CRON_SECRET` (or `PUSH_CRON_SECRET`) for scheduled monthly invoice runs
   - `STRIPE_CONNECT_REFRESH_URL`
   - `STRIPE_CONNECT_RETURN_URL`
   - `STRIPE_CHECKOUT_SUCCESS_URL`
   - `STRIPE_CHECKOUT_CANCEL_URL`
 - In Stripe, add the webhook URL for `stripe-webhook`.
-- Schedule `stripe-create-monthly-invoices` monthly (Supabase scheduled functions).
+- Schedule `stripe-create-monthly-invoices` monthly (Supabase scheduled functions), sending header `x-cron-secret: <BILLING_CRON_SECRET>`.
 
 Invite codes + roles:
 - Re-run the updated `supabase/schema.sql` to create the `invites` table.

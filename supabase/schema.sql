@@ -745,11 +745,18 @@ using (auth.uid() = id);
 
 create policy "Profiles are editable by owners"
 on public.profiles for update
-using (auth.uid() = id);
+using (auth.uid() = id)
+with check (
+  auth.uid() = id
+  and coalesce(role, 'consumer') in ('consumer', 'business_owner')
+);
 
 create policy "Profiles are insertable by owners"
 on public.profiles for insert
-with check (auth.uid() = id);
+with check (
+  auth.uid() = id
+  and coalesce(role, 'consumer') in ('consumer', 'business_owner')
+);
 
 create policy "Admins can read all profiles"
 on public.profiles for select
