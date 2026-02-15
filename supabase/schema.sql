@@ -75,6 +75,13 @@ alter table public.businesses
   add column if not exists commission_enabled boolean not null default true,
   add column if not exists commission_rate_cents integer not null default 150;
 
+alter table public.businesses
+  drop constraint if exists businesses_commission_rate_cents_check;
+
+alter table public.businesses
+  add constraint businesses_commission_rate_cents_check
+  check (commission_rate_cents in (100, 150));
+
 create table if not exists public.offers (
   id uuid primary key default gen_random_uuid(),
   business_id uuid not null references public.businesses on delete cascade,

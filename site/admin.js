@@ -419,7 +419,29 @@ const getActiveDetailDraft = (receiptId) => {
 const AUTO_REFRESH_MS = 30000;
 const LIVE_DEBOUNCE_MS = 1200;
 const CASHBACK_BASE_RATE_BPS = 5000; // 50% of commission (base cashback)
-const MERCHANT_COMMISSION_RATE_BPS = 1500; // 15% of receipt total (merchant cap)
+const DEFAULT_MERCHANT_COMMISSION_RATE_BPS = 1500; // default 15% of receipt total
+const ALLOWED_BUSINESS_COMMISSION_RATE_CENTS = new Set([100, 150]);
+const normalizeBusinessCommissionRateCents = (value) => {
+  const numeric = Number(value);
+  if (
+    Number.isFinite(numeric) &&
+    ALLOWED_BUSINESS_COMMISSION_RATE_CENTS.has(numeric)
+  ) {
+    return numeric;
+  }
+  return 150;
+};
+const getBusinessCommissionRateBps = (businessId) => {
+  const id = String(businessId || "").trim();
+  if (!id) return DEFAULT_MERCHANT_COMMISSION_RATE_BPS;
+  const business = (Array.isArray(state.businesses) ? state.businesses : []).find(
+    (row) => String(row?.id || "") === id,
+  );
+  const rateCents = normalizeBusinessCommissionRateCents(
+    business?.commission_rate_cents,
+  );
+  return rateCents * 10;
+};
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -484,10 +506,14 @@ const calculateCashbackCents = (commissionCents, cashbackRateBps) => {
   return Math.round((cents * bps) / 10000);
 };
 
-const calculateCommissionCents = (receiptTotalCents) => {
+const calculateCommissionCents = (
+  receiptTotalCents,
+  commissionRateBps = DEFAULT_MERCHANT_COMMISSION_RATE_BPS,
+) => {
   const cents = Number(receiptTotalCents) || 0;
-  if (cents <= 0) return 0;
-  return Math.round((cents * MERCHANT_COMMISSION_RATE_BPS) / 10000);
+  const rateBps = Number(commissionRateBps) || DEFAULT_MERCHANT_COMMISSION_RATE_BPS;
+  if (cents <= 0 || rateBps <= 0) return 0;
+  return Math.round((cents * rateBps) / 10000);
 };
 
 const calculatePromoDiscountCents = (receiptTotalCents, promoRateBps) => {
@@ -1267,7 +1293,7 @@ const loadBusinesses = async () => {
       label: "loadBusinesses",
       timeoutMs: DB_TIMEOUT_MS,
       searchParams: new URLSearchParams({
-        select: "id,name",
+        select: "id,name,commission_rate_cents",
         order: "name.asc",
       }),
     });
@@ -1284,7 +1310,7 @@ const loadBusinesses = async () => {
         label: "loadBusinessesRetry",
         timeoutMs: DB_TIMEOUT_MS,
         searchParams: new URLSearchParams({
-          select: "id,name",
+          select: "id,name,commission_rate_cents",
           order: "name.asc",
         }),
       });
@@ -1984,9 +2010,12 @@ const renderReceipts = () => {
     const eventCashbackCents = Number(cashbackEvent?.amount_cents) || 0;
 
     const totalCents = Number(receipt?.receipt_total_cents) || 0;
+    const commissionRateBps = getBusinessCommissionRateBps(
+      receipt?.business_id || receipt?.business?.id,
+    );
     const commissionCents =
       Number(receipt?.commission_due_cents) ||
-      (totalCents > 0 ? calculateCommissionCents(totalCents) : 0);
+      (totalCents > 0 ? calculateCommissionCents(totalCents, commissionRateBps) : 0);
 
     const promoMeta = getEffectivePromoMetaForReceipt(receipt);
     const promoCode = promoMeta?.promoCode ? String(promoMeta.promoCode) : null;
@@ -2068,17 +2097,23 @@ const selectReceipt = async (receiptId, options = {}) => {
   const draftTotalCents = draft ? parseMoneyToCents(draft.total) : null;
   const totalCents =
     draft && draftTotalCents != null ? draftTotalCents : storedTotalCents;
+  const commissionRateBps = getBusinessCommissionRateBps(
+    receipt?.business_id || receipt?.business?.id,
+  );
+  const commissionRatePct = formatRatePct(commissionRateBps);
   ui.detailTotal.value = draft
     ? String(draft.total ?? "")
     : receipt.receipt_total_cents != null
       ? (receipt.receipt_total_cents / 100).toFixed(2)
       : "";
 
-  // Commission is always fixed at 15% of receipt total (merchant is never charged more).
+  // Commission is based on the business's configured rate (10% or 15%).
   // We show the computed value even if older rows have an inconsistent stored value.
   const storedCommissionCents = Number(receipt?.commission_due_cents) || 0;
   const computedCommissionCents =
-    totalCents > 0 ? calculateCommissionCents(totalCents) : 0;
+    totalCents > 0
+      ? calculateCommissionCents(totalCents, commissionRateBps)
+      : 0;
   const commissionCents =
     totalCents > 0 ? computedCommissionCents : storedCommissionCents;
   ui.detailCommission.value =
@@ -2100,12 +2135,12 @@ const selectReceipt = async (receiptId, options = {}) => {
     } else {
       ui.detailPromoHelp.textContent = `${formatRatePct(
         promoRateBps,
-      )}% of receipt total. Merchant commission is capped at 15%.`;
+      )}% of receipt total. Merchant commission is capped at ${commissionRatePct}%.`;
     }
   }
 
   // Cashback/subsidy display:
-  // - No promo: cashback = 50% of commission (15% commission).
+  // - No promo: cashback = 50% of commission.
   // - Promo: cashback = promo % of receipt total; any amount above commission is platform-funded.
   const cashbackEvent = getReceiptCashbackEvent(receipt);
   const eventCashbackCents = Number(cashbackEvent?.amount_cents) || 0;
@@ -2158,7 +2193,9 @@ const selectReceipt = async (receiptId, options = {}) => {
       );
     }
     if (totalCents > 0) {
-      parts.push(`Merchant commission: 15% (${formatCurrency(commissionCents)})`);
+      parts.push(
+        `Merchant commission: ${commissionRatePct}% (${formatCurrency(commissionCents)})`,
+      );
     }
     if (subsidyCents > 0) {
       parts.push(`Platform subsidy: ${formatCurrency(subsidyCents)}`);
@@ -2733,8 +2770,13 @@ const saveReceipt = async (options = {}) => {
 
   const status = options.status || ui.detailStatusSelect.value;
   const totalCents = parseMoneyToCents(ui.detailTotal.value);
+  const commissionRateBps = getBusinessCommissionRateBps(
+    receipt?.business_id || receipt?.business?.id,
+  );
   const commissionCents =
-    totalCents != null && totalCents > 0 ? calculateCommissionCents(totalCents) : null;
+    totalCents != null && totalCents > 0
+      ? calculateCommissionCents(totalCents, commissionRateBps)
+      : null;
   const notes = ui.detailNotes.value || null;
 
   // Fail-safe validation: you cannot verify without a receipt total.
@@ -3028,6 +3070,10 @@ const attachListeners = () => {
       : { promoId: null, promoCode: null, rateBps: 0, source: "none" };
     const promoCode = promoMeta?.promoCode ? String(promoMeta.promoCode) : "";
     const promoRateBps = Number(promoMeta?.rateBps) || 0;
+    const commissionRateBps = getBusinessCommissionRateBps(
+      selected?.business_id || selected?.business?.id,
+    );
+    const commissionRatePct = formatRatePct(commissionRateBps);
 
     if (ui.detailPromo) ui.detailPromo.value = promoCode || "";
     if (ui.detailPromoHelp) {
@@ -3040,7 +3086,7 @@ const attachListeners = () => {
       } else {
         ui.detailPromoHelp.textContent = `${formatRatePct(
           promoRateBps,
-        )}% of receipt total. Merchant commission is capped at 15%.`;
+        )}% of receipt total. Merchant commission is capped at ${commissionRatePct}%.`;
       }
     }
 
@@ -3051,7 +3097,10 @@ const attachListeners = () => {
       return;
     }
 
-    const commissionCents = calculateCommissionCents(totalCents);
+    const commissionCents = calculateCommissionCents(
+      totalCents,
+      commissionRateBps,
+    );
     // Promo eligibility is independent of whether a total has been entered.
     // The total only affects whether we can compute the promo cashback amount.
     const isPromo = Boolean(promoCode) && promoRateBps > 0;
@@ -3084,7 +3133,9 @@ const attachListeners = () => {
           `Base cashback: ${formatRatePct(CASHBACK_BASE_RATE_BPS)}% of commission`,
         );
       }
-      parts.push(`Merchant commission: 15% (${formatCurrency(commissionCents)})`);
+      parts.push(
+        `Merchant commission: ${commissionRatePct}% (${formatCurrency(commissionCents)})`,
+      );
       if (subsidyCents > 0) parts.push(`Platform subsidy: ${formatCurrency(subsidyCents)}`);
       parts.push("Estimated");
       ui.detailCashbackHelp.textContent = parts.join(" | ");
@@ -3182,9 +3233,10 @@ const init = async () => {
     return;
   }
   attachListeners();
-  // Commission is fixed at 15% (admin UI no longer supports changing it).
+  // Commission is configured per business (10% or 15%).
   if (ui.filterRate) {
-    ui.filterRate.value = (MERCHANT_COMMISSION_RATE_BPS / 100).toFixed(2);
+    ui.filterRate.value = "";
+    ui.filterRate.placeholder = "10 or 15";
     ui.filterRate.disabled = true;
   }
   if (ui.testDate) {

@@ -150,7 +150,29 @@ const DISCOVER_DEMO_LAYOUTS = [
   { key: "editorial_stack", label: "Editorial Stack" },
   { key: "editorial", label: "Editorial" },
 ];
-const COMMISSION_RATE_PERCENT = 15;
+const BUSINESS_COMMISSION_OPTIONS = [
+  { label: "10%", value: 100 },
+  { label: "15%", value: 150 },
+];
+const BUSINESS_COMMISSION_VALUES = new Set(
+  BUSINESS_COMMISSION_OPTIONS.map((option) => option.value),
+);
+const normalizeBusinessCommissionRateCents = (value) => {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && BUSINESS_COMMISSION_VALUES.has(numeric)) {
+    return numeric;
+  }
+  return 150;
+};
+const commissionRateCentsToPercent = (value) =>
+  normalizeBusinessCommissionRateCents(value) / 10;
+const formatPercentLabel = (value) => {
+  if (!Number.isFinite(value)) return "--";
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded)
+    ? String(rounded)
+    : rounded.toFixed(1).replace(/\.0$/, "");
+};
 const CASHBACK_RATE_PERCENT = 7.5;
 const CASHBACK_BASE_RATE_BPS = 750;
 const MIN_CASHOUT_CENTS = 1000;
@@ -578,9 +600,9 @@ const mapSupabaseBusiness = (row, index) => {
     stripeOnboardedAt: row.stripe_onboarded_at
       ? new Date(row.stripe_onboarded_at).getTime()
       : null,
-    commissionRateCents: Number.isFinite(Number(row.commission_rate_cents))
-      ? Number(row.commission_rate_cents)
-      : 0,
+    commissionRateCents: normalizeBusinessCommissionRateCents(
+      row.commission_rate_cents,
+    ),
     commissionEnabled: row.commission_enabled ?? true,
     source: "supabase",
   };
@@ -2824,6 +2846,8 @@ export default function App() {
   const [expandedAdminEdits, setExpandedAdminEdits] = useState({});
   const [expandedAdminOffers, setExpandedAdminOffers] = useState({});
   const [expandedAdminBusinesses, setExpandedAdminBusinesses] = useState({});
+  const [pendingBusinessCommissionRates, setPendingBusinessCommissionRates] =
+    useState({});
   const [showReachTooltip, setShowReachTooltip] = useState(false);
   const [infoTooltip, setInfoTooltip] = useState(null);
   const [appDialog, setAppDialog] = useState({
@@ -4068,6 +4092,14 @@ export default function App() {
       businesses.find((business) => business.id === ownerBusinessId) || null
     );
   }, [ownerBusiness, authUserId, ownerBusinessId, businesses]);
+  const ownerCommissionRatePercent = useMemo(
+    () => commissionRateCentsToPercent(resolvedOwnerBusiness?.commissionRateCents),
+    [resolvedOwnerBusiness?.commissionRateCents],
+  );
+  const ownerDefaultCashbackPercent = useMemo(
+    () => ownerCommissionRatePercent / 2,
+    [ownerCommissionRatePercent],
+  );
 
   const resolveStripeBusiness = useCallback(async () => {
     if (resolvedOwnerBusiness?.id) return resolvedOwnerBusiness;
@@ -5733,6 +5765,24 @@ export default function App() {
       businesses.filter((business) => !business.approved && !business.rejected),
     [businesses],
   );
+  useEffect(() => {
+    setPendingBusinessCommissionRates((prev) => {
+      const next = {};
+      pendingBusinesses.forEach((business) => {
+        const previousValue = prev[business.id];
+        next[business.id] =
+          previousValue === undefined
+            ? normalizeBusinessCommissionRateCents(business.commissionRateCents)
+            : normalizeBusinessCommissionRateCents(previousValue);
+      });
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      const unchanged =
+        prevKeys.length === nextKeys.length &&
+        nextKeys.every((key) => prev[key] === next[key]);
+      return unchanged ? prev : next;
+    });
+  }, [pendingBusinesses]);
   const adminBusinesses = useMemo(
     () =>
       businesses
@@ -8216,20 +8266,33 @@ export default function App() {
     }
   };
 
-  const handleApprove = async (id) => {
+  const handleApprove = async (id, commissionRateCentsInput) => {
     const target = businesses.find((business) => business.id === id);
     if (!target) return;
+    const commissionRateCents = normalizeBusinessCommissionRateCents(
+      commissionRateCentsInput,
+    );
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY || target.source !== "supabase") {
       setBusinesses((prev) =>
         prev.map((business) =>
-          business.id === id ? { ...business, approved: true } : business,
+          business.id === id
+            ? {
+                ...business,
+                approved: true,
+                commissionRateCents,
+              }
+            : business,
         ),
       );
       return;
     }
     const { data, error } = await supabase
       .from("businesses")
-      .update({ approval_status: "approved", status: "active" })
+      .update({
+        approval_status: "approved",
+        status: "active",
+        commission_rate_cents: commissionRateCents,
+      })
       .eq("id", id)
       .select(
         [
@@ -8276,6 +8339,12 @@ export default function App() {
         business.id === id ? { ...mapped, pendingEdits: null } : business,
       ),
     );
+    setPendingBusinessCommissionRates((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
 
   const handleApproveEdits = async (id) => {
@@ -8507,6 +8576,12 @@ export default function App() {
         business.id === id ? { ...mapped, pendingEdits: null } : business,
       ),
     );
+    setPendingBusinessCommissionRates((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
 
   const handleScrollToIndexFailed = (info) => {
@@ -14596,7 +14671,7 @@ export default function App() {
                               onPress={() =>
                                 openInfoTooltip(
                                   "Payments",
-                                  `Commission is ${COMMISSION_RATE_PERCENT}% of each verified receipt total. Customer cashback defaults to half of that commission (${CASHBACK_RATE_PERCENT}%) and promo codes can increase it. Your commission is billed monthly. The billing portal is for payment methods and invoices.`,
+                                  `Commission is ${formatPercentLabel(ownerCommissionRatePercent)}% of each verified receipt total for your business. Customer cashback defaults to half of that commission (${formatPercentLabel(ownerDefaultCashbackPercent)}%) and promo codes can increase it. Your commission is billed monthly. The billing portal is for payment methods and invoices.`,
                                 )
                               }
                               hitSlop={{
@@ -18114,6 +18189,10 @@ export default function App() {
                             const tagLine = sanitizeBusinessTags(
                               business.tags,
                             ).join(", ");
+                            const selectedCommissionRate =
+                              normalizeBusinessCommissionRateCents(
+                                pendingBusinessCommissionRates[business.id],
+                              );
                             return (
                               <View key={business.id} style={styles.adminCard}>
                                 <TouchableOpacity
@@ -18183,6 +18262,52 @@ export default function App() {
                                     </View>
                                     <View style={styles.adminDetailRow}>
                                       <Text style={styles.adminDetailLabel}>
+                                        Commission rate
+                                      </Text>
+                                      <View style={styles.adminRatePicker}>
+                                        {BUSINESS_COMMISSION_OPTIONS.map(
+                                          (option) => {
+                                            const isSelected =
+                                              selectedCommissionRate ===
+                                              option.value;
+                                            return (
+                                              <TouchableOpacity
+                                                key={`${business.id}-${option.value}`}
+                                                style={[
+                                                  styles.adminRateOption,
+                                                  isSelected &&
+                                                    styles.adminRateOptionSelected,
+                                                ]}
+                                                onPress={() =>
+                                                  setPendingBusinessCommissionRates(
+                                                    (prev) => ({
+                                                      ...prev,
+                                                      [business.id]:
+                                                        option.value,
+                                                    }),
+                                                  )
+                                                }
+                                              >
+                                                <Text
+                                                  style={[
+                                                    styles.adminRateOptionText,
+                                                    isSelected &&
+                                                      styles.adminRateOptionTextSelected,
+                                                  ]}
+                                                >
+                                                  {option.label}
+                                                </Text>
+                                              </TouchableOpacity>
+                                            );
+                                          },
+                                        )}
+                                      </View>
+                                      <Text style={styles.adminMeta}>
+                                        This rate is applied on approval.
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
                                         Submitted
                                       </Text>
                                       <Text style={styles.adminDetailValueFull}>
@@ -18194,10 +18319,15 @@ export default function App() {
                                 <View style={styles.adminActions}>
                                   <TouchableOpacity
                                     style={styles.adminApprove}
-                                    onPress={() => handleApprove(business.id)}
+                                    onPress={() =>
+                                      handleApprove(
+                                        business.id,
+                                        selectedCommissionRate,
+                                      )
+                                    }
                                   >
                                     <Text style={styles.adminActionText}>
-                                      Approve
+                                      Approve ({selectedCommissionRate / 10}%)
                                     </Text>
                                   </TouchableOpacity>
                                   <TouchableOpacity
@@ -24229,6 +24359,33 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     lineHeight: 18,
+  },
+  adminRatePicker: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 6,
+  },
+  adminRateOption: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    alignItems: "center",
+    backgroundColor: COLORS.white,
+  },
+  adminRateOptionSelected: {
+    borderColor: COLORS.pine,
+    backgroundColor: "#E6F0F8",
+  },
+  adminRateOptionText: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  adminRateOptionTextSelected: {
+    color: COLORS.pine,
   },
   adminActions: {
     flexDirection: "row",
