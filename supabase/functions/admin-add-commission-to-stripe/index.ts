@@ -16,6 +16,7 @@ const SUPABASE_ANON_KEY =
   Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
   "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
+const PUSH_CRON_SECRET = Deno.env.get("PUSH_CRON_SECRET") ?? "";
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
@@ -26,7 +27,7 @@ const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
 
 const baseCorsHeaders = {
   "Access-Control-Allow-Headers":
-    "authorization, apikey, content-type, x-client-info",
+    "authorization, apikey, content-type, x-client-info, x-cron-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -64,6 +65,35 @@ const getPeriodForDate = (value?: string) => {
   return { start, end };
 };
 
+const findStripeDraftInvoiceForPeriod = async ({
+  customerId,
+  businessId,
+  periodStart,
+  periodEnd,
+}: {
+  customerId: string;
+  businessId: string;
+  periodStart: string;
+  periodEnd: string;
+}) => {
+  const response = await stripe.invoices.list({
+    customer: customerId,
+    status: "draft",
+    limit: 100,
+  });
+  const match = (response.data || [])
+    .filter((invoice) => {
+      const metadata = invoice.metadata || {};
+      return (
+        String(metadata.business_id || "") === businessId &&
+        String(metadata.period_start || "") === periodStart &&
+        String(metadata.period_end || "") === periodEnd
+      );
+    })
+    .sort((a, b) => Number(b.created || 0) - Number(a.created || 0))[0];
+  return match?.id || "";
+};
+
 serve(async (req) => {
   const corsHeaders = getCorsHeaders(req);
   if (!corsHeaders) {
@@ -89,17 +119,11 @@ serve(async (req) => {
   }
 
   try {
-    const authHeader =
-      req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
-    const token = authHeader.startsWith("Bearer ")
-      ? authHeader.slice(7).trim()
-      : "";
-    if (!token) {
-      return new Response(
-        JSON.stringify({ error: "Missing authorization header." }),
-        { status: 401, headers: corsHeaders },
-      );
-    }
+    const cronSecret = req.headers.get("x-cron-secret") ?? "";
+    const isCronAuthorized =
+      Boolean(PUSH_CRON_SECRET) &&
+      Boolean(cronSecret) &&
+      cronSecret === PUSH_CRON_SECRET;
 
     const body = await req.json().catch(() => ({}));
     const businessId = String(body?.businessId || "").trim();
@@ -119,28 +143,47 @@ serve(async (req) => {
       });
     }
 
-    const authClient = createAuthClient();
-    const { data: authData, error: authError } = await authClient.auth.getUser(
-      token,
-    );
-    if (authError || !authData?.user?.id) {
-      return new Response(JSON.stringify({ error: "Invalid JWT" }), {
-        status: 401,
-        headers: corsHeaders,
-      });
-    }
-
     const adminClient = createAdminClient();
-    const { data: profile, error: profileError } = await adminClient
-      .from("profiles")
-      .select("id, role")
-      .eq("id", authData.user.id)
-      .maybeSingle();
-    if (profileError || !profile || !["admin", "supervisor"].includes(profile.role)) {
-      return new Response(JSON.stringify({ error: "Forbidden" }), {
-        status: 403,
-        headers: corsHeaders,
-      });
+
+    if (!isCronAuthorized) {
+      const authHeader =
+        req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
+      const token = authHeader.startsWith("Bearer ")
+        ? authHeader.slice(7).trim()
+        : "";
+      if (!token) {
+        return new Response(
+          JSON.stringify({ error: "Missing authorization header." }),
+          { status: 401, headers: corsHeaders },
+        );
+      }
+
+      const authClient = createAuthClient();
+      const { data: authData, error: authError } = await authClient.auth.getUser(
+        token,
+      );
+      if (authError || !authData?.user?.id) {
+        return new Response(JSON.stringify({ error: "Invalid JWT" }), {
+          status: 401,
+          headers: corsHeaders,
+        });
+      }
+
+      const { data: profile, error: profileError } = await adminClient
+        .from("profiles")
+        .select("id, role")
+        .eq("id", authData.user.id)
+        .maybeSingle();
+      if (
+        profileError ||
+        !profile ||
+        !["admin", "supervisor"].includes(profile.role)
+      ) {
+        return new Response(JSON.stringify({ error: "Forbidden" }), {
+          status: 403,
+          headers: corsHeaders,
+        });
+      }
     }
 
     const { data: event, error: eventError } = await adminClient
@@ -210,6 +253,25 @@ serve(async (req) => {
       .maybeSingle();
 
     let invoiceId = existingInvoice?.stripe_invoice_id || "";
+    if (!invoiceId) {
+      invoiceId = await findStripeDraftInvoiceForPeriod({
+        customerId: business.stripe_customer_id,
+        businessId,
+        periodStart,
+        periodEnd,
+      });
+      if (invoiceId) {
+        const draftInvoice = await stripe.invoices.retrieve(invoiceId);
+        await adminClient.from("commission_invoices").insert({
+          business_id: businessId,
+          stripe_invoice_id: invoiceId,
+          period_start: periodStart,
+          period_end: periodEnd,
+          amount_cents: draftInvoice.amount_due || draftInvoice.total || 0,
+          status: draftInvoice.status || "draft",
+        });
+      }
+    }
     if (!invoiceId) {
       const invoice = await stripe.invoices.create({
         customer: business.stripe_customer_id,

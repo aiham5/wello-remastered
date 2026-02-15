@@ -34,7 +34,6 @@ import {
 } from "react-native-gesture-handler";
 import BottomSheet, {
   BottomSheetScrollView,
-  BottomSheetView,
 } from "@gorhom/bottom-sheet";
 import {
   configureReanimatedLogger,
@@ -55,6 +54,7 @@ import { createClient } from "@supabase/supabase-js";
 import * as Location from "expo-location";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
+import * as WebBrowser from "expo-web-browser";
 import {
   create as createPlaidLink,
   destroy as destroyPlaidLink,
@@ -94,6 +94,8 @@ const IS_SAMSUNG_ANDROID =
     .toLowerCase()
     .includes("samsung");
 const DEBUG_DISCOVER_SCROLL = __DEV__;
+const DEBUG_DISCOVER_SCROLL_VERBOSE =
+  DEBUG_DISCOVER_SCROLL && Platform.OS === "android";
 const SHEET_MIN = IS_SHORT ? 140 : 160;
 const SHEET_MAX = Math.min(SCREEN_HEIGHT * 0.72, IS_SHORT ? 560 : 620);
 const SAFE_TOP =
@@ -136,6 +138,7 @@ const DISCOVER_DEMO_LAYOUTS = [
 const COMMISSION_RATE_PERCENT = 15;
 const CASHBACK_RATE_PERCENT = 7.5;
 const CASHBACK_BASE_RATE_BPS = 750;
+const MIN_CASHOUT_CENTS = 1000;
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
 const GOOGLE_PLACES_KEY = getEnv("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY");
@@ -1761,6 +1764,12 @@ const CATEGORY_OPTIONS = [
   { key: "activity", label: "Activities/Entertainment" },
   { key: "auto", label: "Carwash/Auto Cosmetic" },
 ];
+const CATEGORY_OTHER_KEY = "other";
+const CATEGORY_OPTIONS_WITH_OTHER = [
+  ...CATEGORY_OPTIONS,
+  { key: CATEGORY_OTHER_KEY, label: "Other" },
+];
+const KNOWN_CATEGORY_KEY_SET = new Set(CATEGORY_OPTIONS.map((item) => item.key));
 
 const CATEGORY_CONFIG = {
   cafe: {
@@ -1809,6 +1818,52 @@ const CATEGORY_CONFIG = {
 
 function getCategoryConfig(categoryKey) {
   return CATEGORY_CONFIG[categoryKey] || CATEGORY_CONFIG.default;
+}
+
+function isKnownCategoryKey(categoryKey) {
+  return KNOWN_CATEGORY_KEY_SET.has(String(categoryKey || "").trim());
+}
+
+function getCategoryPickerLabel(categoryKey, customLabel = "") {
+  const key = String(categoryKey || "").trim();
+  if (key === CATEGORY_OTHER_KEY) {
+    const custom = String(customLabel || "").trim();
+    return custom || "Other";
+  }
+  const option = CATEGORY_OPTIONS.find((item) => item.key === key);
+  if (option?.label) return option.label;
+  if (key) return getCategoryConfig(key).display;
+  return "Select category";
+}
+
+function resolveSelectedCategory(categoryKey, customLabel = "") {
+  const key = String(categoryKey || "").trim();
+  if (key === CATEGORY_OTHER_KEY) {
+    const label = String(customLabel || "").trim();
+    if (!label) {
+      return {
+        ok: false,
+        error: "Type a category when selecting Other.",
+      };
+    }
+    const slug = label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40);
+    return {
+      ok: true,
+      categoryKey: slug ? `other-${slug}` : "other",
+      categoryLabel: label,
+    };
+  }
+
+  const resolvedKey = isKnownCategoryKey(key) ? key : "restaurant";
+  return {
+    ok: true,
+    categoryKey: resolvedKey,
+    categoryLabel: getCategoryConfig(resolvedKey).display,
+  };
 }
 
 const OFFER_IMAGE_BUCKET = "offer-images";
@@ -2253,6 +2308,64 @@ function formatPercentOnlyLabel(percentValue) {
   return `${label}%`;
 }
 
+function getDiscoverTouchDebugPayload(event) {
+  const native = event?.nativeEvent || {};
+  const touches = Array.isArray(native.touches) ? native.touches : [];
+  const changedTouches = Array.isArray(native.changedTouches)
+    ? native.changedTouches
+    : [];
+  const primaryTouch = changedTouches[0] || touches[0] || null;
+  const xValue = Number(
+    primaryTouch?.pageX ?? primaryTouch?.locationX ?? Number.NaN,
+  );
+  const yValue = Number(
+    primaryTouch?.pageY ?? primaryTouch?.locationY ?? Number.NaN,
+  );
+  return {
+    touches: touches.length,
+    changedTouches: changedTouches.length,
+    x: Number.isFinite(xValue) ? Math.round(xValue) : null,
+    y: Number.isFinite(yValue) ? Math.round(yValue) : null,
+    target: native.target ?? null,
+  };
+}
+
+function getDiscoverScrollDebugPayload(event) {
+  const native = event?.nativeEvent || {};
+  const yValue = Number(native?.contentOffset?.y ?? Number.NaN);
+  const velocityYValue = Number(native?.velocity?.y ?? Number.NaN);
+  const layoutHeightValue = Number(
+    native?.layoutMeasurement?.height ?? Number.NaN,
+  );
+  const contentHeightValue = Number(native?.contentSize?.height ?? Number.NaN);
+  const layoutWidthValue = Number(native?.layoutMeasurement?.width ?? Number.NaN);
+  const contentWidthValue = Number(native?.contentSize?.width ?? Number.NaN);
+  const layoutHeight = Number.isFinite(layoutHeightValue)
+    ? Math.round(layoutHeightValue)
+    : null;
+  const contentHeight = Number.isFinite(contentHeightValue)
+    ? Math.round(contentHeightValue)
+    : null;
+  return {
+    y: Number.isFinite(yValue) ? Math.round(yValue) : 0,
+    velocityY: Number.isFinite(velocityYValue)
+      ? Math.round(velocityYValue * 100) / 100
+      : null,
+    layoutHeight,
+    contentHeight,
+    layoutWidth: Number.isFinite(layoutWidthValue)
+      ? Math.round(layoutWidthValue)
+      : null,
+    contentWidth: Number.isFinite(contentWidthValue)
+      ? Math.round(contentWidthValue)
+      : null,
+    scrollRange:
+      layoutHeight !== null && contentHeight !== null
+        ? Math.max(0, contentHeight - layoutHeight)
+        : null,
+  };
+}
+
 function getOfferCardSelectionKey(card) {
   if (!card) return null;
   const offerId = String(card.offerId || card.id || "").trim();
@@ -2473,10 +2586,25 @@ export default function App() {
   const bottomSheetRef = useRef(null);
   const sheetIndexRef = useRef(0);
   const discoverScrollDebugRef = useRef({
+    sessionId: `${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`,
+    sessionStartedAt: Date.now(),
+    eventSeq: 0,
     viewportHeight: 0,
+    viewportWidth: 0,
     contentHeight: 0,
+    contentWidth: 0,
     lastY: 0,
     lastScrollLogAt: 0,
+    lastScrollAt: 0,
+    lastTouchMoveLogAt: 0,
+    lastResponderLogAt: 0,
+    touchSeq: 0,
+    activeTouchSeq: null,
+    touchStartedAt: 0,
+    dragStartedAt: 0,
+    blockProbeTimer: null,
   });
   const isMountedRef = useRef(true);
   const [query, setQuery] = useState("");
@@ -2520,6 +2648,10 @@ export default function App() {
   const [businessOwnerName, setBusinessOwnerName] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [businessCategoryKey, setBusinessCategoryKey] = useState("restaurant");
+  const [businessCategoryCustomLabel, setBusinessCategoryCustomLabel] =
+    useState("");
+  const [businessCategoryMenuOpen, setBusinessCategoryMenuOpen] =
+    useState(false);
   const [businessAddress, setBusinessAddress] = useState("");
   const [businessAddressCoords, setBusinessAddressCoords] = useState(null);
   const [businessAddressCity, setBusinessAddressCity] = useState("");
@@ -2729,10 +2861,13 @@ export default function App() {
     state: "",
     postalCode: "",
     categoryKey: "restaurant",
+    categoryCustomLabel: "",
     offer: "",
     phone: "",
     tags: "",
   });
+  const [createBusinessCategoryMenuOpen, setCreateBusinessCategoryMenuOpen] =
+    useState(false);
   const [createBusinessBusy, setCreateBusinessBusy] = useState(false);
   const [createBusinessError, setCreateBusinessError] = useState(null);
   const [createHoursStart, setCreateHoursStart] = useState("");
@@ -2850,7 +2985,9 @@ export default function App() {
     const cleaned = String(cashoutAmountText || "").trim();
     if (!cleaned) {
       return {
-        mode: "max",
+        mode: availableCents > 0 && availableCents < MIN_CASHOUT_CENTS
+          ? "below_min"
+          : "max",
         amountCents: availableCents,
         label:
           availableCents > 0
@@ -2865,6 +3002,13 @@ export default function App() {
     const cents = Math.round(parsed * 100);
     if (cents <= 0 || cents > availableCents) {
       return { mode: "invalid", amountCents: 0, label: "Cash out now" };
+    }
+    if (cents < MIN_CASHOUT_CENTS) {
+      return {
+        mode: "below_min",
+        amountCents: cents,
+        label: `Cash out ${formatCurrencyFromCents(cents)}`,
+      };
     }
     return {
       mode: "custom",
@@ -2956,6 +3100,11 @@ export default function App() {
   });
   const [receiptUploadConfetti, setReceiptUploadConfetti] = useState(false);
   const receiptUploadTimersRef = useRef({ hide: null, confetti: null });
+  const [cashoutCelebration, setCashoutCelebration] = useState({
+    visible: false,
+    amountCents: 0,
+  });
+  const cashoutCelebrationTimerRef = useRef(null);
   const historyVerifyNoticeTimerRef = useRef(null);
   const autoVerifyAttemptedAtRef = useRef(new Map());
   const autoVerifyInFlightRef = useRef(false);
@@ -3004,28 +3153,61 @@ export default function App() {
   const logDiscoverGestureDebug = useCallback(
     (eventName, payload = {}) => {
       if (!DEBUG_DISCOVER_SCROLL) return;
+      const now = Date.now();
       const debugState = discoverScrollDebugRef.current;
+      debugState.eventSeq = (debugState.eventSeq || 0) + 1;
       const viewportHeight = Math.round(Number(debugState.viewportHeight) || 0);
+      const viewportWidth = Math.round(Number(debugState.viewportWidth) || 0);
       const contentHeight = Math.round(Number(debugState.contentHeight) || 0);
+      const contentWidth = Math.round(Number(debugState.contentWidth) || 0);
       const canScroll = contentHeight > viewportHeight + 2;
+      const sinceSessionMs = now - (debugState.sessionStartedAt || now);
+      const scrollIdleMs = debugState.lastScrollAt
+        ? now - debugState.lastScrollAt
+        : null;
       console.log("[DiscoverGestureDebug]", eventName, {
+        seq: debugState.eventSeq,
+        sessionId: debugState.sessionId,
+        sinceSessionMs,
         tab: activeTab,
         sheetIndex: sheetIndexRef.current,
+        viewportWidth,
         viewportHeight,
+        contentWidth,
         contentHeight,
         canScroll,
+        lastY: Math.round(Number(debugState.lastY) || 0),
+        activeTouchSeq: debugState.activeTouchSeq ?? null,
+        scrollIdleMs,
         ...payload,
       });
     },
     [activeTab],
   );
+  const logDiscoverScrollSnapshot = useCallback(
+    (reason = "snapshot") => {
+      if (!DEBUG_DISCOVER_SCROLL) return;
+      const debugState = discoverScrollDebugRef.current;
+      logDiscoverGestureDebug(reason, {
+        touchStartedAt: debugState.touchStartedAt || null,
+        dragStartedAt: debugState.dragStartedAt || null,
+        lastScrollAt: debugState.lastScrollAt || null,
+      });
+    },
+    [logDiscoverGestureDebug],
+  );
   const handleDiscoverScrollLayout = useCallback(
     (event) => {
+      const nextWidth = Math.round(event?.nativeEvent?.layout?.width || 0);
       const nextHeight = Math.round(event?.nativeEvent?.layout?.height || 0);
+      const prevWidth = discoverScrollDebugRef.current.viewportWidth;
       const prevHeight = discoverScrollDebugRef.current.viewportHeight;
+      discoverScrollDebugRef.current.viewportWidth = nextWidth;
       discoverScrollDebugRef.current.viewportHeight = nextHeight;
-      if (nextHeight !== prevHeight) {
+      if (nextWidth !== prevWidth || nextHeight !== prevHeight) {
         logDiscoverGestureDebug("layout", {
+          source: "scrollViewport",
+          viewportWidth: nextWidth,
           viewportHeight: nextHeight,
         });
       }
@@ -3034,80 +3216,207 @@ export default function App() {
   );
   const handleDiscoverContentSizeChange = useCallback(
     (contentWidth, contentHeight) => {
+      const nextWidth = Math.round(contentWidth || 0);
       const nextHeight = Math.round(contentHeight || 0);
+      const prevWidth = discoverScrollDebugRef.current.contentWidth;
       const prevHeight = discoverScrollDebugRef.current.contentHeight;
+      discoverScrollDebugRef.current.contentWidth = nextWidth;
       discoverScrollDebugRef.current.contentHeight = nextHeight;
-      if (nextHeight !== prevHeight) {
+      if (nextWidth !== prevWidth || nextHeight !== prevHeight) {
         logDiscoverGestureDebug("contentSize", {
-          contentWidth: Math.round(contentWidth || 0),
+          contentWidth: nextWidth,
           contentHeight: nextHeight,
         });
       }
     },
     [logDiscoverGestureDebug],
   );
-  const handleDiscoverTouchStart = useCallback(() => {
-    logDiscoverGestureDebug("touchStart");
-  }, [logDiscoverGestureDebug]);
+  const handleDiscoverTouchStart = useCallback(
+    (event) => {
+      const now = Date.now();
+      const debugState = discoverScrollDebugRef.current;
+      debugState.touchSeq = (debugState.touchSeq || 0) + 1;
+      debugState.activeTouchSeq = debugState.touchSeq;
+      debugState.touchStartedAt = now;
+      if (debugState.blockProbeTimer) {
+        clearTimeout(debugState.blockProbeTimer);
+        debugState.blockProbeTimer = null;
+      }
+      const touchId = debugState.activeTouchSeq;
+      logDiscoverGestureDebug("touchStart", {
+        touchId,
+        ...getDiscoverTouchDebugPayload(event),
+      });
+      debugState.blockProbeTimer = setTimeout(() => {
+        const state = discoverScrollDebugRef.current;
+        if (state.activeTouchSeq !== touchId) return;
+        if (activeTab !== "discover") return;
+        if (sheetIndexRef.current !== 1) return;
+        const viewportHeight = Math.round(Number(state.viewportHeight) || 0);
+        const contentHeight = Math.round(Number(state.contentHeight) || 0);
+        const canScroll = contentHeight > viewportHeight + 2;
+        const hasScrolledAfterTouch =
+          state.lastScrollAt && state.lastScrollAt >= now;
+        if (canScroll && !hasScrolledAfterTouch) {
+          logDiscoverGestureDebug("possibleGestureBlock", {
+            touchId,
+            waitedMs: Date.now() - now,
+            viewportHeight,
+            contentHeight,
+          });
+        }
+      }, 1200);
+    },
+    [activeTab, logDiscoverGestureDebug],
+  );
+  const handleDiscoverTouchMove = useCallback(
+    (event) => {
+      if (!DEBUG_DISCOVER_SCROLL_VERBOSE) return;
+      const now = Date.now();
+      const debugState = discoverScrollDebugRef.current;
+      if (now - debugState.lastTouchMoveLogAt < 180) return;
+      debugState.lastTouchMoveLogAt = now;
+      logDiscoverGestureDebug("touchMove", {
+        touchId: debugState.activeTouchSeq ?? null,
+        ...getDiscoverTouchDebugPayload(event),
+      });
+    },
+    [logDiscoverGestureDebug],
+  );
+  const handleDiscoverTouchEnd = useCallback(
+    (event) => {
+      const now = Date.now();
+      const debugState = discoverScrollDebugRef.current;
+      if (debugState.blockProbeTimer) {
+        clearTimeout(debugState.blockProbeTimer);
+        debugState.blockProbeTimer = null;
+      }
+      const touchDurationMs = debugState.touchStartedAt
+        ? now - debugState.touchStartedAt
+        : null;
+      logDiscoverGestureDebug("touchEnd", {
+        touchId: debugState.activeTouchSeq ?? null,
+        touchDurationMs,
+        ...getDiscoverTouchDebugPayload(event),
+      });
+      debugState.activeTouchSeq = null;
+      debugState.touchStartedAt = 0;
+    },
+    [logDiscoverGestureDebug],
+  );
+  const handleDiscoverTouchCancel = useCallback(
+    (event) => {
+      const debugState = discoverScrollDebugRef.current;
+      if (debugState.blockProbeTimer) {
+        clearTimeout(debugState.blockProbeTimer);
+        debugState.blockProbeTimer = null;
+      }
+      logDiscoverGestureDebug("touchCancel", {
+        touchId: debugState.activeTouchSeq ?? null,
+        ...getDiscoverTouchDebugPayload(event),
+      });
+      debugState.activeTouchSeq = null;
+      debugState.touchStartedAt = 0;
+    },
+    [logDiscoverGestureDebug],
+  );
   const handleDiscoverScrollBeginDrag = useCallback(
     (event) => {
-      const y = Math.round(event?.nativeEvent?.contentOffset?.y || 0);
+      const debugState = discoverScrollDebugRef.current;
+      const metrics = getDiscoverScrollDebugPayload(event);
+      const y = metrics.y;
+      const now = Date.now();
       discoverScrollDebugRef.current.lastY = y;
-      logDiscoverGestureDebug("scrollBeginDrag", { y });
+      discoverScrollDebugRef.current.lastScrollAt = now;
+      discoverScrollDebugRef.current.dragStartedAt = now;
+      logDiscoverGestureDebug("scrollBeginDrag", {
+        touchId: debugState.activeTouchSeq ?? null,
+        ...metrics,
+      });
     },
     [logDiscoverGestureDebug],
   );
   const handleDiscoverScroll = useCallback(
     (event) => {
       if (!DEBUG_DISCOVER_SCROLL) return;
-      const y = Math.round(event?.nativeEvent?.contentOffset?.y || 0);
-      discoverScrollDebugRef.current.lastY = y;
+      const metrics = getDiscoverScrollDebugPayload(event);
+      const debugState = discoverScrollDebugRef.current;
+      const previousY = Number(debugState.lastY) || 0;
+      const y = metrics.y;
+      const dy = y - previousY;
+      debugState.lastY = y;
+      debugState.lastScrollAt = Date.now();
       const now = Date.now();
-      if (now - discoverScrollDebugRef.current.lastScrollLogAt < 400) return;
-      discoverScrollDebugRef.current.lastScrollLogAt = now;
-      logDiscoverGestureDebug("scroll", { y });
+      if (now - debugState.lastScrollLogAt < 300) return;
+      debugState.lastScrollLogAt = now;
+      logDiscoverGestureDebug("scroll", {
+        ...metrics,
+        dy,
+        direction: dy > 0 ? "down" : dy < 0 ? "up" : "still",
+      });
     },
     [logDiscoverGestureDebug],
   );
   const handleDiscoverScrollEndDrag = useCallback(
     (event) => {
-      const y = Math.round(event?.nativeEvent?.contentOffset?.y || 0);
-      discoverScrollDebugRef.current.lastY = y;
-      logDiscoverGestureDebug("scrollEndDrag", { y });
+      const debugState = discoverScrollDebugRef.current;
+      const metrics = getDiscoverScrollDebugPayload(event);
+      const y = metrics.y;
+      debugState.lastY = y;
+      debugState.lastScrollAt = Date.now();
+      const dragDurationMs = debugState.dragStartedAt
+        ? Date.now() - debugState.dragStartedAt
+        : null;
+      debugState.dragStartedAt = 0;
+      logDiscoverGestureDebug("scrollEndDrag", {
+        touchId: debugState.activeTouchSeq ?? null,
+        dragDurationMs,
+        ...metrics,
+      });
     },
     [logDiscoverGestureDebug],
   );
   const handleDiscoverMomentumScrollBegin = useCallback(
     (event) => {
-      const y = Math.round(event?.nativeEvent?.contentOffset?.y || 0);
-      discoverScrollDebugRef.current.lastY = y;
-      logDiscoverGestureDebug("momentumBegin", { y });
+      const metrics = getDiscoverScrollDebugPayload(event);
+      discoverScrollDebugRef.current.lastY = metrics.y;
+      discoverScrollDebugRef.current.lastScrollAt = Date.now();
+      logDiscoverGestureDebug("momentumBegin", {
+        touchId: discoverScrollDebugRef.current.activeTouchSeq ?? null,
+        ...metrics,
+      });
     },
     [logDiscoverGestureDebug],
   );
   const handleDiscoverMomentumScrollEnd = useCallback(
     (event) => {
-      const y = Math.round(event?.nativeEvent?.contentOffset?.y || 0);
-      discoverScrollDebugRef.current.lastY = y;
-      logDiscoverGestureDebug("momentumEnd", { y });
+      const metrics = getDiscoverScrollDebugPayload(event);
+      discoverScrollDebugRef.current.lastY = metrics.y;
+      discoverScrollDebugRef.current.lastScrollAt = Date.now();
+      logDiscoverGestureDebug("momentumEnd", {
+        touchId: discoverScrollDebugRef.current.activeTouchSeq ?? null,
+        ...metrics,
+      });
     },
     [logDiscoverGestureDebug],
   );
   const handleSheetChange = useCallback((index) => {
     const nextIndex = Number.isFinite(index) ? index : 0;
     sheetIndexRef.current = nextIndex;
-    logDiscoverGestureDebug("sheetChange", { index: nextIndex });
+    logDiscoverGestureDebug("sheetChange", {
+      index: nextIndex,
+      activeTouchSeq: discoverScrollDebugRef.current.activeTouchSeq ?? null,
+    });
   }, [logDiscoverGestureDebug]);
   const handleSheetAnimate = useCallback(
     (fromIndex, toIndex) => {
       if (!DEBUG_DISCOVER_SCROLL) return;
-      console.log("[DiscoverGestureDebug]", "sheetAnimate", {
-        tab: activeTab,
+      logDiscoverGestureDebug("sheetAnimate", {
         fromIndex,
         toIndex,
       });
     },
-    [activeTab],
+    [logDiscoverGestureDebug],
   );
   useEffect(() => {
     if (!DEBUG_DISCOVER_SCROLL) return;
@@ -3117,10 +3426,27 @@ export default function App() {
       brand: Device.brand || null,
       modelName: Device.modelName || null,
       isSamsungAndroid: IS_SAMSUNG_ANDROID,
+      window: {
+        width: SCREEN_WIDTH,
+        height: SCREEN_HEIGHT,
+      },
       snapPoints: sheetSnapPoints,
       enableContentPanningGesture: false,
+      verbose: DEBUG_DISCOVER_SCROLL_VERBOSE,
     });
   }, [sheetSnapPoints]);
+  useEffect(() => {
+    return () => {
+      const timer = discoverScrollDebugRef.current.blockProbeTimer;
+      if (timer) clearTimeout(timer);
+      discoverScrollDebugRef.current.blockProbeTimer = null;
+    };
+  }, []);
+  useEffect(() => {
+    if (!DEBUG_DISCOVER_SCROLL) return;
+    if (activeTab !== "discover") return;
+    logDiscoverScrollSnapshot("discoverTabActive");
+  }, [activeTab, logDiscoverScrollSnapshot]);
   const renderSheetHandle = useCallback(() => {
     return (
       <View style={styles.sheetHandle}>
@@ -3160,6 +3486,10 @@ export default function App() {
       const timers = receiptUploadTimersRef.current;
       if (timers.hide) clearTimeout(timers.hide);
       if (timers.confetti) clearTimeout(timers.confetti);
+      if (cashoutCelebrationTimerRef.current) {
+        clearTimeout(cashoutCelebrationTimerRef.current);
+        cashoutCelebrationTimerRef.current = null;
+      }
       if (historyVerifyNoticeTimerRef.current) {
         clearTimeout(historyVerifyNoticeTimerRef.current);
         historyVerifyNoticeTimerRef.current = null;
@@ -4165,6 +4495,21 @@ export default function App() {
     Linking.openURL(data.url).catch(() => null);
   }, [cashoutStatus.connected]);
 
+  const triggerCashoutCelebration = useCallback((amountCents) => {
+    if (cashoutCelebrationTimerRef.current) {
+      clearTimeout(cashoutCelebrationTimerRef.current);
+      cashoutCelebrationTimerRef.current = null;
+    }
+    setCashoutCelebration({
+      visible: true,
+      amountCents: Number(amountCents) || 0,
+    });
+    cashoutCelebrationTimerRef.current = setTimeout(() => {
+      setCashoutCelebration((prev) => ({ ...prev, visible: false }));
+      cashoutCelebrationTimerRef.current = null;
+    }, 2800);
+  }, []);
+
   const handleCashoutPayout = useCallback(async () => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setCashoutActionStatus({
@@ -4196,6 +4541,14 @@ export default function App() {
     }
 
     const availableCents = Number(cashbackBalance.availableCents) || 0;
+    if (availableCents < MIN_CASHOUT_CENTS) {
+      setCashoutActionStatus({
+        loading: false,
+        error: `Minimum cashout is ${formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.`,
+        success: null,
+      });
+      return;
+    }
     const cleaned = String(cashoutAmountText || "").trim();
     let amountCentsToCashout = availableCents;
 
@@ -4236,6 +4589,14 @@ export default function App() {
       });
       return;
     }
+    if (amountCentsToCashout < MIN_CASHOUT_CENTS) {
+      setCashoutActionStatus({
+        loading: false,
+        error: `Minimum cashout is ${formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.`,
+        success: null,
+      });
+      return;
+    }
 
     setCashoutActionStatus({ loading: true, error: null, success: null });
     const { data, error, status, details } = await callStripeFunction(
@@ -4258,10 +4619,19 @@ export default function App() {
       }
       setCashoutActionStatus({
         loading: false,
-        error:
-          typeof error === "string"
-            ? error
-            : error?.message || "Unable to cash out right now.",
+        error: (() => {
+          const rawError =
+            typeof error === "string"
+              ? error
+              : error?.message || "Unable to cash out right now.";
+          const normalized = String(rawError || "").toLowerCase();
+          const isInsufficientBalanceError =
+            normalized.includes("insufficient") &&
+            (normalized.includes("balance") || normalized.includes("fund"));
+          return isInsufficientBalanceError
+            ? "Unable to cash out right now."
+            : rawError;
+        })(),
         success: null,
       });
       return;
@@ -4271,10 +4641,9 @@ export default function App() {
     setCashoutActionStatus({
       loading: false,
       error: null,
-      success: `Cashout started: ${formatCurrencyFromCents(
-        Number(data.amountCents) || 0,
-      )}.`,
+      success: null,
     });
+    triggerCashoutCelebration(Number(data.amountCents) || 0);
     setCashoutAmountText("");
   }, [
     cashoutStatus.connected,
@@ -4283,6 +4652,7 @@ export default function App() {
     cashbackBalance.availableCents,
     cashoutAmountText,
     loadCashbackBalance,
+    triggerCashoutCelebration,
   ]);
 
   useEffect(() => {
@@ -5213,6 +5583,10 @@ export default function App() {
     Boolean(ownerBusiness) && !ownerBusiness?.pendingEdits;
   const canEditBusiness = isEditingBusiness && !ownerBusiness?.pendingEdits;
   const canEditTags = Boolean(ownerBusiness);
+  const ownerBusinessAwaitingApproval =
+    Boolean(ownerBusiness) &&
+    !ownerBusiness.approved &&
+    !ownerBusiness.rejected;
   const tagsDirty = useMemo(() => {
     if (!ownerBusiness) return false;
     const currentTags = Array.isArray(ownerBusiness.tags)
@@ -5441,31 +5815,48 @@ export default function App() {
   }, [redemptionHistory, reviewedBusinessIds]);
 
   const receiptOfferGroups = useMemo(() => {
-    const grouped = new Map();
-    businessReceipts.forEach((receipt) => {
-      const key = receipt.offerId || receipt.offerTitle || "offer";
-      if (!grouped.has(key)) {
-        grouped.set(key, {
-          key,
-          offerId: receipt.offerId || null,
-          offerTitle: receipt.offerTitle || "Offer",
-          receipts: [],
-          lastUploadedAt: 0,
-        });
-      }
-      const group = grouped.get(key);
-      group.receipts.push(receipt);
-      if ((receipt.uploadedAt || 0) > group.lastUploadedAt) {
-        group.lastUploadedAt = receipt.uploadedAt || 0;
-      }
-    });
-    const list = Array.from(grouped.values());
-    list.forEach((group) => {
-      group.receipts.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
-    });
-    return list.sort(
-      (a, b) => (b.lastUploadedAt || 0) - (a.lastUploadedAt || 0),
+    const groupByOffer = (items, keyPrefix) => {
+      const grouped = new Map();
+      items.forEach((receipt) => {
+        const offerKey = receipt.offerId || receipt.offerTitle || "offer";
+        const key = `${keyPrefix}:${offerKey}`;
+        if (!grouped.has(key)) {
+          grouped.set(key, {
+            key,
+            offerId: receipt.offerId || null,
+            offerTitle: receipt.offerTitle || "Offer",
+            receipts: [],
+            lastUploadedAt: 0,
+          });
+        }
+        const group = grouped.get(key);
+        group.receipts.push(receipt);
+        if ((receipt.uploadedAt || 0) > group.lastUploadedAt) {
+          group.lastUploadedAt = receipt.uploadedAt || 0;
+        }
+      });
+      const list = Array.from(grouped.values());
+      list.forEach((group) => {
+        group.receipts.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+      });
+      return list.sort(
+        (a, b) => (b.lastUploadedAt || 0) - (a.lastUploadedAt || 0),
+      );
+    };
+
+    const plaidReceipts = businessReceipts.filter(
+      (receipt) =>
+        String(receipt.verificationSource || "").toLowerCase() === "plaid",
     );
+    const uploadedReceipts = businessReceipts.filter(
+      (receipt) =>
+        String(receipt.verificationSource || "").toLowerCase() !== "plaid",
+    );
+
+    return {
+      plaid: groupByOffer(plaidReceipts, "plaid"),
+      uploaded: groupByOffer(uploadedReceipts, "uploaded"),
+    };
   }, [businessReceipts]);
 
   const pendingRedemptionGroups = useMemo(() => {
@@ -5726,6 +6117,37 @@ export default function App() {
     if (!authBusinessDraft) return;
     setCreateBusinessForm((prev) => ({
       ...prev,
+      ...(() => {
+        const draftCategoryKey = String(authBusinessDraft.categoryKey || "").trim();
+        const draftCategoryLabel = String(
+          authBusinessDraft.categoryLabel || "",
+        ).trim();
+        const draftCategoryKnown = isKnownCategoryKey(draftCategoryKey);
+        const hasCustom = Boolean(
+          String(prev.categoryCustomLabel || "").trim(),
+        );
+        const hasUserChosenCategory =
+          prev.categoryKey !== "restaurant" || hasCustom;
+        const fallbackCustomLabel = draftCategoryKey.startsWith("other-")
+          ? draftCategoryKey.slice(6).replace(/-/g, " ")
+          : draftCategoryKey;
+        const nextCategoryKey = hasUserChosenCategory
+          ? prev.categoryKey
+          : draftCategoryKey
+            ? draftCategoryKnown
+              ? draftCategoryKey
+              : CATEGORY_OTHER_KEY
+            : prev.categoryKey || "restaurant";
+        const nextCategoryCustomLabel = hasUserChosenCategory
+          ? prev.categoryCustomLabel || ""
+          : draftCategoryKnown
+            ? ""
+            : draftCategoryLabel || fallbackCustomLabel || "";
+        return {
+          categoryKey: nextCategoryKey,
+          categoryCustomLabel: nextCategoryCustomLabel,
+        };
+      })(),
       name: prev.name || authBusinessDraft.name || "",
       address: prev.address || authBusinessDraft.address || "",
       addressCoords:
@@ -5733,8 +6155,6 @@ export default function App() {
       city: prev.city || authBusinessDraft.city || "",
       state: prev.state || authBusinessDraft.state || "",
       postalCode: prev.postalCode || authBusinessDraft.postalCode || "",
-      categoryKey:
-        prev.categoryKey || authBusinessDraft.categoryKey || "restaurant",
       phone: prev.phone || authBusinessDraft.phone || "",
     }));
     if (!createHoursStart && authBusinessDraft.hours) {
@@ -6291,7 +6711,29 @@ export default function App() {
         setAuthBusy(false);
         return;
       }
+
       setGoogleAuthState("awaiting_return");
+      try {
+        const authResult = await WebBrowser.openAuthSessionAsync(
+          data.url,
+          GOOGLE_AUTH_REDIRECT_URL,
+        );
+        if (
+          authResult?.type === "success" &&
+          String(authResult?.url || "").trim()
+        ) {
+          await handleAuthCallbackUrl(authResult.url);
+          return;
+        }
+        if (authResult?.type === "dismiss" || authResult?.type === "cancel") {
+          setGoogleAuthState("idle");
+          setAuthBusy(false);
+          return;
+        }
+      } catch {
+        // Fallback for environments where auth sessions are unavailable.
+      }
+
       await Linking.openURL(data.url);
       setAuthBusy(false);
     } catch (error) {
@@ -6363,6 +6805,14 @@ export default function App() {
       setBusinessSignUpError("Operating hours are required.");
       return;
     }
+    const categorySelection = resolveSelectedCategory(
+      businessCategoryKey,
+      businessCategoryCustomLabel,
+    );
+    if (!categorySelection.ok) {
+      setBusinessSignUpError(categorySelection.error);
+      return;
+    }
     if (!ensureSupabaseReady(setBusinessSignUpError)) return;
     setAuthBusy(true);
     setBusinessSignUpError(null);
@@ -6385,7 +6835,8 @@ export default function App() {
         name: businessName.trim(),
         address: businessAddress.trim(),
         phone: businessPhone.trim(),
-        categoryKey: businessCategoryKey,
+        categoryKey: categorySelection.categoryKey,
+        categoryLabel: categorySelection.categoryLabel,
         hours: hoursValue,
         city: businessAddressCity.trim(),
         state: businessAddressState.trim(),
@@ -6442,7 +6893,6 @@ export default function App() {
         return;
       }
 
-      const categoryConfig = getCategoryConfig(businessCategoryKey);
       const { data: businessRows, error: businessError } = await supabase
         .from("businesses")
         .insert({
@@ -6453,8 +6903,8 @@ export default function App() {
           state: businessAddressState.trim() || null,
           postal_code: businessAddressPostal.trim() || null,
           phone: businessPhone.trim() || null,
-          category_key: businessCategoryKey,
-          category_label: categoryConfig.display,
+          category_key: categorySelection.categoryKey,
+          category_label: categorySelection.categoryLabel,
           hours: hoursValue,
           approval_status: "pending",
           status: "active",
@@ -6518,6 +6968,9 @@ export default function App() {
       setBusinessAddressState("");
       setBusinessAddressPostal("");
       setBusinessPhone("");
+      setBusinessCategoryKey("restaurant");
+      setBusinessCategoryCustomLabel("");
+      setBusinessCategoryMenuOpen(false);
       setBusinessHoursStart("");
       setBusinessHoursEnd("");
       setBusinessHoursStartMeridiem("AM");
@@ -6608,6 +7061,9 @@ export default function App() {
     setBusinessAddressState("");
     setBusinessAddressPostal("");
     setBusinessPhone("");
+    setBusinessCategoryKey("restaurant");
+    setBusinessCategoryCustomLabel("");
+    setBusinessCategoryMenuOpen(false);
     setBusinessHoursStart("");
     setBusinessHoursEnd("");
     setBusinessHoursStartMeridiem("AM");
@@ -6620,10 +7076,12 @@ export default function App() {
       state: "",
       postalCode: "",
       categoryKey: "restaurant",
+      categoryCustomLabel: "",
       offer: "",
       phone: "",
       tags: "",
     });
+    setCreateBusinessCategoryMenuOpen(false);
     setCreateBusinessError(null);
     setCreateHoursStart("");
     setCreateHoursEnd("");
@@ -10601,6 +11059,10 @@ export default function App() {
             "user_id",
             "storage_path",
             "uploaded_at",
+            "review_status",
+            "verification_source",
+            "verification_reference",
+            "receipt_total_cents",
             "redemption:redemptions (id, created_at, offer:offers (id, title))",
           ].join(","),
         )
@@ -10618,7 +11080,13 @@ export default function App() {
       }
       const mapped = await Promise.all(
         (data || []).map(async (row) => {
-          const signedUrl = await createReceiptSignedUrl(row.storage_path);
+          const verificationSource = String(
+            row.verification_source || "receipt",
+          ).toLowerCase();
+          const signedUrl =
+            verificationSource === "plaid"
+              ? ""
+              : await createReceiptSignedUrl(row.storage_path);
           return {
             id: String(row.id),
             redemptionId: row.redemption_id || null,
@@ -10633,6 +11101,10 @@ export default function App() {
             offerTitle: row.redemption?.offer?.title || "",
             storagePath: row.storage_path || "",
             imageUrl: signedUrl || "",
+            reviewStatus: row.review_status || null,
+            verificationSource,
+            verificationReference: row.verification_reference || null,
+            receiptTotalCents: Number(row.receipt_total_cents) || 0,
           };
         }),
       );
@@ -10946,11 +11418,18 @@ export default function App() {
       setCreateBusinessError("Operating hours are required.");
       return;
     }
+    const categorySelection = resolveSelectedCategory(
+      createBusinessForm.categoryKey,
+      createBusinessForm.categoryCustomLabel,
+    );
+    if (!categorySelection.ok) {
+      setCreateBusinessError(categorySelection.error);
+      return;
+    }
     if (!ensureSupabaseReady(setCreateBusinessError)) return;
     setCreateBusinessBusy(true);
     setCreateBusinessError(null);
     try {
-      const categoryConfig = getCategoryConfig(createBusinessForm.categoryKey);
       const hoursValue = formatBusinessHours(
         createHoursStart,
         createHoursStartMeridiem,
@@ -10971,8 +11450,8 @@ export default function App() {
           state: createBusinessForm.state.trim() || null,
           postal_code: createBusinessForm.postalCode.trim() || null,
           phone: createBusinessForm.phone.trim(),
-          category_key: createBusinessForm.categoryKey,
-          category_label: categoryConfig.display,
+          category_key: categorySelection.categoryKey,
+          category_label: categorySelection.categoryLabel,
           offer_highlight: null,
           hours: hoursValue,
           tags: normalizeTagsInput(createBusinessForm.tags),
@@ -11009,6 +11488,7 @@ export default function App() {
         state: "",
         postalCode: "",
         categoryKey: "restaurant",
+        categoryCustomLabel: "",
         offer: "",
         phone: "",
         tags: "",
@@ -11017,6 +11497,7 @@ export default function App() {
       setCreateHoursEnd("");
       setCreateHoursStartMeridiem("AM");
       setCreateHoursEndMeridiem("PM");
+      setCreateBusinessCategoryMenuOpen(false);
     } finally {
       setCreateBusinessBusy(false);
     }
@@ -11969,8 +12450,13 @@ export default function App() {
               </View>
             </Modal>
 
-            <Modal visible={receiptsModalOpen} animationType="slide">
+            <Modal
+              visible={receiptsModalOpen}
+              animationType="slide"
+              presentationStyle="fullScreen"
+            >
               {/* React Native Modal renders in a separate root on Android; wrap it so RNGH works reliably. */}
+              <SafeAreaProvider>
               <GestureHandlerRootView style={{ flex: 1 }}>
                 <SafeAreaView
                   style={styles.receiptsScreen}
@@ -12034,12 +12520,97 @@ export default function App() {
                       </View>
                     ) : (
                       <View style={styles.receiptList}>
-                        {receiptOfferGroups.length > 0 && (
+                        {receiptOfferGroups.plaid.length > 0 && (
+                          <>
+                            <Text style={styles.receiptSectionTitle}>
+                              Auto verified by Plaid
+                            </Text>
+                            {receiptOfferGroups.plaid.map((group) => {
+                              const expandKey = `verified:${group.key}`;
+                              const isExpanded = Boolean(
+                                expandedReceiptOffers[expandKey],
+                              );
+                              return (
+                                <View
+                                  key={`verified-${group.key}`}
+                                  style={styles.receiptOfferCard}
+                                >
+                                  <TouchableOpacity
+                                    style={styles.receiptOfferHeader}
+                                    onPress={() =>
+                                      setExpandedReceiptOffers((prev) => ({
+                                        ...prev,
+                                        [expandKey]: !prev[expandKey],
+                                      }))
+                                    }
+                                  >
+                                    <View style={styles.receiptOfferMeta}>
+                                      <Text
+                                        style={styles.receiptOfferTitle}
+                                        numberOfLines={1}
+                                      >
+                                        {group.offerTitle}
+                                      </Text>
+                                      <Text style={styles.receiptOfferSub}>
+                                        {group.receipts.length} receipts{" "}
+                                        {"\u00b7"} Last{" "}
+                                        {formatHistoryTimestamp(
+                                          group.lastUploadedAt,
+                                        )}
+                                      </Text>
+                                    </View>
+                                    <Ionicons
+                                      name={
+                                        isExpanded
+                                          ? "chevron-up"
+                                          : "chevron-down"
+                                      }
+                                      size={18}
+                                      color={COLORS.muted}
+                                    />
+                                  </TouchableOpacity>
+                                  {isExpanded && (
+                                    <View style={styles.receiptTileGrid}>
+                                      {group.receipts.map((receipt) => (
+                                        <View
+                                          key={receipt.id}
+                                          style={[styles.receiptTile, styles.redeemTile]}
+                                        >
+                                          <View style={styles.receiptAmountWrap}>
+                                            <Text style={styles.receiptAmountValue}>
+                                              {formatCurrencyFromCents(
+                                                receipt.receiptTotalCents,
+                                              )}
+                                            </Text>
+                                            <Text style={styles.receiptAmountHint}>
+                                              Receipt total
+                                            </Text>
+                                          </View>
+                                          <Text style={styles.receiptTileDate}>
+                                            {formatOfferDate(
+                                              receipt.uploadedAt,
+                                            )}
+                                          </Text>
+                                          <Text style={styles.receiptTileTime}>
+                                            {formatReceiptTime(
+                                              receipt.uploadedAt,
+                                            )}
+                                          </Text>
+                                        </View>
+                                      ))}
+                                    </View>
+                                  )}
+                                </View>
+                              );
+                            })}
+                          </>
+                        )}
+                        {receiptOfferGroups.uploaded.length > 0 && (
                           <>
                             <Text style={styles.receiptSectionTitle}>
                               Verified redemptions
                             </Text>
-                            {receiptOfferGroups.map((group) => {
+                            {receiptOfferGroups.uploaded.map((group) => {
                               const expandKey = `verified:${group.key}`;
                               const isExpanded = Boolean(
                                 expandedReceiptOffers[expandKey],
@@ -12088,7 +12659,7 @@ export default function App() {
                                       {group.receipts.map((receipt) => (
                                         <TouchableOpacity
                                           key={receipt.id}
-                                          style={styles.receiptTile}
+                                          style={[styles.receiptTile, styles.redeemTile]}
                                           onPress={() =>
                                             handleOpenReceiptPreview(
                                               receipt,
@@ -12096,28 +12667,22 @@ export default function App() {
                                             )
                                           }
                                         >
-                                          <View style={styles.receiptThumbWrap}>
-                                            {receipt.imageUrl ? (
-                                              <Image
-                                                source={{
-                                                  uri: receipt.imageUrl,
-                                                }}
-                                                style={styles.receiptThumb}
-                                                resizeMode="cover"
-                                              />
-                                            ) : (
-                                              <View
-                                                style={
-                                                  styles.receiptThumbPlaceholder
-                                                }
-                                              >
-                                                <Ionicons
-                                                  name="image"
-                                                  size={16}
-                                                  color={COLORS.muted}
-                                                />
-                                              </View>
-                                            )}
+                                          <View style={styles.receiptAmountWrap}>
+                                            <Text style={styles.receiptAmountValue}>
+                                              {formatCurrencyFromCents(
+                                                receipt.receiptTotalCents,
+                                              )}
+                                            </Text>
+                                            <Text style={styles.receiptAmountHint}>
+                                              Receipt total
+                                            </Text>
+                                          </View>
+                                          <View style={styles.receiptTileOpenHint}>
+                                            <Ionicons
+                                              name="chevron-forward"
+                                              size={12}
+                                              color={COLORS.muted}
+                                            />
                                           </View>
                                           <Text style={styles.receiptTileDate}>
                                             {formatOfferDate(
@@ -12399,6 +12964,7 @@ export default function App() {
                   )}
                 </SafeAreaView>
               </GestureHandlerRootView>
+              </SafeAreaProvider>
             </Modal>
 
             <Modal visible={editOfferOpen} animationType="slide">
@@ -12530,16 +13096,24 @@ export default function App() {
               </SafeAreaView>
             </Modal>
 
-            <Modal visible={ownerOffersModalOpen} animationType="slide">
+            <Modal
+              visible={ownerOffersModalOpen}
+              animationType="slide"
+              presentationStyle="fullScreen"
+            >
+              <SafeAreaProvider>
               <SafeAreaView
                 style={styles.editOfferScreen}
                 edges={["top", "bottom"]}
               >
-                <View style={styles.editOfferHeader}>
+                <View
+                  style={[styles.editOfferHeader, styles.ownerOffersHeader]}
+                >
                   <Text style={styles.editOfferTitle}>Your offers</Text>
                   <TouchableOpacity
                     style={styles.receiptsClose}
                     onPress={() => setOwnerOffersModalOpen(false)}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                   >
                     <Ionicons name="close" size={18} color={COLORS.ink} />
                   </TouchableOpacity>
@@ -12702,6 +13276,7 @@ export default function App() {
                   )}
                 </ScrollView>
               </SafeAreaView>
+              </SafeAreaProvider>
             </Modal>
 
             <Modal
@@ -12852,6 +13427,35 @@ export default function App() {
               </View>
             </Modal>
 
+            <Modal
+              transparent
+              visible={cashoutCelebration.visible}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+            >
+              <View style={styles.cashoutCelebrationOverlay} pointerEvents="none">
+                <View style={styles.cashoutCelebrationCard}>
+                  <View style={styles.cashoutCelebrationIconWrap}>
+                    <Ionicons name="trophy-outline" size={16} color={COLORS.white} />
+                  </View>
+                  <Text style={styles.cashoutCelebrationTitle}>
+                    Cashout started
+                  </Text>
+                  <Text style={styles.cashoutCelebrationBody}>
+                    {formatCurrencyFromCents(cashoutCelebration.amountCents)} is on
+                    the way to your payout bank.
+                  </Text>
+                </View>
+                <ConfettiDrizzle
+                  active={cashoutCelebration.visible}
+                  width={SCREEN_WIDTH}
+                  height={SCREEN_HEIGHT}
+                  style={{ borderRadius: 0, overflow: "visible" }}
+                />
+              </View>
+            </Modal>
+
             <Modal transparent visible={timePickerVisible} animationType="fade">
               <View style={styles.timePickerOverlay}>
                 <View style={styles.timePickerCard}>
@@ -12900,23 +13504,25 @@ export default function App() {
               keyboardBlurBehavior="restore"
               android_keyboardInputMode="adjustResize"
             >
-              <View style={styles.sheetBody}>
               {activeTab === "discover" ? (
-                <ScrollView
+                <BottomSheetScrollView
                   style={styles.sheetScroll}
                   showsVerticalScrollIndicator={false}
                   bounces={Platform.OS === "ios"}
                   alwaysBounceVertical={Platform.OS === "ios"}
+                  onLayout={handleDiscoverScrollLayout}
                   contentContainerStyle={[
                     styles.sheetScrollContent,
+                    styles.sheetContentInsets,
                     filteredOfferCards.length === 0 && styles.sheetScrollContentEmpty,
                   ]}
                   keyboardShouldPersistTaps="handled"
                   keyboardDismissMode="on-drag"
-                  nestedScrollEnabled
-                  onLayout={handleDiscoverScrollLayout}
                   onContentSizeChange={handleDiscoverContentSizeChange}
                   onTouchStart={handleDiscoverTouchStart}
+                  onTouchMove={handleDiscoverTouchMove}
+                  onTouchEnd={handleDiscoverTouchEnd}
+                  onTouchCancel={handleDiscoverTouchCancel}
                   onScrollBeginDrag={handleDiscoverScrollBeginDrag}
                   onScroll={handleDiscoverScroll}
                   onScrollEndDrag={handleDiscoverScrollEndDrag}
@@ -13071,14 +13677,17 @@ export default function App() {
                       ))}
                     </View>
                   )}
-                </ScrollView>
+                </BottomSheetScrollView>
               ) : activeTab === "demo" ? (
                 <BottomSheetScrollView
                   style={styles.sheetScroll}
                   showsVerticalScrollIndicator={false}
                   bounces={Platform.OS === "ios"}
                   alwaysBounceVertical={Platform.OS === "ios"}
-                  contentContainerStyle={styles.sheetScrollContent}
+                  contentContainerStyle={[
+                    styles.sheetScrollContent,
+                    styles.sheetContentInsets,
+                  ]}
                 >
                   <View style={styles.demoIntroCard}>
                     <View style={styles.demoIntroHeader}>
@@ -13510,6 +14119,7 @@ export default function App() {
                     alwaysBounceVertical={Platform.OS === "ios"}
                     contentContainerStyle={[
                       styles.sheetScrollContent,
+                      styles.sheetContentInsets,
                       { paddingBottom: 24 + keyboardInset },
                     ]}
                     keyboardShouldPersistTaps="handled"
@@ -13550,6 +14160,29 @@ export default function App() {
                           </View>
                         </View>
 
+                        {ownerBusinessAwaitingApproval ? (
+                          <View style={styles.dashboardReviewCard}>
+                            <View style={styles.dashboardReviewIconWrap}>
+                              <Ionicons
+                                name="hourglass-outline"
+                                size={18}
+                                color={COLORS.pine}
+                              />
+                            </View>
+                            <Text style={styles.dashboardReviewTitle}>
+                              Business profile under review
+                            </Text>
+                            <Text style={styles.dashboardReviewBody}>
+                              {ownerBusiness?.name
+                                ? `Thanks for submitting ${ownerBusiness.name}. Our team is currently reviewing your business profile. Dashboard tools will unlock as soon as your listing is approved.`
+                                : "Thanks for submitting your business profile. Our team is currently reviewing your information. Dashboard tools will unlock as soon as your listing is approved."}
+                            </Text>
+                            <Text style={styles.dashboardReviewMeta}>
+                              Most reviews are completed within 12-24 hours.
+                            </Text>
+                          </View>
+                        ) : (
+                          <>
                         <View style={styles.analyticsGrid}>
                           <TouchableOpacity
                             style={[
@@ -13816,7 +14449,12 @@ export default function App() {
                         </View>
 
                         <View style={styles.sectionBlock}>
-                          <View style={styles.sectionTitleRow}>
+                          <View
+                            style={[
+                              styles.sectionTitleRow,
+                              styles.offersSectionTitleRow,
+                            ]}
+                          >
                             <Text
                               style={[
                                 styles.sectionTitleAlt,
@@ -13848,12 +14486,32 @@ export default function App() {
                             </TouchableOpacity>
                           </View>
                           <TouchableOpacity
-                            style={styles.secondaryButton}
+                            style={styles.offersCtaButton}
                             onPress={() => setOwnerOffersModalOpen(true)}
+                            activeOpacity={0.9}
                           >
-                            <Text style={styles.secondaryButtonText}>
-                              View current offers
-                            </Text>
+                            <View style={styles.offersCtaLeft}>
+                              <View style={styles.offersCtaIconWrap}>
+                                <Ionicons
+                                  name="sparkles-outline"
+                                  size={16}
+                                  color={COLORS.white}
+                                />
+                              </View>
+                              <View style={styles.offersCtaCopy}>
+                                <Text style={styles.offersCtaTitle}>
+                                  View current offers
+                                </Text>
+                                <Text style={styles.offersCtaMeta}>
+                                  Manage live and pending campaigns
+                                </Text>
+                              </View>
+                            </View>
+                            <Ionicons
+                              name="chevron-forward"
+                              size={18}
+                              color={COLORS.white}
+                            />
                           </TouchableOpacity>
                         </View>
 
@@ -14514,37 +15172,95 @@ export default function App() {
                             </View>
 
                             <Text style={styles.formLabel}>Category</Text>
-                            <View style={styles.categoryRow}>
-                              {CATEGORY_OPTIONS.map((option) => {
-                                const isActive =
-                                  createBusinessForm.categoryKey === option.key;
-                                return (
-                                  <TouchableOpacity
-                                    key={option.key}
-                                    style={[
-                                      styles.categoryChip,
-                                      isActive && styles.categoryChipActive,
-                                    ]}
-                                    onPress={() =>
-                                      setCreateBusinessForm((prev) => ({
-                                        ...prev,
-                                        categoryKey: option.key,
-                                      }))
-                                    }
-                                  >
-                                    <Text
+                            <TouchableOpacity
+                              style={[styles.formInput, styles.selectInput]}
+                              onPress={() =>
+                                setCreateBusinessCategoryMenuOpen(
+                                  (prev) => !prev,
+                                )
+                              }
+                              activeOpacity={0.8}
+                            >
+                              <Text style={styles.selectInputText}>
+                                {getCategoryPickerLabel(
+                                  createBusinessForm.categoryKey,
+                                  createBusinessForm.categoryCustomLabel,
+                                )}
+                              </Text>
+                              <Ionicons
+                                name={
+                                  createBusinessCategoryMenuOpen
+                                    ? "chevron-up"
+                                    : "chevron-down"
+                                }
+                                size={16}
+                                color={COLORS.muted}
+                              />
+                            </TouchableOpacity>
+                            {createBusinessCategoryMenuOpen && (
+                              <View style={styles.selectMenu}>
+                                {CATEGORY_OPTIONS_WITH_OTHER.map((option) => {
+                                  const isActive =
+                                    createBusinessForm.categoryKey ===
+                                    option.key;
+                                  return (
+                                    <TouchableOpacity
+                                      key={option.key}
                                       style={[
-                                        styles.categoryChipText,
+                                        styles.selectMenuOption,
                                         isActive &&
-                                          styles.categoryChipTextActive,
+                                          styles.selectMenuOptionActive,
                                       ]}
+                                      onPress={() => {
+                                        setCreateBusinessForm((prev) => ({
+                                          ...prev,
+                                          categoryKey: option.key,
+                                          categoryCustomLabel:
+                                            option.key === CATEGORY_OTHER_KEY
+                                              ? prev.categoryCustomLabel
+                                              : "",
+                                        }));
+                                        setCreateBusinessCategoryMenuOpen(
+                                          false,
+                                        );
+                                      }}
                                     >
-                                      {option.label}
-                                    </Text>
-                                  </TouchableOpacity>
-                                );
-                              })}
-                            </View>
+                                      <Text
+                                        style={[
+                                          styles.selectMenuOptionText,
+                                          isActive &&
+                                            styles.selectMenuOptionTextActive,
+                                        ]}
+                                      >
+                                        {option.label}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+                            )}
+                            {createBusinessForm.categoryKey ===
+                              CATEGORY_OTHER_KEY && (
+                              <>
+                                <Text style={styles.formLabel}>
+                                  Custom category
+                                </Text>
+                                <AutoFocusInput
+                                  style={styles.formInput}
+                                  placeholder="Type your category"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={
+                                    createBusinessForm.categoryCustomLabel
+                                  }
+                                  onChangeText={(value) =>
+                                    setCreateBusinessForm((prev) => ({
+                                      ...prev,
+                                      categoryCustomLabel: value,
+                                    }))
+                                  }
+                                />
+                              </>
+                            )}
 
                             <Text style={styles.formLabel}>Phone</Text>
                             <AutoFocusInput
@@ -14746,6 +15462,8 @@ export default function App() {
                         )}
 
                         {/* Offer management lives in the Business Dashboard tab. */}
+                          </>
+                        )}
                       </>
                     ) : activeTab === "history" ? (
                       <>
@@ -15102,6 +15820,9 @@ export default function App() {
                                     const cashbackCents = Number(
                                       entry.receipt?.cashbackCents,
                                     );
+                                    const receiptReviewStatus = String(
+                                      entry.receipt?.reviewStatus || "",
+                                    ).toLowerCase();
                                     const statusCopy = (() => {
                                       if (needsReceipt) {
                                         if (verificationStatus === "pending") {
@@ -15121,6 +15842,20 @@ export default function App() {
                                         return {
                                           icon: "close-circle-outline",
                                           text: "Receipt window expired",
+                                          tone: "danger",
+                                        };
+                                      }
+                                      if (receiptReviewStatus === "pending") {
+                                        return {
+                                          icon: "time-outline",
+                                          text: "Pending review",
+                                          tone: "pending",
+                                        };
+                                      }
+                                      if (receiptReviewStatus === "rejected") {
+                                        return {
+                                          icon: "alert-circle-outline",
+                                          text: "Receipt rejected",
                                           tone: "danger",
                                         };
                                       }
@@ -15435,8 +16170,13 @@ export default function App() {
                                 </Text>
                               </View>
                             </View>
-                            <View style={styles.pointsCard}>
-                              <View style={styles.pointsHeader}>
+                            <View style={[styles.pointsCard, styles.cashoutHeroCard]}>
+                              <View
+                                style={[
+                                  styles.pointsHeader,
+                                  styles.cashoutBalanceHeader,
+                                ]}
+                              >
                                 <View style={styles.pointsLabelRow}>
                                   <Ionicons
                                     name="sparkles-outline"
@@ -15447,7 +16187,12 @@ export default function App() {
                                     Cashback balance
                                   </Text>
                                 </View>
-                                <Text style={styles.pointsValue}>
+                                <Text
+                                  style={[
+                                    styles.pointsValue,
+                                    styles.cashoutBalanceValue,
+                                  ]}
+                                >
                                   {formatCurrencyFromCents(
                                     cashbackBalance.availableCents,
                                   )}
@@ -15465,6 +16210,10 @@ export default function App() {
                                     )}
                                   </Text>
                                 </View>
+                                <Text style={styles.cashoutAmountHint}>
+                                  Minimum cashout:{" "}
+                                  {formatCurrencyFromCents(MIN_CASHOUT_CENTS)}
+                                </Text>
                                 <View style={styles.cashoutAmountRow}>
                                   <View style={styles.cashoutAmountField}>
                                     <Text style={styles.cashoutAmountPrefix}>
@@ -15512,28 +16261,29 @@ export default function App() {
                                   </TouchableOpacity>
                                 </View>
                                 {String(cashoutAmountText || "").trim() &&
-                                  cashoutPreview.mode === "invalid" && (
+                                  (cashoutPreview.mode === "invalid" ||
+                                    cashoutPreview.mode === "below_min") && (
                                     <Text style={styles.formError}>
-                                      Enter an amount up to{" "}
-                                      {formatCurrencyFromCents(
-                                        cashbackBalance.availableCents,
-                                      )}
-                                      .
+                                      {cashoutPreview.mode === "below_min"
+                                        ? `Minimum cashout is ${formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.`
+                                        : `Enter an amount up to ${formatCurrencyFromCents(
+                                            cashbackBalance.availableCents,
+                                          )}.`}
                                     </Text>
                                   )}
                               </View>
                               <TouchableOpacity
                                 style={[
-                                  styles.primaryButton,
-                                  { marginTop: 12 },
+                                  styles.cashoutPayoutButton,
                                   (!cashoutStatus.connected ||
                                     !cashoutStatus.bankSelected ||
                                     !cashoutStatus.payoutsEnabled ||
                                     cashoutPreview.mode === "invalid" ||
+                                    cashoutPreview.mode === "below_min" ||
                                     (Number(cashbackBalance.availableCents) ||
                                       0) <= 0 ||
                                     cashoutActionStatus.loading) &&
-                                    styles.primaryButtonDisabled,
+                                    styles.cashoutPayoutButtonDisabled,
                                 ]}
                                 onPress={handleCashoutPayout}
                                 disabled={
@@ -15541,12 +16291,13 @@ export default function App() {
                                   !cashoutStatus.bankSelected ||
                                   !cashoutStatus.payoutsEnabled ||
                                   cashoutPreview.mode === "invalid" ||
+                                  cashoutPreview.mode === "below_min" ||
                                   (Number(cashbackBalance.availableCents) ||
                                     0) <= 0 ||
                                   cashoutActionStatus.loading
                                 }
                               >
-                                <Text style={styles.primaryButtonText}>
+                                <Text style={styles.cashoutPayoutButtonText}>
                                   {cashoutPreview.label}
                                 </Text>
                               </TouchableOpacity>
@@ -15561,7 +16312,7 @@ export default function App() {
                                 </Text>
                               )}
                             </View>
-                            <View style={styles.sectionBlock}>
+                            <View style={[styles.sectionBlock, styles.cashoutBankPanel]}>
                               <View style={styles.cashoutTitleRow}>
                                 <View style={styles.sectionTitleIcon}>
                                   <Ionicons
@@ -16065,34 +16816,86 @@ export default function App() {
                                 />
 
                                 <Text style={styles.formLabel}>Category</Text>
-                                <View style={styles.categoryRow}>
-                                  {CATEGORY_OPTIONS.map((option) => {
-                                    const isActive =
-                                      businessCategoryKey === option.key;
-                                    return (
-                                      <TouchableOpacity
-                                        key={option.key}
-                                        style={[
-                                          styles.categoryChip,
-                                          isActive && styles.categoryChipActive,
-                                        ]}
-                                        onPress={() =>
-                                          setBusinessCategoryKey(option.key)
-                                        }
-                                      >
-                                        <Text
-                                          style={[
-                                            styles.categoryChipText,
-                                            isActive &&
-                                              styles.categoryChipTextActive,
-                                          ]}
-                                        >
-                                          {option.label}
-                                        </Text>
-                                      </TouchableOpacity>
-                                    );
-                                  })}
-                                </View>
+                                <TouchableOpacity
+                                  style={[styles.authInput, styles.selectInput]}
+                                  onPress={() =>
+                                    setBusinessCategoryMenuOpen(
+                                      (prev) => !prev,
+                                    )
+                                  }
+                                  activeOpacity={0.8}
+                                >
+                                  <Text style={styles.selectInputText}>
+                                    {getCategoryPickerLabel(
+                                      businessCategoryKey,
+                                      businessCategoryCustomLabel,
+                                    )}
+                                  </Text>
+                                  <Ionicons
+                                    name={
+                                      businessCategoryMenuOpen
+                                        ? "chevron-up"
+                                        : "chevron-down"
+                                    }
+                                    size={16}
+                                    color={COLORS.muted}
+                                  />
+                                </TouchableOpacity>
+                                {businessCategoryMenuOpen && (
+                                  <View style={styles.selectMenu}>
+                                    {CATEGORY_OPTIONS_WITH_OTHER.map(
+                                      (option) => {
+                                        const isActive =
+                                          businessCategoryKey === option.key;
+                                        return (
+                                          <TouchableOpacity
+                                            key={option.key}
+                                            style={[
+                                              styles.selectMenuOption,
+                                              isActive &&
+                                                styles.selectMenuOptionActive,
+                                            ]}
+                                            onPress={() => {
+                                              setBusinessCategoryKey(option.key);
+                                              if (
+                                                option.key !== CATEGORY_OTHER_KEY
+                                              ) {
+                                                setBusinessCategoryCustomLabel(
+                                                  "",
+                                                );
+                                              }
+                                              setBusinessCategoryMenuOpen(false);
+                                            }}
+                                          >
+                                            <Text
+                                              style={[
+                                                styles.selectMenuOptionText,
+                                                isActive &&
+                                                  styles.selectMenuOptionTextActive,
+                                              ]}
+                                            >
+                                              {option.label}
+                                            </Text>
+                                          </TouchableOpacity>
+                                        );
+                                      },
+                                    )}
+                                  </View>
+                                )}
+                                {businessCategoryKey === CATEGORY_OTHER_KEY && (
+                                  <>
+                                    <Text style={styles.formLabel}>
+                                      Custom category
+                                    </Text>
+                                    <AutoFocusInput
+                                      style={styles.authInput}
+                                      placeholder="Type your category"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={businessCategoryCustomLabel}
+                                      onChangeText={setBusinessCategoryCustomLabel}
+                                    />
+                                  </>
+                                )}
 
                                 <Text style={styles.formLabel}>
                                   Business address
@@ -17479,7 +18282,6 @@ export default function App() {
                   </BottomSheetScrollView>
                 </KeyboardAvoidingView>
               )}
-              </View>
             </BottomSheet>
           </View>
         </SafeAreaView>
@@ -18694,13 +19496,12 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: -8 },
     elevation: 10,
   },
-  sheetBody: {
-    flex: 1,
-    paddingHorizontal: IS_COMPACT ? 12 : 16,
-    paddingTop: 10,
-  },
   sheetScroll: {
     flex: 1,
+  },
+  sheetContentInsets: {
+    paddingHorizontal: IS_COMPACT ? 12 : 16,
+    paddingTop: 10,
   },
   sheetScrollContent: {
     paddingBottom: 24,
@@ -20314,6 +21115,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 10,
   },
+  offersSectionTitleRow: {
+    marginBottom: 10,
+  },
   sectionInfoButton: {
     width: 34,
     height: 34,
@@ -20323,6 +21127,53 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(15, 23, 42, 0.04)",
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.08)",
+  },
+  offersCtaButton: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(11, 33, 71, 0.28)",
+    backgroundColor: COLORS.pine,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 3,
+  },
+  offersCtaLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  offersCtaIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.26)",
+  },
+  offersCtaCopy: {
+    flex: 1,
+  },
+  offersCtaTitle: {
+    fontSize: 15,
+    color: COLORS.white,
+    fontFamily: FONT_DISPLAY,
+  },
+  offersCtaMeta: {
+    marginTop: 2,
+    fontSize: 11,
+    color: "rgba(255, 255, 255, 0.84)",
+    fontFamily: FONT_TEXT,
   },
   sectionBody: {
     fontSize: 12,
@@ -20486,6 +21337,44 @@ const styles = StyleSheet.create({
   pendingPillText: {
     fontSize: 10,
     color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  dashboardReviewCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+    marginBottom: 12,
+  },
+  dashboardReviewIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.mint,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    marginBottom: 10,
+  },
+  dashboardReviewTitle: {
+    fontSize: 15,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+    marginBottom: 6,
+  },
+  dashboardReviewBody: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 18,
+  },
+  dashboardReviewMeta: {
+    marginTop: 10,
+    fontSize: 11,
+    color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
   profileCard: {
@@ -21051,11 +21940,12 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   receiptSectionTitle: {
-    fontSize: 12,
+    fontSize: 16,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM,
-    marginBottom: 8,
-    marginTop: 4,
+    fontFamily: FONT_DISPLAY,
+    marginBottom: 10,
+    marginTop: 10,
+    letterSpacing: 0.2,
   },
   receiptTileGrid: {
     flexDirection: "row",
@@ -21091,6 +21981,31 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  receiptAmountWrap: {
+    width: "100%",
+    height: 64,
+    borderRadius: 10,
+    backgroundColor: COLORS.cream,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    marginBottom: 6,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+  },
+  receiptAmountValue: {
+    fontSize: 18,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+    textAlign: "center",
+  },
+  receiptAmountHint: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginTop: 2,
+    textAlign: "center",
+  },
   redeemTile: {
     justifyContent: "space-between",
   },
@@ -21110,6 +22025,19 @@ const styles = StyleSheet.create({
   },
   receiptTileDisabled: {
     opacity: 0.6,
+  },
+  receiptTileOpenHint: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
   },
   receiptTileDate: {
     fontSize: 11,
@@ -21139,6 +22067,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     gap: 12,
+  },
+  ownerOffersHeader: {
+    paddingTop: Platform.OS === "ios" ? 4 : 0,
   },
   editOfferTitle: {
     fontSize: 16,
@@ -21868,6 +22799,79 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.mint,
     marginBottom: 12,
   },
+  cashoutHeroCard: {
+    backgroundColor: "#F9FBFE",
+    borderColor: "#D8E0EB",
+    borderWidth: 1,
+    borderLeftWidth: 1,
+    borderLeftColor: "#D8E0EB",
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
+  },
+  cashoutBalanceHeader: {
+    marginBottom: 10,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    backgroundColor: "transparent",
+    borderRadius: 0,
+    borderTopWidth: 0,
+    borderLeftWidth: 0,
+    borderRightWidth: 0,
+    borderWidth: 1,
+    borderColor: "#E1E8F1",
+    borderBottomColor: "#E1E8F1",
+  },
+  cashoutBalanceValue: {
+    fontSize: 30,
+    lineHeight: 34,
+    letterSpacing: -0.3,
+    color: "#0B1F3B",
+    fontFamily: FONT_BOLD,
+  },
+  cashoutSectionLead: {
+    marginTop: 6,
+    fontSize: 12,
+    lineHeight: 18,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutBalanceBadgeRow: {
+    marginTop: 2,
+    marginBottom: 2,
+  },
+  cashoutBalanceBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  cashoutBalanceBadgeReady: {
+    backgroundColor: "#ECFDF3",
+    borderColor: "#B7E4C7",
+  },
+  cashoutBalanceBadgeMuted: {
+    backgroundColor: "#FFF7E8",
+    borderColor: "#F4D6A5",
+  },
+  cashoutBalanceBadgeText: {
+    fontSize: 10,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutBalanceBadgeTextReady: {
+    color: "#166534",
+  },
+  cashoutBalanceBadgeTextMuted: {
+    color: "#92400E",
+  },
   pointsHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -21895,10 +22899,10 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
   },
   cashoutAmountGroup: {
-    marginTop: 14,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(15, 23, 42, 0.08)",
+    marginTop: 10,
+    paddingTop: 0,
+    borderTopWidth: 0,
+    borderTopColor: "transparent",
   },
   cashoutAmountHeader: {
     flexDirection: "row",
@@ -21925,12 +22929,12 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: COLORS.white,
+    backgroundColor: "#FFFFFF",
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
-    borderColor: COLORS.sand,
+    borderColor: "#D5DEE9",
   },
   cashoutAmountPrefix: {
     fontSize: 13,
@@ -21951,8 +22955,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: COLORS.sand,
-    backgroundColor: COLORS.white,
+    borderColor: "#D5DEE9",
+    backgroundColor: "#FFFFFF",
   },
   cashoutAmountMaxText: {
     fontSize: 12,
@@ -21964,6 +22968,31 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
+  },
+  cashoutPayoutButton: {
+    marginTop: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.pine,
+    backgroundColor: COLORS.pine,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cashoutPayoutButtonDisabled: {
+    opacity: 0.58,
+  },
+  cashoutPayoutButtonText: {
+    fontSize: 13,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutBankPanel: {
+    borderWidth: 1,
+    borderColor: "#D7DEE9",
+    borderRadius: 14,
+    padding: 12,
+    backgroundColor: COLORS.white,
   },
   cashoutStatusLine: {
     marginTop: 10,
@@ -22106,6 +23135,48 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
+  },
+  cashoutCelebrationOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    paddingTop: SAFE_TOP + 14,
+  },
+  cashoutCelebrationCard: {
+    width: Math.min(SCREEN_WIDTH - 36, 360),
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.10)",
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    alignItems: "center",
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
+  },
+  cashoutCelebrationIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.pine,
+    marginBottom: 6,
+  },
+  cashoutCelebrationTitle: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+  },
+  cashoutCelebrationBody: {
+    marginTop: 2,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    textAlign: "center",
+    lineHeight: 16,
   },
   cashoutButtonStack: {
     marginTop: 14,
@@ -22569,6 +23640,45 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8,
     marginBottom: 12,
+  },
+  selectInput: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  selectInputText: {
+    flex: 1,
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    paddingRight: 8,
+  },
+  selectMenu: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    marginTop: -6,
+    marginBottom: 12,
+    overflow: "hidden",
+  },
+  selectMenuOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+  },
+  selectMenuOptionActive: {
+    backgroundColor: COLORS.mint,
+  },
+  selectMenuOptionText: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  selectMenuOptionTextActive: {
+    color: COLORS.pine,
   },
   categoryChip: {
     backgroundColor: COLORS.white,

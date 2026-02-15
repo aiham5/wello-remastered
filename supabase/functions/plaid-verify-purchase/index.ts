@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import Stripe from "npm:stripe@14.25.0";
 import {
   HttpError,
   authenticateRequest,
@@ -21,6 +22,10 @@ const AUTO_COPY =
   "Cashback is automatically verified when purchases are visible through your linked bank.";
 const PLAID_ENV = (Deno.env.get("PLAID_ENV") ?? "sandbox").toLowerCase();
 const IDENTITY_ENFORCED = PLAID_ENV !== "sandbox";
+const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
+const stripe = STRIPE_SECRET_KEY
+  ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" })
+  : null;
 
 type Candidate = {
   plaidItemId: string;
@@ -115,6 +120,175 @@ const reasonMessage = (reasonCode: string) => {
     default:
       return "Automatic bank verification was not completed.";
   }
+};
+
+type StripeDraftSyncResult = {
+  ok: boolean;
+  invoiceId: string | null;
+  skippedReason: string | null;
+  error: string | null;
+};
+
+const getPeriodForDate = (value?: string | null) => {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return null;
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  const start = new Date(Date.UTC(year, month, 1));
+  const end = new Date(Date.UTC(year, month + 1, 1));
+  return { start, end };
+};
+
+const syncCommissionEventToDraftInvoice = async (
+  supabase: ReturnType<typeof createAdminSupabase>,
+  businessId: string,
+  redemptionId: string,
+  eventDate?: string | null,
+): Promise<StripeDraftSyncResult> => {
+  if (!stripe) {
+    return {
+      ok: false,
+      invoiceId: null,
+      skippedReason: "stripe_not_configured",
+      error: null,
+    };
+  }
+
+  const { data: event, error: eventError } = await supabase
+    .from("commission_events")
+    .select("id, amount_cents, status, created_at")
+    .eq("business_id", businessId)
+    .eq("redemption_id", redemptionId)
+    .maybeSingle();
+  if (eventError || !event) {
+    return {
+      ok: false,
+      invoiceId: null,
+      skippedReason: "commission_event_missing",
+      error: eventError?.message || null,
+    };
+  }
+
+  if (event.status === "paid" || event.status === "invoiced") {
+    return {
+      ok: true,
+      invoiceId: null,
+      skippedReason: "already_invoiced",
+      error: null,
+    };
+  }
+
+  const amountCents = Number(event.amount_cents) || 0;
+  if (amountCents <= 0) {
+    return {
+      ok: false,
+      invoiceId: null,
+      skippedReason: "invalid_amount",
+      error: null,
+    };
+  }
+
+  const period = getPeriodForDate(eventDate || event.created_at || null);
+  if (!period) {
+    return {
+      ok: false,
+      invoiceId: null,
+      skippedReason: "invalid_period",
+      error: null,
+    };
+  }
+  const periodStart = period.start.toISOString().slice(0, 10);
+  const periodEnd = period.end.toISOString().slice(0, 10);
+
+  const { data: business, error: businessError } = await supabase
+    .from("businesses")
+    .select("stripe_customer_id")
+    .eq("id", businessId)
+    .maybeSingle();
+  if (businessError || !business?.stripe_customer_id) {
+    return {
+      ok: false,
+      invoiceId: null,
+      skippedReason: "missing_stripe_customer",
+      error: businessError?.message || null,
+    };
+  }
+
+  const { data: existingInvoice } = await supabase
+    .from("commission_invoices")
+    .select("stripe_invoice_id, status")
+    .eq("business_id", businessId)
+    .eq("period_start", periodStart)
+    .eq("period_end", periodEnd)
+    .in("status", ["draft", "open"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  let invoiceId = String(existingInvoice?.stripe_invoice_id || "").trim();
+  if (!invoiceId) {
+    const invoice = await stripe.invoices.create({
+      customer: business.stripe_customer_id,
+      collection_method: "charge_automatically",
+      auto_advance: false,
+      metadata: {
+        business_id: businessId,
+        period_start: periodStart,
+        period_end: periodEnd,
+        mode: "auto_plaid",
+      },
+    });
+    invoiceId = invoice.id;
+    await supabase.from("commission_invoices").insert({
+      business_id: businessId,
+      stripe_invoice_id: invoiceId,
+      period_start: periodStart,
+      period_end: periodEnd,
+      amount_cents: invoice.amount_due || invoice.total || 0,
+      status: invoice.status || "draft",
+    });
+  }
+
+  await stripe.invoiceItems.create(
+    {
+      customer: business.stripe_customer_id,
+      amount: amountCents,
+      currency: "usd",
+      description: `Wello commission (${periodStart} to ${periodEnd})`,
+      invoice: invoiceId,
+      metadata: {
+        business_id: businessId,
+        redemption_id: redemptionId,
+        commission_event_id: event.id,
+      },
+    },
+    { idempotencyKey: `commission_${event.id}` },
+  );
+
+  const updatedInvoice = await stripe.invoices.retrieve(invoiceId);
+  const invoiceTotal =
+    updatedInvoice.amount_due || updatedInvoice.total || amountCents;
+
+  await supabase
+    .from("commission_invoices")
+    .update({
+      amount_cents: invoiceTotal,
+      status: updatedInvoice.status || "draft",
+    })
+    .eq("stripe_invoice_id", invoiceId);
+
+  await supabase
+    .from("commission_events")
+    .update({ status: "invoiced" })
+    .eq("id", event.id)
+    .eq("status", "pending");
+
+  return {
+    ok: true,
+    invoiceId,
+    skippedReason: null,
+    error: null,
+  };
 };
 
 serve(async (req) => {
@@ -729,6 +903,28 @@ serve(async (req) => {
       })
       .eq("id", receiptUpsert.id);
 
+    let stripeDraftSync: StripeDraftSyncResult | null = null;
+    try {
+      stripeDraftSync = await syncCommissionEventToDraftInvoice(
+        supabase,
+        businessId,
+        redemptionId,
+        nowIso,
+      );
+    } catch (syncError) {
+      console.warn("plaid-verify-purchase stripe draft sync failed", {
+        businessId,
+        redemptionId,
+        error: syncError?.message || String(syncError),
+      });
+      stripeDraftSync = {
+        ok: false,
+        invoiceId: null,
+        skippedReason: "sync_error",
+        error: syncError?.message || "Stripe draft sync failed.",
+      };
+    }
+
     const verification = await createOrUpdateVerification({
       source: "plaid",
       status: "confirmed",
@@ -767,6 +963,7 @@ serve(async (req) => {
       fallbackRequired: false,
       receiptUploadId: receiptUpsert.id,
       requestId: selected.requestId || lastRequestId || null,
+      stripeDraftSync,
       copy: {
         primary: AUTO_COPY,
         secondary: PENDING_COPY,

@@ -43,6 +43,10 @@ if (!googleMapsApiKey) {
 
 export default ({ config }) => ({
   ...config,
+  plugins: uniqueValues([
+    ...(Array.isArray(config.plugins) ? config.plugins : []),
+    "expo-web-browser",
+  ]),
   extra: {
     ...(config.extra ?? {}),
     EXPO_PUBLIC_GOOGLE_MAPS_API_KEY: googleMapsApiKey,

@@ -15,8 +15,15 @@ const SUPABASE_ANON_KEY =
   Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
   "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
+const CASHOUT_WEEKLY_LIMIT_ENABLED = (() => {
+  const raw = String(Deno.env.get("CASHOUT_WEEKLY_LIMIT_ENABLED") || "")
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+})();
 
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const MIN_CASHOUT_CENTS = 1000;
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
@@ -113,33 +120,35 @@ Deno.serve(async (req) => {
       .update({ stripe_cashout_payouts_enabled: payoutsEnabled })
       .eq("id", userId);
 
-    const { data: lastPayout, error: lastPayoutError } = await supabase
-      .from("cashout_payouts")
-      .select("id, created_at, status")
-      .eq("user_id", userId)
-      .in("status", ["pending", "paid"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (lastPayoutError) {
-      return new Response(
-        JSON.stringify({ error: lastPayoutError.message || "Unable to cash out." }),
-        { status: 500 },
-      );
-    }
-
-    if (lastPayout?.created_at) {
-      const lastAtMs = Date.parse(lastPayout.created_at);
-      if (Number.isFinite(lastAtMs) && Date.now() - lastAtMs < ONE_WEEK_MS) {
-        const nextEligibleAt = new Date(lastAtMs + ONE_WEEK_MS).toISOString();
+    if (CASHOUT_WEEKLY_LIMIT_ENABLED) {
+      const { data: lastPayout, error: lastPayoutError } = await supabase
+        .from("cashout_payouts")
+        .select("id, created_at, status")
+        .eq("user_id", userId)
+        .in("status", ["pending", "paid"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (lastPayoutError) {
         return new Response(
-          JSON.stringify({
-            error: "Cashout available once per week.",
-            nextEligibleAt,
-            lastPayoutAt: new Date(lastAtMs).toISOString(),
-          }),
-          { status: 429 },
+          JSON.stringify({ error: lastPayoutError.message || "Unable to cash out." }),
+          { status: 500 },
         );
+      }
+
+      if (lastPayout?.created_at) {
+        const lastAtMs = Date.parse(lastPayout.created_at);
+        if (Number.isFinite(lastAtMs) && Date.now() - lastAtMs < ONE_WEEK_MS) {
+          const nextEligibleAt = new Date(lastAtMs + ONE_WEEK_MS).toISOString();
+          return new Response(
+            JSON.stringify({
+              error: "Cashout available once per week.",
+              nextEligibleAt,
+              lastPayoutAt: new Date(lastAtMs).toISOString(),
+            }),
+            { status: 429 },
+          );
+        }
       }
     }
 
@@ -167,6 +176,16 @@ Deno.serve(async (req) => {
         { status: 400 },
       );
     }
+    if (availableCents < MIN_CASHOUT_CENTS && requestedAmountCents == null) {
+      return new Response(
+        JSON.stringify({
+          error: "Minimum cashout is $10.00.",
+          minimumCashoutCents: MIN_CASHOUT_CENTS,
+          availableCents,
+        }),
+        { status: 400 },
+      );
+    }
 
     if (requestedAmountCents != null) {
       if (!Number.isFinite(requestedAmountCents) || requestedAmountCents <= 0) {
@@ -184,10 +203,30 @@ Deno.serve(async (req) => {
           { status: 400 },
         );
       }
+      if (requestedAmountCents < MIN_CASHOUT_CENTS) {
+        return new Response(
+          JSON.stringify({
+            error: "Minimum cashout is $10.00.",
+            minimumCashoutCents: MIN_CASHOUT_CENTS,
+            requestedAmountCents,
+          }),
+          { status: 400 },
+        );
+      }
     }
 
     const payoutAmountCents =
       requestedAmountCents == null ? availableCents : requestedAmountCents;
+    if (payoutAmountCents < MIN_CASHOUT_CENTS) {
+      return new Response(
+        JSON.stringify({
+          error: "Minimum cashout is $10.00.",
+          minimumCashoutCents: MIN_CASHOUT_CENTS,
+          payoutAmountCents,
+        }),
+        { status: 400 },
+      );
+    }
 
     // Deterministic selection: oldest first.
     const sorted = [...eventRows].sort((a, b) => {
@@ -331,7 +370,9 @@ Deno.serve(async (req) => {
         availableCents,
         overageCents: overage || 0,
         adjustmentId,
-        nextEligibleAt: new Date(Date.now() + ONE_WEEK_MS).toISOString(),
+        nextEligibleAt: CASHOUT_WEEKLY_LIMIT_ENABLED
+          ? new Date(Date.now() + ONE_WEEK_MS).toISOString()
+          : null,
       }),
       { status: 200 },
     );
