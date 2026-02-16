@@ -2846,6 +2846,8 @@ export default function App() {
   const [showDemoFilters, setShowDemoFilters] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [selectedOfferCardId, setSelectedOfferCardId] = useState(null);
+  const [markerFocusedBusinessId, setMarkerFocusedBusinessId] = useState(null);
+  const markerPressAtRef = useRef(0);
   const [mapRegion, setMapRegion] = useState(MAP_REGION);
   const initialBusinesses = SUPABASE_URL && SUPABASE_ANON_KEY ? [] : BUSINESSES;
   const initialOffers = SUPABASE_URL && SUPABASE_ANON_KEY ? [] : OFFER_SEEDS;
@@ -6143,6 +6145,41 @@ export default function App() {
     return sorted;
   }, [offerCards, activeFilters, query, discoverRadiusKey]);
 
+  const discoverSheetOfferCards = useMemo(() => {
+    const list = Array.isArray(filteredOfferCards) ? [...filteredOfferCards] : [];
+    const focusedBusinessId = String(markerFocusedBusinessId || "").trim();
+    if (!focusedBusinessId) return list;
+
+    const selectedKey = String(selectedOfferCardId || "").trim();
+    const selectedForFocused = list.find(
+      (item) =>
+        item.businessId === focusedBusinessId &&
+        getOfferCardSelectionKey(item) === selectedKey,
+    );
+    const focusedCards = list.filter((item) => item.businessId === focusedBusinessId);
+    const remainingCards = list.filter((item) => item.businessId !== focusedBusinessId);
+
+    if (!focusedCards.length) return list;
+    if (!selectedForFocused) return [...focusedCards, ...remainingCards];
+
+    const selectedCardKey = getOfferCardSelectionKey(selectedForFocused);
+    const focusedWithoutSelected = focusedCards.filter(
+      (item) => getOfferCardSelectionKey(item) !== selectedCardKey,
+    );
+    return [selectedForFocused, ...focusedWithoutSelected, ...remainingCards];
+  }, [filteredOfferCards, markerFocusedBusinessId, selectedOfferCardId]);
+
+  useEffect(() => {
+    if (!markerFocusedBusinessId) return;
+    const stillVisible = filteredOfferCards.some(
+      (item) => item.businessId === markerFocusedBusinessId,
+    );
+    if (!stillVisible) {
+      setMarkerFocusedBusinessId(null);
+      setSelectedOfferCardId(null);
+    }
+  }, [markerFocusedBusinessId, filteredOfferCards]);
+
   const filteredBusinesses = useMemo(() => {
     const visibleBusinessIds = new Set(
       filteredOfferCards.map((card) => card.businessId),
@@ -8515,6 +8552,7 @@ export default function App() {
   const openSheetForBusiness = (business) => {
     const selectedCard = getFirstVisibleOfferForBusiness(business.id);
     const selectedCardKey = getOfferCardSelectionKey(selectedCard);
+    setMarkerFocusedBusinessId(business.id);
     setSelectedId(business.id);
     setSelectedOfferCardId(selectedCardKey || null);
     openSheet("discover");
@@ -8696,17 +8734,16 @@ export default function App() {
   };
 
   const handleMarkerPress = (business) => {
-    const selectedCard = getFirstVisibleOfferForBusiness(business.id);
-    const selectedCardKey = getOfferCardSelectionKey(selectedCard);
-    const isSame = selectedId === business.id;
-    const isSheetOpen = sheetIndexRef.current > 0;
-    if (isSame || isSheetOpen) {
-      openSheetForBusiness(business);
-    } else {
-      setSelectedId(business.id);
-      setSelectedOfferCardId(selectedCardKey || null);
-    }
+    markerPressAtRef.current = Date.now();
+    openSheetForBusiness(business);
   };
+
+  const handleMapPress = useCallback(() => {
+    if (Date.now() - markerPressAtRef.current < 250) return;
+    setMarkerFocusedBusinessId(null);
+    setSelectedId(null);
+    setSelectedOfferCardId(null);
+  }, []);
 
   const toggleFilter = (filterKey) => {
     setActiveFilters((prev) =>
@@ -13283,6 +13320,7 @@ export default function App() {
               style={styles.map}
               initialRegion={MAP_REGION}
               onMapReady={handleMapReady}
+              onPress={handleMapPress}
               onRegionChangeComplete={handleMapRegionChangeComplete}
               customMapStyle={MAP_STYLE}
               showsUserLocation
@@ -15421,7 +15459,8 @@ export default function App() {
                   contentContainerStyle={[
                     styles.sheetScrollContent,
                     styles.sheetContentInsets,
-                    filteredOfferCards.length === 0 && styles.sheetScrollContentEmpty,
+                    discoverSheetOfferCards.length === 0 &&
+                      styles.sheetScrollContentEmpty,
                   ]}
                   keyboardShouldPersistTaps="handled"
                   keyboardDismissMode="on-drag"
@@ -15623,11 +15662,11 @@ export default function App() {
                   <View style={styles.cardHeaderRow}>
                     <Text style={styles.sectionTitle}>Offers Nearby</Text>
                     <Text style={styles.sectionMeta}>
-                      {filteredOfferCards.length} nearby
+                      {discoverSheetOfferCards.length} nearby
                     </Text>
                   </View>
 
-                  {filteredOfferCards.length === 0 ? (
+                  {discoverSheetOfferCards.length === 0 ? (
                     <View style={styles.emptyState}>
                       <Text style={styles.emptyTitle}>No listings match.</Text>
                       <Text style={styles.emptyCopy}>
@@ -15636,7 +15675,7 @@ export default function App() {
                     </View>
                   ) : (
                     <View style={styles.demoListStack}>
-                      {filteredOfferCards.map((item, index) => (
+                      {discoverSheetOfferCards.map((item, index) => (
                         <OfferCard
                           key={
                             item?.id ||
