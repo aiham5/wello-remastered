@@ -529,6 +529,15 @@ const formatRatePct = (bps) => {
   return (n / 100).toFixed(2);
 };
 
+const formatCommissionRateLabel = (bps) => {
+  const pct = (Number(bps) || 0) / 100;
+  if (!Number.isFinite(pct) || pct <= 0) return "15%";
+  return Number.isInteger(pct) ? `${pct.toFixed(0)}%` : `${pct.toFixed(2)}%`;
+};
+
+const getReceiptCommissionRateBps = (receipt) =>
+  getBusinessCommissionRateBps(receipt?.business_id || receipt?.business?.id);
+
 const isPromoActiveAt = (promo, atIso) => {
   if (!promo) return false;
   if (promo.active === false) return false;
@@ -2014,6 +2023,29 @@ const scheduleResume = (source) => {
   }, 150);
 };
 
+const updateCommissionRateIndicator = () => {
+  if (!ui.filterRate) return;
+  const selectedBusinessId = String(ui.filterBusiness?.value || "all");
+  if (selectedBusinessId && selectedBusinessId !== "all") {
+    const selectedRateBps = getBusinessCommissionRateBps(selectedBusinessId);
+    ui.filterRate.value = formatCommissionRateLabel(selectedRateBps);
+    return;
+  }
+  const rateSet = new Set();
+  state.filtered.forEach((receipt) => {
+    rateSet.add(formatCommissionRateLabel(getReceiptCommissionRateBps(receipt)));
+  });
+  if (!rateSet.size) {
+    ui.filterRate.value = "";
+    return;
+  }
+  if (rateSet.size === 1) {
+    ui.filterRate.value = Array.from(rateSet)[0];
+    return;
+  }
+  ui.filterRate.value = "10% or 15%";
+};
+
 const applyFilters = () => {
   const search = (ui.filterSearch.value || "").toLowerCase().trim();
   const status = ui.filterStatus.value;
@@ -2048,6 +2080,7 @@ const applyFilters = () => {
   renderStats();
   renderBusinessSummary();
   renderActivitySummary();
+  updateCommissionRateIndicator();
 };
 
 const renderReceipts = () => {
@@ -2058,9 +2091,8 @@ const renderReceipts = () => {
     const eventCashbackCents = Number(cashbackEvent?.amount_cents) || 0;
 
     const totalCents = Number(receipt?.receipt_total_cents) || 0;
-    const commissionRateBps = getBusinessCommissionRateBps(
-      receipt?.business_id || receipt?.business?.id,
-    );
+    const commissionRateBps = getReceiptCommissionRateBps(receipt);
+    const commissionRateLabel = formatCommissionRateLabel(commissionRateBps);
     const commissionCents =
       Number(receipt?.commission_due_cents) ||
       (totalCents > 0 ? calculateCommissionCents(totalCents, commissionRateBps) : 0);
@@ -2100,7 +2132,12 @@ const renderReceipts = () => {
       row.classList.add("active");
     }
     row.innerHTML = ` 
-      <td>${escapeHtml(receipt.business?.name || "--")}</td> 
+      <td>
+        <div class="business-cell">
+          <span class="business-name">${escapeHtml(receipt.business?.name || "--")}</span>
+          <span class="commission-pill" title="Business commission rate">${escapeHtml(commissionRateLabel)} commission</span>
+        </div>
+      </td> 
       <td>
         <div class="offer-cell">
           <span class="offer-title">${escapeHtml(receipt.redemption?.offer?.title || "--")}</span>
@@ -2134,9 +2171,10 @@ const selectReceipt = async (receiptId, options = {}) => {
   ui.detailEmpty.classList.add("is-hidden");
   ui.detailContent.classList.remove("is-hidden");
   ui.detailTitle.textContent = receipt.business?.name || "Receipt";
+  const headerCommissionRate = formatCommissionRateLabel(getReceiptCommissionRateBps(receipt));
   ui.detailSubtitle.textContent = `Uploaded ${formatDateTime(
     receipt.uploaded_at,
-  )}`;
+  )} | Commission ${headerCommissionRate}`;
   const statusValue = draft?.status || receipt.review_status || "pending";
   updateStatusPill(ui.detailStatus, statusValue);
   ui.detailStatusSelect.value = statusValue;
@@ -2414,8 +2452,12 @@ const renderStats = () => {
 const renderBusinessSummary = () => {
   const totals = new Map();
   state.filtered.forEach((receipt) => {
+    const businessId = String(receipt?.business?.id || receipt?.business_id || "");
     const businessName = receipt.business?.name || "Unknown";
-    const current = totals.get(businessName) || {
+    const key = businessId || businessName;
+    const current = totals.get(key) || {
+      name: businessName,
+      commissionRate: formatCommissionRateLabel(getReceiptCommissionRateBps(receipt)),
       count: 0,
       gross: 0,
       commission: 0,
@@ -2427,14 +2469,15 @@ const renderBusinessSummary = () => {
     current.commission += Number(receipt.commission_due_cents) || 0;
     const cashbackEvent = getReceiptCashbackEvent(receipt);
     current.cashback += Number(cashbackEvent?.amount_cents) || 0;
-    totals.set(businessName, current);
+    totals.set(key, current);
   });
   ui.businessSummary.innerHTML = "";
-  Array.from(totals.entries()).forEach(([name, data]) => {
+  Array.from(totals.entries()).forEach(([, data]) => {
     const item = document.createElement("div");
     item.className = "summary-item";
     item.innerHTML = `
-      <h4>${name}</h4>
+      <h4>${data.name}</h4>
+      <p>Commission rate: ${data.commissionRate}</p>
       <p>${data.count} receipts</p>
       <p>Gross: ${formatCurrency(data.gross)}</p>
       <p>Commission: ${formatCurrency(data.commission)}</p>
@@ -3267,7 +3310,7 @@ const init = async () => {
   // Commission is configured per business (10% or 15%).
   if (ui.filterRate) {
     ui.filterRate.value = "";
-    ui.filterRate.placeholder = "10 or 15";
+    ui.filterRate.placeholder = "10% or 15%";
     ui.filterRate.disabled = true;
   }
   if (ui.testDate) {

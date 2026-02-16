@@ -340,6 +340,30 @@ h1 {
   gap: 10px;
 }
 
+.business-cell {
+  display: grid;
+  gap: 6px;
+}
+
+.business-name {
+  font-weight: 600;
+}
+
+.commission-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--frost);
+  color: var(--slate);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 .promo-pill {
   display: inline-flex;
   align-items: center;
