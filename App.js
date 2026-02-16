@@ -885,6 +885,8 @@ const levenshteinDistance = (value, target) => {
 };
 
 const OFFER_TYPE_LABELS = {
+  list: "List",
+  other: "Other",
   bogo: "BOGO",
   discount: "Discount",
   bundle: "Bundle",
@@ -892,11 +894,20 @@ const OFFER_TYPE_LABELS = {
   event: "Event",
 };
 
+const OFFER_TYPE_OPTIONS = [
+  { value: "List", label: "List" },
+  { value: "Other", label: "Other" },
+];
+
 const normalizeOfferType = (input) => {
   const raw = String(input || "").trim();
   if (!raw) return "";
   const lower = raw.toLowerCase();
   const aliases = {
+    list: "list",
+    listing: "list",
+    other: "other",
+    custom: "other",
     "buy one get one": "bogo",
     buy1get1: "bogo",
     b1g1: "bogo",
@@ -937,6 +948,14 @@ const normalizeOfferType = (input) => {
   });
   const threshold = Math.max(2, Math.floor(raw.length * 0.3));
   return bestScore <= threshold ? bestLabel : raw;
+};
+
+const normalizeOfferTypeSelection = (input) => {
+  const normalized = normalizeOfferType(input);
+  if (!normalized) return "";
+  if (normalized.toLowerCase() === "list") return "List";
+  if (normalized.toLowerCase() === "other") return "Other";
+  return "Other";
 };
 
 const normalizeTagsInput = (value) =>
@@ -3080,7 +3099,7 @@ export default function App() {
   const [offerForm, setOfferForm] = useState({
     title: "",
     description: "",
-    type: "",
+    type: "List",
     redemptionLimitMode: "unlimited", // unlimited | day | week | custom
     redemptionLimitCount: "1",
     redemptionLimitPeriod: "day", // day | week (custom only)
@@ -3098,7 +3117,7 @@ export default function App() {
     id: null,
     title: "",
     description: "",
-    type: "",
+    type: "List",
     imageUrl: "",
   });
   const [editOfferImage, setEditOfferImage] = useState(null);
@@ -6165,11 +6184,6 @@ export default function App() {
     if (!ownerBusiness?.id) return [];
     return offers.filter((offer) => offer.businessId === ownerBusiness.id);
   }, [offers, ownerBusiness?.id]);
-  const offerTypeSuggestion = normalizeOfferType(offerForm.type);
-  const showOfferTypeSuggestion =
-    offerForm.type &&
-    offerTypeSuggestion &&
-    offerTypeSuggestion.toLowerCase() !== offerForm.type.trim().toLowerCase();
 
   const canRequestEdits =
     Boolean(ownerBusiness) && !ownerBusiness?.pendingEdits;
@@ -7983,7 +7997,7 @@ export default function App() {
     setOfferForm({
       title: "",
       description: "",
-      type: "",
+      type: "List",
       redemptionLimitMode: "unlimited",
       redemptionLimitCount: "1",
       redemptionLimitPeriod: "day",
@@ -11325,7 +11339,7 @@ export default function App() {
       id: offer.id,
       title: offer.title || "",
       description: offer.description || "",
-      type: offer.offerType || offer.offer_type || "",
+      type: normalizeOfferTypeSelection(offer.offerType || offer.offer_type) || "List",
       imageUrl: offer.imageUrl || "",
     });
     setEditOfferImage(
@@ -11341,6 +11355,14 @@ export default function App() {
       setEditOfferStatus({
         saving: false,
         error: "Offer title is required.",
+      });
+      return;
+    }
+    const normalizedType = normalizeOfferTypeSelection(editOfferDraft.type);
+    if (!normalizedType) {
+      setEditOfferStatus({
+        saving: false,
+        error: "Offer type is required.",
       });
       return;
     }
@@ -11365,7 +11387,7 @@ export default function App() {
       const payload = {
         title: editOfferDraft.title.trim(),
         description: editOfferDraft.description.trim() || null,
-        offer_type: editOfferDraft.type.trim(),
+        offer_type: normalizedType,
         image_url: imageUrl || null,
         approval_status: "pending",
       };
@@ -11601,7 +11623,7 @@ export default function App() {
       setOfferError("Offer title is required.");
       return;
     }
-    const normalizedType = normalizeOfferType(offerForm.type);
+    const normalizedType = normalizeOfferTypeSelection(offerForm.type);
     if (!normalizedType) {
       setOfferError("Offer type is required.");
       return;
@@ -11716,7 +11738,7 @@ export default function App() {
     setOfferForm({
       title: "",
       description: "",
-      type: "",
+      type: "List",
       redemptionLimitMode: "unlimited",
       redemptionLimitCount: "1",
       redemptionLimitPeriod: "day",
@@ -11788,32 +11810,37 @@ export default function App() {
         </View>
         <View style={styles.formField}>
           <Text style={styles.formLabel}>Offer type</Text>
-          <AutoFocusInput
-            style={styles.formInput}
-            placeholder="Discount, Buy One Get One, Bundle"
-            placeholderTextColor={COLORS.muted}
-            value={offerForm.type}
-            onChangeText={(value) => {
-              setOfferForm((prev) => ({
-                ...prev,
-                type: value,
-              }));
-              if (offerError) setOfferError(null);
-              if (offerNotice) setOfferNotice(null);
-            }}
-            autoCorrect
-            autoCapitalize="words"
-            onBlur={() => {
-              const corrected = normalizeOfferType(offerForm.type);
-              if (corrected && corrected !== offerForm.type) {
-                setOfferForm((prev) => ({
-                  ...prev,
-                  type: corrected,
-                }));
-              }
-            }}
-            maxLength={32}
-          />
+          <View style={styles.offerTypeOptionRow}>
+            {OFFER_TYPE_OPTIONS.map((option) => {
+              const active = offerForm.type === option.value;
+              return (
+                <TouchableOpacity
+                  key={option.value}
+                  style={[
+                    styles.offerTypeOption,
+                    active && styles.offerTypeOptionActive,
+                  ]}
+                  onPress={() => {
+                    setOfferForm((prev) => ({
+                      ...prev,
+                      type: option.value,
+                    }));
+                    if (offerError) setOfferError(null);
+                    if (offerNotice) setOfferNotice(null);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.offerTypeOptionText,
+                      active && styles.offerTypeOptionTextActive,
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         </View>
       </View>
 
@@ -11835,10 +11862,6 @@ export default function App() {
         textAlignVertical="top"
         maxLength={360}
       />
-      {showOfferTypeSuggestion && (
-        <Text style={styles.formHint}>Suggested: {offerTypeSuggestion}</Text>
-      )}
-
       <Text style={styles.formLabel}>Redemption limit</Text>
       <View style={styles.limitOptionRow}>
         {[
@@ -14718,17 +14741,35 @@ export default function App() {
                   />
 
                   <Text style={styles.formLabel}>Offer type</Text>
-                  <AutoFocusInput
-                    style={styles.formInput}
-                    placeholder="Discount, Buy One Get One, Bundle"
-                    placeholderTextColor={COLORS.muted}
-                    value={editOfferDraft.type}
-                    onChangeText={(value) =>
-                      setEditOfferDraft((prev) => ({ ...prev, type: value }))
-                    }
-                    autoCorrect
-                    autoCapitalize="words"
-                  />
+                  <View style={styles.offerTypeOptionRow}>
+                    {OFFER_TYPE_OPTIONS.map((option) => {
+                      const active = editOfferDraft.type === option.value;
+                      return (
+                        <TouchableOpacity
+                          key={option.value}
+                          style={[
+                            styles.offerTypeOption,
+                            active && styles.offerTypeOptionActive,
+                          ]}
+                          onPress={() =>
+                            setEditOfferDraft((prev) => ({
+                              ...prev,
+                              type: option.value,
+                            }))
+                          }
+                        >
+                          <Text
+                            style={[
+                              styles.offerTypeOptionText,
+                              active && styles.offerTypeOptionTextActive,
+                            ]}
+                          >
+                            {option.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
 
                   <Text style={styles.formLabel}>Offer photo</Text>
                   <View style={styles.offerUploadRow}>
@@ -15431,7 +15472,7 @@ export default function App() {
                   )}
 
                   <View style={styles.cardHeaderRow}>
-                    <Text style={styles.sectionTitle}>Offer cards</Text>
+                    <Text style={styles.sectionTitle}>Offers Nearby</Text>
                     <Text style={styles.sectionMeta}>
                       {filteredOfferCards.length} nearby
                     </Text>
@@ -22106,6 +22147,33 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8,
     marginBottom: 6,
+  },
+  offerTypeOptionRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 2,
+  },
+  offerTypeOption: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: "#F4F6FA",
+  },
+  offerTypeOptionActive: {
+    borderColor: COLORS.pine,
+    backgroundColor: COLORS.pine,
+  },
+  offerTypeOptionText: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  offerTypeOptionTextActive: {
+    color: COLORS.white,
   },
   limitOption: {
     paddingHorizontal: 12,
