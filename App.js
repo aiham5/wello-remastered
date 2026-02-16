@@ -121,12 +121,10 @@ const SAFE_TOP =
       : 12;
 const CARD_WIDTH = Math.min(280, Math.max(210, Math.round(SCREEN_WIDTH * 0.7)));
 const CARD_GAP = Math.round(Math.max(10, SCREEN_WIDTH * 0.03));
-const OFFER_IMAGE_ASPECT = 2 / 1;
+const OFFER_IMAGE_ASPECT = 1.91 / 1;
 const OFFER_UPLOAD_WIDTH = 1200;
 const OFFER_UPLOAD_HEIGHT = Math.round(OFFER_UPLOAD_WIDTH / OFFER_IMAGE_ASPECT);
-const CARD_MEDIA_HEIGHT = Math.round(
-  (CARD_WIDTH - (IS_COMPACT ? 28 : 32)) / OFFER_IMAGE_ASPECT,
-);
+const OFFER_CROP_MAX_ZOOM = 4;
 const CARD_MEDIA_FULL_HEIGHT = Math.round(CARD_WIDTH / OFFER_IMAGE_ASPECT);
 const QR_SIZE = Math.min(200, Math.max(130, Math.round(SCREEN_WIDTH * 0.42)));
 const SCANNER_FRAME = Math.min(
@@ -1055,6 +1053,52 @@ const formatPlaidFunctionError = (parsed, fallbackMessage) => {
   }
 };
 
+const toUserFacingError = (
+  message,
+  fallback = "Something went wrong. Please try again.",
+) => {
+  const raw = String(message || "").replace(/\s+/g, " ").trim();
+  if (!raw) return fallback;
+  const lower = raw.toLowerCase();
+
+  if (
+    lower.includes("timeout") ||
+    lower.includes("edge_invoke") ||
+    lower.includes("stripe_invoke") ||
+    lower.includes("plaid_invoke") ||
+    lower.includes("r2_invoke")
+  ) {
+    return "The request took too long. Please try again.";
+  }
+  if (
+    lower.includes("network request failed") ||
+    lower.includes("failed to fetch") ||
+    lower.includes("network error")
+  ) {
+    return "Network issue. Check your connection and try again.";
+  }
+  if (
+    lower.includes("invalid jwt") ||
+    lower.includes("jwt expired") ||
+    lower.includes("unauthorized") ||
+    lower.includes("missing authorization")
+  ) {
+    return "Your session expired. Please sign in again.";
+  }
+  if (
+    lower.includes("debug") ||
+    lower.includes("stack") ||
+    lower.includes("trace") ||
+    lower.includes("exception")
+  ) {
+    return fallback;
+  }
+
+  return raw
+    .replace(/sk_(test|live)_[A-Za-z0-9]+/g, "sk_****")
+    .replace(/acct_[A-Za-z0-9]+/g, "acct_****");
+};
+
 const safeLocalSignOut = async () => {
   try {
     await clearSupabaseSession();
@@ -1240,7 +1284,10 @@ const callStripeFunction = async (functionName, payload) => {
       });
       return {
         data: null,
-        error: attempt.errorMessage,
+        error: toUserFacingError(
+          attempt.errorMessage,
+          "Unable to complete this request right now.",
+        ),
         status: attempt.status,
         details: attempt.parsed ?? null,
       };
@@ -1254,7 +1301,10 @@ const callStripeFunction = async (functionName, payload) => {
   } catch (error) {
     return {
       data: null,
-      error: error?.message || "Stripe request failed.",
+      error: toUserFacingError(
+        error?.message || "Stripe request failed.",
+        "Unable to complete this request right now.",
+      ),
       status: null,
       details: null,
     };
@@ -1441,7 +1491,10 @@ const callPlaidFunction = async (functionName, payload) => {
       });
       return {
         data: null,
-        error: attempt.errorMessage,
+        error: toUserFacingError(
+          attempt.errorMessage,
+          "Unable to complete verification right now.",
+        ),
         status: attempt.status,
         details: attempt.parsed ?? null,
       };
@@ -1455,7 +1508,10 @@ const callPlaidFunction = async (functionName, payload) => {
   } catch (error) {
     return {
       data: null,
-      error: error?.message || "Verification request failed.",
+      error: toUserFacingError(
+        error?.message || "Verification request failed.",
+        "Unable to complete verification right now.",
+      ),
       status: null,
       details: null,
     };
@@ -1566,10 +1622,12 @@ const callR2Presign = async (payload) => {
       });
       return {
         data: null,
-        error:
+        error: toUserFacingError(
           attempt.parsed?.error ||
-          attempt.parsed?.message ||
-          "Unable to sign receipt URL.",
+            attempt.parsed?.message ||
+            "Unable to sign receipt URL.",
+          "Unable to prepare receipt upload right now.",
+        ),
         status: attempt.status || null,
       };
     }
@@ -1578,7 +1636,10 @@ const callR2Presign = async (payload) => {
     console.warn("R2 presign exception");
     return {
       data: null,
-      error: error?.message || "Unable to sign receipt URL.",
+      error: toUserFacingError(
+        error?.message || "Unable to sign receipt URL.",
+        "Unable to prepare receipt upload right now.",
+      ),
       status: null,
     };
   }
@@ -1624,6 +1685,22 @@ const computeContainedSize = (
   if (!vw || !vh) return { width: 0, height: 0 };
   if (!iw || !ih) return { width: vw, height: vh };
   const scale = Math.min(vw / iw, vh / ih);
+  return { width: iw * scale, height: ih * scale };
+};
+
+const computeCoverSize = (
+  viewportWidth,
+  viewportHeight,
+  imageWidth,
+  imageHeight,
+) => {
+  const vw = Number(viewportWidth) || 0;
+  const vh = Number(viewportHeight) || 0;
+  const iw = Number(imageWidth) || 0;
+  const ih = Number(imageHeight) || 0;
+  if (!vw || !vh) return { width: 0, height: 0 };
+  if (!iw || !ih) return { width: vw, height: vh };
+  const scale = Math.max(vw / iw, vh / ih);
   return { width: iw * scale, height: ih * scale };
 };
 
@@ -1786,15 +1863,18 @@ const TAG_OPTIONS = [
   { value: "new-customer", label: "New customer" },
 ];
 
-const FILTERS = [
+const BASE_FILTERS = [
   { key: "open", label: "Open now" },
   { key: "top", label: "Top rated" },
   { key: "new", label: "New offers" },
   { key: "family", label: "Entertainment" },
-  ...TAG_OPTIONS.map((tag) => ({
-    key: `tag:${tag.value}`,
-    label: tag.label,
-  })),
+];
+const DISCOVER_RADIUS_OPTIONS = [
+  { key: "5mi", label: "5 mi", miles: 5 },
+  { key: "10mi", label: "10 mi", miles: 10 },
+  { key: "20mi", label: "20 mi", miles: 20 },
+  { key: "50mi", label: "50 mi", miles: 50 },
+  { key: "100mi", label: "100 mi", miles: 100 },
 ];
 
 const CATEGORY_OPTIONS = [
@@ -1946,57 +2026,23 @@ const getCenteredOfferCrop = (width, height) => {
   };
 };
 
-const normalizeOfferImage = async (asset) => {
-  if (!asset?.uri) {
-    return { image: null, error: "Invalid image selection." };
-  }
-  const manipulator = await loadImageManipulator();
-  if (!manipulator?.manipulateAsync) {
-    return {
-      image: {
-        uri: asset.uri,
-        mimeType: asset.mimeType || "image/jpeg",
-        fileName: `offer-${Date.now()}.jpg`,
-        base64: asset.base64 || null,
+const getImageDimensionsFromUri = (uri) =>
+  new Promise((resolve) => {
+    if (!uri) {
+      resolve({ width: 0, height: 0 });
+      return;
+    }
+    Image.getSize(
+      uri,
+      (width, height) => {
+        resolve({
+          width: Number(width) || 0,
+          height: Number(height) || 0,
+        });
       },
-      error: null,
-    };
-  }
-  try {
-    const crop = getCenteredOfferCrop(asset.width, asset.height);
-    const actions = crop
-      ? [
-          { crop },
-          {
-            resize: { width: OFFER_UPLOAD_WIDTH, height: OFFER_UPLOAD_HEIGHT },
-          },
-        ]
-      : [
-          {
-            resize: { width: OFFER_UPLOAD_WIDTH, height: OFFER_UPLOAD_HEIGHT },
-          },
-        ];
-    const result = await manipulator.manipulateAsync(asset.uri, actions, {
-      compress: 0.85,
-      format: manipulator.SaveFormat.JPEG,
-      base64: true,
-    });
-    return {
-      image: {
-        uri: result.uri,
-        mimeType: "image/jpeg",
-        fileName: `offer-${Date.now()}.jpg`,
-        base64: result.base64 || null,
-      },
-      error: null,
-    };
-  } catch (error) {
-    return {
-      image: null,
-      error: error?.message || "Unable to process the image.",
-    };
-  }
-};
+      () => resolve({ width: 0, height: 0 }),
+    );
+  });
 
 const normalizeReceiptImage = async (asset) => {
   if (!asset?.uri) {
@@ -2438,6 +2484,41 @@ function getOfferCardSelectionKey(card) {
   return null;
 }
 
+function parseDistanceLabelMiles(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || raw === "--") return null;
+  const numeric = Number.parseFloat(raw.replace(/[^0-9.]/g, ""));
+  if (!Number.isFinite(numeric)) return null;
+  if (raw.includes("mi")) return numeric;
+  if (raw.includes("km")) return numeric * 0.621371;
+  if (raw.endsWith("m") || raw.includes(" m")) return numeric / 1609.34;
+  return null;
+}
+
+function normalizeTagFilterValue(value) {
+  return String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[_\s]+/g, "-");
+}
+
+function tagFilterKeyFromLabel(tagLabel) {
+  return `tag:${normalizeTagFilterValue(tagLabel)}`;
+}
+
+const readAnimatedValueNow = async (animatedValue, fallback = 0) => {
+  try {
+    return await new Promise((resolve) => {
+      animatedValue.stopAnimation((value) => {
+        const numeric = Number(value);
+        resolve(Number.isFinite(numeric) ? numeric : fallback);
+      });
+    });
+  } catch (_error) {
+    return fallback;
+  }
+};
+
 function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
   const category = getCategoryConfig(item.categoryKey);
   const ratingLabel =
@@ -2497,6 +2578,12 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
     openFromHours === null
       ? (item.isOpen ?? item.business?.isOpen ?? true)
       : openFromHours;
+  const operatingHoursLabel = useMemo(() => {
+    const raw = String(hoursValue || "").replace(/\s+/g, " ").trim();
+    if (!raw) return null;
+    if (raw.toLowerCase() === "hours available upon request") return null;
+    return raw;
+  }, [hoursValue]);
   const tags = sanitizeBusinessTags(item.tags);
   const visibleTags = tags.slice(0, 2);
   const extraTagCount = tags.length - visibleTags.length;
@@ -2583,6 +2670,17 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
             <View style={styles.liveEditorialStackMetaTopRow}>
               <View style={styles.liveEditorialStackMetaRow}>
                 <Text style={styles.liveEditorialStackMeta}>{limitMeta.label}</Text>
+                {operatingHoursLabel ? (
+                  <View style={styles.liveEditorialStackHoursPill}>
+                    <Ionicons name="time-outline" size={11} color="#475569" />
+                    <Text
+                      style={styles.liveEditorialStackHoursText}
+                      numberOfLines={1}
+                    >
+                      {operatingHoursLabel}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
               <View style={styles.liveEditorialStackRatingPill}>
               <Ionicons name="star" size={11} color="#A16207" />
@@ -2623,15 +2721,23 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
               </Pressable>
             </View>
           ) : null}
-          {cashbackLabel ? (
+        {cashbackLabel ? (
             <View style={styles.liveEditorialStackCashbackPill}>
-              <Ionicons name="cash-outline" size={12} color="#065F46" />
+              <Ionicons name="cash-outline" size={14} color="#065F46" />
               <Text style={styles.liveEditorialStackCashbackText}>
                 {cashbackLabel} Cashback
               </Text>
             </View>
           ) : null}
         </View>
+        {!isOpen ? (
+          <View pointerEvents="none" style={styles.liveEditorialStackClosedOverlay}>
+            <View style={styles.liveEditorialStackClosedPill}>
+              <Ionicons name="time-outline" size={13} color="#334155" />
+              <Text style={styles.liveEditorialStackClosedText}>Closed now</Text>
+            </View>
+          </View>
+        ) : null}
       </TouchableOpacity>
     </View>
   );
@@ -2674,8 +2780,10 @@ export default function App() {
   const [demoQuery, setDemoQuery] = useState("");
   const [demoSearchFocused, setDemoSearchFocused] = useState(false);
   const [activeTab, setActiveTab] = useState("discover");
+  const activeTabRef = useRef("discover");
   const [discoverDemoLayout, setDiscoverDemoLayout] = useState("editorial_split");
   const [activeFilters, setActiveFilters] = useState([]);
+  const [discoverRadiusKey, setDiscoverRadiusKey] = useState("20mi");
   const [showFilters, setShowFilters] = useState(false);
   const [demoActiveFilters, setDemoActiveFilters] = useState([]);
   const [showDemoFilters, setShowDemoFilters] = useState(false);
@@ -2757,6 +2865,18 @@ export default function App() {
   const [profilePhone, setProfilePhone] = useState("");
   const [profileCompany, setProfileCompany] = useState("");
   const [profileMessage, setProfileMessage] = useState(null);
+  const [signInNotice, setSignInNotice] = useState(null);
+  const [forgotPasswordBusy, setForgotPasswordBusy] = useState(false);
+  const [securityEmailDraft, setSecurityEmailDraft] = useState("");
+  const [securityPhoneDraft, setSecurityPhoneDraft] = useState("");
+  const [securityPasswordDraft, setSecurityPasswordDraft] = useState("");
+  const [securityPasswordConfirm, setSecurityPasswordConfirm] = useState("");
+  const [pendingEmailChange, setPendingEmailChange] = useState("");
+  const [securityStatus, setSecurityStatus] = useState({
+    loading: false,
+    type: null,
+    message: null,
+  });
   const [promoCodeInput, setPromoCodeInput] = useState("");
   const [promoState, setPromoState] = useState({
     loading: false,
@@ -2814,6 +2934,9 @@ export default function App() {
     inFlight: false,
   });
   const [keyboardInset, setKeyboardInset] = useState(0);
+  const keyboardInsetRef = useRef(0);
+  const [isProfilePhoneFocused, setIsProfilePhoneFocused] = useState(false);
+  const isProfilePhoneFocusedRef = useRef(false);
   const [isEditingBusiness, setIsEditingBusiness] = useState(false);
   const [businessSaveBusy, setBusinessSaveBusy] = useState(false);
   const [remoteStatus, setRemoteStatus] = useState({
@@ -2963,6 +3086,13 @@ export default function App() {
     redemptionLimitPeriod: "day", // day | week (custom only)
   });
   const [offerImage, setOfferImage] = useState(null);
+  const [offerCropModal, setOfferCropModal] = useState({
+    visible: false,
+    target: null, // "create" | "edit"
+    asset: null,
+    saving: false,
+    error: null,
+  });
   const [editOfferOpen, setEditOfferOpen] = useState(false);
   const [editOfferDraft, setEditOfferDraft] = useState({
     id: null,
@@ -3585,6 +3715,37 @@ export default function App() {
   const receiptScale = Animated.multiply(receiptBaseScale, receiptPinchScale);
   const receiptTranslateX = Animated.add(receiptBaseX, receiptPanX);
   const receiptTranslateY = Animated.add(receiptBaseY, receiptPanY);
+  const offerCropPinchScale = useRef(new Animated.Value(1)).current;
+  const offerCropBaseScale = useRef(new Animated.Value(1)).current;
+  const offerCropPanX = useRef(new Animated.Value(0)).current;
+  const offerCropPanY = useRef(new Animated.Value(0)).current;
+  const offerCropBaseX = useRef(new Animated.Value(0)).current;
+  const offerCropBaseY = useRef(new Animated.Value(0)).current;
+  const offerCropBaseScaleValue = useRef(1);
+  const offerCropBaseXValue = useRef(0);
+  const offerCropBaseYValue = useRef(0);
+  const offerCropPinchScaleValue = useRef(1);
+  const offerCropPanXValue = useRef(0);
+  const offerCropPanYValue = useRef(0);
+  const offerCropViewportSizeRef = useRef({
+    width: Math.max(240, Math.min(SCREEN_WIDTH - 32, 360)),
+    height: Math.max(240, Math.min(SCREEN_WIDTH - 32, 360)) / OFFER_IMAGE_ASPECT,
+  });
+  const offerCropImageSizeRef = useRef({ width: 0, height: 0 });
+  const [offerCropViewportSize, setOfferCropViewportSize] = useState(
+    offerCropViewportSizeRef.current,
+  );
+  const [offerCropImageSize, setOfferCropImageSize] = useState(
+    offerCropImageSizeRef.current,
+  );
+  const offerCropPinchRef = useRef(null);
+  const offerCropPanRef = useRef(null);
+  const offerCropScale = Animated.multiply(
+    offerCropBaseScale,
+    offerCropPinchScale,
+  );
+  const offerCropTranslateX = Animated.add(offerCropBaseX, offerCropPanX);
+  const offerCropTranslateY = Animated.add(offerCropBaseY, offerCropPanY);
 
   useEffect(() => {
     return () => {
@@ -3672,11 +3833,22 @@ export default function App() {
       nextRole = "consumer";
     }
     const fullName = data?.full_name || metadataName || fallbackName;
-    const profileEmailValue = data?.email || email;
+    const profileEmailValue = email || data?.email || "";
     const profilePhoneValue = data?.phone || metadataPhone || "";
     const profileCompanyValue = data?.company || metadataCompany || "";
 
-    if (!data || roleOverride) {
+    const profileEmailNormalized = String(data?.email || "")
+      .trim()
+      .toLowerCase();
+    const authEmailNormalized = String(email || "")
+      .trim()
+      .toLowerCase();
+    const shouldSyncProfile =
+      !data ||
+      roleOverride ||
+      (authEmailNormalized && authEmailNormalized !== profileEmailNormalized);
+
+    if (shouldSyncProfile) {
       const canWriteProfile = await hasActiveSessionForUser(user.id);
       if (!canWriteProfile) {
         return nextRole;
@@ -3689,12 +3861,14 @@ export default function App() {
         phone: profilePhoneValue || null,
         company: profileCompanyValue || null,
       });
-      if (upsertError && !data) {
+      if (upsertError) {
         const stillSignedIn = await hasActiveSessionForUser(user.id);
         if (stillSignedIn) {
           console.warn("Wello profile upsert failed:", upsertError.message);
         }
-        nextRole = roleOverride || "consumer";
+        if (!data) {
+          nextRole = roleOverride || "consumer";
+        }
       }
     }
 
@@ -3706,6 +3880,10 @@ export default function App() {
     setProfileEmail(profileEmailValue);
     setProfilePhone(profilePhoneValue);
     setProfileCompany(profileCompanyValue);
+    setSecurityEmailDraft(profileEmailValue || email || "");
+    setSecurityPhoneDraft(profilePhoneValue || "");
+    setPendingEmailChange("");
+    setSecurityStatus({ loading: false, type: null, message: null });
     setAuthBusinessDraft(metadataDraft);
     setAccountRole(nextRole);
     return nextRole;
@@ -3785,11 +3963,21 @@ export default function App() {
           parsed?.message ||
           err?.message ||
           (status ? `Request failed (${status}).` : "Request failed.");
-        return { data: null, error: message, status };
+        return {
+          data: null,
+          error: toUserFacingError(
+            message,
+            "Unable to complete this request right now.",
+          ),
+          status,
+        };
       } catch (error) {
         return {
           data: null,
-          error: error?.message || "Request failed.",
+          error: toUserFacingError(
+            error?.message || "Request failed.",
+            "Unable to complete this request right now.",
+          ),
           status: null,
         };
       }
@@ -3962,6 +4150,14 @@ export default function App() {
     setProfileName("");
     setProfilePhone("");
     setProfileCompany("");
+    setSignInNotice(null);
+    setForgotPasswordBusy(false);
+    setSecurityEmailDraft("");
+    setSecurityPhoneDraft("");
+    setSecurityPasswordDraft("");
+    setSecurityPasswordConfirm("");
+    setPendingEmailChange("");
+    setSecurityStatus({ loading: false, type: null, message: null });
     setAuthBusinessDraft(null);
     setOwnerBusinessId(null);
   }, []);
@@ -4096,29 +4292,90 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    activeTabRef.current = activeTab;
+    if (activeTab !== "profile") {
+      setIsProfilePhoneFocused(false);
+      isProfilePhoneFocusedRef.current = false;
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    isProfilePhoneFocusedRef.current = isProfilePhoneFocused;
+  }, [isProfilePhoneFocused]);
+
+  useEffect(() => {
     const handleKeyboardShow = (event) => {
       const height = event?.endCoordinates?.height || 0;
+      keyboardInsetRef.current = height;
       setKeyboardInset(height);
+      if (
+        activeTabRef.current === "profile" &&
+        isProfilePhoneFocusedRef.current &&
+        sheetScrollRef.current
+      ) {
+        const scrollNode = sheetScrollRef.current;
+        requestAnimationFrame(() => {
+          if (typeof scrollNode.scrollToEnd === "function") {
+            scrollNode.scrollToEnd({ animated: true });
+          }
+          if (typeof scrollNode.scrollTo === "function") {
+            scrollNode.scrollTo({ y: 100000, animated: true });
+          }
+          setTimeout(() => {
+            const retryNode = sheetScrollRef.current;
+            if (!retryNode) return;
+            if (typeof retryNode.scrollToEnd === "function") {
+              retryNode.scrollToEnd({ animated: true });
+            }
+            if (typeof retryNode.scrollTo === "function") {
+              retryNode.scrollTo({ y: 100000, animated: true });
+            }
+          }, 220);
+        });
+      }
     };
     const handleKeyboardHide = () => {
+      keyboardInsetRef.current = 0;
       setKeyboardInset(0);
+      setIsProfilePhoneFocused(false);
+      isProfilePhoneFocusedRef.current = false;
     };
-    const showEvent =
-      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvent =
-      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const showSubscription = Keyboard.addListener(
-      showEvent,
-      handleKeyboardShow,
-    );
-    const hideSubscription = Keyboard.addListener(
-      hideEvent,
-      handleKeyboardHide,
-    );
+    const showEvents =
+      Platform.OS === "ios"
+        ? ["keyboardWillShow", "keyboardDidShow"]
+        : ["keyboardDidShow"];
+    const hideEvents =
+      Platform.OS === "ios"
+        ? ["keyboardWillHide", "keyboardDidHide"]
+        : ["keyboardDidHide"];
+    const subscriptions = [
+      ...showEvents.map((eventName) =>
+        Keyboard.addListener(eventName, handleKeyboardShow),
+      ),
+      ...hideEvents.map((eventName) =>
+        Keyboard.addListener(eventName, handleKeyboardHide),
+      ),
+    ];
     return () => {
-      showSubscription.remove();
-      hideSubscription.remove();
+      subscriptions.forEach((sub) => sub?.remove?.());
     };
+  }, []);
+
+  const nudgeSheetToBottomForKeyboard = useCallback((delayMs = 160) => {
+    const scrollNode = sheetScrollRef.current;
+    if (!scrollNode) return;
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        const node = sheetScrollRef.current;
+        if (!node) return;
+        if (typeof node.scrollToEnd === "function") {
+          node.scrollToEnd({ animated: true });
+        }
+        if (typeof node.scrollTo === "function") {
+          node.scrollTo({ y: 100000, animated: true });
+        }
+      }, delayMs);
+    });
   }, []);
 
   const AutoFocusInput = useMemo(() => {
@@ -4830,6 +5087,40 @@ export default function App() {
       receiptBaseY.removeListener(ySub);
     };
   }, [receiptBaseScale, receiptBaseX, receiptBaseY]);
+
+  useEffect(() => {
+    const scaleSub = offerCropBaseScale.addListener(({ value }) => {
+      offerCropBaseScaleValue.current = value;
+    });
+    const xSub = offerCropBaseX.addListener(({ value }) => {
+      offerCropBaseXValue.current = value;
+    });
+    const ySub = offerCropBaseY.addListener(({ value }) => {
+      offerCropBaseYValue.current = value;
+    });
+    return () => {
+      offerCropBaseScale.removeListener(scaleSub);
+      offerCropBaseX.removeListener(xSub);
+      offerCropBaseY.removeListener(ySub);
+    };
+  }, [offerCropBaseScale, offerCropBaseX, offerCropBaseY]);
+
+  useEffect(() => {
+    const pinchSub = offerCropPinchScale.addListener(({ value }) => {
+      offerCropPinchScaleValue.current = value;
+    });
+    const panXSub = offerCropPanX.addListener(({ value }) => {
+      offerCropPanXValue.current = value;
+    });
+    const panYSub = offerCropPanY.addListener(({ value }) => {
+      offerCropPanYValue.current = value;
+    });
+    return () => {
+      offerCropPinchScale.removeListener(pinchSub);
+      offerCropPanX.removeListener(panXSub);
+      offerCropPanY.removeListener(panYSub);
+    };
+  }, [offerCropPinchScale, offerCropPanX, offerCropPanY]);
 
   const trackOfferView = useCallback(
     async (businessId, offerId) => {
@@ -5639,9 +5930,72 @@ export default function App() {
       })
       .filter(Boolean);
   }, [publicOffers, businesses]);
+  const discoverTagFilters = useMemo(() => {
+    const tagStats = new Map();
+    offerCards.forEach((card) => {
+      const tags = sanitizeBusinessTags(card?.tags);
+      tags.forEach((tag) => {
+        const normalized = normalizeTagFilterValue(tag);
+        if (!normalized) return;
+        const existing = tagStats.get(normalized) || {
+          key: tagFilterKeyFromLabel(normalized),
+          label: String(tag || "").trim() || normalized,
+          count: 0,
+        };
+        existing.count += 1;
+        if (
+          !existing.label ||
+          String(existing.label).length > String(tag || "").trim().length
+        ) {
+          existing.label = String(tag || "").trim() || existing.label;
+        }
+        tagStats.set(normalized, existing);
+      });
+    });
+    return Array.from(tagStats.values())
+      .sort((a, b) => {
+        const byCount = b.count - a.count;
+        if (byCount !== 0) return byCount;
+        return String(a.label).localeCompare(String(b.label));
+      })
+      .slice(0, 12)
+      .map((entry) => ({
+        key: entry.key,
+        label: `${entry.label} (${entry.count})`,
+      }));
+  }, [offerCards]);
+  const discoverFilterOptions = useMemo(
+    () => [...BASE_FILTERS, ...discoverTagFilters],
+    [discoverTagFilters],
+  );
+
+  useEffect(() => {
+    const allowed = new Set(discoverFilterOptions.map((option) => option.key));
+    setActiveFilters((prev) => {
+      const next = prev.filter((key) => allowed.has(key));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [discoverFilterOptions]);
 
   const filteredOfferCards = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
+    const selectedRadiusMiles =
+      DISCOVER_RADIUS_OPTIONS.find((option) => option.key === discoverRadiusKey)
+        ?.miles ?? 20;
+    const getDistanceMiles = (card) => parseDistanceLabelMiles(card?.distance);
+    const compareByDistanceAsc = (a, b) => {
+      const aOpen = a?.isOpen !== false;
+      const bOpen = b?.isOpen !== false;
+      if (aOpen !== bOpen) return aOpen ? -1 : 1;
+      const aDistance = getDistanceMiles(a);
+      const bDistance = getDistanceMiles(b);
+      const aKnown = Number.isFinite(aDistance);
+      const bKnown = Number.isFinite(bDistance);
+      if (aKnown && bKnown) return aDistance - bDistance;
+      if (aKnown) return -1;
+      if (bKnown) return 1;
+      return 0;
+    };
     const base = offerCards.filter((card) => {
       const matchesFilters = activeFilters.every((filterKey) => {
         switch (filterKey) {
@@ -5653,10 +6007,12 @@ export default function App() {
             );
           default: {
             if (filterKey.startsWith("tag:")) {
-              const tagValue = filterKey.replace("tag:", "");
+              const tagValue = normalizeTagFilterValue(
+                filterKey.replace("tag:", ""),
+              );
               const tags = Array.isArray(card.tags) ? card.tags : [];
               return tags
-                .map((tag) => String(tag || "").toLowerCase())
+                .map((tag) => normalizeTagFilterValue(tag))
                 .includes(tagValue);
             }
             return true;
@@ -5664,6 +6020,13 @@ export default function App() {
         }
       });
       if (!matchesFilters) return false;
+      const cardDistanceMiles = getDistanceMiles(card);
+      if (
+        Number.isFinite(cardDistanceMiles) &&
+        cardDistanceMiles > selectedRadiusMiles
+      ) {
+        return false;
+      }
       if (!trimmed) return true;
       return card.searchText.includes(trimmed);
     });
@@ -5696,15 +6059,27 @@ export default function App() {
       sorted.sort((a, b) => {
         const ratingDelta = (b.rating || 0) - (a.rating || 0);
         if (ratingDelta !== 0) return ratingDelta;
-        return (b.offerCreatedAt || 0) - (a.offerCreatedAt || 0);
+        const createdDelta = (b.offerCreatedAt || 0) - (a.offerCreatedAt || 0);
+        if (createdDelta !== 0) return createdDelta;
+        return compareByDistanceAsc(a, b);
       });
     } else if (wantsTop) {
-      sorted.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+      sorted.sort((a, b) => {
+        const ratingDelta = (b.rating || 0) - (a.rating || 0);
+        if (ratingDelta !== 0) return ratingDelta;
+        return compareByDistanceAsc(a, b);
+      });
     } else if (wantsNew) {
-      sorted.sort((a, b) => (b.offerCreatedAt || 0) - (a.offerCreatedAt || 0));
+      sorted.sort((a, b) => {
+        const createdDelta = (b.offerCreatedAt || 0) - (a.offerCreatedAt || 0);
+        if (createdDelta !== 0) return createdDelta;
+        return compareByDistanceAsc(a, b);
+      });
+    } else {
+      sorted.sort(compareByDistanceAsc);
     }
     return sorted;
-  }, [offerCards, activeFilters, query]);
+  }, [offerCards, activeFilters, query, discoverRadiusKey]);
 
   const filteredBusinesses = useMemo(() => {
     const visibleBusinessIds = new Set(
@@ -5730,10 +6105,12 @@ export default function App() {
             );
           default: {
             if (filterKey.startsWith("tag:")) {
-              const tagValue = filterKey.replace("tag:", "");
+              const tagValue = normalizeTagFilterValue(
+                filterKey.replace("tag:", ""),
+              );
               const tags = Array.isArray(card.tags) ? card.tags : [];
               return tags
-                .map((tag) => String(tag || "").toLowerCase())
+                .map((tag) => normalizeTagFilterValue(tag))
                 .includes(tagValue);
             }
             return true;
@@ -6896,6 +7273,7 @@ export default function App() {
     if (!ensureSupabaseReady(setSignInError)) return;
     setAuthBusy(true);
     setSignInError(null);
+    setSignInNotice(null);
     try {
       const email = signInEmail.trim().toLowerCase();
       // Clear any stale local session keys before attempting a fresh sign-in.
@@ -6946,6 +7324,12 @@ export default function App() {
       setProfileName(formatDisplayName(data.user.email || email));
       setProfilePhone("");
       setProfileCompany("");
+      setSecurityEmailDraft(data.user.email || email);
+      setSecurityPhoneDraft("");
+      setSecurityPasswordDraft("");
+      setSecurityPasswordConfirm("");
+      setPendingEmailChange("");
+      setSecurityStatus({ loading: false, type: null, message: null });
       setAccountRole("consumer");
       setIsSignedIn(true);
       setSignInPassword("");
@@ -6958,6 +7342,231 @@ export default function App() {
       setSignInError(friendly);
     } finally {
       setAuthBusy(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    const email = String(signInEmail || "").trim().toLowerCase();
+    if (!email) {
+      setSignInError("Enter your email first, then tap Forgot password.");
+      return;
+    }
+    if (!ensureSupabaseReady(setSignInError)) return;
+    setForgotPasswordBusy(true);
+    setSignInError(null);
+    setSignInNotice(null);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: GOOGLE_AUTH_REDIRECT_URL,
+      });
+      if (error) {
+        const raw = String(error.message || "");
+        if (
+          raw.toLowerCase().includes("recovery email") ||
+          raw.toLowerCase().includes("smtp")
+        ) {
+          setSignInError(
+            "We couldn't send the reset email right now. Please try again in a minute.",
+          );
+        } else {
+          setSignInError(raw || "Unable to send reset email.");
+        }
+        return;
+      }
+      setSignInNotice("Password reset email sent. Check your inbox.");
+    } catch (error) {
+      const raw = String(error?.message || "");
+      if (
+        raw.toLowerCase().includes("recovery email") ||
+        raw.toLowerCase().includes("smtp")
+      ) {
+        setSignInError(
+          "We couldn't send the reset email right now. Please try again in a minute.",
+        );
+      } else {
+        setSignInError(raw || "Unable to send reset email.");
+      }
+    } finally {
+      setForgotPasswordBusy(false);
+    }
+  };
+
+  const handleSecurityChangePassword = async () => {
+    if (!isSignedIn || !authUserId) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: "Sign in to change your password.",
+      });
+      return;
+    }
+    if (!ensureSupabaseReady((message) =>
+      setSecurityStatus({ loading: false, type: "error", message }),
+    )) {
+      return;
+    }
+    const nextPassword = String(securityPasswordDraft || "");
+    const confirmPassword = String(securityPasswordConfirm || "");
+    if (nextPassword.length < 8) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: "Use at least 8 characters for your new password.",
+      });
+      return;
+    }
+    if (nextPassword !== confirmPassword) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: "New password and confirmation must match.",
+      });
+      return;
+    }
+    setSecurityStatus({ loading: true, type: null, message: null });
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: nextPassword,
+      });
+      if (error) {
+        setSecurityStatus({
+          loading: false,
+          type: "error",
+          message: error.message || "Unable to change password.",
+        });
+        return;
+      }
+      setSecurityPasswordDraft("");
+      setSecurityPasswordConfirm("");
+      setSecurityStatus({
+        loading: false,
+        type: "success",
+        message: "Password updated.",
+      });
+    } catch (error) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: error?.message || "Unable to change password.",
+      });
+    }
+  };
+
+  const handleSecurityChangeEmail = async () => {
+    if (!isSignedIn || !authUserId) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: "Sign in to change your email.",
+      });
+      return;
+    }
+    if (!ensureSupabaseReady((message) =>
+      setSecurityStatus({ loading: false, type: "error", message }),
+    )) {
+      return;
+    }
+    const nextEmail = String(securityEmailDraft || "").trim().toLowerCase();
+    const currentEmail = String(profileEmail || authEmail || "")
+      .trim()
+      .toLowerCase();
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailPattern.test(nextEmail)) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: "Enter a valid email address.",
+      });
+      return;
+    }
+    if (nextEmail === currentEmail) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: "Enter a different email address.",
+      });
+      return;
+    }
+    setSecurityStatus({ loading: true, type: null, message: null });
+    try {
+      const { error } = await supabase.auth.updateUser(
+        { email: nextEmail },
+        { emailRedirectTo: GOOGLE_AUTH_REDIRECT_URL },
+      );
+      if (error) {
+        setSecurityStatus({
+          loading: false,
+          type: "error",
+          message: error.message || "Unable to start email change.",
+        });
+        return;
+      }
+      setPendingEmailChange(nextEmail);
+      setSecurityStatus({
+        loading: false,
+        type: "success",
+        message:
+          "Confirmation sent. Open your email and confirm the new address.",
+      });
+    } catch (error) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: error?.message || "Unable to start email change.",
+      });
+    }
+  };
+
+  const handleSecurityChangePhone = async () => {
+    if (!isSignedIn || !authUserId) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: "Sign in to update your phone number.",
+      });
+      return;
+    }
+    if (!ensureSupabaseReady((message) =>
+      setSecurityStatus({ loading: false, type: "error", message }),
+    )) {
+      return;
+    }
+    const nextPhone = String(securityPhoneDraft || "").trim();
+    setSecurityStatus({ loading: true, type: null, message: null });
+    try {
+      const payload = {
+        id: authUserId,
+        phone: nextPhone || null,
+      };
+      const { error } = await supabase.from("profiles").upsert(payload);
+      if (error) {
+        setSecurityStatus({
+          loading: false,
+          type: "error",
+          message: error.message || "Unable to update phone number.",
+        });
+        return;
+      }
+      setProfilePhone(nextPhone);
+      setProfileList((prev) =>
+        prev.map((profile) =>
+          profile.id === authUserId ? { ...profile, phone: nextPhone } : profile,
+        ),
+      );
+      await supabase.auth
+        .updateUser({ data: { phone: nextPhone || null } })
+        .catch(() => null);
+      setSecurityStatus({
+        loading: false,
+        type: "success",
+        message: "Phone number updated.",
+      });
+    } catch (error) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: error?.message || "Unable to update phone number.",
+      });
     }
   };
 
@@ -7318,6 +7927,14 @@ export default function App() {
     setProfileEmail("");
     setProfilePhone("");
     setProfileCompany("");
+    setSignInNotice(null);
+    setForgotPasswordBusy(false);
+    setSecurityEmailDraft("");
+    setSecurityPhoneDraft("");
+    setSecurityPasswordDraft("");
+    setSecurityPasswordConfirm("");
+    setPendingEmailChange("");
+    setSecurityStatus({ loading: false, type: null, message: null });
     viewedOfferIdsRef.current = new Set();
     setAuthBusinessDraft(null);
     setSignInError(null);
@@ -9295,6 +9912,356 @@ export default function App() {
     });
   };
 
+  const resetOfferCropTransform = useCallback(() => {
+    offerCropBaseScale.setValue(1);
+    offerCropPinchScale.setValue(1);
+    offerCropBaseX.setValue(0);
+    offerCropBaseY.setValue(0);
+    offerCropPanX.setValue(0);
+    offerCropPanY.setValue(0);
+    offerCropBaseScaleValue.current = 1;
+    offerCropPinchScaleValue.current = 1;
+    offerCropBaseXValue.current = 0;
+    offerCropBaseYValue.current = 0;
+    offerCropPanXValue.current = 0;
+    offerCropPanYValue.current = 0;
+  }, [
+    offerCropBaseScale,
+    offerCropPinchScale,
+    offerCropBaseX,
+    offerCropBaseY,
+    offerCropPanX,
+    offerCropPanY,
+  ]);
+
+  const closeOfferCropModal = useCallback(() => {
+    setOfferCropModal({
+      visible: false,
+      target: null,
+      asset: null,
+      saving: false,
+      error: null,
+    });
+    resetOfferCropTransform();
+  }, [resetOfferCropTransform]);
+
+  const openOfferCropModalForAsset = useCallback(
+    async (asset, target) => {
+      if (!asset?.uri) return;
+      resetOfferCropTransform();
+      const fallbackWidth = Math.max(240, Math.min(SCREEN_WIDTH - 32, 360));
+      const fallbackHeight = fallbackWidth / OFFER_IMAGE_ASPECT;
+      offerCropViewportSizeRef.current = {
+        width: fallbackWidth,
+        height: fallbackHeight,
+      };
+      setOfferCropViewportSize(offerCropViewportSizeRef.current);
+      let width = Number(asset.width) || 0;
+      let height = Number(asset.height) || 0;
+      if (!width || !height) {
+        const dims = await getImageDimensionsFromUri(asset.uri);
+        width = Number(dims.width) || 0;
+        height = Number(dims.height) || 0;
+      }
+      offerCropImageSizeRef.current = { width, height };
+      setOfferCropImageSize(offerCropImageSizeRef.current);
+      setOfferCropModal({
+        visible: true,
+        target: target === "edit" ? "edit" : "create",
+        asset: {
+          uri: asset.uri,
+          width,
+          height,
+          mimeType: asset.mimeType || "image/jpeg",
+        },
+        saving: false,
+        error: null,
+      });
+    },
+    [resetOfferCropTransform],
+  );
+
+  const getOfferCropPanBounds = useCallback((scale) => {
+    const viewport = offerCropViewportSizeRef.current;
+    const image = offerCropImageSizeRef.current;
+    const viewportWidth = Number(viewport?.width) || 0;
+    const viewportHeight = Number(viewport?.height) || 0;
+    const { width: coverWidth, height: coverHeight } = computeCoverSize(
+      viewportWidth,
+      viewportHeight,
+      image?.width,
+      image?.height,
+    );
+    const maxX = Math.max(0, (Number(coverWidth) * scale - viewportWidth) / 2);
+    const maxY = Math.max(0, (Number(coverHeight) * scale - viewportHeight) / 2);
+    return { maxX, maxY };
+  }, []);
+
+  const onOfferCropPinchEvent = Animated.event(
+    [{ nativeEvent: { scale: offerCropPinchScale } }],
+    { useNativeDriver: true },
+  );
+
+  const onOfferCropPanEvent = Animated.event(
+    [
+      {
+        nativeEvent: {
+          translationX: offerCropPanX,
+          translationY: offerCropPanY,
+        },
+      },
+    ],
+    { useNativeDriver: true },
+  );
+
+  const onOfferCropPinchStateChange = useCallback(
+    (event) => {
+      if (event.nativeEvent.oldState !== GestureState.ACTIVE) return;
+      const next = Math.max(
+        1,
+        Math.min(
+          OFFER_CROP_MAX_ZOOM,
+          offerCropBaseScaleValue.current * event.nativeEvent.scale,
+        ),
+      );
+      offerCropBaseScale.setValue(next);
+      offerCropPinchScale.setValue(1);
+      offerCropBaseScaleValue.current = next;
+      offerCropPinchScaleValue.current = 1;
+      if (next <= 1.001) {
+        offerCropBaseScale.setValue(1);
+        offerCropBaseX.setValue(0);
+        offerCropBaseY.setValue(0);
+        offerCropBaseScaleValue.current = 1;
+        offerCropBaseXValue.current = 0;
+        offerCropBaseYValue.current = 0;
+        offerCropPanXValue.current = 0;
+        offerCropPanYValue.current = 0;
+        return;
+      }
+      const { maxX, maxY } = getOfferCropPanBounds(next);
+      const clampedX = clampValue(offerCropBaseXValue.current, -maxX, maxX);
+      const clampedY = clampValue(offerCropBaseYValue.current, -maxY, maxY);
+      offerCropBaseX.setValue(clampedX);
+      offerCropBaseY.setValue(clampedY);
+      offerCropBaseXValue.current = clampedX;
+      offerCropBaseYValue.current = clampedY;
+    },
+    [
+      offerCropBaseScale,
+      offerCropPinchScale,
+      offerCropBaseX,
+      offerCropBaseY,
+      getOfferCropPanBounds,
+    ],
+  );
+
+  const onOfferCropPanStateChange = useCallback(
+    (event) => {
+      if (event.nativeEvent.oldState !== GestureState.ACTIVE) return;
+      const scale = offerCropBaseScaleValue.current;
+      const { maxX, maxY } = getOfferCropPanBounds(scale);
+      const nextX = clampValue(
+        offerCropBaseXValue.current + event.nativeEvent.translationX,
+        -maxX,
+        maxX,
+      );
+      const nextY = clampValue(
+        offerCropBaseYValue.current + event.nativeEvent.translationY,
+        -maxY,
+        maxY,
+      );
+      offerCropBaseX.setValue(nextX);
+      offerCropBaseY.setValue(nextY);
+      offerCropPanX.setValue(0);
+      offerCropPanY.setValue(0);
+      offerCropBaseXValue.current = nextX;
+      offerCropBaseYValue.current = nextY;
+      offerCropPanXValue.current = 0;
+      offerCropPanYValue.current = 0;
+    },
+    [
+      offerCropBaseX,
+      offerCropBaseY,
+      offerCropPanX,
+      offerCropPanY,
+      getOfferCropPanBounds,
+    ],
+  );
+
+  const getCurrentOfferCropRect = useCallback(() => {
+    const viewport = offerCropViewportSizeRef.current;
+    const image = offerCropImageSizeRef.current;
+    const viewportWidth = Number(viewport?.width) || 0;
+    const viewportHeight = Number(viewport?.height) || 0;
+    const sourceWidth = Number(image?.width) || 0;
+    const sourceHeight = Number(image?.height) || 0;
+    if (!viewportWidth || !viewportHeight || !sourceWidth || !sourceHeight) {
+      return null;
+    }
+    const baseCover = computeCoverSize(
+      viewportWidth,
+      viewportHeight,
+      sourceWidth,
+      sourceHeight,
+    );
+    const liveScale = Math.max(
+      1,
+      (Number(offerCropBaseScaleValue.current) || 1) *
+        (Number(offerCropPinchScaleValue.current) || 1),
+    );
+    const liveX =
+      (Number(offerCropBaseXValue.current) || 0) +
+      (Number(offerCropPanXValue.current) || 0);
+    const liveY =
+      (Number(offerCropBaseYValue.current) || 0) +
+      (Number(offerCropPanYValue.current) || 0);
+    const { maxX, maxY } = getOfferCropPanBounds(liveScale);
+    const clampedX = clampValue(liveX, -maxX, maxX);
+    const clampedY = clampValue(liveY, -maxY, maxY);
+
+    const scale = liveScale;
+    const displayWidth = baseCover.width * scale;
+    const displayHeight = baseCover.height * scale;
+    if (!displayWidth || !displayHeight) return null;
+
+    const offsetX = (displayWidth - viewportWidth) / 2 - clampedX;
+    const offsetY =
+      (displayHeight - viewportHeight) / 2 - clampedY;
+
+    const originX = clampValue(
+      Math.round((offsetX / displayWidth) * sourceWidth),
+      0,
+      Math.max(0, sourceWidth - 1),
+    );
+    const originY = clampValue(
+      Math.round((offsetY / displayHeight) * sourceHeight),
+      0,
+      Math.max(0, sourceHeight - 1),
+    );
+    const width = clampValue(
+      Math.round((viewportWidth / displayWidth) * sourceWidth),
+      1,
+      Math.max(1, sourceWidth - originX),
+    );
+    const height = clampValue(
+      Math.round((viewportHeight / displayHeight) * sourceHeight),
+      1,
+      Math.max(1, sourceHeight - originY),
+    );
+    return {
+      originX,
+      originY,
+      width,
+      height,
+    };
+  }, [getOfferCropPanBounds]);
+
+  const handleSaveOfferCrop = useCallback(async () => {
+    const asset = offerCropModal.asset;
+    const target = offerCropModal.target;
+    if (!asset?.uri || !target) return;
+    const manipulator = await loadImageManipulator();
+    if (!manipulator?.manipulateAsync) {
+      const fallback = {
+        uri: asset.uri,
+        mimeType: asset.mimeType || "image/jpeg",
+        fileName: `offer-${Date.now()}.jpg`,
+        base64: null,
+      };
+      if (target === "edit") {
+        setEditOfferImage({ ...fallback, isRemote: false });
+      } else {
+        setOfferImage(fallback);
+      }
+      closeOfferCropModal();
+      return;
+    }
+
+    setOfferCropModal((prev) => ({ ...prev, saving: true, error: null }));
+    try {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      const [
+        liveBaseScale,
+        livePinchScale,
+        liveBaseX,
+        liveBaseY,
+        livePanX,
+        livePanY,
+      ] = await Promise.all([
+        readAnimatedValueNow(offerCropBaseScale, offerCropBaseScaleValue.current),
+        readAnimatedValueNow(
+          offerCropPinchScale,
+          offerCropPinchScaleValue.current,
+        ),
+        readAnimatedValueNow(offerCropBaseX, offerCropBaseXValue.current),
+        readAnimatedValueNow(offerCropBaseY, offerCropBaseYValue.current),
+        readAnimatedValueNow(offerCropPanX, offerCropPanXValue.current),
+        readAnimatedValueNow(offerCropPanY, offerCropPanYValue.current),
+      ]);
+      offerCropBaseScaleValue.current = liveBaseScale;
+      offerCropPinchScaleValue.current = livePinchScale;
+      offerCropBaseXValue.current = liveBaseX;
+      offerCropBaseYValue.current = liveBaseY;
+      offerCropPanXValue.current = livePanX;
+      offerCropPanYValue.current = livePanY;
+
+      let sourceWidth = Number(offerCropImageSizeRef.current.width) || 0;
+      let sourceHeight = Number(offerCropImageSizeRef.current.height) || 0;
+      if (!sourceWidth || !sourceHeight) {
+        const dims = await getImageDimensionsFromUri(asset.uri);
+        sourceWidth = Number(dims.width) || 0;
+        sourceHeight = Number(dims.height) || 0;
+      }
+
+      const cropRect =
+        getCurrentOfferCropRect() ||
+        getCenteredOfferCrop(sourceWidth, sourceHeight) || {
+          originX: 0,
+          originY: 0,
+          width: sourceWidth || 1,
+          height: sourceHeight || 1,
+        };
+      const actions = [
+        { crop: cropRect },
+        { resize: { width: OFFER_UPLOAD_WIDTH, height: OFFER_UPLOAD_HEIGHT } },
+      ];
+      const result = await manipulator.manipulateAsync(asset.uri, actions, {
+        compress: 0.85,
+        format: manipulator.SaveFormat.JPEG,
+        base64: true,
+      });
+      const finalImage = {
+        uri: result.uri,
+        mimeType: "image/jpeg",
+        fileName: `offer-${Date.now()}.jpg`,
+        base64: result.base64 || null,
+      };
+      if (target === "edit") {
+        setEditOfferImage({ ...finalImage, isRemote: false });
+      } else {
+        setOfferImage(finalImage);
+      }
+      closeOfferCropModal();
+    } catch (error) {
+      setOfferCropModal((prev) => ({
+        ...prev,
+        saving: false,
+        error: "Unable to crop this photo. Please try another image.",
+      }));
+    }
+  }, [
+    offerCropModal,
+    getCurrentOfferCropRect,
+    closeOfferCropModal,
+    offerCropBaseScale,
+    offerCropPinchScale,
+    offerCropBaseX,
+    offerCropBaseY,
+    offerCropPanX,
+    offerCropPanY,
+  ]);
+
   const handlePickOfferImage = async () => {
     if (!ownerBusiness) {
       setOfferError("Create your business profile first.");
@@ -9313,12 +10280,14 @@ export default function App() {
     }
     try {
       const mediaTypes = getImagePickerMediaTypes();
-      const result = await ImagePicker.launchImageLibraryAsync({
+      const pickerOptions = {
         ...(mediaTypes ? { mediaTypes } : {}),
         allowsEditing: false,
-        aspect: [2, 1],
         quality: 0.85,
-        base64: true,
+        base64: false,
+      };
+      const result = await ImagePicker.launchImageLibraryAsync({
+        ...pickerOptions,
       });
       if (result.canceled) return;
       const asset = result.assets?.[0];
@@ -9330,15 +10299,7 @@ export default function App() {
         });
         return;
       }
-      const normalized = await normalizeOfferImage(asset);
-      if (normalized.error || !normalized.image) {
-        setOfferImageStatus({
-          uploading: false,
-          error: normalized.error || "Unable to process the image.",
-        });
-        return;
-      }
-      setOfferImage(normalized.image);
+      await openOfferCropModalForAsset(asset, "create");
     } catch (error) {
       setOfferImageStatus({
         uploading: false,
@@ -9360,12 +10321,14 @@ export default function App() {
     }
     try {
       const mediaTypes = getImagePickerMediaTypes();
-      const result = await ImagePicker.launchImageLibraryAsync({
+      const pickerOptions = {
         ...(mediaTypes ? { mediaTypes } : {}),
         allowsEditing: false,
-        aspect: [2, 1],
         quality: 0.85,
-        base64: true,
+        base64: false,
+      };
+      const result = await ImagePicker.launchImageLibraryAsync({
+        ...pickerOptions,
       });
       if (result.canceled) return;
       const asset = result.assets?.[0];
@@ -9377,18 +10340,7 @@ export default function App() {
         });
         return;
       }
-      const normalized = await normalizeOfferImage(asset);
-      if (normalized.error || !normalized.image) {
-        setEditOfferStatus({
-          saving: false,
-          error: normalized.error || "Unable to process the image.",
-        });
-        return;
-      }
-      setEditOfferImage({
-        ...normalized.image,
-        isRemote: false,
-      });
+      await openOfferCropModalForAsset(asset, "edit");
     } catch (error) {
       setEditOfferStatus({
         saving: false,
@@ -10636,6 +11588,15 @@ export default function App() {
       setOfferError("Create your business profile first.");
       return;
     }
+    const isBusinessStripeConnected = Boolean(
+      resolvedOwnerBusiness?.stripeAccountId || ownerBusiness?.stripeAccountId,
+    );
+    if (!isBusinessStripeConnected) {
+      setOfferError(
+        "Connect Stripe in Dashboard > Payments before creating offers.",
+      );
+      return;
+    }
     if (!offerForm.title.trim()) {
       setOfferError("Offer title is required.");
       return;
@@ -10772,8 +11733,12 @@ export default function App() {
     setOfferBusy(false);
   };
 
-  const renderCreateOfferCard = () => (
-    <View style={styles.formCard}>
+  const renderCreateOfferCard = () => {
+    const stripeConnectedForOffers = Boolean(
+      resolvedOwnerBusiness?.stripeAccountId || ownerBusiness?.stripeAccountId,
+    );
+    return (
+      <View style={styles.formCard}>
       <View style={styles.formHeaderRow}>
         <View style={styles.formHeaderCopy}>
           <Text style={styles.formHeaderTitle}>Create offer</Text>
@@ -10825,7 +11790,7 @@ export default function App() {
           <Text style={styles.formLabel}>Offer type</Text>
           <AutoFocusInput
             style={styles.formInput}
-            placeholder="Discount, BOGO, Bundle..."
+            placeholder="Discount, Buy One Get One, Bundle"
             placeholderTextColor={COLORS.muted}
             value={offerForm.type}
             onChangeText={(value) => {
@@ -10954,7 +11919,7 @@ export default function App() {
           <View style={styles.limitCountWrap}>
             <AutoFocusInput
               style={[styles.formInput, styles.limitCountInput]}
-              placeholder="Times"
+              placeholder="Count"
               placeholderTextColor={COLORS.muted}
               value={String(offerForm.redemptionLimitCount || "")}
               onChangeText={(value) => {
@@ -11045,13 +12010,17 @@ export default function App() {
               }}
             />
             <View style={styles.offerUploadOverlay}>
-              <Text style={styles.offerUploadOverlayText}>Tap to replace</Text>
+              <Text style={styles.offerUploadOverlayText}>
+                Tap to recrop or replace
+              </Text>
             </View>
           </>
         ) : (
           <View style={styles.offerUploadPlaceholder}>
             <Ionicons name="image-outline" size={18} color={COLORS.muted} />
-            <Text style={styles.offerUploadHint}>Tap to upload a photo.</Text>
+            <Text style={styles.offerUploadHint}>
+              Tap to upload and crop a photo.
+            </Text>
           </View>
         )}
         {offerImageStatus.uploading && (
@@ -11060,6 +12029,9 @@ export default function App() {
           </View>
         )}
       </TouchableOpacity>
+      <Text style={styles.formHint}>
+        Crop before saving. The preview is how your offer will appear.
+      </Text>
 
       {offerNotice && (
         <View style={[styles.alertBox, styles.alertSuccess]}>
@@ -11072,18 +12044,31 @@ export default function App() {
         <TouchableOpacity
           style={[
             styles.primaryButton,
-            offerBusy && styles.primaryButtonDisabled,
+            (offerBusy || !stripeConnectedForOffers) &&
+              styles.primaryButtonDisabled,
           ]}
           onPress={handleCreateOffer}
-          disabled={offerBusy}
+          disabled={offerBusy || !stripeConnectedForOffers}
         >
           <Text style={styles.primaryButtonText}>
-            {offerBusy ? "Saving..." : "Create offer"}
+            {offerBusy
+              ? "Saving..."
+              : stripeConnectedForOffers
+                ? "Create offer"
+                : "Connect Stripe to create offers"}
           </Text>
         </TouchableOpacity>
       </View>
+      {!stripeConnectedForOffers && (
+        <View style={styles.formCardDisabledOverlay}>
+          <Text style={styles.formCardDisabledOverlayText}>
+            Connect Stripe in Dashboard {" > "} Payments to create offers
+          </Text>
+        </View>
+      )}
     </View>
-  );
+    );
+  };
 
   const handleToggleOffer = async (offer) => {
     if (!offer?.id) return;
@@ -13067,7 +14052,7 @@ export default function App() {
                         {businessRedemptionStatus.error}
                       </Text>
                     )}
-                    {receiptDebug && (
+                    {__DEV__ && receiptDebug && (
                       <Text style={styles.cashoutErrorText}>
                         {receiptDebug}
                       </Text>
@@ -13538,6 +14523,151 @@ export default function App() {
               </SafeAreaProvider>
             </Modal>
 
+            <Modal
+              visible={offerCropModal.visible}
+              animationType="slide"
+              onRequestClose={closeOfferCropModal}
+            >
+              <SafeAreaProvider>
+              <GestureHandlerRootView style={styles.receiptPreviewRoot}>
+                <SafeAreaView
+                  style={styles.editOfferScreen}
+                  edges={["top", "bottom"]}
+                >
+                  <View style={styles.editOfferHeader}>
+                    <Text style={styles.editOfferTitle}>Crop offer photo</Text>
+                    <TouchableOpacity
+                      style={styles.receiptsClose}
+                      onPress={closeOfferCropModal}
+                    >
+                      <Ionicons name="close" size={18} color={COLORS.ink} />
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.editOfferSubtitle}>
+                    Move and zoom your image. The frame below is the exact phone
+                    offer preview.
+                  </Text>
+
+                  <View style={styles.offerCropBody}>
+                    <View
+                      style={styles.offerCropViewport}
+                      onLayout={(event) => {
+                        const { width, height } = event.nativeEvent.layout || {};
+                        if (!width || !height) return;
+                        const next = { width, height };
+                        offerCropViewportSizeRef.current = next;
+                        setOfferCropViewportSize(next);
+                      }}
+                    >
+                      <PinchGestureHandler
+                        ref={offerCropPinchRef}
+                        simultaneousHandlers={offerCropPanRef}
+                        onGestureEvent={onOfferCropPinchEvent}
+                        onHandlerStateChange={onOfferCropPinchStateChange}
+                      >
+                        <Animated.View style={styles.receiptZoomWrap}>
+                          <PanGestureHandler
+                            ref={offerCropPanRef}
+                            simultaneousHandlers={offerCropPinchRef}
+                            onGestureEvent={onOfferCropPanEvent}
+                            onHandlerStateChange={onOfferCropPanStateChange}
+                            minPointers={1}
+                            maxPointers={2}
+                          >
+                            <Animated.View
+                              style={[
+                                styles.offerCropPreviewContent,
+                                (() => {
+                                  const { width: vw, height: vh } =
+                                    offerCropViewportSize || {};
+                                  const { width: iw, height: ih } =
+                                    offerCropImageSize || {};
+                                  const base = computeCoverSize(
+                                    vw || 320,
+                                    vh || 320 / OFFER_IMAGE_ASPECT,
+                                    iw,
+                                    ih,
+                                  );
+                                  return {
+                                    width: base.width || vw || 320,
+                                    height:
+                                      base.height ||
+                                      vh ||
+                                      320 / OFFER_IMAGE_ASPECT,
+                                    transform: [
+                                      { scale: offerCropScale },
+                                      { translateX: offerCropTranslateX },
+                                      { translateY: offerCropTranslateY },
+                                    ],
+                                  };
+                                })(),
+                              ]}
+                            >
+                              {offerCropModal.asset?.uri ? (
+                                <Image
+                                  source={{ uri: offerCropModal.asset.uri }}
+                                  style={styles.offerCropPreviewImage}
+                                  resizeMode="cover"
+                                  onLoad={(event) => {
+                                    const source = event?.nativeEvent?.source;
+                                    const width = Number(source?.width) || 0;
+                                    const height = Number(source?.height) || 0;
+                                    if (!width || !height) return;
+                                    const next = { width, height };
+                                    offerCropImageSizeRef.current = next;
+                                    setOfferCropImageSize(next);
+                                  }}
+                                />
+                              ) : (
+                                <View style={styles.offerCropFallback}>
+                                  <Text style={styles.offerCropFallbackText}>
+                                    Image unavailable
+                                  </Text>
+                                </View>
+                              )}
+                            </Animated.View>
+                          </PanGestureHandler>
+                        </Animated.View>
+                      </PinchGestureHandler>
+                      <View
+                        pointerEvents="none"
+                        style={styles.offerCropGuideBorder}
+                      />
+                    </View>
+                    <Text style={styles.formHint}>
+                      Ratio locked to 1.91:1 so it fills the offer card exactly.
+                    </Text>
+                    {offerCropModal.error ? (
+                      <Text style={styles.formError}>{offerCropModal.error}</Text>
+                    ) : null}
+                  </View>
+
+                  <View style={styles.formActions}>
+                    <TouchableOpacity
+                      style={styles.secondaryButton}
+                      onPress={resetOfferCropTransform}
+                      disabled={offerCropModal.saving}
+                    >
+                      <Text style={styles.secondaryButtonText}>Reset</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.primaryButton,
+                        offerCropModal.saving && styles.primaryButtonDisabled,
+                      ]}
+                      onPress={handleSaveOfferCrop}
+                      disabled={offerCropModal.saving}
+                    >
+                      <Text style={styles.primaryButtonText}>
+                        {offerCropModal.saving ? "Saving..." : "Save photo"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </SafeAreaView>
+              </GestureHandlerRootView>
+              </SafeAreaProvider>
+            </Modal>
+
             <Modal visible={editOfferOpen} animationType="slide">
               <SafeAreaView
                 style={styles.editOfferScreen}
@@ -13563,7 +14693,7 @@ export default function App() {
                   <Text style={styles.formLabel}>Offer title</Text>
                   <AutoFocusInput
                     style={styles.formInput}
-                    placeholder="Offer title"
+                    placeholder="Ex: 20% off lunch"
                     placeholderTextColor={COLORS.muted}
                     value={editOfferDraft.title}
                     onChangeText={(value) =>
@@ -13574,7 +14704,7 @@ export default function App() {
                   <Text style={styles.formLabel}>Description</Text>
                   <AutoFocusInput
                     style={[styles.formInput, styles.formTextarea]}
-                    placeholder="Describe the offer details"
+                    placeholder="Include limits, dates, and eligible items"
                     placeholderTextColor={COLORS.muted}
                     value={editOfferDraft.description}
                     onChangeText={(value) =>
@@ -13590,7 +14720,7 @@ export default function App() {
                   <Text style={styles.formLabel}>Offer type</Text>
                   <AutoFocusInput
                     style={styles.formInput}
-                    placeholder="Discount, BOGO, Bundle..."
+                    placeholder="Discount, Buy One Get One, Bundle"
                     placeholderTextColor={COLORS.muted}
                     value={editOfferDraft.type}
                     onChangeText={(value) =>
@@ -13620,6 +14750,9 @@ export default function App() {
                       </TouchableOpacity>
                     )}
                   </View>
+                  <Text style={styles.formHint}>
+                    Upload and crop to control how the offer photo appears.
+                  </Text>
                   <View style={styles.offerUploadFrame}>
                     {editOfferImage?.uri ? (
                       <Image
@@ -14226,29 +15359,59 @@ export default function App() {
                   )}
 
                   {showFilters && (
-                    <View style={styles.filterRow}>
-                      {FILTERS.map((filter) => {
-                        const isActive = activeFilters.includes(filter.key);
-                        return (
-                          <TouchableOpacity
-                            key={filter.key}
-                            style={[
-                              styles.filterPill,
-                              isActive && styles.filterPillActive,
-                            ]}
-                            onPress={() => toggleFilter(filter.key)}
-                          >
-                            <Text
+                    <View>
+                      <View style={styles.filterRow}>
+                        {discoverFilterOptions.map((filter) => {
+                          const isActive = activeFilters.includes(filter.key);
+                          return (
+                            <TouchableOpacity
+                              key={filter.key}
                               style={[
-                                styles.filterText,
-                                isActive && styles.filterTextActive,
+                                styles.filterPill,
+                                isActive && styles.filterPillActive,
                               ]}
+                              onPress={() => toggleFilter(filter.key)}
                             >
-                              {filter.label}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
+                              <Text
+                                style={[
+                                  styles.filterText,
+                                  isActive && styles.filterTextActive,
+                                ]}
+                              >
+                                {filter.label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                      <View style={styles.filterRadiusBlock}>
+                        <Text style={styles.filterRadiusLabel}>Radius (miles)</Text>
+                        <View style={styles.filterRadiusRow}>
+                          {DISCOVER_RADIUS_OPTIONS.map((option) => {
+                            const isActive = discoverRadiusKey === option.key;
+                            return (
+                              <TouchableOpacity
+                                key={option.key}
+                                style={[
+                                  styles.filterRadiusPill,
+                                  isActive && styles.filterRadiusPillActive,
+                                ]}
+                                onPress={() => setDiscoverRadiusKey(option.key)}
+                                activeOpacity={0.85}
+                              >
+                                <Text
+                                  style={[
+                                    styles.filterRadiusText,
+                                    isActive && styles.filterRadiusTextActive,
+                                  ]}
+                                >
+                                  {option.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </View>
                     </View>
                   )}
 
@@ -14432,7 +15595,7 @@ export default function App() {
 
                   {showDemoFilters && (
                     <View style={styles.filterRow}>
-                      {FILTERS.map((filter) => {
+                      {BASE_FILTERS.map((filter) => {
                         const isActive = demoActiveFilters.includes(filter.key);
                         return (
                           <TouchableOpacity
@@ -14736,7 +15899,9 @@ export default function App() {
               ) : (
                 <KeyboardAvoidingView
                   behavior={Platform.OS === "ios" ? "padding" : "height"}
-                  keyboardVerticalOffset={SAFE_TOP + 20}
+                  keyboardVerticalOffset={
+                    activeTab === "profile" ? 0 : SAFE_TOP + 20
+                  }
                   style={styles.sheetScroll}
                 >
                   <BottomSheetScrollView
@@ -14747,9 +15912,19 @@ export default function App() {
                     contentContainerStyle={[
                       styles.sheetScrollContent,
                       styles.sheetContentInsets,
-                      { paddingBottom: 24 + keyboardInset },
+                      {
+                        paddingBottom:
+                          24 +
+                          (activeTab === "profile" ? 0 : keyboardInset) +
+                          (activeTab === "profile" && isProfilePhoneFocused
+                            ? Platform.OS === "ios"
+                              ? 54
+                              : 42
+                            : 0),
+                      },
                     ]}
                     keyboardShouldPersistTaps="handled"
+                    keyboardDismissMode="interactive"
                   >
                     {activeTab === "business" && isOwner ? (
                       <>
@@ -15281,7 +16456,7 @@ export default function App() {
                                 styles.formInput,
                                 !canEditBusiness && styles.formInputDisabled,
                               ]}
-                              placeholder="Business name"
+                              placeholder="Company name"
                               placeholderTextColor={COLORS.muted}
                               value={formData.name}
                               editable={canEditBusiness}
@@ -15374,7 +16549,7 @@ export default function App() {
                                     !canEditBusiness &&
                                       styles.formInputDisabled,
                                   ]}
-                                  placeholder="State"
+                                  placeholder="State (e.g., OH)"
                                   placeholderTextColor={COLORS.muted}
                                   value={formData.state}
                                   editable={canEditBusiness}
@@ -15391,7 +16566,7 @@ export default function App() {
                                     !canEditBusiness &&
                                       styles.formInputDisabled,
                                   ]}
-                                  placeholder="Zip"
+                                  placeholder="ZIP code"
                                   placeholderTextColor={COLORS.muted}
                                   value={formData.postalCode}
                                   editable={canEditBusiness}
@@ -15692,7 +16867,7 @@ export default function App() {
                             <Text style={styles.formLabel}>Business name</Text>
                             <AutoFocusInput
                               style={styles.formInput}
-                              placeholder="Business name"
+                              placeholder="Company name"
                               placeholderTextColor={COLORS.muted}
                               value={createBusinessForm.name}
                               onChangeText={(value) =>
@@ -15777,7 +16952,7 @@ export default function App() {
                                 <Text style={styles.formLabel}>State</Text>
                                 <AutoFocusInput
                                   style={styles.formInput}
-                                  placeholder="State"
+                                  placeholder="State (e.g., OH)"
                                   placeholderTextColor={COLORS.muted}
                                   value={createBusinessForm.state}
                                   onChangeText={(value) =>
@@ -15792,7 +16967,7 @@ export default function App() {
                                 <Text style={styles.formLabel}>Zip code</Text>
                                 <AutoFocusInput
                                   style={styles.formInput}
-                                  placeholder="Zip"
+                                  placeholder="ZIP code"
                                   placeholderTextColor={COLORS.muted}
                                   value={createBusinessForm.postalCode}
                                   onChangeText={(value) =>
@@ -15882,7 +17057,7 @@ export default function App() {
                                 </Text>
                                 <AutoFocusInput
                                   style={styles.formInput}
-                                  placeholder="Type your category"
+                                  placeholder="Enter custom category"
                                   placeholderTextColor={COLORS.muted}
                                   value={
                                     createBusinessForm.categoryCustomLabel
@@ -16202,7 +17377,7 @@ export default function App() {
                                 )}
                               </View>
                             )}
-                            {receiptDebug && (
+                            {__DEV__ && receiptDebug && (
                               <Text style={styles.cashoutErrorText}>
                                 {receiptDebug}
                               </Text>
@@ -16854,7 +18029,7 @@ export default function App() {
                                     <Text style={styles.cashoutAmountPrefix}>
                                       $
                                     </Text>
-                                    <TextInput
+                                    <AutoFocusInput
                                       style={styles.cashoutAmountInput}
                                       value={cashoutAmountText}
                                       onChangeText={setCashoutAmountText}
@@ -17294,27 +18469,59 @@ export default function App() {
                                 <Text style={styles.formLabel}>Email</Text>
                                 <AutoFocusInput
                                   style={styles.authInput}
-                                  placeholder="name@business.com"
+                                  placeholder="you@example.com"
                                   placeholderTextColor={COLORS.muted}
                                   value={signInEmail}
-                                  onChangeText={setSignInEmail}
+                                  onChangeText={(value) => {
+                                    setSignInEmail(value);
+                                    if (signInError) setSignInError(null);
+                                    if (signInNotice) setSignInNotice(null);
+                                  }}
                                   keyboardType="email-address"
                                   autoCapitalize="none"
+                                  autoCorrect={false}
+                                  returnKeyType="next"
                                 />
 
                                 <Text style={styles.formLabel}>Password</Text>
                                 <AutoFocusInput
                                   style={styles.authInput}
-                                  placeholder="--------"
+                                  placeholder="Enter your password"
                                   placeholderTextColor={COLORS.muted}
                                   value={signInPassword}
-                                  onChangeText={setSignInPassword}
+                                  onChangeText={(value) => {
+                                    setSignInPassword(value);
+                                    if (signInError) setSignInError(null);
+                                    if (signInNotice) setSignInNotice(null);
+                                  }}
                                   secureTextEntry
+                                  returnKeyType="go"
+                                  onSubmitEditing={() => {
+                                    if (!authBusy) handleSignIn();
+                                  }}
                                 />
+                                <TouchableOpacity
+                                  style={styles.authInlineLink}
+                                  onPress={() => {
+                                    setAuthView("forgot");
+                                    if (signInError) setSignInError(null);
+                                    if (signInNotice) setSignInNotice(null);
+                                  }}
+                                  disabled={authBusy}
+                                >
+                                  <Text style={styles.authInlineLinkText}>
+                                    Forgot password?
+                                  </Text>
+                                </TouchableOpacity>
 
                                 {signInError && (
                                   <Text style={styles.formError}>
                                     {signInError}
+                                  </Text>
+                                )}
+                                {signInNotice && (
+                                  <Text style={styles.formSuccess}>
+                                    {signInNotice}
                                   </Text>
                                 )}
 
@@ -17328,6 +18535,82 @@ export default function App() {
                                 >
                                   <Text style={styles.authButtonText}>
                                     {authBusy ? "Please wait..." : "Sign in"}
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            )}
+
+                            {authView === "forgot" && (
+                              <View style={styles.authCard}>
+                                <TouchableOpacity
+                                  style={styles.authBack}
+                                  onPress={() => {
+                                    setAuthView("signin");
+                                    if (signInError) setSignInError(null);
+                                    if (signInNotice) setSignInNotice(null);
+                                  }}
+                                >
+                                  <Ionicons
+                                    name="arrow-back"
+                                    size={16}
+                                    color={COLORS.muted}
+                                  />
+                                  <Text style={styles.authBackText}>Back</Text>
+                                </TouchableOpacity>
+
+                                <Text style={styles.authTitle}>
+                                  Reset password
+                                </Text>
+                                <Text style={styles.authSubtitle}>
+                                  Enter your email and we'll send a reset link.
+                                </Text>
+
+                                <Text style={styles.formLabel}>Email</Text>
+                                <AutoFocusInput
+                                  style={styles.authInput}
+                                  placeholder="you@example.com"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={signInEmail}
+                                  onChangeText={(value) => {
+                                    setSignInEmail(value);
+                                    if (signInError) setSignInError(null);
+                                    if (signInNotice) setSignInNotice(null);
+                                  }}
+                                  keyboardType="email-address"
+                                  autoCapitalize="none"
+                                  autoCorrect={false}
+                                  returnKeyType="go"
+                                  onSubmitEditing={() => {
+                                    if (!forgotPasswordBusy) {
+                                      handleForgotPassword();
+                                    }
+                                  }}
+                                />
+
+                                {signInError && (
+                                  <Text style={styles.formError}>
+                                    {signInError}
+                                  </Text>
+                                )}
+                                {signInNotice && (
+                                  <Text style={styles.formSuccess}>
+                                    {signInNotice}
+                                  </Text>
+                                )}
+
+                                <TouchableOpacity
+                                  style={[
+                                    styles.authButton,
+                                    forgotPasswordBusy &&
+                                      styles.authButtonDisabled,
+                                  ]}
+                                  onPress={handleForgotPassword}
+                                  disabled={forgotPasswordBusy}
+                                >
+                                  <Text style={styles.authButtonText}>
+                                    {forgotPasswordBusy
+                                      ? "Sending..."
+                                      : "Send reset link"}
                                   </Text>
                                 </TouchableOpacity>
                               </View>
@@ -17358,7 +18641,7 @@ export default function App() {
                                 <Text style={styles.formLabel}>Full name</Text>
                                 <AutoFocusInput
                                   style={styles.authInput}
-                                  placeholder="Your name"
+                                  placeholder="Full name"
                                   placeholderTextColor={COLORS.muted}
                                   value={signUpName}
                                   onChangeText={setSignUpName}
@@ -17367,7 +18650,7 @@ export default function App() {
                                 <Text style={styles.formLabel}>Email</Text>
                                 <AutoFocusInput
                                   style={styles.authInput}
-                                  placeholder="name@business.com"
+                                  placeholder="you@example.com"
                                   placeholderTextColor={COLORS.muted}
                                   value={signUpEmail}
                                   onChangeText={setSignUpEmail}
@@ -17378,7 +18661,7 @@ export default function App() {
                                 <Text style={styles.formLabel}>Password</Text>
                                 <AutoFocusInput
                                   style={styles.authInput}
-                                  placeholder="--------"
+                                  placeholder="Create a password"
                                   placeholderTextColor={COLORS.muted}
                                   value={signUpPassword}
                                   onChangeText={setSignUpPassword}
@@ -17433,7 +18716,7 @@ export default function App() {
                                 <Text style={styles.formLabel}>Full name</Text>
                                 <AutoFocusInput
                                   style={styles.authInput}
-                                  placeholder="Your name"
+                                  placeholder="Full name"
                                   placeholderTextColor={COLORS.muted}
                                   value={businessOwnerName}
                                   onChangeText={setBusinessOwnerName}
@@ -17444,7 +18727,7 @@ export default function App() {
                                 </Text>
                                 <AutoFocusInput
                                   style={styles.authInput}
-                                  placeholder="Business name"
+                                  placeholder="Company name"
                                   placeholderTextColor={COLORS.muted}
                                   value={businessName}
                                   onChangeText={setBusinessName}
@@ -17524,7 +18807,7 @@ export default function App() {
                                     </Text>
                                     <AutoFocusInput
                                       style={styles.authInput}
-                                      placeholder="Type your category"
+                                      placeholder="Enter custom category"
                                       placeholderTextColor={COLORS.muted}
                                       value={businessCategoryCustomLabel}
                                       onChangeText={setBusinessCategoryCustomLabel}
@@ -17603,7 +18886,7 @@ export default function App() {
                                     <Text style={styles.formLabel}>State</Text>
                                     <AutoFocusInput
                                       style={styles.authInput}
-                                      placeholder="State"
+                                      placeholder="State (e.g., OH)"
                                       placeholderTextColor={COLORS.muted}
                                       value={businessAddressState}
                                       onChangeText={setBusinessAddressState}
@@ -17615,7 +18898,7 @@ export default function App() {
                                     </Text>
                                     <AutoFocusInput
                                       style={styles.authInput}
-                                      placeholder="Zip"
+                                      placeholder="ZIP code"
                                       placeholderTextColor={COLORS.muted}
                                       value={businessAddressPostal}
                                       onChangeText={setBusinessAddressPostal}
@@ -17748,7 +19031,7 @@ export default function App() {
                                 <Text style={styles.formLabel}>Email</Text>
                                 <AutoFocusInput
                                   style={styles.authInput}
-                                  placeholder="owner@business.com"
+                                  placeholder="owner@yourbusiness.com"
                                   placeholderTextColor={COLORS.muted}
                                   value={businessEmail}
                                   onChangeText={setBusinessEmail}
@@ -17759,7 +19042,7 @@ export default function App() {
                                 <Text style={styles.formLabel}>Password</Text>
                                 <AutoFocusInput
                                   style={styles.authInput}
-                                  placeholder="--------"
+                                  placeholder="Create a password"
                                   placeholderTextColor={COLORS.muted}
                                   value={businessPassword}
                                   onChangeText={setBusinessPassword}
@@ -17992,7 +19275,7 @@ export default function App() {
                               <Text style={styles.formLabel}>Full name</Text>
                               <AutoFocusInput
                                 style={styles.formInput}
-                                placeholder="Your name"
+                                placeholder="Full name"
                                 placeholderTextColor={COLORS.muted}
                                 value={profileName}
                                 onChangeText={setProfileName}
@@ -18000,31 +19283,25 @@ export default function App() {
 
                               <Text style={styles.formLabel}>Email</Text>
                               <AutoFocusInput
-                                style={styles.formInput}
-                                placeholder="name@business.com"
+                                style={[styles.formInput, styles.formInputDisabled]}
+                                placeholder="you@example.com"
                                 placeholderTextColor={COLORS.muted}
                                 value={profileEmail}
-                                onChangeText={setProfileEmail}
                                 keyboardType="email-address"
                                 autoCapitalize="none"
+                                editable={false}
                               />
-
-                              <Text style={styles.formLabel}>Phone</Text>
-                              <AutoFocusInput
-                                style={styles.formInput}
-                                placeholder="(555) 123-4567"
-                                placeholderTextColor={COLORS.muted}
-                                value={profilePhone}
-                                onChangeText={setProfilePhone}
-                                keyboardType="phone-pad"
-                              />
+                              <Text style={styles.formHint}>
+                                Use Account security below to change email,
+                                password, or phone number.
+                              </Text>
 
                               {accountRole !== "consumer" && (
                                 <>
                                   <Text style={styles.formLabel}>Company</Text>
                                   <AutoFocusInput
                                     style={styles.formInput}
-                                    placeholder="Business name"
+                                    placeholder="Company name"
                                     placeholderTextColor={COLORS.muted}
                                     value={profileCompany}
                                     onChangeText={setProfileCompany}
@@ -18054,6 +19331,177 @@ export default function App() {
                               </View>
                             </View>
 
+                            <View style={styles.formCard}>
+                              <Text style={styles.formHeaderTitle}>
+                                Account security
+                              </Text>
+                              <Text style={styles.formHint}>
+                                Keep your login details up to date.
+                              </Text>
+
+                              <Text style={styles.formLabel}>New email</Text>
+                              <AutoFocusInput
+                                style={styles.formInput}
+                                placeholder="new-email@example.com"
+                                placeholderTextColor={COLORS.muted}
+                                value={securityEmailDraft}
+                                onChangeText={(value) => {
+                                  setSecurityEmailDraft(value);
+                                  if (securityStatus.message) {
+                                    setSecurityStatus({
+                                      loading: false,
+                                      type: null,
+                                      message: null,
+                                    });
+                                  }
+                                }}
+                                keyboardType="email-address"
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                              />
+                              <TouchableOpacity
+                                style={[
+                                  styles.secondaryButton,
+                                  securityStatus.loading &&
+                                    styles.secondaryButtonDisabled,
+                                ]}
+                                onPress={handleSecurityChangeEmail}
+                                disabled={securityStatus.loading}
+                              >
+                                <Text style={styles.secondaryButtonText}>
+                                  Change email
+                                </Text>
+                              </TouchableOpacity>
+                              {pendingEmailChange ? (
+                                <Text style={styles.formHint}>
+                                  Pending confirmation: {pendingEmailChange}
+                                </Text>
+                              ) : null}
+
+                              <Text style={styles.formLabel}>Phone number</Text>
+                              <AutoFocusInput
+                                style={styles.formInput}
+                                placeholder="(555) 123-4567"
+                                placeholderTextColor={COLORS.muted}
+                                value={securityPhoneDraft}
+                                onChangeText={(value) => {
+                                  setSecurityPhoneDraft(value);
+                                  if (securityStatus.message) {
+                                    setSecurityStatus({
+                                      loading: false,
+                                      type: null,
+                                      message: null,
+                                    });
+                                  }
+                                }}
+                                keyboardType="phone-pad"
+                                onFocus={() => {
+                                  setIsProfilePhoneFocused(true);
+                                  isProfilePhoneFocusedRef.current = true;
+                                  nudgeSheetToBottomForKeyboard(40);
+                                  nudgeSheetToBottomForKeyboard(
+                                    Platform.OS === "android" ? 240 : 180,
+                                  );
+                                  nudgeSheetToBottomForKeyboard(
+                                    Platform.OS === "android" ? 360 : 320,
+                                  );
+                                }}
+                                onBlur={() => {
+                                  setIsProfilePhoneFocused(false);
+                                  isProfilePhoneFocusedRef.current = false;
+                                }}
+                              />
+                              <TouchableOpacity
+                                style={[
+                                  styles.secondaryButton,
+                                  securityStatus.loading &&
+                                    styles.secondaryButtonDisabled,
+                                ]}
+                                onPress={handleSecurityChangePhone}
+                                disabled={securityStatus.loading}
+                              >
+                                <Text style={styles.secondaryButtonText}>
+                                  Change phone number
+                                </Text>
+                              </TouchableOpacity>
+
+                              <Text style={styles.formLabel}>New password</Text>
+                              <AutoFocusInput
+                                style={styles.formInput}
+                                placeholder="At least 8 characters"
+                                placeholderTextColor={COLORS.muted}
+                                value={securityPasswordDraft}
+                                onChangeText={(value) => {
+                                  setSecurityPasswordDraft(value);
+                                  if (securityStatus.message) {
+                                    setSecurityStatus({
+                                      loading: false,
+                                      type: null,
+                                      message: null,
+                                    });
+                                  }
+                                }}
+                                secureTextEntry
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                              />
+
+                              <Text style={styles.formLabel}>
+                                Confirm new password
+                              </Text>
+                              <AutoFocusInput
+                                style={styles.formInput}
+                                placeholder="Re-enter new password"
+                                placeholderTextColor={COLORS.muted}
+                                value={securityPasswordConfirm}
+                                onChangeText={(value) => {
+                                  setSecurityPasswordConfirm(value);
+                                  if (securityStatus.message) {
+                                    setSecurityStatus({
+                                      loading: false,
+                                      type: null,
+                                      message: null,
+                                    });
+                                  }
+                                }}
+                                secureTextEntry
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                                returnKeyType="done"
+                                onSubmitEditing={() => {
+                                  if (!securityStatus.loading) {
+                                    handleSecurityChangePassword();
+                                  }
+                                }}
+                              />
+                              <TouchableOpacity
+                                style={[
+                                  styles.primaryButton,
+                                  securityStatus.loading &&
+                                    styles.primaryButtonDisabled,
+                                ]}
+                                onPress={handleSecurityChangePassword}
+                                disabled={securityStatus.loading}
+                              >
+                                <Text style={styles.primaryButtonText}>
+                                  {securityStatus.loading
+                                    ? "Saving..."
+                                    : "Change password"}
+                                </Text>
+                              </TouchableOpacity>
+                              {securityStatus.message ? (
+                                <Text
+                                  style={
+                                    securityStatus.type === "error"
+                                      ? styles.formError
+                                      : styles.formSuccess
+                                  }
+                                >
+                                  {securityStatus.message}
+                                </Text>
+                              ) : null}
+                            </View>
+
                             {profileMessage && (
                               <View
                                 style={[styles.alertBox, styles.alertSuccess]}
@@ -18062,6 +19510,16 @@ export default function App() {
                                   {profileMessage}
                                 </Text>
                               </View>
+                            )}
+                            {keyboardInset > 0 && (
+                              <View
+                                pointerEvents="none"
+                                style={{
+                                  height:
+                                    keyboardInset +
+                                    (Platform.OS === "ios" ? 12 : 8),
+                                }}
+                              />
                             )}
                           </>
                         )}
@@ -19748,6 +21206,18 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
+  authInlineLink: {
+    alignSelf: "flex-end",
+    marginTop: -4,
+    marginBottom: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  authInlineLinkText: {
+    fontSize: 12,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+  },
   timeRow: {
     flexDirection: "column",
     gap: 12,
@@ -20975,6 +22445,42 @@ const styles = StyleSheet.create({
   filterTextActive: {
     color: COLORS.white,
   },
+  filterRadiusBlock: {
+    marginTop: 2,
+    marginBottom: 10,
+  },
+  filterRadiusLabel: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+    marginBottom: 6,
+  },
+  filterRadiusRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  filterRadiusPill: {
+    backgroundColor: "#EEF2F7",
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#D5DEE9",
+  },
+  filterRadiusPillActive: {
+    backgroundColor: "#DCE7F5",
+    borderColor: "#B5CAE7",
+  },
+  filterRadiusText: {
+    fontSize: 11,
+    color: "#334155",
+    fontFamily: FONT_MEDIUM,
+  },
+  filterRadiusTextActive: {
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
   discoverPlaidPrompt: {
     borderRadius: 14,
     borderWidth: 1,
@@ -21952,6 +23458,29 @@ const styles = StyleSheet.create({
   liveEditorialStackCardSelected: {
     borderColor: COLORS.coral,
   },
+  liveEditorialStackClosedOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(148, 163, 184, 0.32)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveEditorialStackClosedPill: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    height: 30,
+    backgroundColor: "rgba(241, 245, 249, 0.95)",
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.75)",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  liveEditorialStackClosedText: {
+    fontSize: 12,
+    color: "#334155",
+    fontFamily: FONT_SEMIBOLD,
+  },
   liveEditorialStackMedia: {
     position: "relative",
     aspectRatio: OFFER_IMAGE_ASPECT,
@@ -22085,6 +23614,24 @@ const styles = StyleSheet.create({
     color: "#64748B",
     fontFamily: FONT_MEDIUM,
   },
+  liveEditorialStackHoursPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(71, 85, 105, 0.22)",
+    backgroundColor: "#F3F6FA",
+    minHeight: 22,
+    maxWidth: "78%",
+    paddingHorizontal: 7,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  liveEditorialStackHoursText: {
+    flexShrink: 1,
+    fontSize: 10,
+    color: "#475569",
+    fontFamily: FONT_MEDIUM,
+  },
   liveEditorialStackRatingPill: {
     borderRadius: 999,
     borderWidth: 1,
@@ -22157,7 +23704,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: "rgba(6, 95, 70, 0.24)",
     backgroundColor: "#EAF9EF",
-    minHeight: 32,
+    minHeight: 36,
     paddingHorizontal: 12,
     paddingVertical: 7,
     flexDirection: "row",
@@ -22166,7 +23713,7 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   liveEditorialStackCashbackText: {
-    fontSize: 10,
+    fontSize: 12,
     color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
@@ -22331,10 +23878,9 @@ const styles = StyleSheet.create({
   },
   cardMedia: {
     position: "relative",
-    // Keep cards visually consistent across platforms (Android font scaling can
-    // make the content section taller). Using the "content width" media height
-    // prevents the card from feeling oversized and getting clipped in the sheet.
-    height: CARD_MEDIA_HEIGHT,
+    // Keep Discover offer media at the same upload ratio used by custom crop so
+    // businesses see consistent framing from picker to final card.
+    height: CARD_MEDIA_FULL_HEIGHT,
     alignSelf: "stretch",
     backgroundColor: "#EFF3F8",
     alignItems: "center",
@@ -22572,12 +24118,28 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   formCard: {
+    position: "relative",
+    overflow: "hidden",
     backgroundColor: COLORS.white,
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
     marginBottom: 12,
+  },
+  formCardDisabledOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(226, 232, 240, 0.78)",
+    paddingHorizontal: 20,
+  },
+  formCardDisabledOverlayText: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    textAlign: "center",
   },
   paymentCard: {
     marginTop: 12,
@@ -23478,6 +25040,51 @@ const styles = StyleSheet.create({
   },
   editOfferBodyContent: {
     paddingBottom: 24,
+  },
+  receiptPreviewRoot: {
+    flex: 1,
+  },
+  offerCropBody: {
+    flex: 1,
+  },
+  offerCropViewport: {
+    width: "100%",
+    maxWidth: Math.min(SCREEN_WIDTH - 32, 420),
+    aspectRatio: OFFER_IMAGE_ASPECT,
+    alignSelf: "center",
+    borderRadius: 16,
+    overflow: "hidden",
+    backgroundColor: "#0B1220",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.16)",
+  },
+  offerCropPreviewContent: {
+    alignSelf: "center",
+    justifyContent: "center",
+    backgroundColor: "#EFF3F8",
+    overflow: "hidden",
+  },
+  offerCropPreviewImage: {
+    width: "100%",
+    height: "100%",
+  },
+  offerCropGuideBorder: {
+    ...StyleSheet.absoluteFillObject,
+    borderWidth: 2,
+    borderColor: "rgba(255, 255, 255, 0.86)",
+    borderRadius: 16,
+  },
+  offerCropFallback: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EFF3F8",
+  },
+  offerCropFallbackText: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
   },
   receiptPreviewOverlay: {
     position: "absolute",
@@ -25815,5 +27422,6 @@ const styles = StyleSheet.create({
     transform: [{ rotate: "45deg" }],
   },
 });
+
 
 

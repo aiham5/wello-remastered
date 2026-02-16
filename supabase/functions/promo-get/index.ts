@@ -99,7 +99,9 @@ Deno.serve(async (req) => {
   const nowIso = new Date().toISOString();
   const { data: promo, error: promoError } = await adminClient
     .from("promo_codes")
-    .select("id, code, cashback_rate_bps, active, starts_at, ends_at")
+    .select(
+      "id, code, cashback_rate_bps, max_uses_per_user, active, starts_at, ends_at",
+    )
     .eq("id", promoId)
     .maybeSingle();
 
@@ -116,11 +118,43 @@ Deno.serve(async (req) => {
     return json(req, 200, { ok: true, cashbackRateBps: 750, promo: null });
   }
 
+  const maxUsesPerUser = Number(promo.max_uses_per_user) || 0;
+  if (maxUsesPerUser > 0) {
+    const { count, error: usageError } = await adminClient
+      .from("cashback_events")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .eq("promo_code_id", promo.id)
+      .in("status", ["available", "reserved", "paid"]);
+
+    if (usageError) {
+      return json(req, 500, {
+        error: usageError.message || "Unable to validate promo usage limit",
+      });
+    }
+
+    if ((Number(count) || 0) >= maxUsesPerUser) {
+      // Keep profile assignment clean once the per-user promo limit is exhausted.
+      await adminClient
+        .from("profiles")
+        .update({ promo_code_id: null })
+        .eq("id", userId)
+        .eq("promo_code_id", promo.id);
+
+      return json(req, 200, { ok: true, cashbackRateBps: 750, promo: null });
+    }
+  }
+
   const rateBps = Number(promo.cashback_rate_bps) || 750;
   return json(req, 200, {
     ok: true,
     cashbackRateBps: rateBps,
     cashbackRatePercent: rateBps / 100,
-    promo: { id: promo.id, code: promo.code, cashbackRateBps: rateBps },
+    promo: {
+      id: promo.id,
+      code: promo.code,
+      cashbackRateBps: rateBps,
+      maxUsesPerUser: maxUsesPerUser > 0 ? maxUsesPerUser : null,
+    },
   });
 });

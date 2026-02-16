@@ -117,7 +117,9 @@ Deno.serve(async (req) => {
 
   const { data: promo, error: promoError } = await adminClient
     .from("promo_codes")
-    .select("id, code, cashback_rate_bps, active, starts_at, ends_at")
+    .select(
+      "id, code, cashback_rate_bps, max_uses_per_user, active, starts_at, ends_at",
+    )
     .eq("active", true)
     .eq("code", codeClean) // fast path (exact match)
     .maybeSingle();
@@ -127,7 +129,9 @@ Deno.serve(async (req) => {
     // Case-insensitive lookup.
     const { data: promo2, error: promo2Error } = await adminClient
       .from("promo_codes")
-      .select("id, code, cashback_rate_bps, active, starts_at, ends_at")
+      .select(
+        "id, code, cashback_rate_bps, max_uses_per_user, active, starts_at, ends_at",
+      )
       .ilike("code", codeClean)
       .eq("active", true)
       .limit(1)
@@ -149,6 +153,28 @@ Deno.serve(async (req) => {
     return json(req, 400, { error: "Promo code expired" });
   }
 
+  const maxUsesPerUser = Number(resolved.max_uses_per_user) || 0;
+  if (maxUsesPerUser > 0) {
+    const { count, error: usageError } = await adminClient
+      .from("cashback_events")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .eq("promo_code_id", resolved.id)
+      .in("status", ["available", "reserved", "paid"]);
+
+    if (usageError) {
+      return json(req, 500, {
+        error: usageError.message || "Unable to validate promo usage limit",
+      });
+    }
+
+    if ((Number(count) || 0) >= maxUsesPerUser) {
+      return json(req, 400, {
+        error: "Promo usage limit reached for this account",
+      });
+    }
+  }
+
   const rateBps = Number(resolved.cashback_rate_bps) || 750;
   const { error: updateError } = await adminClient
     .from("profiles")
@@ -166,6 +192,7 @@ Deno.serve(async (req) => {
       code: resolved.code,
       cashbackRateBps: rateBps,
       cashbackRatePercent: rateBps / 100,
+      maxUsesPerUser: maxUsesPerUser > 0 ? maxUsesPerUser : null,
     },
   });
 });

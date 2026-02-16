@@ -109,6 +109,7 @@ const ui = {
   imageModalClose: document.getElementById("image-modal-close"),
   promoCode: document.getElementById("promo-code"),
   promoRate: document.getElementById("promo-rate"),
+  promoMaxUsesPerUser: document.getElementById("promo-max-uses-per-user"),
   promoActive: document.getElementById("promo-active"),
   promoStart: document.getElementById("promo-start"),
   promoEnd: document.getElementById("promo-end"),
@@ -1439,7 +1440,10 @@ const loadPromoCodes = async () => {
   let error = null;
   try {
     const sp = new URLSearchParams();
-    sp.append("select", "id,code,cashback_rate_bps,active,starts_at,ends_at,created_at,updated_at");
+    sp.append(
+      "select",
+      "id,code,cashback_rate_bps,max_uses_per_user,active,starts_at,ends_at,created_at,updated_at",
+    );
     sp.append("order", "created_at.desc");
     sp.append("limit", "60");
     const result = await postgrestGetJson({
@@ -1458,7 +1462,10 @@ const loadPromoCodes = async () => {
     await ensureSession({ force: true });
     try {
       const sp = new URLSearchParams();
-      sp.append("select", "id,code,cashback_rate_bps,active,starts_at,ends_at,created_at,updated_at");
+      sp.append(
+        "select",
+        "id,code,cashback_rate_bps,max_uses_per_user,active,starts_at,ends_at,created_at,updated_at",
+      );
       sp.append("order", "created_at.desc");
       sp.append("limit", "60");
       const retry = await postgrestGetJson({
@@ -1512,9 +1519,11 @@ const createPromoCode = async () => {
   const rawCode = String(ui.promoCode?.value || "").trim();
   const code = rawCode.replace(/\s+/g, "").toUpperCase();
   const bps = parsePercentToBps(ui.promoRate?.value);
+  const maxUsesRaw = String(ui.promoMaxUsesPerUser?.value || "").trim();
   const active = String(ui.promoActive?.value || "true") === "true";
   const startsAt = toStartOfDayIso(ui.promoStart?.value);
   const endsAt = toEndOfDayIso(ui.promoEnd?.value);
+  let maxUsesPerUser = null;
 
   if (!code) {
     setPromoStatus("Enter a promo code.", true);
@@ -1536,6 +1545,18 @@ const createPromoCode = async () => {
     setPromoStatus("Start date must be before end date.", true);
     return;
   }
+  if (maxUsesRaw) {
+    const parsedMaxUses = Number(maxUsesRaw);
+    if (
+      !Number.isFinite(parsedMaxUses) ||
+      !Number.isInteger(parsedMaxUses) ||
+      parsedMaxUses < 1
+    ) {
+      setPromoStatus("Per-user max uses must be a whole number of at least 1.", true);
+      return;
+    }
+    maxUsesPerUser = parsedMaxUses;
+  }
 
   setPromoStatus("Creating promo code...");
   if (ui.promoCreate) ui.promoCreate.disabled = true;
@@ -1549,12 +1570,14 @@ const createPromoCode = async () => {
       body: {
         code,
         cashback_rate_bps: bps,
+        max_uses_per_user: maxUsesPerUser,
         active,
         starts_at: startsAt,
         ends_at: endsAt,
       },
       searchParams: new URLSearchParams({
-        select: "id,code,cashback_rate_bps,active,starts_at,ends_at,created_at,updated_at",
+        select:
+          "id,code,cashback_rate_bps,max_uses_per_user,active,starts_at,ends_at,created_at,updated_at",
       }),
     });
 
@@ -1593,9 +1616,13 @@ const createPromoCode = async () => {
       await loadPromoCodes();
     }
 
-    setPromoStatus(`Promo code created: ${code} (${(bps / 100).toFixed(2)}%).`);
+    const maxUsesLabel = maxUsesPerUser ? `, ${maxUsesPerUser} use(s) per user` : ", unlimited per user";
+    setPromoStatus(
+      `Promo code created: ${code} (${(bps / 100).toFixed(2)}%${maxUsesLabel}).`,
+    );
     // Keep the code in the input for easy re-copy; clear dates/rate for speed.
     if (ui.promoRate) ui.promoRate.value = "";
+    if (ui.promoMaxUsesPerUser) ui.promoMaxUsesPerUser.value = "";
     if (ui.promoStart) ui.promoStart.value = "";
     if (ui.promoEnd) ui.promoEnd.value = "";
   } catch (err) {
@@ -2550,6 +2577,11 @@ const renderPromoCodes = () => {
     item.className = "summary-item";
     const rateBps = Number(promo?.cashback_rate_bps) || CASHBACK_BASE_RATE_BPS;
     const ratePct = (rateBps / 100).toFixed(2);
+    const maxUsesPerUser = Number(promo?.max_uses_per_user) || 0;
+    const usesPerUserLabel =
+      maxUsesPerUser > 0
+        ? `${maxUsesPerUser} use${maxUsesPerUser === 1 ? "" : "s"}/user`
+        : "Unlimited/user";
     const active = promo?.active === true;
     const windowText = formatPromoWindow(promo);
     const code = String(promo?.code || "").trim() || "(missing code)";
@@ -2564,6 +2596,7 @@ const renderPromoCodes = () => {
             <span>${escapeHtml(code)}</span>
             <span class="pill" style="padding:6px 10px; font-size:12px; ${active ? "" : "opacity:0.7;"}">${statusText}</span>
             <span class="pill" style="padding:6px 10px; font-size:12px;">${ratePct}%</span>
+            <span class="pill" style="padding:6px 10px; font-size:12px;">${escapeHtml(usesPerUserLabel)}</span>
           </h4>
           <p>${escapeHtml(windowText)}</p>
         </div>
