@@ -1192,6 +1192,54 @@ const setAuthError = (message) => {
   if (ui.authError) ui.authError.textContent = message || "";
 };
 
+const signInIdleLabel = ui.signIn?.textContent?.trim() || "Sign in";
+let signInInFlight = false;
+
+const setSignInLoading = (isLoading) => {
+  if (ui.signIn) {
+    ui.signIn.disabled = isLoading;
+    ui.signIn.textContent = isLoading ? "Signing in..." : signInIdleLabel;
+    ui.signIn.setAttribute("aria-busy", isLoading ? "true" : "false");
+  }
+  if (ui.authEmail) ui.authEmail.disabled = isLoading;
+  if (ui.authPassword) ui.authPassword.disabled = isLoading;
+};
+
+const handleSignInSubmit = async () => {
+  if (signInInFlight) return;
+  setAuthError("");
+  if (!supabaseClient) {
+    setAuthError("Supabase is not configured.");
+    return;
+  }
+  const email = ui.authEmail.value.trim().toLowerCase();
+  const password = ui.authPassword.value.trim();
+  if (!email || !password) {
+    setAuthError("Email and password are required.");
+    return;
+  }
+  signInInFlight = true;
+  setSignInLoading(true);
+  try {
+    const { data, error } = await supabaseClient.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) {
+      setAuthError(error.message || "Unable to sign in.");
+      return;
+    }
+    if (data?.session) {
+      state.session = data.session;
+    }
+  } catch (error) {
+    setAuthError(error?.message || "Unable to sign in.");
+  } finally {
+    signInInFlight = false;
+    setSignInLoading(false);
+  }
+};
+
 const setDetailError = (message) => {
   if (ui.detailError) ui.detailError.textContent = message || "";
 };
@@ -3009,35 +3057,18 @@ const exportCsv = () => {
 };
 
 const attachListeners = () => {
-  if (ui.signIn) ui.signIn.addEventListener("click", async () => {
-    setAuthError("");
-    if (!supabaseClient) {
-      setAuthError("Supabase is not configured.");
-      return;
-    }
-    const email = ui.authEmail.value.trim().toLowerCase();
-    const password = ui.authPassword.value.trim();
-    if (!email || !password) {
-      setAuthError("Email and password are required.");
-      return;
-    }
-    ui.signIn.disabled = true;
-    try {
-      const { data, error } = await supabaseClient.auth.signInWithPassword({
-        email,
-        password,
-      });
-      if (error) {
-        setAuthError(error.message || "Unable to sign in.");
-        return;
-      }
-      if (data?.session) {
-        state.session = data.session;
-      }
-    } finally {
-      ui.signIn.disabled = false;
-    }
-  });
+  if (ui.signIn) {
+    ui.signIn.addEventListener("click", () => {
+      handleSignInSubmit();
+    });
+  }
+  const onAuthEnter = (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    handleSignInSubmit();
+  };
+  if (ui.authEmail) ui.authEmail.addEventListener("keydown", onAuthEnter);
+  if (ui.authPassword) ui.authPassword.addEventListener("keydown", onAuthEnter);
 
   if (ui.signOut) ui.signOut.addEventListener("click", async () => {
     if (!supabaseClient) return;

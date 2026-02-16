@@ -10,7 +10,28 @@
       href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css?v=20260210b" />
+    <script>
+      (() => {
+        const storageKey = "wello-admin-theme";
+        let savedTheme = null;
+        try {
+          savedTheme = localStorage.getItem(storageKey);
+        } catch (_) {
+          savedTheme = null;
+        }
+        const prefersDark =
+          typeof window.matchMedia === "function" &&
+          window.matchMedia("(prefers-color-scheme: dark)").matches;
+        const theme =
+          savedTheme === "dark" || savedTheme === "light"
+            ? savedTheme
+            : prefersDark
+              ? "dark"
+              : "light";
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
+    <link rel="stylesheet" href="/styles.css?v=20260216a" />
   </head>
   <body class="admin">
     <div class="page">
@@ -22,6 +43,15 @@
           </a>
           <div class="nav-actions">
             <span id="admin-user">Not signed in</span>
+            <button
+              id="admin-theme-toggle"
+              class="theme-toggle"
+              type="button"
+              aria-label="Toggle dark mode"
+              aria-pressed="false"
+            >
+              <span id="admin-theme-toggle-text">Dark mode</span>
+            </button>
             <button class="button secondary is-hidden" id="sign-out">
               Sign out
             </button>
@@ -409,8 +439,40 @@
       </div>
     </div>
 
+    <script>
+      (() => {
+        const storageKey = "wello-admin-theme";
+        const root = document.documentElement;
+        const themeToggle = document.getElementById("admin-theme-toggle");
+        const themeToggleText = document.getElementById("admin-theme-toggle-text");
+        const setTheme = (theme) => {
+          const normalized = theme === "dark" ? "dark" : "light";
+          root.setAttribute("data-theme", normalized);
+          try {
+            localStorage.setItem(storageKey, normalized);
+          } catch (_) {}
+          if (themeToggle) {
+            const isDark = normalized === "dark";
+            themeToggle.setAttribute("aria-pressed", String(isDark));
+            if (themeToggleText) {
+              themeToggleText.textContent = isDark ? "Light mode" : "Dark mode";
+            }
+          }
+        };
+
+        if (!themeToggle) return;
+        setTheme(root.getAttribute("data-theme") || "light");
+        themeToggle.addEventListener("click", () => {
+          const nextTheme =
+            (root.getAttribute("data-theme") || "light") === "dark"
+              ? "light"
+              : "dark";
+          setTheme(nextTheme);
+        });
+      })();
+    </script>
     <script src="/admin-config.js?v=20260209a"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="/admin.js?v=20260210b" defer></script>
+    <script src="/admin.js?v=20260216a" defer></script>
   </body>
 </html>
