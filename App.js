@@ -8447,20 +8447,33 @@ export default function App() {
     bottomSheetRef.current?.snapToIndex(1);
   };
 
-  const scrollToBusiness = (business) => {
-    const index = filteredOfferCards.findIndex(
-      (item) => item.businessId === business.id,
-    );
+  const getFirstVisibleOfferForBusiness = (businessId) =>
+    filteredOfferCards.find((item) => item.businessId === businessId) || null;
+
+  const scrollToBusiness = (business, preferredOfferCardKey = null) => {
+    let index = -1;
+    if (preferredOfferCardKey) {
+      index = filteredOfferCards.findIndex(
+        (item) => getOfferCardSelectionKey(item) === preferredOfferCardKey,
+      );
+    }
+    if (index < 0) {
+      index = filteredOfferCards.findIndex(
+        (item) => item.businessId === business.id,
+      );
+    }
     if (index >= 0 && cardListRef.current) {
       cardListRef.current.scrollToIndex({ index, animated: true });
     }
   };
 
   const openSheetForBusiness = (business) => {
+    const selectedCard = getFirstVisibleOfferForBusiness(business.id);
+    const selectedCardKey = getOfferCardSelectionKey(selectedCard);
     setSelectedId(business.id);
-    setSelectedOfferCardId(null);
+    setSelectedOfferCardId(selectedCardKey || null);
     openSheet("discover");
-    scrollToBusiness(business);
+    scrollToBusiness(business, selectedCardKey);
   };
 
   const resolveBusinessFromCard = (card) =>
@@ -8638,13 +8651,15 @@ export default function App() {
   };
 
   const handleMarkerPress = (business) => {
+    const selectedCard = getFirstVisibleOfferForBusiness(business.id);
+    const selectedCardKey = getOfferCardSelectionKey(selectedCard);
     const isSame = selectedId === business.id;
     const isSheetOpen = sheetIndexRef.current > 0;
     if (isSame || isSheetOpen) {
       openSheetForBusiness(business);
     } else {
       setSelectedId(business.id);
-      setSelectedOfferCardId(null);
+      setSelectedOfferCardId(selectedCardKey || null);
     }
   };
 
