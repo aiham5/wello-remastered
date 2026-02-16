@@ -885,18 +885,25 @@ const levenshteinDistance = (value, target) => {
 };
 
 const OFFER_TYPE_LABELS = {
-  list: "List",
-  other: "Other",
   bogo: "BOGO",
   discount: "Discount",
   bundle: "Bundle",
   freebie: "Freebie",
   event: "Event",
+  happy_hour: "Happy Hour",
+  limited_time: "Limited Time",
 };
 
-const OFFER_TYPE_OPTIONS = [
-  { value: "List", label: "List" },
-  { value: "Other", label: "Other" },
+const OFFER_TYPE_OTHER_KEY = "__other__";
+const OFFER_TYPE_DROPDOWN_OPTIONS = [
+  { value: "Discount", label: "Discount" },
+  { value: "BOGO", label: "BOGO" },
+  { value: "Bundle", label: "Bundle" },
+  { value: "Freebie", label: "Free item" },
+  { value: "Event", label: "Event" },
+  { value: "Happy Hour", label: "Happy hour" },
+  { value: "Limited Time", label: "Limited time" },
+  { value: OFFER_TYPE_OTHER_KEY, label: "Other" },
 ];
 
 const normalizeOfferType = (input) => {
@@ -904,10 +911,6 @@ const normalizeOfferType = (input) => {
   if (!raw) return "";
   const lower = raw.toLowerCase();
   const aliases = {
-    list: "list",
-    listing: "list",
-    other: "other",
-    custom: "other",
     "buy one get one": "bogo",
     buy1get1: "bogo",
     b1g1: "bogo",
@@ -924,6 +927,11 @@ const normalizeOfferType = (input) => {
     free: "freebie",
     freebie: "freebie",
     event: "event",
+    "happy hour": "happy_hour",
+    happyhour: "happy_hour",
+    "limited time": "limited_time",
+    limitedtime: "limited_time",
+    lto: "limited_time",
   };
   if (aliases[lower]) return OFFER_TYPE_LABELS[aliases[lower]];
   const entries = Object.entries(OFFER_TYPE_LABELS);
@@ -953,9 +961,39 @@ const normalizeOfferType = (input) => {
 const normalizeOfferTypeSelection = (input) => {
   const normalized = normalizeOfferType(input);
   if (!normalized) return "";
-  if (normalized.toLowerCase() === "list") return "List";
-  if (normalized.toLowerCase() === "other") return "Other";
-  return "Other";
+  const preset = OFFER_TYPE_DROPDOWN_OPTIONS.find(
+    (option) =>
+      option.value !== OFFER_TYPE_OTHER_KEY &&
+      option.value.toLowerCase() === normalized.toLowerCase(),
+  );
+  return preset?.value || normalized;
+};
+
+const getOfferTypePickerLabel = (value) =>
+  OFFER_TYPE_DROPDOWN_OPTIONS.find((option) => option.value === value)?.label ||
+  "Select offer type";
+
+const getOfferTypeDraftFromValue = (value) => {
+  const normalized = normalizeOfferTypeSelection(value);
+  const preset = OFFER_TYPE_DROPDOWN_OPTIONS.find(
+    (option) =>
+      option.value !== OFFER_TYPE_OTHER_KEY &&
+      option.value.toLowerCase() === normalized.toLowerCase(),
+  );
+  if (preset?.value) {
+    return { typePreset: preset.value, typeCustom: "" };
+  }
+  return {
+    typePreset: OFFER_TYPE_OTHER_KEY,
+    typeCustom: String(value || "").trim(),
+  };
+};
+
+const resolveOfferTypeDraftValue = (typePreset, typeCustom) => {
+  if (typePreset === OFFER_TYPE_OTHER_KEY) {
+    return normalizeOfferTypeSelection(typeCustom);
+  }
+  return normalizeOfferTypeSelection(typePreset);
 };
 
 const normalizeTagsInput = (value) =>
@@ -3099,11 +3137,14 @@ export default function App() {
   const [offerForm, setOfferForm] = useState({
     title: "",
     description: "",
-    type: "List",
+    typePreset: "Discount",
+    typeCustom: "",
     redemptionLimitMode: "unlimited", // unlimited | day | week | custom
     redemptionLimitCount: "1",
     redemptionLimitPeriod: "day", // day | week (custom only)
   });
+  const [createOfferTypeMenuOpen, setCreateOfferTypeMenuOpen] =
+    useState(false);
   const [offerImage, setOfferImage] = useState(null);
   const [offerCropModal, setOfferCropModal] = useState({
     visible: false,
@@ -3117,9 +3158,11 @@ export default function App() {
     id: null,
     title: "",
     description: "",
-    type: "List",
+    typePreset: "Discount",
+    typeCustom: "",
     imageUrl: "",
   });
+  const [editOfferTypeMenuOpen, setEditOfferTypeMenuOpen] = useState(false);
   const [editOfferImage, setEditOfferImage] = useState(null);
   const [editOfferStatus, setEditOfferStatus] = useState({
     saving: false,
@@ -7997,11 +8040,13 @@ export default function App() {
     setOfferForm({
       title: "",
       description: "",
-      type: "List",
+      typePreset: "Discount",
+      typeCustom: "",
       redemptionLimitMode: "unlimited",
       redemptionLimitCount: "1",
       redemptionLimitPeriod: "day",
     });
+    setCreateOfferTypeMenuOpen(false);
     setOfferImage(null);
     setOfferError(null);
     setOfferBusy(false);
@@ -11350,13 +11395,18 @@ export default function App() {
 
   const handleOpenOfferEdit = (offer) => {
     if (!offer) return;
+    const offerTypeDraft = getOfferTypeDraftFromValue(
+      offer.offerType || offer.offer_type,
+    );
     setEditOfferDraft({
       id: offer.id,
       title: offer.title || "",
       description: offer.description || "",
-      type: normalizeOfferTypeSelection(offer.offerType || offer.offer_type) || "List",
+      typePreset: offerTypeDraft.typePreset,
+      typeCustom: offerTypeDraft.typeCustom,
       imageUrl: offer.imageUrl || "",
     });
+    setEditOfferTypeMenuOpen(false);
     setEditOfferImage(
       offer.imageUrl ? { uri: offer.imageUrl, isRemote: true } : null,
     );
@@ -11373,7 +11423,10 @@ export default function App() {
       });
       return;
     }
-    const normalizedType = normalizeOfferTypeSelection(editOfferDraft.type);
+    const normalizedType = resolveOfferTypeDraftValue(
+      editOfferDraft.typePreset,
+      editOfferDraft.typeCustom,
+    );
     if (!normalizedType) {
       setEditOfferStatus({
         saving: false,
@@ -11433,6 +11486,7 @@ export default function App() {
       }
       mergeOffers([mapSupabaseOffer(data)]);
       setEditOfferOpen(false);
+      setEditOfferTypeMenuOpen(false);
     } finally {
       setEditOfferStatus((prev) => ({ ...prev, saving: false }));
     }
@@ -11638,7 +11692,10 @@ export default function App() {
       setOfferError("Offer title is required.");
       return;
     }
-    const normalizedType = normalizeOfferTypeSelection(offerForm.type);
+    const normalizedType = resolveOfferTypeDraftValue(
+      offerForm.typePreset,
+      offerForm.typeCustom,
+    );
     if (!normalizedType) {
       setOfferError("Offer type is required.");
       return;
@@ -11753,11 +11810,13 @@ export default function App() {
     setOfferForm({
       title: "",
       description: "",
-      type: "List",
+      typePreset: "Discount",
+      typeCustom: "",
       redemptionLimitMode: "unlimited",
       redemptionLimitCount: "1",
       redemptionLimitPeriod: "day",
     });
+    setCreateOfferTypeMenuOpen(false);
     setOfferImage(null);
     if (SUPABASE_URL && SUPABASE_ANON_KEY) {
       loadOwnerOffers(ownerBusiness.id);
@@ -11825,37 +11884,73 @@ export default function App() {
         </View>
         <View style={styles.formField}>
           <Text style={styles.formLabel}>Offer type</Text>
-          <View style={styles.offerTypeOptionRow}>
-            {OFFER_TYPE_OPTIONS.map((option) => {
-              const active = offerForm.type === option.value;
-              return (
-                <TouchableOpacity
-                  key={option.value}
-                  style={[
-                    styles.offerTypeOption,
-                    active && styles.offerTypeOptionActive,
-                  ]}
-                  onPress={() => {
-                    setOfferForm((prev) => ({
-                      ...prev,
-                      type: option.value,
-                    }));
-                    if (offerError) setOfferError(null);
-                    if (offerNotice) setOfferNotice(null);
-                  }}
-                >
-                  <Text
+          <TouchableOpacity
+            style={[styles.formInput, styles.selectInput]}
+            onPress={() => setCreateOfferTypeMenuOpen((prev) => !prev)}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.selectInputText}>
+              {getOfferTypePickerLabel(offerForm.typePreset)}
+            </Text>
+            <Ionicons
+              name={createOfferTypeMenuOpen ? "chevron-up" : "chevron-down"}
+              size={16}
+              color={COLORS.muted}
+            />
+          </TouchableOpacity>
+          {createOfferTypeMenuOpen && (
+            <View style={styles.selectMenu}>
+              {OFFER_TYPE_DROPDOWN_OPTIONS.map((option) => {
+                const isActive = offerForm.typePreset === option.value;
+                return (
+                  <TouchableOpacity
+                    key={option.value}
                     style={[
-                      styles.offerTypeOptionText,
-                      active && styles.offerTypeOptionTextActive,
+                      styles.selectMenuOption,
+                      isActive && styles.selectMenuOptionActive,
                     ]}
+                    onPress={() => {
+                      setOfferForm((prev) => ({
+                        ...prev,
+                        typePreset: option.value,
+                        typeCustom:
+                          option.value === OFFER_TYPE_OTHER_KEY
+                            ? prev.typeCustom
+                            : "",
+                      }));
+                      setCreateOfferTypeMenuOpen(false);
+                      if (offerError) setOfferError(null);
+                      if (offerNotice) setOfferNotice(null);
+                    }}
                   >
-                    {option.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+                    <Text
+                      style={[
+                        styles.selectMenuOptionText,
+                        isActive && styles.selectMenuOptionTextActive,
+                      ]}
+                    >
+                      {option.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+          {offerForm.typePreset === OFFER_TYPE_OTHER_KEY && (
+            <AutoFocusInput
+              style={styles.formInput}
+              placeholder="Type custom offer type"
+              placeholderTextColor={COLORS.muted}
+              value={offerForm.typeCustom}
+              onChangeText={(value) =>
+                setOfferForm((prev) => ({
+                  ...prev,
+                  typeCustom: value,
+                }))
+              }
+              maxLength={32}
+            />
+          )}
         </View>
       </View>
 
@@ -14715,7 +14810,10 @@ export default function App() {
                   <Text style={styles.editOfferTitle}>Request offer edit</Text>
                   <TouchableOpacity
                     style={styles.receiptsClose}
-                    onPress={() => setEditOfferOpen(false)}
+                    onPress={() => {
+                      setEditOfferOpen(false);
+                      setEditOfferTypeMenuOpen(false);
+                    }}
                   >
                     <Ionicons name="close" size={18} color={COLORS.ink} />
                   </TouchableOpacity>
@@ -14756,35 +14854,71 @@ export default function App() {
                   />
 
                   <Text style={styles.formLabel}>Offer type</Text>
-                  <View style={styles.offerTypeOptionRow}>
-                    {OFFER_TYPE_OPTIONS.map((option) => {
-                      const active = editOfferDraft.type === option.value;
-                      return (
-                        <TouchableOpacity
-                          key={option.value}
-                          style={[
-                            styles.offerTypeOption,
-                            active && styles.offerTypeOptionActive,
-                          ]}
-                          onPress={() =>
-                            setEditOfferDraft((prev) => ({
-                              ...prev,
-                              type: option.value,
-                            }))
-                          }
-                        >
-                          <Text
+                  <TouchableOpacity
+                    style={[styles.formInput, styles.selectInput]}
+                    onPress={() => setEditOfferTypeMenuOpen((prev) => !prev)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.selectInputText}>
+                      {getOfferTypePickerLabel(editOfferDraft.typePreset)}
+                    </Text>
+                    <Ionicons
+                      name={editOfferTypeMenuOpen ? "chevron-up" : "chevron-down"}
+                      size={16}
+                      color={COLORS.muted}
+                    />
+                  </TouchableOpacity>
+                  {editOfferTypeMenuOpen && (
+                    <View style={styles.selectMenu}>
+                      {OFFER_TYPE_DROPDOWN_OPTIONS.map((option) => {
+                        const isActive = editOfferDraft.typePreset === option.value;
+                        return (
+                          <TouchableOpacity
+                            key={option.value}
                             style={[
-                              styles.offerTypeOptionText,
-                              active && styles.offerTypeOptionTextActive,
+                              styles.selectMenuOption,
+                              isActive && styles.selectMenuOptionActive,
                             ]}
+                            onPress={() => {
+                              setEditOfferDraft((prev) => ({
+                                ...prev,
+                                typePreset: option.value,
+                                typeCustom:
+                                  option.value === OFFER_TYPE_OTHER_KEY
+                                    ? prev.typeCustom
+                                    : "",
+                              }));
+                              setEditOfferTypeMenuOpen(false);
+                            }}
                           >
-                            {option.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
+                            <Text
+                              style={[
+                                styles.selectMenuOptionText,
+                                isActive && styles.selectMenuOptionTextActive,
+                              ]}
+                            >
+                              {option.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
+                  {editOfferDraft.typePreset === OFFER_TYPE_OTHER_KEY && (
+                    <AutoFocusInput
+                      style={styles.formInput}
+                      placeholder="Type custom offer type"
+                      placeholderTextColor={COLORS.muted}
+                      value={editOfferDraft.typeCustom}
+                      onChangeText={(value) =>
+                        setEditOfferDraft((prev) => ({
+                          ...prev,
+                          typeCustom: value,
+                        }))
+                      }
+                      maxLength={32}
+                    />
+                  )}
 
                   <Text style={styles.formLabel}>Offer photo</Text>
                   <View style={styles.offerUploadRow}>
@@ -22162,33 +22296,6 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8,
     marginBottom: 6,
-  },
-  offerTypeOptionRow: {
-    flexDirection: "row",
-    gap: 8,
-    marginTop: 2,
-  },
-  offerTypeOption: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.sand,
-    backgroundColor: "#F4F6FA",
-  },
-  offerTypeOptionActive: {
-    borderColor: COLORS.pine,
-    backgroundColor: COLORS.pine,
-  },
-  offerTypeOptionText: {
-    fontSize: 12,
-    color: COLORS.ink,
-    fontFamily: FONT_MEDIUM,
-  },
-  offerTypeOptionTextActive: {
-    color: COLORS.white,
   },
   limitOption: {
     paddingHorizontal: 12,
