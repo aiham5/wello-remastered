@@ -557,6 +557,8 @@ const MAP_REGION_EPSILON = 0.00003;
 const mapSupabaseBusiness = (row, index) => {
   const categoryKey = row.category_key || "restaurant";
   const categoryConfig = getCategoryConfig(categoryKey);
+  const offerHighlight =
+    typeof row.offer_highlight === "string" ? row.offer_highlight.trim() : "";
   const latitude = row.latitude !== null ? Number(row.latitude) : null;
   const longitude = row.longitude !== null ? Number(row.longitude) : null;
   const hasCoordinates =
@@ -573,7 +575,7 @@ const mapSupabaseBusiness = (row, index) => {
     address: row.address || "",
     category: row.category_label || categoryConfig.display,
     categoryKey,
-    offer: row.offer_highlight || "New offer available",
+    offer: offerHighlight,
     distance: "--",
     rating: Number.isFinite(Number(row.rating)) ? Number(row.rating) : null,
     tags: Array.isArray(row.tags) && row.tags.length ? row.tags : [],
@@ -589,6 +591,7 @@ const mapSupabaseBusiness = (row, index) => {
     hasCoordinates,
     approved: row.approval_status === "approved",
     rejected: row.approval_status === "rejected",
+    status: row.status || "active",
     qrCode: row.qr_code || "",
     stripeAccountId: row.stripe_account_id || null,
     stripeCustomerId: row.stripe_customer_id || null,
@@ -754,6 +757,19 @@ const formatOfferDate = (value) => {
   if (!value) return "Date unavailable";
   const date = new Date(value);
   return date.toLocaleDateString();
+};
+
+const formatOfferRedemptionLimit = (period, count) => {
+  const normalizedPeriod = String(period || "").trim().toLowerCase();
+  const normalizedCount = Math.floor(Number(count));
+  const hasLimit =
+    Number.isFinite(normalizedCount) &&
+    normalizedCount > 0 &&
+    (normalizedPeriod === "day" || normalizedPeriod === "week");
+  if (!hasLimit) return "Unlimited per customer";
+  const unit = normalizedPeriod === "week" ? "week" : "day";
+  const cadence = unit === "week" ? "rolling 7 days" : "rolling 24 hours";
+  return `${normalizedCount} per ${unit} (${cadence})`;
 };
 
 const formatShortDate = (value) => {
@@ -2846,6 +2862,12 @@ export default function App() {
   const [expandedAdminEdits, setExpandedAdminEdits] = useState({});
   const [expandedAdminOffers, setExpandedAdminOffers] = useState({});
   const [expandedAdminBusinesses, setExpandedAdminBusinesses] = useState({});
+  const [adminWorkspaceTab, setAdminWorkspaceTab] = useState("queue");
+  const [armedQueueActions, setArmedQueueActions] = useState({});
+  const [armedManagementOfferDeletes, setArmedManagementOfferDeletes] =
+    useState({});
+  const [armedManagementBusinessDeletes, setArmedManagementBusinessDeletes] =
+    useState({});
   const [pendingBusinessCommissionRates, setPendingBusinessCommissionRates] =
     useState({});
   const [showReachTooltip, setShowReachTooltip] = useState(false);
@@ -3096,6 +3118,8 @@ export default function App() {
     error: null,
   });
   const [plaidLinkAction, setPlaidLinkAction] = useState("idle");
+  const [discoverPlaidPromptDismissed, setDiscoverPlaidPromptDismissed] =
+    useState(false);
   const [historyVerificationExpanded, setHistoryVerificationExpanded] =
     useState(false);
   const hasLinkedPlaidBank = useMemo(() => {
@@ -3109,6 +3133,22 @@ export default function App() {
     plaidLinkState.linkedCount,
     plaidLinkState.linkedAccounts,
   ]);
+  const plaidPromptBusy =
+    plaidLinkAction === "linking" || Boolean(plaidLinkState.loading);
+  const shouldShowDiscoverPlaidPrompt = useMemo(() => {
+    if (activeTab !== "discover") return false;
+    if (!isSignedIn) return false;
+    if (accountRole !== "consumer") return false;
+    if (hasLinkedPlaidBank) return false;
+    if (discoverPlaidPromptDismissed) return false;
+    return true;
+  }, [
+    activeTab,
+    isSignedIn,
+    accountRole,
+    hasLinkedPlaidBank,
+    discoverPlaidPromptDismissed,
+  ]);
   const cashoutPayoutStatusCopy = useMemo(() => {
     if (cashoutStatus.payoutsEnabled) return "Ready";
     if (cashoutStatus.bankSelected) return "Verification needed";
@@ -3116,11 +3156,14 @@ export default function App() {
   }, [cashoutStatus.bankSelected, cashoutStatus.payoutsEnabled]);
   const selectedPayoutAccountDetails = useMemo(() => {
     const selectedLabel = String(cashoutStatus.selectedPayoutLabel || "").trim();
-    if (selectedLabel) {
+    const hasAccount = Boolean(selectedLabel || cashoutStatus.bankSelected);
+    if (hasAccount) {
       return {
         hasAccount: true,
-        title: selectedLabel,
-        detail: "Stripe payout account",
+        title: "Connected bank account",
+        detail: cashoutStatus.payoutsEnabled
+          ? "Managed securely by Stripe."
+          : "Managed securely by Stripe (verification pending).",
       };
     }
 
@@ -3129,7 +3172,11 @@ export default function App() {
       title: "No payout bank selected",
       detail: "Complete Stripe payout setup to receive cashback payouts.",
     };
-  }, [cashoutStatus.selectedPayoutLabel]);
+  }, [
+    cashoutStatus.selectedPayoutLabel,
+    cashoutStatus.bankSelected,
+    cashoutStatus.payoutsEnabled,
+  ]);
   const [verificationPrompt, setVerificationPrompt] = useState({
     visible: false,
     title: "",
@@ -3496,13 +3543,23 @@ export default function App() {
     logDiscoverScrollSnapshot("discoverTabActive");
   }, [activeTab, logDiscoverScrollSnapshot]);
   const renderSheetHandle = useCallback(() => {
+    const hint =
+      activeTab === "admin"
+        ? "Swipe up for admin review tools"
+        : activeTab === "profile"
+          ? "Swipe up to manage your profile"
+          : activeTab === "history"
+            ? "Swipe up to review your history"
+            : activeTab === "cashout"
+              ? "Swipe up to manage cashout"
+              : "Swipe up to explore offers";
     return (
       <View style={styles.sheetHandle}>
         <View style={styles.handleBar} />
-        <Text style={styles.sheetHint}>Swipe up to explore offers</Text>
+        <Text style={styles.sheetHint}>{hint}</Text>
       </View>
     );
-  }, []);
+  }, [activeTab]);
   const receiptPinchScale = useRef(new Animated.Value(1)).current;
   const receiptBaseScale = useRef(new Animated.Value(1)).current;
   const receiptPanX = useRef(new Animated.Value(0)).current;
@@ -4664,11 +4721,31 @@ export default function App() {
         const nextEligibleAt =
           details?.nextEligibleAt || data?.nextEligibleAt || null;
         const nextLabel = nextEligibleAt
-          ? new Date(nextEligibleAt).toLocaleDateString()
-          : "next week";
+          ? new Date(nextEligibleAt).toLocaleString([], {
+              year: "numeric",
+              month: "numeric",
+              day: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+            })
+          : "later this week";
+        const limitLabel = Math.max(
+          Number(details?.weeklyLimit || data?.weeklyLimit) || 2,
+          1,
+        );
+        const cadenceLabel =
+          limitLabel === 1
+            ? "once per week"
+            : `${limitLabel} times per week`;
+        const message = `You can cash out ${cadenceLabel}. Your next cashout is available on ${nextLabel}.`;
+        showAppDialog({
+          title: "Cashout limit reached",
+          message,
+          options: [{ label: "OK", variant: "primary" }],
+        });
         setCashoutActionStatus({
           loading: false,
-          error: `Cashout is limited to once per week. Try again on ${nextLabel}.`,
+          error: null,
           success: null,
         });
         return;
@@ -4699,6 +4776,31 @@ export default function App() {
       error: null,
       success: null,
     });
+    const payoutsRemainingInWindow = Number(data?.payoutsRemainingInWindow);
+    const weeklyLimit = Math.max(Number(data?.weeklyLimit) || 2, 1);
+    if (
+      Number.isFinite(payoutsRemainingInWindow) &&
+      payoutsRemainingInWindow <= 0
+    ) {
+      const nextEligibleLabel = data?.nextEligibleAt
+        ? new Date(data.nextEligibleAt).toLocaleString([], {
+            year: "numeric",
+            month: "numeric",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          })
+        : "later this week";
+      const cadenceLabel =
+        weeklyLimit === 1
+          ? "once per week"
+          : `${weeklyLimit} times per week`;
+      showAppDialog({
+        title: "Weekly cashout limit reached",
+        message: `You have reached your cashout limit (${cadenceLabel}). Your next cashout is available on ${nextEligibleLabel}.`,
+        options: [{ label: "OK", variant: "primary" }],
+      });
+    }
     triggerCashoutCelebration(Number(data.amountCents) || 0);
     setCashoutAmountText("");
   }, [
@@ -4708,6 +4810,7 @@ export default function App() {
     cashbackBalance.availableCents,
     cashoutAmountText,
     loadCashbackBalance,
+    showAppDialog,
     triggerCashoutCelebration,
   ]);
 
@@ -5272,6 +5375,49 @@ export default function App() {
     }, customDelay);
   }, []);
 
+  const buildQueueActionKey = useCallback(
+    (scope, id, action) => `${String(scope)}:${String(id)}:${String(action)}`,
+    [],
+  );
+
+  const isQueueActionArmed = useCallback(
+    (scope, id, action) =>
+      Boolean(armedQueueActions[buildQueueActionKey(scope, id, action)]),
+    [armedQueueActions, buildQueueActionKey],
+  );
+
+  const runQueueGuardedAction = useCallback(
+    ({ scope, id, action, title, message, onConfirm }) => {
+      const key = buildQueueActionKey(scope, id, action);
+      if (!armedQueueActions[key]) {
+        setArmedQueueActions({ [key]: true });
+        return;
+      }
+      showAppDialog({
+        title,
+        message,
+        dismissOnBackdrop: false,
+        options: [
+          {
+            label: "Cancel",
+            variant: "ghost",
+            onPress: () => setArmedQueueActions({}),
+          },
+          {
+            label: "Confirm",
+            variant: "primary",
+            icon: "shield-checkmark-outline",
+            onPress: () => {
+              setArmedQueueActions({});
+              onConfirm();
+            },
+          },
+        ],
+      });
+    },
+    [armedQueueActions, buildQueueActionKey, showAppDialog],
+  );
+
   useEffect(() => {
     if (Platform.OS !== "android") return;
     let isMounted = true;
@@ -5800,6 +5946,36 @@ export default function App() {
         .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
     [offers],
   );
+  const adminQueueCount =
+    pendingEditBusinesses.length +
+    pendingOffers.length +
+    pendingBusinesses.length;
+  const adminManagementCount = adminOffers.length + adminBusinesses.length;
+  const adminWorkspaceTabs = useMemo(() => {
+    return [
+      {
+        key: "queue",
+        label: "Queue",
+        subtitle: "Approvals and reviews",
+        icon: "time-outline",
+        count: adminQueueCount,
+      },
+      {
+        key: "management",
+        label: "Management",
+        subtitle: "Live cleanup tools",
+        icon: "briefcase-outline",
+        count: adminManagementCount,
+      },
+    ];
+  }, [adminManagementCount, adminQueueCount]);
+  const activeAdminWorkspace = useMemo(
+    () =>
+      adminWorkspaceTabs.find((tab) => tab.key === adminWorkspaceTab) ||
+      adminWorkspaceTabs[0] ||
+      null,
+    [adminWorkspaceTab, adminWorkspaceTabs],
+  );
   const averageRating = useMemo(() => {
     const rated = approvedBusinesses.filter(
       (business) => business.rating && Number.isFinite(business.rating),
@@ -5824,6 +6000,21 @@ export default function App() {
       return haystack.includes(trimmed);
     });
   }, [profileList, supervisorSearch]);
+  useEffect(() => {
+    const validTabSet = new Set(adminWorkspaceTabs.map((tab) => tab.key));
+    if (!validTabSet.has(adminWorkspaceTab)) {
+      setAdminWorkspaceTab("queue");
+    }
+  }, [adminWorkspaceTab, adminWorkspaceTabs]);
+  useEffect(() => {
+    if (activeTab === "admin" && adminWorkspaceTab === "management") return;
+    setArmedManagementOfferDeletes({});
+    setArmedManagementBusinessDeletes({});
+  }, [activeTab, adminWorkspaceTab]);
+  useEffect(() => {
+    if (activeTab === "admin" && adminWorkspaceTab === "queue") return;
+    setArmedQueueActions({});
+  }, [activeTab, adminWorkspaceTab]);
 
   const reviewedBusinessIds = useMemo(() => {
     const ids = new Set();
@@ -6022,12 +6213,6 @@ export default function App() {
       setOwnerBusinessId(businesses[0].id);
     }
   }, [businesses, ownerBusinessId, authUserId]);
-
-  useEffect(() => {
-    if (activeTab === "admin" && isAdmin) {
-      loadProfiles();
-    }
-  }, [activeTab, isAdmin, loadProfiles]);
 
   useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
@@ -8912,7 +9097,7 @@ export default function App() {
           "redemption_limit_period",
           "redemption_limit_count",
           "created_at",
-          "business:businesses (id, name, category_key, category_label)",
+          "business:businesses (id, name, category_key, category_label, created_at)",
         ].join(","),
       )
       .eq("approval_status", "pending")
@@ -8948,7 +9133,7 @@ export default function App() {
           "redemption_limit_period",
           "redemption_limit_count",
           "created_at",
-          "business:businesses (id, name, category_key, category_label)",
+          "business:businesses (id, name, category_key, category_label, created_at)",
         ].join(","),
       )
       .maybeSingle();
@@ -8982,7 +9167,7 @@ export default function App() {
           "redemption_limit_period",
           "redemption_limit_count",
           "created_at",
-          "business:businesses (id, name, category_key, category_label)",
+          "business:businesses (id, name, category_key, category_label, created_at)",
         ].join(","),
       )
       .maybeSingle();
@@ -10593,7 +10778,9 @@ export default function App() {
         <View style={styles.formHeaderCopy}>
           <Text style={styles.formHeaderTitle}>Create offer</Text>
           <Text style={styles.formHeaderMeta}>
-            Customers will see this on Discover.
+            Customers will see this on Discover. Your commission is{" "}
+            {formatPercentLabel(ownerCommissionRatePercent)}% on verified
+            receipts from this offer.
           </Text>
         </View>
         <TouchableOpacity
@@ -10601,7 +10788,7 @@ export default function App() {
           onPress={() =>
             openInfoTooltip(
               "Create offer",
-              "Keep titles short and clear. Add a description with any conditions (limits, dates, eligible items). Offer type is used for filtering and reporting.",
+              `Keep titles short and clear. Add a description with any conditions (limits, dates, eligible items). Offer type is used for filtering and reporting. Your business commission rate is ${formatPercentLabel(ownerCommissionRatePercent)}% on verified receipts.`,
             )
           }
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -11593,8 +11780,13 @@ export default function App() {
     }
     if (hasLinkedPlaidBank) {
       setPostRedeemBankPromptOpen(false);
+      setDiscoverPlaidPromptDismissed(false);
     }
   }, [hasLinkedPlaidBank, plaidLinkState.linkedSinceMs]);
+
+  useEffect(() => {
+    setDiscoverPlaidPromptDismissed(false);
+  }, [authUserId]);
 
   useEffect(() => {
     if (!isSignedIn || !showHistoryTab) {
@@ -13990,6 +14182,49 @@ export default function App() {
                     </TouchableOpacity>
                   </View>
 
+                  {shouldShowDiscoverPlaidPrompt && (
+                    <View style={styles.discoverPlaidPrompt}>
+                      <View style={styles.discoverPlaidPromptIconWrap}>
+                        <Ionicons
+                          name="shield-checkmark-outline"
+                          size={15}
+                          color={COLORS.pine}
+                        />
+                      </View>
+                      <View style={styles.discoverPlaidPromptCopy}>
+                        <Text style={styles.discoverPlaidPromptTitle}>
+                          Link bank for instant cashback
+                        </Text>
+                        <Text style={styles.discoverPlaidPromptBody}>
+                          Connect your bank to receive instant cashback with auto verification.
+                        </Text>
+                      </View>
+                      <View style={styles.discoverPlaidPromptActions}>
+                        <TouchableOpacity
+                          style={[
+                            styles.discoverPlaidPromptConnect,
+                            plaidPromptBusy &&
+                              styles.discoverPlaidPromptConnectDisabled,
+                          ]}
+                          onPress={handleLinkPurchaseVerificationBank}
+                          disabled={plaidPromptBusy}
+                        >
+                          <Text style={styles.discoverPlaidPromptConnectText}>
+                            {plaidPromptBusy ? "Opening..." : "Connect"}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.discoverPlaidPromptClose}
+                          onPress={() => setDiscoverPlaidPromptDismissed(true)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          accessibilityLabel="Dismiss bank verification reminder"
+                        >
+                          <Ionicons name="close" size={16} color={COLORS.muted} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  )}
+
                   {showFilters && (
                     <View style={styles.filterRow}>
                       {FILTERS.map((filter) => {
@@ -14731,6 +14966,14 @@ export default function App() {
                                 </View>
                               </View>
                             </View>
+                          </View>
+                          <View style={styles.paymentRow}>
+                            <Text style={styles.paymentLabel}>
+                              Commission rate
+                            </Text>
+                            <Text style={styles.paymentAmount}>
+                              {formatPercentLabel(ownerCommissionRatePercent)}%
+                            </Text>
                           </View>
                           <View style={styles.paymentRow}>
                             <Text style={styles.paymentLabel}>
@@ -17827,10 +18070,10 @@ export default function App() {
                       <>
                         <View style={styles.sectionBlock}>
                           <Text style={styles.sectionTitleAlt}>
-                            Admin review
+                            Admin workspace
                           </Text>
                           <Text style={styles.sectionBody}>
-                            Approve new listings before they go live.
+                            Review business submissions, offers, and updates.
                           </Text>
                         </View>
                         {adminActionStatus.loading && (
@@ -17878,26 +18121,96 @@ export default function App() {
                           </View>
                         </View>
 
-                        <View style={styles.sectionBlock}>
-                          <Text style={styles.sectionTitleAlt}>
-                            Pending edits
-                          </Text>
-                          <Text style={styles.sectionBody}>
-                            Approve or reject changes to business details.
-                          </Text>
+                        <View style={styles.adminWorkspaceTabs}>
+                          {adminWorkspaceTabs.map((tab) => {
+                            const isActive = adminWorkspaceTab === tab.key;
+                            return (
+                              <TouchableOpacity
+                                key={tab.key}
+                                style={[
+                                  styles.adminWorkspaceTab,
+                                  isActive && styles.adminWorkspaceTabActive,
+                                ]}
+                                onPress={() => setAdminWorkspaceTab(tab.key)}
+                              >
+                                <View style={styles.adminWorkspaceTabHeader}>
+                                  <View
+                                    style={[
+                                      styles.adminWorkspaceTabIconWrap,
+                                      isActive &&
+                                        styles.adminWorkspaceTabIconWrapActive,
+                                    ]}
+                                  >
+                                    <Ionicons
+                                      name={tab.icon}
+                                      size={14}
+                                      color={isActive ? COLORS.white : COLORS.pine}
+                                    />
+                                  </View>
+                                  <View style={styles.adminWorkspaceTabCount}>
+                                    <Text
+                                      style={[
+                                        styles.adminWorkspaceTabCountText,
+                                        isActive &&
+                                          styles.adminWorkspaceTabCountTextActive,
+                                      ]}
+                                    >
+                                      {tab.count}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <Text
+                                  style={[
+                                    styles.adminWorkspaceTabLabel,
+                                    isActive &&
+                                      styles.adminWorkspaceTabLabelActive,
+                                  ]}
+                                >
+                                  {tab.label}
+                                </Text>
+                                <Text style={styles.adminWorkspaceTabSubtitle}>
+                                  {tab.subtitle}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
                         </View>
-
-                        {pendingEditBusinesses.length === 0 ? (
-                          <View style={styles.emptyState}>
-                            <Text style={styles.emptyTitle}>
-                              No edit requests.
+                        {activeAdminWorkspace && (
+                          <View style={styles.adminWorkspaceLead}>
+                            <Text style={styles.adminWorkspaceLeadTitle}>
+                              {activeAdminWorkspace.label}
                             </Text>
-                            <Text style={styles.emptyCopy}>
-                              Updates will appear here for review.
+                            <Text style={styles.adminWorkspaceLeadCopy}>
+                              {activeAdminWorkspace.subtitle}
+                              {isAdmin
+                                ? " You have full admin access."
+                                : " You are using supervisor permissions."}
                             </Text>
                           </View>
-                        ) : (
-                          pendingEditBusinesses.map((business) => {
+                        )}
+
+                        {adminWorkspaceTab === "queue" && (
+                          <>
+                            <View style={styles.sectionBlock}>
+                              <Text style={styles.sectionTitleAlt}>
+                                Pending edits
+                              </Text>
+                              <Text style={styles.sectionBody}>
+                                Approve or reject changes to business details.
+                              </Text>
+                            </View>
+
+                            {pendingEditBusinesses.length === 0 ? (
+                              <View style={styles.emptyState}>
+                                <Text style={styles.emptyTitle}>
+                                  No edit requests.
+                                </Text>
+                                <Text style={styles.emptyCopy}>
+                                  Updates will appear here for review.
+                                </Text>
+                              </View>
+                            ) : (
+                              pendingEditBusinesses.map((business) => {
                             const isExpanded = Boolean(
                               expandedAdminEdits[business.id],
                             );
@@ -17983,70 +18296,149 @@ export default function App() {
                                 )}
                                 <View style={styles.adminActions}>
                                   <TouchableOpacity
-                                    style={styles.adminApprove}
+                                    style={[
+                                      styles.adminApprove,
+                                      isQueueActionArmed(
+                                        "edit",
+                                        business.id,
+                                        "approve",
+                                      ) && styles.adminActionArmed,
+                                    ]}
                                     onPress={() =>
-                                      handleApproveEdits(business.id)
+                                      runQueueGuardedAction({
+                                        scope: "edit",
+                                        id: business.id,
+                                        action: "approve",
+                                        title: "Approve edit request?",
+                                        message:
+                                          "This will apply all pending edits to the business listing.",
+                                        onConfirm: () =>
+                                          handleApproveEdits(business.id),
+                                      })
                                     }
                                   >
-                                    <Text style={styles.adminActionText}>
-                                      Approve edits
+                                    <Text
+                                      style={[
+                                        styles.adminActionText,
+                                        isQueueActionArmed(
+                                          "edit",
+                                          business.id,
+                                          "approve",
+                                        ) && styles.adminActionArmedText,
+                                      ]}
+                                    >
+                                      {isQueueActionArmed(
+                                        "edit",
+                                        business.id,
+                                        "approve",
+                                      )
+                                        ? "Confirm approve"
+                                        : "Arm approve"}
                                     </Text>
                                   </TouchableOpacity>
                                   <TouchableOpacity
-                                    style={styles.adminReject}
+                                    style={[
+                                      styles.adminReject,
+                                      isQueueActionArmed(
+                                        "edit",
+                                        business.id,
+                                        "reject",
+                                      ) && styles.adminActionArmed,
+                                    ]}
                                     onPress={() =>
-                                      handleRejectEdits(business.id)
+                                      runQueueGuardedAction({
+                                        scope: "edit",
+                                        id: business.id,
+                                        action: "reject",
+                                        title: "Reject edit request?",
+                                        message:
+                                          "This will discard the pending edits for this listing.",
+                                        onConfirm: () =>
+                                          handleRejectEdits(business.id),
+                                      })
                                     }
                                   >
                                     <Text
                                       style={[
                                         styles.adminActionText,
                                         styles.adminActionTextDark,
+                                        isQueueActionArmed(
+                                          "edit",
+                                          business.id,
+                                          "reject",
+                                        ) && styles.adminActionArmedText,
                                       ]}
                                     >
-                                      Reject edits
+                                      {isQueueActionArmed(
+                                        "edit",
+                                        business.id,
+                                        "reject",
+                                      )
+                                        ? "Confirm reject"
+                                        : "Arm reject"}
                                     </Text>
                                   </TouchableOpacity>
                                 </View>
                               </View>
                             );
-                          })
-                        )}
+                              })
+                            )}
 
-                        <View style={styles.sectionBlock}>
-                          <Text style={styles.sectionTitleAlt}>
-                            Pending offers
-                          </Text>
-                          <Text style={styles.sectionBody}>
-                            Review new offers before they appear on Discover.
-                          </Text>
-                        </View>
+                            <View style={styles.sectionBlock}>
+                              <Text style={styles.sectionTitleAlt}>
+                                Pending offers
+                              </Text>
+                              <Text style={styles.sectionBody}>
+                                Review new offers before they appear on Discover.
+                              </Text>
+                            </View>
 
-                        {pendingOfferStatus.loading && (
-                          <Text style={styles.formHint}>
-                            Loading pending offers...
-                          </Text>
-                        )}
-                        {pendingOfferStatus.error && (
-                          <Text style={styles.formError}>
-                            {pendingOfferStatus.error}
-                          </Text>
-                        )}
+                            {pendingOfferStatus.loading && (
+                              <Text style={styles.formHint}>
+                                Loading pending offers...
+                              </Text>
+                            )}
+                            {pendingOfferStatus.error && (
+                              <Text style={styles.formError}>
+                                {pendingOfferStatus.error}
+                              </Text>
+                            )}
 
-                        {pendingOffers.length === 0 ? (
-                          <View style={styles.emptyState}>
-                            <Text style={styles.emptyTitle}>
-                              No pending offers.
-                            </Text>
-                            <Text style={styles.emptyCopy}>
-                              New offers will appear here for approval.
-                            </Text>
-                          </View>
-                        ) : (
-                          pendingOffers.map((offer) => {
+                            {pendingOffers.length === 0 ? (
+                              <View style={styles.emptyState}>
+                                <Text style={styles.emptyTitle}>
+                                  No pending offers.
+                                </Text>
+                                <Text style={styles.emptyCopy}>
+                                  New offers will appear here for approval.
+                                </Text>
+                              </View>
+                            ) : (
+                              pendingOffers.map((offer) => {
                             const isExpanded = Boolean(
                               expandedAdminOffers[offer.id],
                             );
+                            const offerLimitLabel = formatOfferRedemptionLimit(
+                              offer.redemptionLimitPeriod,
+                              offer.redemptionLimitCount,
+                            );
+                            const offerCreatedLabel = formatHistoryTimestamp(
+                              offer.createdAt,
+                            );
+                            const offerCreatedShort =
+                              formatShortDate(offer.createdAt) ||
+                              "Date unavailable";
+                            const businessCreatedLabel = offer.business
+                              ?.created_at
+                              ? formatHistoryTimestamp(
+                                  offer.business.created_at,
+                                )
+                              : null;
+                            const businessCategoryLabel =
+                              offer.business?.category_label ||
+                              getCategoryConfig(
+                                offer.business?.category_key || "restaurant",
+                              ).display;
                             return (
                               <View key={offer.id} style={styles.adminCard}>
                                 <TouchableOpacity
@@ -18074,20 +18466,92 @@ export default function App() {
                                     color={COLORS.muted}
                                   />
                                 </TouchableOpacity>
+                                <View style={styles.adminQuickMetaRow}>
+                                  <View style={styles.adminQuickMetaChip}>
+                                    <Text style={styles.adminQuickMetaText}>
+                                      {`Created ${offerCreatedShort}`}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.adminQuickMetaChip}>
+                                    <Text style={styles.adminQuickMetaText}>
+                                      {offerLimitLabel}
+                                    </Text>
+                                  </View>
+                                </View>
                                 {isExpanded && (
                                   <View style={styles.adminDetails}>
-                                    {offer.description ? (
-                                      <View style={styles.adminDetailRow}>
-                                        <Text style={styles.adminDetailLabel}>
-                                          Description
-                                        </Text>
-                                        <Text
-                                          style={styles.adminDetailValueFull}
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Offer photo
+                                      </Text>
+                                      {offer.imageUrl ? (
+                                        <Image
+                                          source={{ uri: offer.imageUrl }}
+                                          style={styles.adminOfferImage}
+                                          resizeMode="cover"
+                                        />
+                                      ) : (
+                                        <View
+                                          style={styles.adminOfferImagePlaceholder}
                                         >
-                                          {offer.description}
-                                        </Text>
-                                      </View>
-                                    ) : null}
+                                          <Text
+                                            style={
+                                              styles.adminOfferImagePlaceholderText
+                                            }
+                                          >
+                                            No photo uploaded
+                                          </Text>
+                                        </View>
+                                      )}
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Description
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {offer.description || "--"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Redemption limit
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {offerLimitLabel}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Business category
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {businessCategoryLabel || "--"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Offer ID
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {offer.id || "--"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Active
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {offer.active ? "Yes" : "No"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Approval status
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {offer.approvalStatus || "pending"}
+                                      </Text>
+                                    </View>
                                     <View style={styles.adminDetailRow}>
                                       <Text style={styles.adminDetailLabel}>
                                         Offer type
@@ -18103,74 +18567,183 @@ export default function App() {
                                         Created
                                       </Text>
                                       <Text style={styles.adminDetailValueFull}>
-                                        {formatOfferDate(offer.createdAt)}
+                                        {offerCreatedLabel}
                                       </Text>
                                     </View>
+                                    {businessCreatedLabel ? (
+                                      <View style={styles.adminDetailRow}>
+                                        <Text style={styles.adminDetailLabel}>
+                                          Business created
+                                        </Text>
+                                        <Text style={styles.adminDetailValueFull}>
+                                          {businessCreatedLabel}
+                                        </Text>
+                                      </View>
+                                    ) : null}
+                                    {offer.business?.name ? (
+                                      <View style={styles.adminDetailRow}>
+                                        <Text style={styles.adminDetailLabel}>
+                                          Business
+                                        </Text>
+                                        <Text style={styles.adminDetailValueFull}>
+                                          {offer.business.name}
+                                        </Text>
+                                      </View>
+                                    ) : null}
                                   </View>
                                 )}
                                 <View style={styles.adminActions}>
                                   <TouchableOpacity
-                                    style={styles.adminApprove}
-                                    onPress={() => handleApproveOffer(offer.id)}
-                                  >
-                                    <Text style={styles.adminActionText}>
-                                      Approve
-                                    </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={styles.adminReject}
-                                    onPress={() => handleRejectOffer(offer.id)}
+                                    style={[
+                                      styles.adminApprove,
+                                      isQueueActionArmed(
+                                        "offer",
+                                        offer.id,
+                                        "approve",
+                                      ) && styles.adminActionArmed,
+                                    ]}
+                                    onPress={() =>
+                                      runQueueGuardedAction({
+                                        scope: "offer",
+                                        id: offer.id,
+                                        action: "approve",
+                                        title: "Approve this offer?",
+                                        message:
+                                          "This will publish the offer to Discover for eligible users.",
+                                        onConfirm: () =>
+                                          handleApproveOffer(offer.id),
+                                      })
+                                    }
                                   >
                                     <Text
                                       style={[
                                         styles.adminActionText,
-                                        styles.adminActionTextDark,
+                                        isQueueActionArmed(
+                                          "offer",
+                                          offer.id,
+                                          "approve",
+                                        ) && styles.adminActionArmedText,
                                       ]}
                                     >
-                                      Reject
+                                      {isQueueActionArmed(
+                                        "offer",
+                                        offer.id,
+                                        "approve",
+                                      )
+                                        ? "Confirm approve"
+                                        : "Arm approve"}
                                     </Text>
                                   </TouchableOpacity>
                                   <TouchableOpacity
-                                    style={styles.adminDelete}
+                                    style={[
+                                      styles.adminReject,
+                                      isQueueActionArmed(
+                                        "offer",
+                                        offer.id,
+                                        "reject",
+                                      ) && styles.adminActionArmed,
+                                    ]}
                                     onPress={() =>
-                                      handleAdminDeleteOffer(offer)
+                                      runQueueGuardedAction({
+                                        scope: "offer",
+                                        id: offer.id,
+                                        action: "reject",
+                                        title: "Reject this offer?",
+                                        message:
+                                          "This will mark the offer rejected and deactivate it.",
+                                        onConfirm: () =>
+                                          handleRejectOffer(offer.id),
+                                      })
                                     }
                                   >
                                     <Text
                                       style={[
                                         styles.adminActionText,
                                         styles.adminActionTextDark,
+                                        isQueueActionArmed(
+                                          "offer",
+                                          offer.id,
+                                          "reject",
+                                        ) && styles.adminActionArmedText,
                                       ]}
                                     >
-                                      Delete
+                                      {isQueueActionArmed(
+                                        "offer",
+                                        offer.id,
+                                        "reject",
+                                      )
+                                        ? "Confirm reject"
+                                        : "Arm reject"}
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.adminDelete,
+                                      isQueueActionArmed(
+                                        "offer",
+                                        offer.id,
+                                        "delete",
+                                      ) && styles.adminActionArmed,
+                                    ]}
+                                    onPress={() =>
+                                      runQueueGuardedAction({
+                                        scope: "offer",
+                                        id: offer.id,
+                                        action: "delete",
+                                        title: "Delete this pending offer?",
+                                        message:
+                                          "This permanently removes the pending offer and attempts to remove the uploaded image.",
+                                        onConfirm: () =>
+                                          handleAdminDeleteOffer(offer),
+                                      })
+                                    }
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.adminActionText,
+                                        styles.adminActionTextDark,
+                                        isQueueActionArmed(
+                                          "offer",
+                                          offer.id,
+                                          "delete",
+                                        ) && styles.adminActionArmedText,
+                                      ]}
+                                    >
+                                      {isQueueActionArmed(
+                                        "offer",
+                                        offer.id,
+                                        "delete",
+                                      )
+                                        ? "Confirm delete"
+                                        : "Arm delete"}
                                     </Text>
                                   </TouchableOpacity>
                                 </View>
                               </View>
                             );
-                          })
-                        )}
+                              })
+                            )}
 
-                        <View style={styles.sectionBlock}>
-                          <Text style={styles.sectionTitleAlt}>
-                            Pending businesses
-                          </Text>
-                          <Text style={styles.sectionBody}>
-                            Review new businesses before they go live.
-                          </Text>
-                        </View>
+                            <View style={styles.sectionBlock}>
+                              <Text style={styles.sectionTitleAlt}>
+                                Pending businesses
+                              </Text>
+                              <Text style={styles.sectionBody}>
+                                Review new businesses before they go live.
+                              </Text>
+                            </View>
 
-                        {pendingBusinesses.length === 0 ? (
-                          <View style={styles.emptyState}>
-                            <Text style={styles.emptyTitle}>
-                              No pending reviews.
-                            </Text>
-                            <Text style={styles.emptyCopy}>
-                              New submissions will appear here.
-                            </Text>
-                          </View>
-                        ) : (
-                          pendingBusinesses.map((business) => {
+                            {pendingBusinesses.length === 0 ? (
+                              <View style={styles.emptyState}>
+                                <Text style={styles.emptyTitle}>
+                                  No pending reviews.
+                                </Text>
+                                <Text style={styles.emptyCopy}>
+                                  New submissions will appear here.
+                                </Text>
+                              </View>
+                            ) : (
+                              pendingBusinesses.map((business) => {
                             const isExpanded = Boolean(
                               expandedAdminBusinesses[business.id],
                             );
@@ -18189,10 +18762,43 @@ export default function App() {
                             const tagLine = sanitizeBusinessTags(
                               business.tags,
                             ).join(", ");
+                            const categoryLabel = getCategoryConfig(
+                              business.categoryKey,
+                            ).display;
+                            const coordinateLabel =
+                              business.coordinate &&
+                              Number.isFinite(
+                                Number(business.coordinate.latitude),
+                              ) &&
+                              Number.isFinite(
+                                Number(business.coordinate.longitude),
+                              )
+                                ? `${Number(business.coordinate.latitude).toFixed(6)}, ${Number(business.coordinate.longitude).toFixed(6)}`
+                                : "--";
+                            const hasDirectionsTarget = Boolean(
+                              business.address ||
+                                (business.coordinate &&
+                                  Number.isFinite(
+                                    Number(business.coordinate.latitude),
+                                  ) &&
+                                  Number.isFinite(
+                                    Number(business.coordinate.longitude),
+                                  )),
+                            );
                             const selectedCommissionRate =
                               normalizeBusinessCommissionRateCents(
                                 pendingBusinessCommissionRates[business.id],
                               );
+                            const businessHighlight = String(
+                              business.offer || "",
+                            ).trim();
+                            const businessSummaryText =
+                              businessHighlight || "No offer highlight submitted.";
+                            const businessCreatedLabel =
+                              formatHistoryTimestamp(business.createdAt);
+                            const businessCreatedShort =
+                              formatShortDate(business.createdAt) ||
+                              "Date unavailable";
                             return (
                               <View key={business.id} style={styles.adminCard}>
                                 <TouchableOpacity
@@ -18224,16 +18830,76 @@ export default function App() {
                                   />
                                 </TouchableOpacity>
                                 <Text style={styles.adminOffer}>
-                                  {business.offer}
+                                  {businessSummaryText}
                                 </Text>
+                                <View style={styles.adminQuickMetaRow}>
+                                  <View style={styles.adminQuickMetaChip}>
+                                    <Text style={styles.adminQuickMetaText}>
+                                      {`Submitted ${businessCreatedShort}`}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.adminQuickMetaChip}>
+                                    <Text style={styles.adminQuickMetaText}>
+                                      {`Commission ${selectedCommissionRate / 10}%`}
+                                    </Text>
+                                  </View>
+                                </View>
                                 {isExpanded && (
                                   <View style={styles.adminDetails}>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Business name
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {business.name || "--"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Category
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {categoryLabel || "--"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Highlight
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {businessHighlight || "--"}
+                                      </Text>
+                                    </View>
                                     <View style={styles.adminDetailRow}>
                                       <Text style={styles.adminDetailLabel}>
                                         Address
                                       </Text>
                                       <Text style={styles.adminDetailValueFull}>
                                         {addressLine || "--"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        City
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {business.city || "--"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        State
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {business.state || "--"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Postal code
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {business.postalCode || "--"}
                                       </Text>
                                     </View>
                                     <View style={styles.adminDetailRow}>
@@ -18250,6 +18916,46 @@ export default function App() {
                                       </Text>
                                       <Text style={styles.adminDetailValueFull}>
                                         {business.hours || "--"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Coordinates
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {coordinateLabel}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Listing status
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {business.status || "--"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Open now
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {business.isOpen ? "Yes" : "No"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Business ID
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {business.id || "--"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminDetailRow}>
+                                      <Text style={styles.adminDetailLabel}>
+                                        Owner ID
+                                      </Text>
+                                      <Text style={styles.adminDetailValueFull}>
+                                        {business.ownerId || "--"}
                                       </Text>
                                     </View>
                                     <View style={styles.adminDetailRow}>
@@ -18306,345 +19012,518 @@ export default function App() {
                                         This rate is applied on approval.
                                       </Text>
                                     </View>
+                                    {hasDirectionsTarget && (
+                                      <View style={styles.adminDetailRow}>
+                                        <TouchableOpacity
+                                          style={styles.adminRouteButton}
+                                          onPress={() =>
+                                            openMapsForBusiness(business)
+                                          }
+                                        >
+                                          <Ionicons
+                                            name="navigate-outline"
+                                            size={14}
+                                            color={COLORS.ink}
+                                          />
+                                          <Text
+                                            style={
+                                              styles.adminRouteButtonText
+                                            }
+                                          >
+                                            Directions
+                                          </Text>
+                                        </TouchableOpacity>
+                                      </View>
+                                    )}
                                     <View style={styles.adminDetailRow}>
                                       <Text style={styles.adminDetailLabel}>
                                         Submitted
                                       </Text>
                                       <Text style={styles.adminDetailValueFull}>
-                                        {formatOfferDate(business.createdAt)}
+                                        {businessCreatedLabel}
                                       </Text>
                                     </View>
                                   </View>
                                 )}
                                 <View style={styles.adminActions}>
                                   <TouchableOpacity
-                                    style={styles.adminApprove}
-                                    onPress={() =>
-                                      handleApprove(
+                                    style={[
+                                      styles.adminApprove,
+                                      isQueueActionArmed(
+                                        "business",
                                         business.id,
-                                        selectedCommissionRate,
-                                      )
-                                    }
-                                  >
-                                    <Text style={styles.adminActionText}>
-                                      Approve ({selectedCommissionRate / 10}%)
-                                    </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={styles.adminReject}
-                                    onPress={() => handleReject(business.id)}
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.adminActionText,
-                                        styles.adminActionTextDark,
-                                      ]}
-                                    >
-                                      Reject
-                                    </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={styles.adminDelete}
+                                        "approve",
+                                      ) && styles.adminActionArmed,
+                                    ]}
                                     onPress={() =>
-                                      handleAdminDeleteBusiness(business)
+                                      runQueueGuardedAction({
+                                        scope: "business",
+                                        id: business.id,
+                                        action: "approve",
+                                        title: "Approve business listing?",
+                                        message: `This will approve the listing and apply a ${selectedCommissionRate / 10}% commission rate.`,
+                                        onConfirm: () =>
+                                          handleApprove(
+                                            business.id,
+                                            selectedCommissionRate,
+                                          ),
+                                      })
                                     }
                                   >
                                     <Text
+                                      numberOfLines={1}
+                                      adjustsFontSizeToFit
+                                      minimumFontScale={0.85}
+                                      style={[
+                                        styles.adminActionText,
+                                        isQueueActionArmed(
+                                          "business",
+                                          business.id,
+                                          "approve",
+                                        ) && styles.adminActionArmedText,
+                                      ]}
+                                    >
+                                      {isQueueActionArmed(
+                                        "business",
+                                        business.id,
+                                        "approve",
+                                      )
+                                        ? "Confirm"
+                                        : "Arm approve"}
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.adminReject,
+                                      isQueueActionArmed(
+                                        "business",
+                                        business.id,
+                                        "reject",
+                                      ) && styles.adminActionArmed,
+                                    ]}
+                                    onPress={() =>
+                                      runQueueGuardedAction({
+                                        scope: "business",
+                                        id: business.id,
+                                        action: "reject",
+                                        title: "Reject business listing?",
+                                        message:
+                                          "This will mark the listing as rejected and keep it inactive.",
+                                        onConfirm: () =>
+                                          handleReject(business.id),
+                                      })
+                                    }
+                                  >
+                                    <Text
+                                      numberOfLines={1}
+                                      adjustsFontSizeToFit
+                                      minimumFontScale={0.85}
                                       style={[
                                         styles.adminActionText,
                                         styles.adminActionTextDark,
+                                        isQueueActionArmed(
+                                          "business",
+                                          business.id,
+                                          "reject",
+                                        ) && styles.adminActionArmedText,
                                       ]}
                                     >
-                                      Delete
+                                      {isQueueActionArmed(
+                                        "business",
+                                        business.id,
+                                        "reject",
+                                      )
+                                        ? "Confirm"
+                                        : "Arm reject"}
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.adminDelete,
+                                      isQueueActionArmed(
+                                        "business",
+                                        business.id,
+                                        "delete",
+                                      ) && styles.adminActionArmed,
+                                    ]}
+                                    onPress={() =>
+                                      runQueueGuardedAction({
+                                        scope: "business",
+                                        id: business.id,
+                                        action: "delete",
+                                        title: "Delete this pending business?",
+                                        message:
+                                          "This permanently removes the business, linked offers, and attempts image cleanup.",
+                                        onConfirm: () =>
+                                          handleAdminDeleteBusiness(business),
+                                      })
+                                    }
+                                  >
+                                    <Text
+                                      numberOfLines={1}
+                                      adjustsFontSizeToFit
+                                      minimumFontScale={0.85}
+                                      style={[
+                                        styles.adminActionText,
+                                        styles.adminActionTextDark,
+                                        isQueueActionArmed(
+                                          "business",
+                                          business.id,
+                                          "delete",
+                                        ) && styles.adminActionArmedText,
+                                      ]}
+                                    >
+                                      {isQueueActionArmed(
+                                        "business",
+                                        business.id,
+                                        "delete",
+                                      )
+                                        ? "Confirm"
+                                        : "Arm delete"}
                                     </Text>
                                   </TouchableOpacity>
                                 </View>
                               </View>
                             );
-                          })
+                              })
+                            )}
+                          </>
                         )}
 
-                        <View style={styles.sectionBlock}>
-                          <Text style={styles.sectionTitleAlt}>
-                            Offer management
-                          </Text>
-                          <Text style={styles.sectionBody}>
-                            Remove offers and clean up their images.
-                          </Text>
-                        </View>
-
-                        {adminOffers.length === 0 ? (
-                          <View style={styles.emptyState}>
-                            <Text style={styles.emptyTitle}>
-                              No offers yet.
-                            </Text>
-                            <Text style={styles.emptyCopy}>
-                              Offers will appear once businesses are active.
-                            </Text>
-                          </View>
-                        ) : (
-                          adminOffers.map((offer) => (
-                            <View key={offer.id} style={styles.adminCard}>
-                              <View style={styles.adminHeader}>
-                                <Text style={styles.adminTitle}>
-                                  {offer.title || "Offer"}
-                                </Text>
-                                <Text style={styles.adminMeta}>
-                                  {offer.business?.name || "Business"}
-                                </Text>
-                              </View>
-                              {offer.description ? (
-                                <Text style={styles.adminOffer}>
-                                  {offer.description}
-                                </Text>
-                              ) : null}
-                              <View style={styles.adminActions}>
-                                <TouchableOpacity
-                                  style={styles.adminDelete}
-                                  onPress={() => handleAdminDeleteOffer(offer)}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.adminActionText,
-                                      styles.adminActionTextDark,
-                                    ]}
-                                  >
-                                    Delete
-                                  </Text>
-                                </TouchableOpacity>
-                              </View>
-                            </View>
-                          ))
-                        )}
-
-                        <View style={styles.sectionBlock}>
-                          <Text style={styles.sectionTitleAlt}>
-                            Business management
-                          </Text>
-                          <Text style={styles.sectionBody}>
-                            Delete businesses and their offers when needed.
-                          </Text>
-                        </View>
-
-                        {adminBusinesses.length === 0 ? (
-                          <View style={styles.emptyState}>
-                            <Text style={styles.emptyTitle}>
-                              No businesses yet.
-                            </Text>
-                            <Text style={styles.emptyCopy}>
-                              Approved listings will appear here.
-                            </Text>
-                          </View>
-                        ) : (
-                          adminBusinesses.map((business) => (
-                            <View key={business.id} style={styles.adminCard}>
-                              <View style={styles.adminHeader}>
-                                <Text style={styles.adminTitle}>
-                                  {business.name}
-                                </Text>
-                                <Text style={styles.adminMeta}>
-                                  {
-                                    getCategoryConfig(business.categoryKey)
-                                      .display
-                                  }
-                                </Text>
-                              </View>
-                              <Text style={styles.adminOffer}>
-                                {business.offer}
-                              </Text>
-                              <View style={styles.adminActions}>
-                                <TouchableOpacity
-                                  style={styles.adminDelete}
-                                  onPress={() =>
-                                    handleAdminDeleteBusiness(business)
-                                  }
-                                >
-                                  <Text
-                                    style={[
-                                      styles.adminActionText,
-                                      styles.adminActionTextDark,
-                                    ]}
-                                  >
-                                    Delete
-                                  </Text>
-                                </TouchableOpacity>
-                              </View>
-                            </View>
-                          ))
-                        )}
-
-                        {isAdmin && (
+                        {adminWorkspaceTab === "management" && (
                           <>
+                            <View style={styles.adminDangerNotice}>
+                              <View style={styles.adminDangerHeader}>
+                                <View style={styles.adminDangerIconWrap}>
+                                  <Ionicons
+                                    name="shield-checkmark-outline"
+                                    size={16}
+                                    color={COLORS.pine}
+                                  />
+                                </View>
+                                <Text style={styles.adminDangerTitle}>
+                                  High-impact actions
+                                </Text>
+                              </View>
+                              <Text style={styles.adminDangerBody}>
+                                Deletions now require two steps: arm delete, then
+                                confirm in a final dialog. Business deletion also
+                                removes related offers and image files.
+                              </Text>
+                            </View>
                             <View style={styles.sectionBlock}>
                               <Text style={styles.sectionTitleAlt}>
-                                Supervisor access
+                                Offer management
                               </Text>
                               <Text style={styles.sectionBody}>
-                                Promote teammates to review listings without
-                                full admin access.
+                                Remove offers and clean up their images.
                               </Text>
                             </View>
 
-                            <View style={styles.invitePanel}>
-                              <AutoFocusInput
-                                style={styles.authInput}
-                                placeholder="Search by name, email, phone, or company"
-                                placeholderTextColor={COLORS.muted}
-                                value={supervisorSearch}
-                                onChangeText={setSupervisorSearch}
-                                autoCapitalize="none"
-                              />
-                              {profileStatus.loading && (
-                                <Text style={styles.formHint}>
-                                  Loading team members...
+                            {adminOffers.length === 0 ? (
+                              <View style={styles.emptyState}>
+                                <Text style={styles.emptyTitle}>
+                                  No offers yet.
                                 </Text>
-                              )}
-                              {profileStatus.error && (
-                                <Text style={styles.formError}>
-                                  {profileStatus.error}
+                                <Text style={styles.emptyCopy}>
+                                  Offers will appear once businesses are active.
                                 </Text>
-                              )}
-                              {supervisorStatus.error && (
-                                <Text style={styles.formError}>
-                                  {supervisorStatus.error}
-                                </Text>
-                              )}
-                              {supervisorStatus.success && (
-                                <Text style={styles.formSuccess}>
-                                  {supervisorStatus.success}
-                                </Text>
-                              )}
-                              {filteredProfiles.length === 0 ? (
-                                <View style={styles.emptyState}>
-                                  <Text style={styles.emptyTitle}>
-                                    No team members yet.
-                                  </Text>
-                                  <Text style={styles.emptyCopy}>
-                                    New signups will appear here.
-                                  </Text>
-                                </View>
-                              ) : (
-                                <View style={styles.supervisorList}>
-                                  {filteredProfiles.map((profile) => {
-                                    const role = profile.role || "consumer";
-                                    const displayName =
-                                      profile.full_name ||
-                                      profile.email ||
-                                      "Member";
-                                    const metaLine = [
-                                      profile.email,
-                                      profile.phone,
-                                      profile.company,
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" - ");
-                                    const isProfileAdmin = role === "admin";
-                                    const isProfileSupervisor =
-                                      role === "supervisor";
-                                    const isProfileBusiness =
-                                      role === "business_owner";
-                                    return (
-                                      <View
-                                        key={profile.id}
-                                        style={styles.supervisorRow}
-                                      >
-                                        <View style={styles.supervisorMeta}>
-                                          <Text style={styles.supervisorName}>
-                                            {displayName}
-                                          </Text>
-                                          {metaLine ? (
-                                            <Text
-                                              style={styles.supervisorDetails}
-                                            >
-                                              {metaLine}
-                                            </Text>
-                                          ) : null}
-                                          <Text style={styles.supervisorRole}>
-                                            {isProfileAdmin
-                                              ? "Admin"
-                                              : isProfileSupervisor
-                                                ? "Supervisor"
-                                                : "Member"}
-                                          </Text>
-                                        </View>
-                                        {isProfileAdmin ? (
-                                          <View style={styles.supervisorBadge}>
-                                            <Text
-                                              style={styles.supervisorBadgeText}
-                                            >
-                                              Admin
-                                            </Text>
-                                          </View>
-                                        ) : (
-                                          <View
-                                            style={styles.supervisorActionsRow}
+                              </View>
+                            ) : (
+                              adminOffers.map((offer) => {
+                                const createdLabel = formatHistoryTimestamp(
+                                  offer.createdAt,
+                                );
+                                const offerDeleteKey = String(offer.id);
+                                const isOfferDeleteArmed = Boolean(
+                                  armedManagementOfferDeletes[offerDeleteKey],
+                                );
+                                return (
+                                  <View key={offer.id} style={styles.adminCard}>
+                                    <View style={styles.adminHeader}>
+                                      <Text style={styles.adminTitle}>
+                                        {offer.title || "Offer"}
+                                      </Text>
+                                      <Text style={styles.adminMeta}>
+                                        {offer.business?.name || "Business"}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminQuickMetaRow}>
+                                      <View style={styles.adminQuickMetaChip}>
+                                        <Text style={styles.adminQuickMetaText}>
+                                          {`Created ${createdLabel}`}
+                                        </Text>
+                                      </View>
+                                    </View>
+                                    {offer.description ? (
+                                      <Text style={styles.adminOffer}>
+                                        {offer.description}
+                                      </Text>
+                                    ) : null}
+                                    <View style={styles.adminDestructivePanel}>
+                                      {!isOfferDeleteArmed ? (
+                                        <TouchableOpacity
+                                          style={styles.adminDeleteArm}
+                                          onPress={() => {
+                                            setArmedManagementOfferDeletes({
+                                              [offerDeleteKey]: true,
+                                            });
+                                            setArmedManagementBusinessDeletes({});
+                                          }}
+                                        >
+                                          <Text
+                                            style={styles.adminDeleteArmText}
                                           >
-                                            {isProfileBusiness ? (
-                                              <View
-                                                style={
-                                                  styles.supervisorBadgeAlt
-                                                }
-                                              >
-                                                <Text
-                                                  style={
-                                                    styles.supervisorBadgeText
-                                                  }
-                                                >
-                                                  Business
-                                                </Text>
-                                              </View>
-                                            ) : (
-                                              <TouchableOpacity
-                                                style={
-                                                  styles.supervisorActionAlt
-                                                }
-                                                onPress={() =>
-                                                  handlePromoteBusinessOwner(
-                                                    profile,
-                                                  )
-                                                }
-                                              >
-                                                <Text
-                                                  style={
-                                                    styles.supervisorActionTextAlt
-                                                  }
-                                                >
-                                                  Make business
-                                                </Text>
-                                              </TouchableOpacity>
-                                            )}
+                                            Arm delete
+                                          </Text>
+                                        </TouchableOpacity>
+                                      ) : (
+                                        <>
+                                          <Text style={styles.adminDangerStep}>
+                                            Step 1 of 2 complete. Continue to
+                                            final confirmation to delete this
+                                            offer.
+                                          </Text>
+                                          <View style={styles.adminActions}>
                                             <TouchableOpacity
-                                              style={styles.supervisorAction}
+                                              style={styles.adminReject}
                                               onPress={() =>
-                                                isProfileSupervisor
-                                                  ? handleRemoveSupervisor(
-                                                      profile,
-                                                    )
-                                                  : handlePromoteSupervisor(
-                                                      profile,
-                                                    )
+                                                setArmedManagementOfferDeletes(
+                                                  (prev) => {
+                                                    const next = { ...prev };
+                                                    delete next[offerDeleteKey];
+                                                    return next;
+                                                  },
+                                                )
                                               }
                                             >
                                               <Text
-                                                style={
-                                                  styles.supervisorActionText
-                                                }
+                                                style={[
+                                                  styles.adminActionText,
+                                                  styles.adminActionTextDark,
+                                                ]}
                                               >
-                                                {isProfileSupervisor
-                                                  ? "Remove"
-                                                  : "Make supervisor"}
+                                                Cancel
+                                              </Text>
+                                            </TouchableOpacity>
+                                            <TouchableOpacity
+                                              style={styles.adminDelete}
+                                              onPress={() =>
+                                                showAppDialog({
+                                                  title: "Delete offer?",
+                                                  message:
+                                                    "This permanently removes the offer and attempts to delete its uploaded image.",
+                                                  dismissOnBackdrop: false,
+                                                  options: [
+                                                    {
+                                                      label: "Keep offer",
+                                                      variant: "ghost",
+                                                    },
+                                                    {
+                                                      label: "Delete offer",
+                                                      variant: "primary",
+                                                      icon: "trash-outline",
+                                                      onPress: () => {
+                                                        setArmedManagementOfferDeletes(
+                                                          (prev) => {
+                                                            const next = {
+                                                              ...prev,
+                                                            };
+                                                            delete next[
+                                                              offerDeleteKey
+                                                            ];
+                                                            return next;
+                                                          },
+                                                        );
+                                                        handleAdminDeleteOffer(
+                                                          offer,
+                                                        );
+                                                      },
+                                                    },
+                                                  ],
+                                                })
+                                              }
+                                            >
+                                              <Text
+                                                style={[
+                                                  styles.adminActionText,
+                                                  styles.adminActionTextDark,
+                                                ]}
+                                              >
+                                                Confirm delete
                                               </Text>
                                             </TouchableOpacity>
                                           </View>
-                                        )}
-                                      </View>
-                                    );
-                                  })}
-                                </View>
-                              )}
+                                        </>
+                                      )}
+                                    </View>
+                                  </View>
+                                );
+                              })
+                            )}
+
+                            <View style={styles.sectionBlock}>
+                              <Text style={styles.sectionTitleAlt}>
+                                Business management
+                              </Text>
+                              <Text style={styles.sectionBody}>
+                                Delete businesses and their offers when needed.
+                              </Text>
                             </View>
+
+                            {adminBusinesses.length === 0 ? (
+                              <View style={styles.emptyState}>
+                                <Text style={styles.emptyTitle}>
+                                  No businesses yet.
+                                </Text>
+                                <Text style={styles.emptyCopy}>
+                                  Approved listings will appear here.
+                                </Text>
+                              </View>
+                            ) : (
+                              adminBusinesses.map((business) => {
+                                const summaryText = String(
+                                  business.offer || "",
+                                ).trim();
+                                const createdLabel = formatHistoryTimestamp(
+                                  business.createdAt,
+                                );
+                                const businessDeleteKey = String(business.id);
+                                const isBusinessDeleteArmed = Boolean(
+                                  armedManagementBusinessDeletes[
+                                    businessDeleteKey
+                                  ],
+                                );
+                                return (
+                                  <View key={business.id} style={styles.adminCard}>
+                                    <View style={styles.adminHeader}>
+                                      <Text style={styles.adminTitle}>
+                                        {business.name}
+                                      </Text>
+                                      <Text style={styles.adminMeta}>
+                                        {
+                                          getCategoryConfig(business.categoryKey)
+                                            .display
+                                        }
+                                      </Text>
+                                    </View>
+                                    <View style={styles.adminQuickMetaRow}>
+                                      <View style={styles.adminQuickMetaChip}>
+                                        <Text style={styles.adminQuickMetaText}>
+                                          {`Created ${createdLabel}`}
+                                        </Text>
+                                      </View>
+                                    </View>
+                                    <Text style={styles.adminOffer}>
+                                      {summaryText ||
+                                        "No offer highlight submitted."}
+                                    </Text>
+                                    <View style={styles.adminDestructivePanel}>
+                                      {!isBusinessDeleteArmed ? (
+                                        <TouchableOpacity
+                                          style={styles.adminDeleteArm}
+                                          onPress={() => {
+                                            setArmedManagementBusinessDeletes({
+                                              [businessDeleteKey]: true,
+                                            });
+                                            setArmedManagementOfferDeletes({});
+                                          }}
+                                        >
+                                          <Text
+                                            style={styles.adminDeleteArmText}
+                                          >
+                                            Arm delete
+                                          </Text>
+                                        </TouchableOpacity>
+                                      ) : (
+                                        <>
+                                          <Text style={styles.adminDangerStep}>
+                                            Step 1 of 2 complete. Final
+                                            confirmation will permanently remove
+                                            this business and all linked offers.
+                                          </Text>
+                                          <View style={styles.adminActions}>
+                                            <TouchableOpacity
+                                              style={styles.adminReject}
+                                              onPress={() =>
+                                                setArmedManagementBusinessDeletes(
+                                                  (prev) => {
+                                                    const next = { ...prev };
+                                                    delete next[
+                                                      businessDeleteKey
+                                                    ];
+                                                    return next;
+                                                  },
+                                                )
+                                              }
+                                            >
+                                              <Text
+                                                style={[
+                                                  styles.adminActionText,
+                                                  styles.adminActionTextDark,
+                                                ]}
+                                              >
+                                                Cancel
+                                              </Text>
+                                            </TouchableOpacity>
+                                            <TouchableOpacity
+                                              style={styles.adminDelete}
+                                              onPress={() =>
+                                                showAppDialog({
+                                                  title: "Delete business?",
+                                                  message:
+                                                    "This permanently removes the business, all linked offers, and attempts image cleanup. This action cannot be undone.",
+                                                  dismissOnBackdrop: false,
+                                                  options: [
+                                                    {
+                                                      label: "Keep business",
+                                                      variant: "ghost",
+                                                    },
+                                                    {
+                                                      label: "Delete business",
+                                                      variant: "primary",
+                                                      icon: "trash-outline",
+                                                      onPress: () => {
+                                                        setArmedManagementBusinessDeletes(
+                                                          (prev) => {
+                                                            const next = {
+                                                              ...prev,
+                                                            };
+                                                            delete next[
+                                                              businessDeleteKey
+                                                            ];
+                                                            return next;
+                                                          },
+                                                        );
+                                                        handleAdminDeleteBusiness(
+                                                          business,
+                                                        );
+                                                      },
+                                                    },
+                                                  ],
+                                                })
+                                              }
+                                            >
+                                              <Text
+                                                style={[
+                                                  styles.adminActionText,
+                                                  styles.adminActionTextDark,
+                                                ]}
+                                              >
+                                                Confirm delete
+                                              </Text>
+                                            </TouchableOpacity>
+                                          </View>
+                                        </>
+                                      )}
+                                    </View>
+                                  </View>
+                                );
+                              })
+                            )}
                           </>
                         )}
+
                       </>
                     ) : (
                       <View style={styles.emptyState}>
@@ -20095,6 +20974,70 @@ const styles = StyleSheet.create({
   },
   filterTextActive: {
     color: COLORS.white,
+  },
+  discoverPlaidPrompt: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#CFE1F8",
+    backgroundColor: "#F4F9FF",
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    marginBottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  discoverPlaidPromptIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#E4F0FF",
+  },
+  discoverPlaidPromptCopy: {
+    flex: 1,
+  },
+  discoverPlaidPromptTitle: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  discoverPlaidPromptBody: {
+    marginTop: 2,
+    fontSize: 11,
+    lineHeight: 14,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  discoverPlaidPromptActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  discoverPlaidPromptConnect: {
+    minHeight: 28,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: COLORS.pine,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  discoverPlaidPromptConnectDisabled: {
+    opacity: 0.6,
+  },
+  discoverPlaidPromptConnectText: {
+    fontSize: 11,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  discoverPlaidPromptClose: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
   },
   cardHeaderRow: {
     flexDirection: "row",
@@ -24287,6 +25230,184 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 16,
   },
+  adminWorkspaceTabs: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 10,
+  },
+  adminWorkspaceTab: {
+    flex: 1,
+    minWidth: 110,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 14,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  adminWorkspaceTabActive: {
+    borderColor: COLORS.pine,
+    backgroundColor: "#F0F6FC",
+  },
+  adminWorkspaceTabHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 6,
+  },
+  adminWorkspaceTabIconWrap: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.mint,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  adminWorkspaceTabIconWrapActive: {
+    borderColor: COLORS.pine,
+    backgroundColor: COLORS.pine,
+  },
+  adminWorkspaceTabCount: {
+    minWidth: 24,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    alignItems: "center",
+  },
+  adminWorkspaceTabCountText: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  adminWorkspaceTabCountTextActive: {
+    color: COLORS.pine,
+  },
+  adminWorkspaceTabLabel: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  adminWorkspaceTabLabelActive: {
+    color: COLORS.pine,
+  },
+  adminWorkspaceTabSubtitle: {
+    marginTop: 2,
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  adminWorkspaceLead: {
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 14,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  adminWorkspaceLeadTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+  },
+  adminWorkspaceLeadCopy: {
+    marginTop: 3,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 17,
+  },
+  adminDangerNotice: {
+    borderWidth: 1,
+    borderColor: "#F2D8B5",
+    backgroundColor: "#FFF6EA",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  adminDangerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  adminDangerIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#F2D8B5",
+    backgroundColor: "#FFF1DC",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  adminDangerTitle: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  adminDangerBody: {
+    marginTop: 6,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 17,
+  },
+  adminRolesCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 14,
+    marginBottom: 12,
+  },
+  adminRolesTitle: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+  },
+  adminRolesSubtitle: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  adminRolesGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 10,
+  },
+  adminRoleColumn: {
+    flex: 1,
+    minWidth: 220,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.mint,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  adminRoleHeading: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    marginBottom: 6,
+  },
+  adminRoleItem: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+    marginBottom: 2,
+  },
   adminCard: {
     backgroundColor: COLORS.white,
     borderRadius: 16,
@@ -24325,6 +25446,25 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     marginBottom: 10,
   },
+  adminQuickMetaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginBottom: 8,
+  },
+  adminQuickMetaChip: {
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.mint,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  adminQuickMetaText: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
   adminDetails: {
     borderTopWidth: 1,
     borderColor: COLORS.sand,
@@ -24360,6 +25500,30 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     lineHeight: 18,
   },
+  adminOfferImage: {
+    width: "100%",
+    height: 160,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.mint,
+  },
+  adminOfferImagePlaceholder: {
+    width: "100%",
+    height: 92,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.mint,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+  },
+  adminOfferImagePlaceholderText: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
   adminRatePicker: {
     flexDirection: "row",
     gap: 8,
@@ -24387,9 +25551,59 @@ const styles = StyleSheet.create({
   adminRateOptionTextSelected: {
     color: COLORS.pine,
   },
+  adminRouteButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    paddingVertical: 10,
+  },
+  adminRouteButtonText: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
   adminActions: {
     flexDirection: "row",
     gap: 8,
+  },
+  adminActionArmed: {
+    borderColor: "#D9A44A",
+    backgroundColor: "#FFF4E1",
+  },
+  adminActionArmedText: {
+    color: "#7C4B00",
+  },
+  adminDestructivePanel: {
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 12,
+    backgroundColor: "#FCFCFD",
+    padding: 10,
+  },
+  adminDeleteArm: {
+    borderWidth: 1,
+    borderColor: "#E4A8A8",
+    borderRadius: 10,
+    backgroundColor: "#FFF6F6",
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+  adminDeleteArmText: {
+    fontSize: 12,
+    color: "#9F3E3E",
+    fontFamily: FONT_MEDIUM,
+  },
+  adminDangerStep: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+    marginBottom: 8,
   },
   qrCard: {
     backgroundColor: COLORS.white,
@@ -24515,6 +25729,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
+    textAlign: "center",
+    includeFontPadding: false,
   },
   adminActionTextDark: {
     color: COLORS.ink,

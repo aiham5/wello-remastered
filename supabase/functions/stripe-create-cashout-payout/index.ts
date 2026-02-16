@@ -19,7 +19,13 @@ const CASHOUT_WEEKLY_LIMIT_ENABLED = (() => {
   const raw = String(Deno.env.get("CASHOUT_WEEKLY_LIMIT_ENABLED") || "")
     .trim()
     .toLowerCase();
+  if (!raw) return true;
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+})();
+const CASHOUT_WEEKLY_LIMIT_MAX = (() => {
+  const raw = Math.trunc(Number(Deno.env.get("CASHOUT_WEEKLY_LIMIT_MAX") || "2"));
+  if (!Number.isFinite(raw) || raw < 1) return 2;
+  return raw;
 })();
 
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -120,31 +126,55 @@ Deno.serve(async (req) => {
       .update({ stripe_cashout_payouts_enabled: payoutsEnabled })
       .eq("id", userId);
 
+    let payoutsUsedInWindowBefore = 0;
+    let payoutsUsedInWindowAfter = 0;
+    let payoutsRemainingInWindow = 0;
+    let nextEligibleAtForWindow: string | null = null;
+
     if (CASHOUT_WEEKLY_LIMIT_ENABLED) {
-      const { data: lastPayout, error: lastPayoutError } = await supabase
+      const weekWindowStartMs = Date.now() - ONE_WEEK_MS;
+      const weekWindowStartIso = new Date(weekWindowStartMs).toISOString();
+      const { data: recentPayouts, error: recentPayoutsError } = await supabase
         .from("cashout_payouts")
-        .select("id, created_at, status")
+        .select("id, created_at")
         .eq("user_id", userId)
         .in("status", ["pending", "paid"])
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (lastPayoutError) {
+        .gte("created_at", weekWindowStartIso)
+        .order("created_at", { ascending: true });
+      if (recentPayoutsError) {
         return new Response(
-          JSON.stringify({ error: lastPayoutError.message || "Unable to cash out." }),
+          JSON.stringify({ error: recentPayoutsError.message || "Unable to cash out." }),
           { status: 500 },
         );
       }
 
-      if (lastPayout?.created_at) {
-        const lastAtMs = Date.parse(lastPayout.created_at);
-        if (Number.isFinite(lastAtMs) && Date.now() - lastAtMs < ONE_WEEK_MS) {
-          const nextEligibleAt = new Date(lastAtMs + ONE_WEEK_MS).toISOString();
+      const payoutRows = Array.isArray(recentPayouts) ? recentPayouts : [];
+      payoutsUsedInWindowBefore = payoutRows.length;
+      payoutsUsedInWindowAfter = payoutsUsedInWindowBefore + 1;
+      payoutsRemainingInWindow = Math.max(
+        CASHOUT_WEEKLY_LIMIT_MAX - payoutsUsedInWindowAfter,
+        0,
+      );
+      const oldestInWindow = payoutRows[0]?.created_at
+        ? Date.parse(payoutRows[0].created_at)
+        : NaN;
+      const computedNextEligibleAt = Number.isFinite(oldestInWindow)
+        ? new Date(oldestInWindow + ONE_WEEK_MS).toISOString()
+        : new Date(Date.now() + ONE_WEEK_MS).toISOString();
+      if (payoutsRemainingInWindow <= 0) {
+        nextEligibleAtForWindow = computedNextEligibleAt;
+      }
+
+      if (payoutRows.length >= CASHOUT_WEEKLY_LIMIT_MAX) {
+        nextEligibleAtForWindow = computedNextEligibleAt;
+        if (nextEligibleAtForWindow) {
           return new Response(
             JSON.stringify({
-              error: "Cashout available once per week.",
-              nextEligibleAt,
-              lastPayoutAt: new Date(lastAtMs).toISOString(),
+              error: `Cashout is limited to ${CASHOUT_WEEKLY_LIMIT_MAX} times per 7 days.`,
+              nextEligibleAt: nextEligibleAtForWindow,
+              payoutsUsedInWindow: payoutsUsedInWindowBefore,
+              payoutsRemainingInWindow: 0,
+              weeklyLimit: CASHOUT_WEEKLY_LIMIT_MAX,
             }),
             { status: 429 },
           );
@@ -370,8 +400,18 @@ Deno.serve(async (req) => {
         availableCents,
         overageCents: overage || 0,
         adjustmentId,
-        nextEligibleAt: CASHOUT_WEEKLY_LIMIT_ENABLED
-          ? new Date(Date.now() + ONE_WEEK_MS).toISOString()
+        nextEligibleAt:
+          CASHOUT_WEEKLY_LIMIT_ENABLED && payoutsRemainingInWindow <= 0
+            ? nextEligibleAtForWindow || new Date(Date.now() + ONE_WEEK_MS).toISOString()
+            : null,
+        payoutsUsedInWindow: CASHOUT_WEEKLY_LIMIT_ENABLED
+          ? payoutsUsedInWindowAfter
+          : null,
+        payoutsRemainingInWindow: CASHOUT_WEEKLY_LIMIT_ENABLED
+          ? payoutsRemainingInWindow
+          : null,
+        weeklyLimit: CASHOUT_WEEKLY_LIMIT_ENABLED
+          ? CASHOUT_WEEKLY_LIMIT_MAX
           : null,
       }),
       { status: 200 },
