@@ -396,7 +396,7 @@ h1 {
 }
 
 .stat-card {
-  background: #ffffff;
+  background: var(--surface);
   border-radius: 20px;
   padding: 18px;
   border: 1px solid var(--line);
@@ -418,7 +418,7 @@ h1 {
 }
 
 .filters-card {
-  background: #ffffff;
+  background: var(--surface);
   border-radius: 22px;
   padding: 20px;
   border: 1px solid var(--line);
@@ -453,12 +453,22 @@ h1 {
   padding: 12px 14px;
   font-size: 14px;
   font-family: inherit;
-  background: #ffffff;
+  background: var(--frost);
   color: var(--ink);
+}
+
+.field input::placeholder,
+.field textarea::placeholder {
+  color: var(--muted);
 }
 
 .field textarea {
   resize: vertical;
+}
+
+html[data-theme="dark"] .field select option {
+  background: var(--surface);
+  color: var(--ink);
 }
 
 .receipts-layout { 
@@ -475,7 +485,7 @@ h1 {
 .table-card,
 .detail-card,
 .summary-card {
-  background: #ffffff;
+  background: var(--surface);
   border-radius: 24px;
   padding: 20px;
   border: 1px solid var(--line);
@@ -646,7 +656,7 @@ h1 {
   max-height: 320px;
   object-fit: contain;
   border-radius: 12px;
-  background: #ffffff;
+  background: var(--surface);
 }
 
 .detail-image-actions {
@@ -702,7 +712,7 @@ h1 {
   padding: 12px;
   border-radius: 14px;
   border: 1px dashed var(--line);
-  background: #fff;
+  background: var(--surface);
 }
 
 .advanced summary {
@@ -752,7 +762,7 @@ h1 {
 
 .modal-card {
   position: relative;
-  background: #ffffff;
+  background: var(--surface);
   border-radius: 24px;
   padding: 18px;
   width: min(90vw, 980px);
@@ -769,7 +779,7 @@ h1 {
   max-height: 75vh;
   object-fit: contain;
   border-radius: 16px;
-  background: #f8fafc;
+  background: var(--frost);
 }
 
 .modal-close {
@@ -780,7 +790,7 @@ h1 {
   height: 36px;
   border-radius: 50%;
   border: 1px solid var(--line);
-  background: #ffffff;
+  background: var(--surface);
   cursor: pointer;
   font-size: 18px;
   color: var(--ink);
