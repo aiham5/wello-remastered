@@ -120,12 +120,10 @@ Deno.serve(async (req) => {
 
   const maxUsesPerUser = Number(promo.max_uses_per_user) || 0;
   if (maxUsesPerUser > 0) {
-    const { count, error: usageError } = await adminClient
-      .from("cashback_events")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", userId)
-      .eq("promo_code_id", promo.id)
-      .in("status", ["available", "reserved", "paid"]);
+    const { data: usageCountData, error: usageError } = await adminClient.rpc(
+      "count_user_promo_uses",
+      { p_user_id: userId, p_promo_id: promo.id },
+    );
 
     if (usageError) {
       return json(req, 500, {
@@ -133,7 +131,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    if ((Number(count) || 0) >= maxUsesPerUser) {
+    if ((Number(usageCountData) || 0) >= maxUsesPerUser) {
       // Keep profile assignment clean once the per-user promo limit is exhausted.
       await adminClient
         .from("profiles")
