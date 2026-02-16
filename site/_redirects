@@ -4,4 +4,5 @@
 /stripe/cancel   /stripe/cancel/index.html   200
 /plaid-link      /plaid-link/index.html      200
 /admin           /admin/index.html           200
+/admin.html      /admin/                     301
 /admin/*         /admin/index.html           200
