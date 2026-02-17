@@ -2108,3 +2108,224 @@ body.contact-page .contact-field textarea:focus {
   box-shadow: 0 0 0 3px rgba(228, 178, 51, 0.24);
 }
 
+/* ==========================
+   Responsive polish overrides
+   ========================== */
+
+body.home-page,
+body.contact-page {
+  overflow-x: hidden;
+}
+
+body.home-page .home-container,
+body.contact-page .contact-container {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+body.home-page .home-nav-wrap {
+  top: max(0px, env(safe-area-inset-top));
+}
+
+body.home-page .home-nav-links,
+body.contact-page .contact-actions {
+  row-gap: 10px;
+}
+
+body.home-page .home-feature-card h3,
+body.home-page .home-trust-card h3,
+body.home-page .home-step h3,
+body.home-page .home-faq-item summary {
+  text-wrap: balance;
+}
+
+body.home-page .home-faq-item p,
+body.home-page .home-feature-card p,
+body.home-page .home-trust-card p,
+body.home-page .home-step p,
+body.contact-page .contact-hero p,
+body.contact-page .contact-status {
+  text-wrap: pretty;
+}
+
+body.contact-page .contact-turnstile {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+@media (max-width: 980px) {
+  body.home-page .home-nav {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  body.home-page .home-nav-links {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  body.home-page .home-hero {
+    padding-top: 46px;
+  }
+
+  body.home-page .home-hero-panel {
+    padding: 22px;
+  }
+}
+
+@media (max-width: 680px) {
+  body.home-page .home-container,
+  body.contact-page .contact-container {
+    width: min(100%, 95%);
+  }
+
+  body.home-page .home-nav,
+  body.contact-page .contact-nav {
+    border-radius: 14px;
+    padding: 10px 12px;
+  }
+
+  body.home-page .home-nav-links {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  body.home-page .home-nav-links a,
+  body.home-page .home-nav-links a.home-nav-cta {
+    width: 100%;
+    justify-content: flex-start;
+    min-height: 40px;
+  }
+
+  body.home-page .home-hero {
+    padding-top: 34px;
+  }
+
+  body.home-page .home-title {
+    font-size: clamp(30px, 11.2vw, 42px);
+    line-height: 1.08;
+  }
+
+  body.home-page .home-subtitle {
+    font-size: 16px;
+    line-height: 1.55;
+    margin-top: 16px;
+  }
+
+  body.home-page .home-section {
+    padding: 20px 0 14px;
+  }
+
+  body.home-page .home-section-alt {
+    padding: 24px 0 18px;
+  }
+
+  body.home-page .home-feature-card,
+  body.home-page .home-trust-card,
+  body.home-page .home-step {
+    padding: 14px;
+    border-radius: 15px;
+  }
+
+  body.home-page .home-step {
+    grid-template-columns: 38px minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  body.home-page .home-step > span {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    font-size: 14px;
+  }
+
+  body.home-page .home-hero-actions,
+  body.home-page .home-cta-content {
+    width: 100%;
+  }
+
+  body.home-page .home-btn {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  body.home-page .home-cta-content {
+    padding: 18px;
+    border-radius: 18px;
+    gap: 14px;
+  }
+
+  body.home-page .home-footer {
+    padding-bottom: calc(24px + env(safe-area-inset-bottom));
+  }
+
+  body.contact-page .contact-main {
+    padding-top: 22px;
+    padding-bottom: calc(32px + env(safe-area-inset-bottom));
+  }
+
+  body.contact-page .contact-hero h1 {
+    font-size: clamp(29px, 10.2vw, 38px);
+    line-height: 1.1;
+  }
+
+  body.contact-page .contact-hero p {
+    font-size: 15px;
+    margin-top: 12px;
+  }
+
+  body.contact-page .contact-card {
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  body.contact-page .contact-card h2 {
+    font-size: 22px;
+  }
+
+  body.contact-page .contact-grid {
+    gap: 11px;
+  }
+
+  body.contact-page .contact-field span {
+    font-size: 12px;
+  }
+
+  body.contact-page .contact-field input,
+  body.contact-page .contact-field select,
+  body.contact-page .contact-field textarea {
+    font-size: 16px;
+    padding: 11px 12px;
+  }
+
+  body.contact-page .contact-btn {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  body.contact-page .contact-status {
+    width: 100%;
+  }
+}
+
+@media (max-width: 380px) {
+  body.home-page .home-container,
+  body.contact-page .contact-container {
+    width: min(100%, 96%);
+  }
+
+  body.home-page .home-title {
+    font-size: clamp(28px, 10.8vw, 34px);
+  }
+
+  body.home-page .home-hero-panel {
+    padding: 16px;
+  }
+
+  body.contact-page .contact-card {
+    padding: 14px;
+  }
+}
+
