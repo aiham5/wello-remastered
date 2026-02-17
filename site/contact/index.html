@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Contact Support | Wello Partners</title>
+    <meta
+      name="description"
+      content="Contact Wello Partners support for onboarding, account, billing, offer, or technical issues."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Rubik:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+    <link rel="apple-touch-icon" href="/assets/wello-logo.jpeg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="contact-page">
+    <div class="contact-shell">
+      <header class="contact-header">
+        <div class="contact-container">
+          <nav class="contact-nav">
+            <a class="contact-brand" href="/">
+              <img src="/assets/wello-logo.jpeg" alt="Wello logo" />
+              <span>Wello Partners</span>
+            </a>
+            <a class="contact-home-link" href="/">Back to home</a>
+          </nav>
+        </div>
+      </header>
+
+      <main class="contact-main">
+        <div class="contact-container">
+          <section class="contact-hero">
+            <p class="contact-kicker">Support</p>
+            <h1>Tell us what you need and we will handle it quickly.</h1>
+            <p>
+              Use this form for onboarding, account updates, billing questions, offer issues, and
+              bug reports. Support replies within 1 business day.
+            </p>
+          </section>
+
+          <section class="contact-card" aria-labelledby="support-form-title">
+            <h2 id="support-form-title">Contact support</h2>
+            <p class="contact-card-subtitle">
+              If you prefer email, use
+              <a href="mailto:support@wellopartners.com">support@wellopartners.com</a>.
+            </p>
+
+            <form id="contact-form" class="contact-form" novalidate>
+              <div class="contact-grid">
+                <label class="contact-field">
+                  <span>Full name</span>
+                  <input
+                    type="text"
+                    name="name"
+                    autocomplete="name"
+                    maxlength="100"
+                    placeholder="Your full name"
+                    required
+                  />
+                </label>
+                <label class="contact-field">
+                  <span>Business name</span>
+                  <input
+                    type="text"
+                    name="businessName"
+                    maxlength="120"
+                    placeholder="Your business name"
+                    required
+                  />
+                </label>
+                <label class="contact-field">
+                  <span>Email</span>
+                  <input
+                    type="email"
+                    name="email"
+                    autocomplete="email"
+                    maxlength="160"
+                    placeholder="you@business.com"
+                    required
+                  />
+                </label>
+                <label class="contact-field">
+                  <span>Phone (optional)</span>
+                  <input
+                    type="tel"
+                    name="phone"
+                    autocomplete="tel"
+                    maxlength="40"
+                    placeholder="+1 555 555 5555"
+                  />
+                </label>
+                <label class="contact-field">
+                  <span>Issue type</span>
+                  <select name="issueType" required>
+                    <option value="">Select issue type</option>
+                    <option value="onboarding">Onboarding</option>
+                    <option value="account_access">Account access</option>
+                    <option value="offer_management">Offer management</option>
+                    <option value="redemptions">Redemptions and verification</option>
+                    <option value="billing_payouts">Billing and payouts</option>
+                    <option value="bug_report">Bug report</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <label class="contact-field contact-field-full">
+                  <span>Message</span>
+                  <textarea
+                    name="message"
+                    rows="6"
+                    maxlength="4000"
+                    placeholder="Describe the issue with as much detail as possible."
+                    required
+                  ></textarea>
+                </label>
+              </div>
+
+              <div id="turnstile-container" class="contact-turnstile"></div>
+              <p id="turnstile-hint" class="contact-turnstile-hint is-hidden">
+                Security check is unavailable right now. Please email support@wellopartners.com.
+              </p>
+
+              <input type="text" name="website" tabindex="-1" autocomplete="off" class="contact-hp" />
+
+              <div class="contact-actions">
+                <button id="contact-submit" type="submit" class="contact-btn">Send message</button>
+                <p id="contact-status" class="contact-status" role="status" aria-live="polite"></p>
+              </div>
+            </form>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      const form = document.getElementById("contact-form");
+      const submitButton = document.getElementById("contact-submit");
+      const statusEl = document.getElementById("contact-status");
+      const turnstileContainer = document.getElementById("turnstile-container");
+      const turnstileHint = document.getElementById("turnstile-hint");
+
+      let turnstileEnabled = false;
+      let turnstileWidgetId = null;
+
+      const setStatus = (message, tone) => {
+        statusEl.textContent = message;
+        statusEl.classList.remove("is-success", "is-error");
+        if (tone) statusEl.classList.add(tone);
+      };
+
+      const loadTurnstileScript = () =>
+        new Promise((resolve, reject) => {
+          if (window.turnstile) {
+            resolve();
+            return;
+          }
+          const script = document.createElement("script");
+          script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+          script.async = true;
+          script.defer = true;
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error("Turnstile script load failed"));
+          document.head.appendChild(script);
+        });
+
+      const initTurnstile = async () => {
+        try {
+          const response = await fetch("/api/contact-config", { cache: "no-store" });
+          if (!response.ok) return;
+          const data = await response.json().catch(() => ({}));
+          const siteKey = String(data?.turnstileSiteKey || "").trim();
+          if (!siteKey) return;
+
+          await loadTurnstileScript();
+          if (!window.turnstile) throw new Error("Turnstile unavailable");
+
+          turnstileWidgetId = window.turnstile.render(turnstileContainer, {
+            sitekey: siteKey,
+            theme: "light",
+          });
+          turnstileEnabled = true;
+        } catch (_) {
+          turnstileHint.classList.remove("is-hidden");
+        }
+      };
+
+      initTurnstile();
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        if (!form.reportValidity()) return;
+
+        const formData = new FormData(form);
+        const payload = {
+          name: String(formData.get("name") || "").trim(),
+          businessName: String(formData.get("businessName") || "").trim(),
+          email: String(formData.get("email") || "").trim(),
+          phone: String(formData.get("phone") || "").trim(),
+          issueType: String(formData.get("issueType") || "").trim(),
+          message: String(formData.get("message") || "").trim(),
+          website: String(formData.get("website") || "").trim(),
+          pageUrl: window.location.href,
+          userAgent: navigator.userAgent,
+        };
+
+        if (turnstileEnabled) {
+          if (!window.turnstile || turnstileWidgetId === null) {
+            setStatus("Security check is not ready. Please refresh and try again.", "is-error");
+            return;
+          }
+          const token = String(window.turnstile.getResponse(turnstileWidgetId) || "");
+          if (!token) {
+            setStatus("Please complete the security check.", "is-error");
+            return;
+          }
+          payload.turnstileToken = token;
+        }
+
+        submitButton.disabled = true;
+        setStatus("Sending your message...", "");
+
+        try {
+          const response = await fetch("/api/contact", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            setStatus(
+              data?.error || "We could not send your message. Please try again shortly.",
+              "is-error",
+            );
+            return;
+          }
+
+          form.reset();
+          setStatus("Message sent. Our support team will reply within 1 business day.", "is-success");
+        } catch (_) {
+          setStatus("Connection issue. Please try again in a moment.", "is-error");
+        } finally {
+          if (turnstileEnabled && window.turnstile && turnstileWidgetId !== null) {
+            window.turnstile.reset(turnstileWidgetId);
+          }
+          submitButton.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
