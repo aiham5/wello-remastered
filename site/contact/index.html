@@ -145,6 +145,7 @@
 
       let turnstileEnabled = false;
       let turnstileWidgetId = null;
+      submitButton.disabled = true;
 
       const setStatus = (message, tone) => {
         statusEl.textContent = message;
@@ -170,10 +171,10 @@
       const initTurnstile = async () => {
         try {
           const response = await fetch("/api/contact-config", { cache: "no-store" });
-          if (!response.ok) return;
+          if (!response.ok) throw new Error("Turnstile config unavailable");
           const data = await response.json().catch(() => ({}));
           const siteKey = String(data?.turnstileSiteKey || "").trim();
-          if (!siteKey) return;
+          if (!siteKey) throw new Error("Missing Turnstile site key");
 
           await loadTurnstileScript();
           if (!window.turnstile) throw new Error("Turnstile unavailable");
@@ -183,8 +184,14 @@
             theme: "light",
           });
           turnstileEnabled = true;
+          submitButton.disabled = false;
         } catch (_) {
           turnstileHint.classList.remove("is-hidden");
+          setStatus(
+            "Security check is unavailable. Please try again later or email support@wellopartners.com.",
+            "is-error",
+          );
+          submitButton.disabled = true;
         }
       };
 
@@ -208,18 +215,17 @@
           userAgent: navigator.userAgent,
         };
 
-        if (turnstileEnabled) {
-          if (!window.turnstile || turnstileWidgetId === null) {
-            setStatus("Security check is not ready. Please refresh and try again.", "is-error");
-            return;
-          }
-          const token = String(window.turnstile.getResponse(turnstileWidgetId) || "");
-          if (!token) {
-            setStatus("Please complete the security check.", "is-error");
-            return;
-          }
-          payload.turnstileToken = token;
+        if (!turnstileEnabled || !window.turnstile || turnstileWidgetId === null) {
+          setStatus("Security check is not ready. Please refresh and try again.", "is-error");
+          return;
         }
+
+        const token = String(window.turnstile.getResponse(turnstileWidgetId) || "");
+        if (!token) {
+          setStatus("Please complete the security check.", "is-error");
+          return;
+        }
+        payload.turnstileToken = token;
 
         submitButton.disabled = true;
         setStatus("Sending your message...", "");

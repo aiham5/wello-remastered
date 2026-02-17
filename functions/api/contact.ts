@@ -80,12 +80,11 @@ const isRateLimited = (key: string) => {
   return current.count > RATE_MAX;
 };
 
-async function verifyTurnstile(request: Request, env: Env, token: string) {
-  if (!env.TURNSTILE_SECRET) return true;
+async function verifyTurnstile(request: Request, turnstileSecret: string, token: string) {
   if (!token) return false;
 
   const body = new URLSearchParams();
-  body.set("secret", env.TURNSTILE_SECRET);
+  body.set("secret", turnstileSecret);
   body.set("response", token);
   const ip = clientIp(request);
   if (ip && ip !== "unknown") body.set("remoteip", ip);
@@ -167,6 +166,14 @@ export const onRequestPost = async ({ request, env }: { request: Request; env: E
   const userAgent = clean(payload.userAgent, 500);
   const turnstileToken = clean(payload.turnstileToken, 1200);
 
+  const turnstileSecret = clean(env.TURNSTILE_SECRET, 2000);
+  if (!turnstileSecret) {
+    return json(
+      { error: "Security check is not configured. Please email support@wellopartners.com." },
+      { status: 503 },
+    );
+  }
+
   if (website) {
     return json({ ok: true });
   }
@@ -186,7 +193,7 @@ export const onRequestPost = async ({ request, env }: { request: Request; env: E
     return json({ error: "Too many requests. Please wait a minute and try again." }, { status: 429 });
   }
 
-  const turnstileOk = await verifyTurnstile(request, env, turnstileToken);
+  const turnstileOk = await verifyTurnstile(request, turnstileSecret, turnstileToken);
   if (!turnstileOk) {
     return json({ error: "Security check failed. Please refresh and try again." }, { status: 400 });
   }
