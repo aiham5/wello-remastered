@@ -1,6 +1,7 @@
 ﻿import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import Stripe from "https://esm.sh/stripe@14.25.0?target=deno";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { syncStripeCustomerIdentity } from "../_shared/stripeCustomer.ts";
 
 export const config = { verify_jwt: false };
 
@@ -139,6 +140,15 @@ serve(async (req) => {
         .update({ stripe_customer_id: customerId })
         .eq("id", businessId);
     }
+
+    await syncStripeCustomerIdentity({
+      stripe,
+      customerId,
+      businessName: business.name,
+      email: authData.user.email,
+      context: "stripe-create-setup-session",
+      businessId,
+    });
 
     const session = await stripe.checkout.sessions.create({
       mode: "setup",

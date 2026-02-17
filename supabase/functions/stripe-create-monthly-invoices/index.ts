@@ -1,5 +1,6 @@
 import Stripe from "npm:stripe@14.25.0";
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
+import { syncStripeCustomerIdentity } from "../_shared/stripeCustomer.ts";
 
 export const config = { verify_jwt: false };
 
@@ -128,7 +129,7 @@ Deno.serve(async (req) => {
 
       const { data: business } = await supabase
         .from("businesses")
-        .select("stripe_customer_id")
+        .select("stripe_customer_id, name")
         .eq("id", businessId)
         .maybeSingle();
 
@@ -136,6 +137,14 @@ Deno.serve(async (req) => {
         results.push({ businessId, error: "missing_stripe_customer" });
         continue;
       }
+
+      await syncStripeCustomerIdentity({
+        stripe,
+        customerId: business.stripe_customer_id,
+        businessName: business.name,
+        context: "stripe-create-monthly-invoices",
+        businessId,
+      });
 
       const { data: existingInvoice } = await supabase
         .from("commission_invoices")

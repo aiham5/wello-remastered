@@ -86,10 +86,11 @@ const ui = {
   detailCashback: document.getElementById("detail-cashback"),
   detailCashbackHelp: document.getElementById("detail-cashback-help"),
   detailSubsidy: document.getElementById("detail-subsidy"),
-  detailStatusSelect: document.getElementById("detail-status-select"),
   detailNotes: document.getElementById("detail-notes"),
   detailSave: document.getElementById("detail-save"),
-  detailVerify: document.getElementById("detail-verify"),
+  detailMarkPending: document.getElementById("detail-mark-pending"),
+  detailMarkVerified: document.getElementById("detail-mark-verified"),
+  detailMarkRejected: document.getElementById("detail-mark-rejected"),
   detailError: document.getElementById("detail-error"),
   businessSummary: document.getElementById("business-summary"),
   activitySummary: document.getElementById("activity-summary"),
@@ -392,6 +393,20 @@ const abortRecovery = {
   lastAt: 0,
 };
 
+const normalizeReviewStatus = (status) => {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "verified" || normalized === "rejected") return normalized;
+  return "pending";
+};
+
+const getCurrentDetailStatus = () =>
+  normalizeReviewStatus(
+    ui.detailStatus?.dataset?.status ||
+      state.detailDraft?.status ||
+      state.selected?.review_status ||
+      "pending",
+  );
+
 const clearDetailDraft = () => {
   state.detailDirty = false;
   state.detailDraft = null;
@@ -404,7 +419,7 @@ const setDetailDraftFromUI = () => {
     receiptId: state.selected.id,
     total: ui.detailTotal?.value ?? "",
     notes: ui.detailNotes?.value ?? "",
-    status: ui.detailStatusSelect?.value ?? "pending",
+    status: getCurrentDetailStatus(),
     updatedAt: nowMs(),
   };
 };
@@ -1173,8 +1188,9 @@ const parseMoneyToCents = (value) => {
 };
 
 const updateStatusPill = (el, status) => {
-  const normalized = status || "pending";
+  const normalized = normalizeReviewStatus(status);
   el.textContent = normalized;
+  el.dataset.status = normalized;
   el.classList.remove("pending", "verified", "rejected");
   el.classList.add(normalized);
 };
@@ -1292,7 +1308,6 @@ const resetDetail = () => {
   ui.detailTotal.value = "";
   ui.detailCommission.value = "";
   ui.detailCashback.value = "";
-  ui.detailStatusSelect.value = "pending";
   ui.detailNotes.value = "";
   setDetailError("");
 };
@@ -2202,9 +2217,10 @@ const selectReceipt = async (receiptId, options = {}) => {
   ui.detailSubtitle.textContent = `Uploaded ${formatDateTime(
     receipt.uploaded_at,
   )} | Commission ${headerCommissionRate}`;
-  const statusValue = draft?.status || receipt.review_status || "pending";
+  const statusValue = normalizeReviewStatus(
+    draft?.status || receipt.review_status || "pending",
+  );
   updateStatusPill(ui.detailStatus, statusValue);
-  ui.detailStatusSelect.value = statusValue;
 
   const storedTotalCents = Number(receipt?.receipt_total_cents) || 0;
   const draftTotalCents = draft ? parseMoneyToCents(draft.total) : null;
@@ -2888,11 +2904,13 @@ const saveReceipt = async (options = {}) => {
 
   setDetailError("");
   if (ui.detailSave) ui.detailSave.disabled = true;
-  if (ui.detailVerify) ui.detailVerify.disabled = true;
-  setDetailError("Saving...");
-  logDebug("saveReceipt start", { receiptId: receipt.id, status: options.status });
-
-  const status = options.status || ui.detailStatusSelect.value;
+  if (ui.detailMarkPending) ui.detailMarkPending.disabled = true;
+  if (ui.detailMarkVerified) ui.detailMarkVerified.disabled = true;
+  if (ui.detailMarkRejected) ui.detailMarkRejected.disabled = true;
+  const status = normalizeReviewStatus(options.status || "verified");
+  updateStatusPill(ui.detailStatus, status);
+  setDetailError(`Saving as ${status}...`);
+  logDebug("saveReceipt start", { receiptId: receipt.id, status });
   const totalCents = parseMoneyToCents(ui.detailTotal.value);
   const commissionRateBps = getBusinessCommissionRateBps(
     receipt?.business_id || receipt?.business?.id,
@@ -2908,7 +2926,9 @@ const saveReceipt = async (options = {}) => {
     if (totalCents == null || totalCents <= 0) {
       setDetailError("Enter a receipt total to verify this receipt.");
       if (ui.detailSave) ui.detailSave.disabled = false;
-      if (ui.detailVerify) ui.detailVerify.disabled = false;
+      if (ui.detailMarkPending) ui.detailMarkPending.disabled = false;
+      if (ui.detailMarkVerified) ui.detailMarkVerified.disabled = false;
+      if (ui.detailMarkRejected) ui.detailMarkRejected.disabled = false;
       return;
     }
   }
@@ -3061,7 +3081,7 @@ const saveReceipt = async (options = {}) => {
     clearDetailDraft();
     applyFilters();
     selectReceipt(data.id);
-    setDetailError("Saved.");
+    setDetailError(`Saved as ${status}.`);
     setTimeout(() => setDetailError(""), 2000);
 
     if (status === "verified" && (Number(commissionCents) || 0) > 0) {
@@ -3095,7 +3115,9 @@ const saveReceipt = async (options = {}) => {
     );
   } finally {
     if (ui.detailSave) ui.detailSave.disabled = false;
-    if (ui.detailVerify) ui.detailVerify.disabled = false;
+    if (ui.detailMarkPending) ui.detailMarkPending.disabled = false;
+    if (ui.detailMarkVerified) ui.detailMarkVerified.disabled = false;
+    if (ui.detailMarkRejected) ui.detailMarkRejected.disabled = false;
     logDebug("saveReceipt end", { receiptId: receipt.id });
   }
 };
@@ -3264,14 +3286,17 @@ const attachListeners = () => {
     setDetailDraftFromUI();
   });
 
-  if (ui.detailStatusSelect) ui.detailStatusSelect.addEventListener("change", () => {
-    setDetailDraftFromUI();
-    updateStatusPill(ui.detailStatus, ui.detailStatusSelect.value);
-  });
-
-  if (ui.detailSave) ui.detailSave.addEventListener("click", () => saveReceipt());
-  if (ui.detailVerify) ui.detailVerify.addEventListener("click", () =>
+  if (ui.detailSave) ui.detailSave.addEventListener("click", () =>
     saveReceipt({ status: "verified" }),
+  );
+  if (ui.detailMarkPending) ui.detailMarkPending.addEventListener("click", () =>
+    saveReceipt({ status: "pending" }),
+  );
+  if (ui.detailMarkVerified) ui.detailMarkVerified.addEventListener("click", () =>
+    saveReceipt({ status: "verified" }),
+  );
+  if (ui.detailMarkRejected) ui.detailMarkRejected.addEventListener("click", () =>
+    saveReceipt({ status: "rejected" }),
   );
   if (ui.exportCsv) ui.exportCsv.addEventListener("click", exportCsv);
   if (ui.testCreate) {

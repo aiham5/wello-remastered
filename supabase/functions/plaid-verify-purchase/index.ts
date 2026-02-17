@@ -11,6 +11,7 @@ import {
   plaidGetIdentity,
   plaidGetTransactions,
 } from "../_shared/plaid.ts";
+import { syncStripeCustomerIdentity } from "../_shared/stripeCustomer.ts";
 
 export const config = { verify_jwt: false };
 
@@ -202,7 +203,7 @@ const syncCommissionEventToDraftInvoice = async (
 
   const { data: business, error: businessError } = await supabase
     .from("businesses")
-    .select("stripe_customer_id")
+    .select("stripe_customer_id, name")
     .eq("id", businessId)
     .maybeSingle();
   if (businessError || !business?.stripe_customer_id) {
@@ -213,6 +214,14 @@ const syncCommissionEventToDraftInvoice = async (
       error: businessError?.message || null,
     };
   }
+
+  await syncStripeCustomerIdentity({
+    stripe,
+    customerId: business.stripe_customer_id,
+    businessName: business.name,
+    context: "plaid-verify-purchase",
+    businessId,
+  });
 
   const { data: existingInvoice } = await supabase
     .from("commission_invoices")

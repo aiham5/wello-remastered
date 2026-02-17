@@ -238,6 +238,17 @@ h1 {
   color: var(--accent);
 }
 
+.button.danger-outline {
+  background: transparent;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+}
+
+html[data-theme="dark"] .button.danger-outline {
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #fca5a5;
+}
+
 .button:hover {
   transform: translateY(-1px);
 }

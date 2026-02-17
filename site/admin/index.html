@@ -32,7 +32,7 @@
         document.documentElement.setAttribute("data-theme", theme);
       })();
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20260216d" />
+    <link rel="stylesheet" href="/styles.css?v=20260217a" />
   </head>
   <body class="admin">
     <div class="page">
@@ -241,24 +241,22 @@
                     </span>
                   </label>
                   <label class="field">
-                    <span>Status</span>
-                    <select id="detail-status-select">
-                      <option value="pending">Pending</option>
-                      <option value="verified">Verified</option>
-                      <option value="rejected">Rejected</option>
-                    </select>
-                  </label>
-                  <label class="field">
                     <span>Notes</span>
                     <textarea id="detail-notes" rows="3"></textarea>
                   </label>
                 </div>
                 <div class="cta-row">
                   <button class="button primary" id="detail-save">
-                    Save review
+                    Save receipt (Verified)
                   </button>
-                  <button class="button secondary" id="detail-verify">
-                    Mark verified
+                  <button class="button secondary" id="detail-mark-pending">
+                    Set pending
+                  </button>
+                  <button class="button secondary" id="detail-mark-verified">
+                    Set verified
+                  </button>
+                  <button class="button danger-outline" id="detail-mark-rejected">
+                    Set rejected
                   </button>
                 </div>
                 <p class="notice" id="detail-error"></p>
@@ -484,6 +482,6 @@
     </script>
     <script src="/admin-config.js?v=20260209a"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="/admin.js?v=20260216c" defer></script>
+    <script src="/admin.js?v=20260217a" defer></script>
   </body>
 </html>

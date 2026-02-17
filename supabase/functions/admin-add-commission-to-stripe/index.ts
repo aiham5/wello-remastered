@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import Stripe from "npm:stripe@14.25.0";
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
+import { syncStripeCustomerIdentity } from "../_shared/stripeCustomer.ts";
 
 export const config = { verify_jwt: false };
 
@@ -231,7 +232,7 @@ serve(async (req) => {
 
     const { data: business } = await adminClient
       .from("businesses")
-      .select("stripe_customer_id")
+      .select("stripe_customer_id, name")
       .eq("id", businessId)
       .maybeSingle();
     if (!business?.stripe_customer_id) {
@@ -240,6 +241,14 @@ serve(async (req) => {
         { status: 400, headers: corsHeaders },
       );
     }
+
+    await syncStripeCustomerIdentity({
+      stripe,
+      customerId: business.stripe_customer_id,
+      businessName: business.name,
+      context: "admin-add-commission-to-stripe",
+      businessId,
+    });
 
     const { data: existingInvoice } = await adminClient
       .from("commission_invoices")

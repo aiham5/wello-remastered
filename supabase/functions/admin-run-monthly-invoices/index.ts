@@ -1,5 +1,6 @@
 import Stripe from "npm:stripe@14.25.0";
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
+import { syncStripeCustomerIdentity } from "../_shared/stripeCustomer.ts";
 
 export const config = { verify_jwt: false };
 
@@ -166,7 +167,7 @@ Deno.serve(async (req) => {
     );
     const { data: business } = await adminClient
       .from("businesses")
-      .select("stripe_customer_id")
+      .select("stripe_customer_id, name")
       .eq("id", businessId)
       .maybeSingle();
     if (!business?.stripe_customer_id) {
@@ -175,6 +176,14 @@ Deno.serve(async (req) => {
         { status: 400, headers: corsHeaders },
       );
     }
+
+    await syncStripeCustomerIdentity({
+      stripe,
+      customerId: business.stripe_customer_id,
+      businessName: business.name,
+      context: "admin-run-monthly-invoices",
+      businessId,
+    });
 
     const periodStart = start.toISOString().slice(0, 10);
     const periodEnd = end.toISOString().slice(0, 10);

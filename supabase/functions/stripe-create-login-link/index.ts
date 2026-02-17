@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import Stripe from "https://esm.sh/stripe@14.25.0?target=deno";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { syncStripeCustomerIdentity } from "../_shared/stripeCustomer.ts";
 
 export const config = { verify_jwt: false };
 
@@ -72,7 +73,7 @@ serve(async (req) => {
 
     const { data: business, error: businessError } = await supabaseAdmin
       .from("businesses")
-      .select("id, owner_id, stripe_account_id, stripe_customer_id")
+      .select("id, owner_id, name, stripe_account_id, stripe_customer_id")
       .eq("id", businessId)
       .maybeSingle();
 
@@ -114,6 +115,7 @@ serve(async (req) => {
 
     if (needsNewCustomer) {
       const customer = await stripe.customers.create({
+        name: business.name ?? undefined,
         email: authData.user.email ?? undefined,
         metadata: { business_id: business.id },
       });
@@ -123,6 +125,15 @@ serve(async (req) => {
         .update({ stripe_customer_id: customerId })
         .eq("id", business.id);
     }
+
+    await syncStripeCustomerIdentity({
+      stripe,
+      customerId,
+      businessName: business.name,
+      email: authData.user.email,
+      context: "stripe-create-login-link",
+      businessId: business.id,
+    });
 
     const returnUrl = BILLING_PORTAL_RETURN_URL || CONNECT_RETURN_URL || "";
     const portalSession = await stripe.billingPortal.sessions.create({
