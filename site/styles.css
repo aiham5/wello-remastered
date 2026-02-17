@@ -1949,3 +1949,162 @@ body.contact-page .contact-status.is-error {
   }
 }
 
+/* ==========================
+   Brand yellow overrides
+   ========================== */
+
+body.home-page {
+  --brand-yellow: #f4c542;
+  --brand-yellow-strong: #e4b233;
+  --brand-yellow-soft: #fff1c9;
+  --brand-black: #111111;
+  --brand-black-strong: #000000;
+  --brand-text: #191919;
+}
+
+body.home-page {
+  color: var(--brand-text);
+  background:
+    radial-gradient(44rem 44rem at 8% -5%, rgba(244, 197, 66, 0.28), transparent 62%),
+    radial-gradient(34rem 34rem at 98% -8%, rgba(15, 47, 82, 0.16), transparent 62%),
+    linear-gradient(180deg, #fffdfa 0%, #fbf5e8 52%, #f5efe2 100%);
+}
+
+body.home-page .home-eyebrow {
+  color: #7a5b13;
+}
+
+body.home-page .home-nav-links a.home-nav-cta,
+body.home-page .home-btn-primary {
+  background: linear-gradient(135deg, var(--brand-yellow), var(--brand-yellow-strong));
+  color: var(--brand-black);
+  box-shadow: 0 14px 28px rgba(228, 178, 51, 0.34);
+}
+
+body.home-page .home-nav-links a.home-nav-cta:hover,
+body.home-page .home-btn-primary:hover {
+  background: linear-gradient(135deg, #f0bf3b, #dca82a);
+  color: var(--brand-black-strong);
+}
+
+body.home-page .home-btn-secondary {
+  border-color: rgba(122, 91, 19, 0.22);
+  color: #503b08;
+  background: rgba(255, 248, 229, 0.82);
+}
+
+body.home-page .home-title,
+body.home-page .home-section-head h2,
+body.home-page .home-cta-content h2 {
+  color: #101010;
+}
+
+body.home-page .home-subtitle,
+body.home-page .home-feature-card p,
+body.home-page .home-trust-card p,
+body.home-page .home-step p,
+body.home-page .home-faq-item p,
+body.home-page .home-cta-content p,
+body.home-page .home-footer-row {
+  color: #445b73;
+}
+
+body.home-page .home-hero-panel {
+  background: linear-gradient(160deg, rgba(17, 17, 17, 0.98), rgba(0, 0, 0, 0.98));
+  border-color: rgba(244, 197, 66, 0.28);
+}
+
+body.home-page .home-mini-label {
+  color: #f5d372;
+}
+
+body.home-page .home-feature-card,
+body.home-page .home-trust-card,
+body.home-page .home-faq-item,
+body.home-page .home-step {
+  border-color: rgba(122, 91, 19, 0.14);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+body.home-page .home-step > span {
+  background: linear-gradient(135deg, #f4c542, #dda821);
+  color: #111111;
+}
+
+body.home-page .home-faq-item summary {
+  color: #213a55;
+}
+
+body.home-page .home-faq-item summary::after {
+  color: #7a5b13;
+}
+
+body.home-page .home-faq-item a,
+body.home-page .home-cta-content p a,
+body.home-page .home-footer-links a,
+body.home-page .home-nav-links a:hover {
+  color: #6c4f0b;
+}
+
+body.home-page .home-cta-content {
+  border-color: rgba(122, 91, 19, 0.18);
+  background:
+    radial-gradient(28rem 20rem at 100% 0, rgba(244, 197, 66, 0.26), transparent 68%),
+    rgba(255, 255, 255, 0.92);
+}
+
+body.home-page a:focus-visible,
+body.home-page details:focus-visible,
+body.home-page summary:focus-visible {
+  outline-color: rgba(228, 178, 51, 0.45);
+}
+
+body.contact-page {
+  --brand-yellow: #f4c542;
+  --brand-yellow-strong: #e4b233;
+  --brand-black: #111111;
+  --brand-text: #191919;
+}
+
+body.contact-page {
+  color: var(--brand-text);
+  background:
+    radial-gradient(38rem 38rem at 100% -10%, rgba(244, 197, 66, 0.24), transparent 62%),
+    linear-gradient(180deg, #fffcf4 0%, #f8f2e5 100%);
+}
+
+body.contact-page .contact-kicker {
+  color: #7a5b13;
+}
+
+body.contact-page .contact-home-link,
+body.contact-page .contact-card-subtitle a {
+  color: #6a4d09;
+}
+
+body.contact-page .contact-btn {
+  background: linear-gradient(135deg, var(--brand-yellow), var(--brand-yellow-strong));
+  color: var(--brand-black);
+  box-shadow: 0 14px 26px rgba(228, 178, 51, 0.3);
+}
+
+body.contact-page .contact-btn:hover {
+  background: linear-gradient(135deg, #f0bf3b, #dca82a);
+}
+
+body.contact-page .contact-card,
+body.contact-page .contact-nav {
+  border-color: rgba(122, 91, 19, 0.16);
+}
+
+body.contact-page .contact-field span {
+  color: #6f5416;
+}
+
+body.contact-page .contact-field input:focus,
+body.contact-page .contact-field select:focus,
+body.contact-page .contact-field textarea:focus {
+  border-color: #d39e20;
+  box-shadow: 0 0 0 3px rgba(228, 178, 51, 0.24);
+}
+
