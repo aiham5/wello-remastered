@@ -54,6 +54,10 @@ create table if not exists public.businesses (
     check (approval_status in ('pending', 'approved', 'rejected')),
   status text not null default 'active'
     check (status in ('active', 'inactive', 'suspended')),
+  offer_honor_policy_accepted boolean not null default false,
+  offer_honor_policy_version text,
+  offer_honor_policy_accepted_at timestamptz,
+  offer_honor_policy_accepted_by uuid references auth.users on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -76,6 +80,12 @@ alter table public.businesses
   add column if not exists commission_rate_cents integer not null default 150;
 
 alter table public.businesses
+  add column if not exists offer_honor_policy_accepted boolean not null default false,
+  add column if not exists offer_honor_policy_version text,
+  add column if not exists offer_honor_policy_accepted_at timestamptz,
+  add column if not exists offer_honor_policy_accepted_by uuid references auth.users on delete set null;
+
+alter table public.businesses
   drop constraint if exists businesses_commission_rate_cents_check;
 
 alter table public.businesses
@@ -94,12 +104,20 @@ create table if not exists public.offers (
   ends_at timestamptz,
   approval_status text not null default 'approved'
     check (approval_status in ('pending', 'approved', 'rejected')),
+  offer_honor_commitment_accepted boolean not null default false,
+  offer_honor_commitment_version text,
+  offer_honor_commitment_accepted_at timestamptz,
+  offer_honor_commitment_accepted_by uuid references auth.users on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 alter table public.offers
-  add column if not exists offer_type text;
+  add column if not exists offer_type text,
+  add column if not exists offer_honor_commitment_accepted boolean not null default false,
+  add column if not exists offer_honor_commitment_version text,
+  add column if not exists offer_honor_commitment_accepted_at timestamptz,
+  add column if not exists offer_honor_commitment_accepted_by uuid references auth.users on delete set null;
 
 create table if not exists public.change_requests (
   id uuid primary key default gen_random_uuid(),
@@ -334,6 +352,63 @@ begin
 end;
 $$;
 
+create or replace function public.require_business_offer_honor_policy()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.offer_honor_policy_accepted is distinct from true then
+    raise exception 'business_offer_honor_policy_required';
+  end if;
+  if coalesce(trim(new.offer_honor_policy_version), '') = '' then
+    raise exception 'business_offer_honor_policy_version_required';
+  end if;
+  if new.offer_honor_policy_accepted_at is null then
+    new.offer_honor_policy_accepted_at := now();
+  end if;
+  if new.offer_honor_policy_accepted_by is null then
+    new.offer_honor_policy_accepted_by := auth.uid();
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.require_offer_honor_commitment()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  needs_enforcement boolean := false;
+begin
+  if tg_op = 'INSERT' then
+    needs_enforcement := true;
+  elsif new.approval_status = 'pending'
+        and coalesce(old.approval_status, '') <> 'pending' then
+    needs_enforcement := true;
+  end if;
+
+  if needs_enforcement then
+    if new.offer_honor_commitment_accepted is distinct from true then
+      raise exception 'offer_honor_commitment_required';
+    end if;
+    if coalesce(trim(new.offer_honor_commitment_version), '') = '' then
+      raise exception 'offer_honor_commitment_version_required';
+    end if;
+    if new.offer_honor_commitment_accepted_at is null then
+      new.offer_honor_commitment_accepted_at := now();
+    end if;
+    if new.offer_honor_commitment_accepted_by is null then
+      new.offer_honor_commitment_accepted_by := auth.uid();
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
 create or replace function public.increment_points(target_user uuid, delta integer)
 returns void
 language plpgsql
@@ -532,6 +607,16 @@ drop trigger if exists set_offers_updated_at on public.offers;
 create trigger set_offers_updated_at
 before update on public.offers
 for each row execute function public.set_updated_at();
+
+drop trigger if exists require_business_offer_honor_policy on public.businesses;
+create trigger require_business_offer_honor_policy
+before insert on public.businesses
+for each row execute function public.require_business_offer_honor_policy();
+
+drop trigger if exists require_offer_honor_commitment on public.offers;
+create trigger require_offer_honor_commitment
+before insert or update on public.offers
+for each row execute function public.require_offer_honor_commitment();
 
 drop trigger if exists award_points_on_redemption on public.redemptions;
 create trigger award_points_on_redemption

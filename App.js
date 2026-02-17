@@ -21,6 +21,7 @@ import {
   NativeModules,
   Platform,
   Pressable,
+  Share,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -189,6 +190,29 @@ const GOOGLE_AUTH_REDIRECT_URL = `${APP_SCHEME}://${AUTH_CALLBACK_PATH}`;
 const STRIPE_CONNECT_RETURN_URL = "https://www.wellopartners.com/stripe/return";
 const STRIPE_CONNECT_REFRESH_URL =
   "https://www.wellopartners.com/stripe/refresh";
+const PRIVACY_POLICY_URL = "https://www.wellopartners.com/privacy";
+const REFERRAL_LANDING_URL = "https://www.wellopartners.com/referral";
+const OFFER_HONOR_POLICY_VERSION = "2026-02-17";
+const REFERRAL_REWARD_CENTS = 500;
+const REFERRAL_MONTHLY_CAP_CENTS = 50000;
+const createInitialReferralState = () => ({
+  loading: false,
+  claiming: false,
+  error: null,
+  success: null,
+  code: null,
+  link: null,
+  rewardCents: REFERRAL_REWARD_CENTS,
+  monthlyCapCents: REFERRAL_MONTHLY_CAP_CENTS,
+  referrerMonthlyEarnedCents: 0,
+  referrerMonthlyRemainingCents: REFERRAL_MONTHLY_CAP_CENTS,
+  stats: {
+    pendingCount: 0,
+    rewardedBothCount: 0,
+    cappedCount: 0,
+  },
+  yourClaimStatus: "none",
+});
 const GOOGLE_AUTH_CALLBACK_PREFIXES = [
   `${APP_SCHEME}://${AUTH_CALLBACK_PATH}`.toLowerCase(),
   `${APP_SCHEME}:///${AUTH_CALLBACK_PATH}`.toLowerCase(),
@@ -1002,6 +1026,29 @@ const normalizeTagsInput = (value) =>
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean);
 
+const normalizeReferralCode = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toUpperCase();
+
+const getReferralClaimMessage = (status) => {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "pending") {
+    return "Referral claimed. Your $5 will unlock after your first verified purchase.";
+  }
+  if (normalized === "already_pending") {
+    return "Referral is already claimed and waiting for your first verified purchase.";
+  }
+  if (normalized === "already_rewarded") {
+    return "Referral reward was already completed on this account.";
+  }
+  if (normalized === "already_capped") {
+    return "Referral is complete. Referrer payout was capped this month.";
+  }
+  return "Referral status updated.";
+};
+
 const parseAuthCallbackParams = (url) => {
   const value = String(url || "");
   const hashIndex = value.indexOf("#");
@@ -1018,6 +1065,7 @@ const parseAuthCallbackParams = (url) => {
     accessToken: params.get("access_token") || null,
     refreshToken: params.get("refresh_token") || null,
     flow: params.get("flow") || null,
+    ref: params.get("ref") || null,
     error:
       params.get("error_description") || params.get("error") || params.get("message") || null,
   };
@@ -2896,6 +2944,12 @@ export default function App() {
   const [timePickerVisible, setTimePickerVisible] = useState(false);
   const [timePickerTarget, setTimePickerTarget] = useState("start");
   const [businessSignUpError, setBusinessSignUpError] = useState(null);
+  const [businessSignUpAuthorizedChecked, setBusinessSignUpAuthorizedChecked] =
+    useState(false);
+  const [
+    businessSignUpHonorOffersChecked,
+    setBusinessSignUpHonorOffersChecked,
+  ] = useState(false);
   const [businessAddressResults, setBusinessAddressResults] = useState([]);
   const [businessAddressLoading, setBusinessAddressLoading] = useState(false);
   const [businessAddressError, setBusinessAddressError] = useState(null);
@@ -2944,6 +2998,8 @@ export default function App() {
     code: null,
     cashbackRateBps: CASHBACK_BASE_RATE_BPS,
   });
+  const [referralState, setReferralState] = useState(createInitialReferralState);
+  const [pendingReferralCode, setPendingReferralCode] = useState(null);
   const [accountRole, setAccountRole] = useState("consumer");
   const [authUserId, setAuthUserId] = useState(null);
   const [authBusinessDraft, setAuthBusinessDraft] = useState(null);
@@ -3122,6 +3178,10 @@ export default function App() {
     useState(false);
   const [createBusinessBusy, setCreateBusinessBusy] = useState(false);
   const [createBusinessError, setCreateBusinessError] = useState(null);
+  const [createBusinessAuthorizedChecked, setCreateBusinessAuthorizedChecked] =
+    useState(false);
+  const [createBusinessHonorOffersChecked, setCreateBusinessHonorOffersChecked] =
+    useState(false);
   const [createHoursStart, setCreateHoursStart] = useState("");
   const [createHoursStartMeridiem, setCreateHoursStartMeridiem] =
     useState("AM");
@@ -3148,6 +3208,7 @@ export default function App() {
   const [createOfferTypeMenuOpen, setCreateOfferTypeMenuOpen] =
     useState(false);
   const [offerImage, setOfferImage] = useState(null);
+  const [offerCreateHonorChecked, setOfferCreateHonorChecked] = useState(false);
   const [offerCropModal, setOfferCropModal] = useState({
     visible: false,
     target: null, // "create" | "edit"
@@ -3170,6 +3231,7 @@ export default function App() {
     saving: false,
     error: null,
   });
+  const [editOfferHonorChecked, setEditOfferHonorChecked] = useState(false);
   const [ownerOffersList, setOwnerOffersList] = useState([]);
   const [ownerOffersStatus, setOwnerOffersStatus] = useState({
     loading: false,
@@ -4095,6 +4157,177 @@ export default function App() {
     }));
   }, [accountRole, isSignedIn, callAuthedEdgeFunction]);
 
+  const loadReferralStatus = useCallback(
+    async ({ silent = false } = {}) => {
+      if (accountRole !== "consumer" || !isSignedIn) {
+        setReferralState(createInitialReferralState());
+        return;
+      }
+      if (!silent) {
+        setReferralState((prev) => ({
+          ...prev,
+          loading: true,
+          error: null,
+        }));
+      }
+      const { data, error } = await callAuthedEdgeFunction("referral-get", {});
+      if (error) {
+        setReferralState((prev) => ({
+          ...prev,
+          loading: false,
+          error,
+        }));
+        return;
+      }
+      const nextCode = data?.code ? String(data.code) : null;
+      const fallbackLink = nextCode
+        ? `${REFERRAL_LANDING_URL}?ref=${encodeURIComponent(nextCode)}`
+        : null;
+      const nextRewardCents = Number(data?.rewardCents);
+      const nextMonthlyCapCents = Number(data?.monthlyCapCents);
+      const nextEarnedCents = Number(data?.referrerMonthlyEarnedCents);
+      const nextRemainingCents = Number(data?.referrerMonthlyRemainingCents);
+      setReferralState((prev) => ({
+        ...prev,
+        loading: false,
+        claiming: false,
+        error: null,
+        code: nextCode,
+        link: data?.link ? String(data.link) : fallbackLink,
+        rewardCents: Number.isFinite(nextRewardCents)
+          ? nextRewardCents
+          : REFERRAL_REWARD_CENTS,
+        monthlyCapCents: Number.isFinite(nextMonthlyCapCents)
+          ? nextMonthlyCapCents
+          : REFERRAL_MONTHLY_CAP_CENTS,
+        referrerMonthlyEarnedCents: Number.isFinite(nextEarnedCents)
+          ? nextEarnedCents
+          : 0,
+        referrerMonthlyRemainingCents: Number.isFinite(nextRemainingCents)
+          ? nextRemainingCents
+          : REFERRAL_MONTHLY_CAP_CENTS,
+        stats: {
+          pendingCount: Number(data?.stats?.pendingCount) || 0,
+          rewardedBothCount: Number(data?.stats?.rewardedBothCount) || 0,
+          cappedCount: Number(data?.stats?.cappedCount) || 0,
+        },
+        yourClaimStatus: String(data?.yourClaimStatus || "none"),
+      }));
+    },
+    [accountRole, isSignedIn, callAuthedEdgeFunction],
+  );
+
+  const claimReferralCode = useCallback(
+    async (rawCode) => {
+      const referralCode = normalizeReferralCode(rawCode);
+      if (!isSignedIn || accountRole !== "consumer" || !referralCode) {
+        return { ok: false, error: "Referral claim is unavailable." };
+      }
+      if (!/^[A-Z0-9]{6,32}$/.test(referralCode)) {
+        setReferralState((prev) => ({
+          ...prev,
+          claiming: false,
+          error: "Referral code is invalid.",
+          success: null,
+        }));
+        return { ok: false, error: "Invalid referral code." };
+      }
+      setReferralState((prev) => ({
+        ...prev,
+        claiming: true,
+        error: null,
+        success: null,
+      }));
+      const { data, error } = await callAuthedEdgeFunction("referral-claim", {
+        ref: referralCode,
+      });
+      if (error) {
+        setReferralState((prev) => ({
+          ...prev,
+          claiming: false,
+          error,
+          success: null,
+        }));
+        return { ok: false, error };
+      }
+      const nextStatus = String(data?.status || "").toLowerCase();
+      const yourClaimStatus =
+        nextStatus === "pending" || nextStatus === "already_pending"
+          ? "pending"
+          : nextStatus === "already_rewarded"
+            ? "rewarded"
+            : nextStatus === "already_capped"
+              ? "capped"
+              : "none";
+      setReferralState((prev) => ({
+        ...prev,
+        claiming: false,
+        error: null,
+        success: String(data?.message || getReferralClaimMessage(nextStatus)),
+        yourClaimStatus,
+      }));
+      setPendingReferralCode(null);
+      await loadReferralStatus({ silent: true });
+      return { ok: true, status: nextStatus };
+    },
+    [accountRole, callAuthedEdgeFunction, isSignedIn, loadReferralStatus],
+  );
+
+  const handleShareReferralLink = useCallback(async () => {
+    const code = referralState.code ? String(referralState.code) : "";
+    const link =
+      referralState.link ||
+      (code
+        ? `${REFERRAL_LANDING_URL}?ref=${encodeURIComponent(code)}`
+        : "");
+    if (!link) {
+      setReferralState((prev) => ({
+        ...prev,
+        error: "Referral link is unavailable. Try again in a moment.",
+      }));
+      return;
+    }
+    try {
+      await Share.share({
+        message: `Join Wello with my referral link: ${link}`,
+      });
+    } catch (shareError) {
+      setReferralState((prev) => ({
+        ...prev,
+        error: shareError?.message || "Unable to open the share menu.",
+      }));
+    }
+  }, [referralState.code, referralState.link]);
+
+  const handleCopyReferralLink = useCallback(async () => {
+    const code = referralState.code ? String(referralState.code) : "";
+    const link =
+      referralState.link ||
+      (code
+        ? `${REFERRAL_LANDING_URL}?ref=${encodeURIComponent(code)}`
+        : "");
+    if (!link) {
+      setReferralState((prev) => ({
+        ...prev,
+        error: "Referral link is unavailable. Try again in a moment.",
+      }));
+      return;
+    }
+    try {
+      await Clipboard.setStringAsync(link);
+      setReferralState((prev) => ({
+        ...prev,
+        error: null,
+        success: "Referral link copied.",
+      }));
+    } catch (copyError) {
+      setReferralState((prev) => ({
+        ...prev,
+        error: copyError?.message || "Unable to copy referral link.",
+      }));
+    }
+  }, [referralState.code, referralState.link]);
+
   const handleApplyPromoCode = useCallback(async () => {
     if (accountRole !== "consumer") {
       setPromoState((prev) => ({
@@ -4224,6 +4457,7 @@ export default function App() {
     setSecurityStatus({ loading: false, type: null, message: null });
     setAuthBusinessDraft(null);
     setOwnerBusinessId(null);
+    setReferralState(createInitialReferralState());
   }, []);
 
   const forceSignOut = useCallback(
@@ -4262,6 +4496,7 @@ export default function App() {
           setIsSignedIn(true);
           if (nextRole === "consumer") {
             loadPromoStatus().catch(() => {});
+            loadReferralStatus().catch(() => {});
           } else {
             setPromoState((prev) => ({
               ...prev,
@@ -4271,6 +4506,7 @@ export default function App() {
               code: null,
               cashbackRateBps: CASHBACK_BASE_RATE_BPS,
             }));
+            setReferralState(createInitialReferralState());
           }
         } else {
           resetAuthState();
@@ -4296,6 +4532,7 @@ export default function App() {
             setIsSignedIn(true);
             if (nextRole === "consumer") {
               loadPromoStatus().catch(() => {});
+              loadReferralStatus().catch(() => {});
             } else {
               setPromoState((prev) => ({
                 ...prev,
@@ -4305,6 +4542,7 @@ export default function App() {
                 code: null,
                 cashbackRateBps: CASHBACK_BASE_RATE_BPS,
               }));
+              setReferralState(createInitialReferralState());
             }
           } else {
             resetAuthState();
@@ -4316,7 +4554,20 @@ export default function App() {
       clearTimeout(safetyTimer);
       authListener?.data?.subscription?.unsubscribe();
     };
-  }, [hydrateProfile, resetAuthState, loadPromoStatus, hasActiveSessionForUser]);
+  }, [
+    hydrateProfile,
+    resetAuthState,
+    loadPromoStatus,
+    loadReferralStatus,
+    hasActiveSessionForUser,
+  ]);
+
+  useEffect(() => {
+    if (!pendingReferralCode || !isSignedIn || accountRole !== "consumer") {
+      return;
+    }
+    claimReferralCode(pendingReferralCode).catch(() => {});
+  }, [accountRole, claimReferralCode, isSignedIn, pendingReferralCode]);
 
   useEffect(() => {
     let isMounted = true;
@@ -7035,15 +7286,41 @@ export default function App() {
       if (!ensureSupabaseReady(setSignInError)) return;
       setGoogleAuthState("finishing");
 
-      const { code, accessToken, refreshToken, flow, error } =
+      const { code, accessToken, refreshToken, flow, ref, error } =
         parseAuthCallbackParams(url);
       const callbackFlow = String(flow || "").toLowerCase();
+      const referralCode = normalizeReferralCode(ref);
       const hasOAuthPayload =
         Boolean(error) ||
         Boolean(code) ||
         Boolean(accessToken) ||
         Boolean(refreshToken);
       if (!hasOAuthPayload) {
+        if (callbackFlow === "referral") {
+          if (!referralCode || !/^[A-Z0-9]{6,32}$/.test(referralCode)) {
+            setSignInError("Referral link is invalid.");
+          } else {
+            setPendingReferralCode(referralCode);
+            setActiveTab("profile");
+            if (isSignedIn && authUserId) {
+              if (accountRole === "consumer") {
+                claimReferralCode(referralCode).catch(() => {});
+              } else {
+                setReferralState((prev) => ({
+                  ...prev,
+                  error:
+                    "Referral links can only be claimed on personal accounts.",
+                }));
+              }
+            } else {
+              setAuthView("signin");
+              setSignInNotice(
+                "Referral link detected. Sign in or create an account to claim it.",
+              );
+              setSignInError(null);
+            }
+          }
+        }
         if (callbackFlow === "stripe_return" || callbackFlow === "stripe_refresh") {
           setCashoutActionStatus((prev) => ({
             ...prev,
@@ -7128,6 +7405,7 @@ export default function App() {
         const nextRole = await hydrateProfile(sessionUser);
         if (nextRole === "consumer") {
           loadPromoStatus().catch(() => {});
+          loadReferralStatus().catch(() => {});
         } else {
           setPromoState((prev) => ({
             ...prev,
@@ -7137,6 +7415,7 @@ export default function App() {
             code: null,
             cashbackRateBps: CASHBACK_BASE_RATE_BPS,
           }));
+          setReferralState(createInitialReferralState());
         }
       } catch (callbackError) {
         setSignInError(
@@ -7149,9 +7428,14 @@ export default function App() {
       }
     },
     [
+      accountRole,
+      authUserId,
+      claimReferralCode,
       ensureSupabaseReady,
       hydrateProfile,
+      isSignedIn,
       loadPromoStatus,
+      loadReferralStatus,
       loadCashoutStatus,
     ],
   );
@@ -7780,6 +8064,18 @@ export default function App() {
       setBusinessSignUpError("Operating hours are required.");
       return;
     }
+    if (!businessSignUpAuthorizedChecked) {
+      setBusinessSignUpError(
+        "Confirm you are authorized to act on behalf of this business.",
+      );
+      return;
+    }
+    if (!businessSignUpHonorOffersChecked) {
+      setBusinessSignUpError(
+        "Confirm your business will honor each approved offer as published.",
+      );
+      return;
+    }
     const categorySelection = resolveSelectedCategory(
       businessCategoryKey,
       businessCategoryCustomLabel,
@@ -7806,6 +8102,7 @@ export default function App() {
           setBusinessAddressCoords(signupCoords);
         }
       }
+      const offerHonorAcceptedAt = new Date().toISOString();
       const businessDraft = {
         name: businessName.trim(),
         address: businessAddress.trim(),
@@ -7886,6 +8183,10 @@ export default function App() {
           is_open: true,
           latitude: signupCoords?.latitude ?? null,
           longitude: signupCoords?.longitude ?? null,
+          offer_honor_policy_accepted: true,
+          offer_honor_policy_version: OFFER_HONOR_POLICY_VERSION,
+          offer_honor_policy_accepted_at: offerHonorAcceptedAt,
+          offer_honor_policy_accepted_by: data.user.id,
         })
         .select(
           [
@@ -7950,6 +8251,8 @@ export default function App() {
       setBusinessHoursEnd("");
       setBusinessHoursStartMeridiem("AM");
       setBusinessHoursEndMeridiem("PM");
+      setBusinessSignUpAuthorizedChecked(false);
+      setBusinessSignUpHonorOffersChecked(false);
     } finally {
       setAuthBusy(false);
     }
@@ -8051,6 +8354,10 @@ export default function App() {
     setBusinessHoursEnd("");
     setBusinessHoursStartMeridiem("AM");
     setBusinessHoursEndMeridiem("PM");
+    setBusinessSignUpAuthorizedChecked(false);
+    setBusinessSignUpHonorOffersChecked(false);
+    setReferralState(createInitialReferralState());
+    setPendingReferralCode(null);
     setCreateBusinessForm({
       name: "",
       address: "",
@@ -8066,6 +8373,8 @@ export default function App() {
     });
     setCreateBusinessCategoryMenuOpen(false);
     setCreateBusinessError(null);
+    setCreateBusinessAuthorizedChecked(false);
+    setCreateBusinessHonorOffersChecked(false);
     setCreateHoursStart("");
     setCreateHoursEnd("");
     setCreateHoursStartMeridiem("AM");
@@ -8083,6 +8392,7 @@ export default function App() {
       redemptionLimitCount: "1",
       redemptionLimitPeriod: "day",
     });
+    setOfferCreateHonorChecked(false);
     setCreateOfferTypeMenuOpen(false);
     setOfferImage(null);
     setOfferError(null);
@@ -8101,6 +8411,7 @@ export default function App() {
     setBusinessDetail(null);
     setBusinessDetailStatus({ loading: false, error: null });
     setBusinessDetailReviews([]);
+    setEditOfferHonorChecked(false);
     setPostRedeemBankPromptOpen(false);
   };
 
@@ -11448,6 +11759,7 @@ export default function App() {
       offer.imageUrl ? { uri: offer.imageUrl, isRemote: true } : null,
     );
     setEditOfferStatus({ saving: false, error: null });
+    setEditOfferHonorChecked(false);
     setEditOfferOpen(true);
   };
 
@@ -11468,6 +11780,13 @@ export default function App() {
       setEditOfferStatus({
         saving: false,
         error: "Offer type is required.",
+      });
+      return;
+    }
+    if (!editOfferHonorChecked) {
+      setEditOfferStatus({
+        saving: false,
+        error: "Confirm you will honor this offer exactly as published.",
       });
       return;
     }
@@ -11495,6 +11814,10 @@ export default function App() {
         offer_type: normalizedType,
         image_url: imageUrl || null,
         approval_status: "pending",
+        offer_honor_commitment_accepted: true,
+        offer_honor_commitment_version: OFFER_HONOR_POLICY_VERSION,
+        offer_honor_commitment_accepted_at: new Date().toISOString(),
+        offer_honor_commitment_accepted_by: authUserId || null,
       };
       const { data, error } = await supabase
         .from("offers")
@@ -11524,6 +11847,7 @@ export default function App() {
       mergeOffers([mapSupabaseOffer(data)]);
       setEditOfferOpen(false);
       setEditOfferTypeMenuOpen(false);
+      setEditOfferHonorChecked(false);
     } finally {
       setEditOfferStatus((prev) => ({ ...prev, saving: false }));
     }
@@ -11745,6 +12069,12 @@ export default function App() {
       setOfferError("Offer photo is required.");
       return;
     }
+    if (!offerCreateHonorChecked) {
+      setOfferError(
+        "Confirm you will honor this offer exactly as published before submitting.",
+      );
+      return;
+    }
     const redemptionLimitMode = String(
       offerForm.redemptionLimitMode || "unlimited",
     );
@@ -11778,6 +12108,7 @@ export default function App() {
     setOfferBusy(true);
     setOfferError(null);
     setOfferImageStatus((prev) => ({ ...prev, error: null }));
+    const offerHonorAcceptedAt = new Date().toISOString();
 
     let imageUrl = null;
     if (offerImage?.uri) {
@@ -11810,6 +12141,10 @@ export default function App() {
         image_url: imageUrl,
         active: true,
         approval_status: "pending",
+        offer_honor_commitment_accepted: true,
+        offer_honor_commitment_version: OFFER_HONOR_POLICY_VERSION,
+        offer_honor_commitment_accepted_at: offerHonorAcceptedAt,
+        offer_honor_commitment_accepted_by: authUserId || null,
         redemption_limit_period: redemptionLimitEnabled
           ? redemptionLimitPeriod
           : null,
@@ -11855,6 +12190,7 @@ export default function App() {
     });
     setCreateOfferTypeMenuOpen(false);
     setOfferImage(null);
+    setOfferCreateHonorChecked(false);
     if (SUPABASE_URL && SUPABASE_ANON_KEY) {
       loadOwnerOffers(ownerBusiness.id);
       loadRemoteOffers({ silent: true });
@@ -12202,6 +12538,32 @@ export default function App() {
       <Text style={styles.formHint}>
         Crop before saving. The preview is how your offer will appear.
       </Text>
+      <View style={styles.legalChecklist}>
+        <TouchableOpacity
+          style={styles.legalCheckRow}
+          onPress={() => {
+            setOfferCreateHonorChecked((prev) => !prev);
+            if (offerError) setOfferError(null);
+          }}
+          activeOpacity={0.85}
+        >
+          <Ionicons
+            name={offerCreateHonorChecked ? "checkmark-circle" : "ellipse-outline"}
+            size={18}
+            color={offerCreateHonorChecked ? COLORS.pine : COLORS.muted}
+          />
+          <Text style={styles.legalCheckText}>
+            I confirm this offer is accurate and my business will honor it exactly
+            as published.
+          </Text>
+        </TouchableOpacity>
+      </View>
+      <TouchableOpacity
+        style={styles.legalLinkButton}
+        onPress={() => Linking.openURL(PRIVACY_POLICY_URL).catch(() => null)}
+      >
+        <Text style={styles.legalLinkText}>Review Privacy Policy</Text>
+      </TouchableOpacity>
 
       {offerNotice && (
         <View style={[styles.alertBox, styles.alertSuccess]}>
@@ -13144,6 +13506,18 @@ export default function App() {
       setCreateBusinessError("Operating hours are required.");
       return;
     }
+    if (!createBusinessAuthorizedChecked) {
+      setCreateBusinessError(
+        "Confirm you are authorized to act on behalf of this business.",
+      );
+      return;
+    }
+    if (!createBusinessHonorOffersChecked) {
+      setCreateBusinessError(
+        "Confirm your business will honor each approved offer as published.",
+      );
+      return;
+    }
     const categorySelection = resolveSelectedCategory(
       createBusinessForm.categoryKey,
       createBusinessForm.categoryCustomLabel,
@@ -13156,6 +13530,7 @@ export default function App() {
     setCreateBusinessBusy(true);
     setCreateBusinessError(null);
     try {
+      const offerHonorAcceptedAt = new Date().toISOString();
       const hoursValue = formatBusinessHours(
         createHoursStart,
         createHoursStartMeridiem,
@@ -13186,6 +13561,10 @@ export default function App() {
           is_open: true,
           latitude: createCoords?.latitude ?? null,
           longitude: createCoords?.longitude ?? null,
+          offer_honor_policy_accepted: true,
+          offer_honor_policy_version: OFFER_HONOR_POLICY_VERSION,
+          offer_honor_policy_accepted_at: offerHonorAcceptedAt,
+          offer_honor_policy_accepted_by: authUserId,
         })
         .select("*")
         .maybeSingle();
@@ -13224,6 +13603,8 @@ export default function App() {
       setCreateHoursStartMeridiem("AM");
       setCreateHoursEndMeridiem("PM");
       setCreateBusinessCategoryMenuOpen(false);
+      setCreateBusinessAuthorizedChecked(false);
+      setCreateBusinessHonorOffersChecked(false);
     } finally {
       setCreateBusinessBusy(false);
     }
@@ -14851,6 +15232,7 @@ export default function App() {
                     onPress={() => {
                       setEditOfferOpen(false);
                       setEditOfferTypeMenuOpen(false);
+                      setEditOfferHonorChecked(false);
                     }}
                   >
                     <Ionicons name="close" size={18} color={COLORS.ink} />
@@ -15001,6 +15383,43 @@ export default function App() {
                       </View>
                     )}
                   </View>
+                  <View style={styles.legalChecklist}>
+                    <TouchableOpacity
+                      style={styles.legalCheckRow}
+                      onPress={() => {
+                        setEditOfferHonorChecked((prev) => !prev);
+                        if (editOfferStatus.error) {
+                          setEditOfferStatus((prev) => ({
+                            ...prev,
+                            error: null,
+                          }));
+                        }
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons
+                        name={
+                          editOfferHonorChecked
+                            ? "checkmark-circle"
+                            : "ellipse-outline"
+                        }
+                        size={18}
+                        color={editOfferHonorChecked ? COLORS.pine : COLORS.muted}
+                      />
+                      <Text style={styles.legalCheckText}>
+                        I confirm this edited offer is accurate and my business
+                        will honor it exactly as published.
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.legalLinkButton}
+                    onPress={() =>
+                      Linking.openURL(PRIVACY_POLICY_URL).catch(() => null)
+                    }
+                  >
+                    <Text style={styles.legalLinkText}>Review Privacy Policy</Text>
+                  </TouchableOpacity>
 
                   {editOfferStatus.error && (
                     <Text style={styles.formError}>
@@ -17458,6 +17877,80 @@ export default function App() {
                                 );
                               })}
                             </View>
+                            <View style={styles.legalChecklist}>
+                              <TouchableOpacity
+                                style={styles.legalCheckRow}
+                                onPress={() => {
+                                  setCreateBusinessAuthorizedChecked(
+                                    (prev) => !prev,
+                                  );
+                                  if (createBusinessError) {
+                                    setCreateBusinessError(null);
+                                  }
+                                }}
+                                activeOpacity={0.85}
+                              >
+                                <Ionicons
+                                  name={
+                                    createBusinessAuthorizedChecked
+                                      ? "checkmark-circle"
+                                      : "ellipse-outline"
+                                  }
+                                  size={18}
+                                  color={
+                                    createBusinessAuthorizedChecked
+                                      ? COLORS.pine
+                                      : COLORS.muted
+                                  }
+                                />
+                                <Text style={styles.legalCheckText}>
+                                  I am authorized to act on behalf of this
+                                  business.
+                                </Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.legalCheckRow}
+                                onPress={() => {
+                                  setCreateBusinessHonorOffersChecked(
+                                    (prev) => !prev,
+                                  );
+                                  if (createBusinessError) {
+                                    setCreateBusinessError(null);
+                                  }
+                                }}
+                                activeOpacity={0.85}
+                              >
+                                <Ionicons
+                                  name={
+                                    createBusinessHonorOffersChecked
+                                      ? "checkmark-circle"
+                                      : "ellipse-outline"
+                                  }
+                                  size={18}
+                                  color={
+                                    createBusinessHonorOffersChecked
+                                      ? COLORS.pine
+                                      : COLORS.muted
+                                  }
+                                />
+                                <Text style={styles.legalCheckText}>
+                                  I agree this business will honor every approved
+                                  offer as published.
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                            <TouchableOpacity
+                              style={styles.legalLinkButton}
+                              onPress={() =>
+                                Linking.openURL(PRIVACY_POLICY_URL).catch(
+                                  () => null,
+                                )
+                              }
+                            >
+                              <Text style={styles.legalLinkText}>
+                                Review Privacy Policy
+                              </Text>
+                            </TouchableOpacity>
 
                             {createBusinessError && (
                               <Text style={styles.formError}>
@@ -19277,6 +19770,80 @@ export default function App() {
                                   onChangeText={setBusinessPassword}
                                   secureTextEntry
                                 />
+                                <View style={styles.legalChecklist}>
+                                  <TouchableOpacity
+                                    style={styles.legalCheckRow}
+                                    onPress={() => {
+                                      setBusinessSignUpAuthorizedChecked(
+                                        (prev) => !prev,
+                                      );
+                                      if (businessSignUpError) {
+                                        setBusinessSignUpError(null);
+                                      }
+                                    }}
+                                    activeOpacity={0.85}
+                                  >
+                                    <Ionicons
+                                      name={
+                                        businessSignUpAuthorizedChecked
+                                          ? "checkmark-circle"
+                                          : "ellipse-outline"
+                                      }
+                                      size={18}
+                                      color={
+                                        businessSignUpAuthorizedChecked
+                                          ? COLORS.pine
+                                          : COLORS.muted
+                                      }
+                                    />
+                                    <Text style={styles.legalCheckText}>
+                                      I am authorized to act on behalf of this
+                                      business.
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={styles.legalCheckRow}
+                                    onPress={() => {
+                                      setBusinessSignUpHonorOffersChecked(
+                                        (prev) => !prev,
+                                      );
+                                      if (businessSignUpError) {
+                                        setBusinessSignUpError(null);
+                                      }
+                                    }}
+                                    activeOpacity={0.85}
+                                  >
+                                    <Ionicons
+                                      name={
+                                        businessSignUpHonorOffersChecked
+                                          ? "checkmark-circle"
+                                          : "ellipse-outline"
+                                      }
+                                      size={18}
+                                      color={
+                                        businessSignUpHonorOffersChecked
+                                          ? COLORS.pine
+                                          : COLORS.muted
+                                      }
+                                    />
+                                    <Text style={styles.legalCheckText}>
+                                      I agree this business will honor every
+                                      approved offer as published.
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                                <TouchableOpacity
+                                  style={styles.legalLinkButton}
+                                  onPress={() =>
+                                    Linking.openURL(PRIVACY_POLICY_URL).catch(
+                                      () => null,
+                                    )
+                                  }
+                                >
+                                  <Text style={styles.legalLinkText}>
+                                    Review Privacy Policy
+                                  </Text>
+                                </TouchableOpacity>
 
                                 {businessSignUpError && (
                                   <Text style={styles.formError}>
@@ -19420,7 +19987,8 @@ export default function App() {
                             </View>
 
                             {accountRole === "consumer" ? (
-                              <View style={styles.notificationPanel}>
+                              <>
+                                <View style={styles.notificationPanel}>
                                 <View style={styles.promoHeader}>
                                   <View style={styles.promoHeaderLeft}>
                                     <Text style={styles.sectionTitleAlt}>
@@ -19497,7 +20065,132 @@ export default function App() {
                                   {promoState.success}
                                 </Text>
                               ) : null}
-                            </View>
+                                </View>
+                                <View style={styles.notificationPanel}>
+                                  <View style={styles.promoHeader}>
+                                    <View style={styles.promoHeaderLeft}>
+                                      <Text style={styles.sectionTitleAlt}>
+                                        Referrals
+                                      </Text>
+                                    </View>
+                                    <View style={styles.promoRatePill}>
+                                      <Text style={styles.promoRateText}>
+                                        {formatCurrencyFromCents(
+                                          referralState.rewardCents,
+                                        )}{" "}
+                                        each
+                                      </Text>
+                                    </View>
+                                  </View>
+                                  <Text style={styles.promoHint}>
+                                    Share your referral link. Your friend gets{" "}
+                                    {formatCurrencyFromCents(
+                                      referralState.rewardCents,
+                                    )}{" "}
+                                    after their first verified purchase, and you
+                                    get the same reward.
+                                  </Text>
+                                  <View style={styles.referralCodeCard}>
+                                    <Text style={styles.referralCodeLabel}>
+                                      Your referral code
+                                    </Text>
+                                    <Text style={styles.referralCodeValue}>
+                                      {referralState.code || "--"}
+                                    </Text>
+                                  </View>
+                                  <Text style={styles.referralStatsText}>
+                                    This month:{" "}
+                                    {formatCurrencyFromCents(
+                                      referralState.referrerMonthlyEarnedCents,
+                                    )}{" "}
+                                    of{" "}
+                                    {formatCurrencyFromCents(
+                                      referralState.monthlyCapCents,
+                                    )}{" "}
+                                    earned as referrer.
+                                  </Text>
+                                  <Text style={styles.referralStatsText}>
+                                    Remaining this month:{" "}
+                                    {formatCurrencyFromCents(
+                                      referralState.referrerMonthlyRemainingCents,
+                                    )}
+                                  </Text>
+                                  <Text style={styles.referralStatsText}>
+                                    Pending: {referralState.stats.pendingCount}{" "}
+                                    | Rewarded:{" "}
+                                    {referralState.stats.rewardedBothCount} |
+                                    Capped: {referralState.stats.cappedCount}
+                                  </Text>
+                                  {referralState.yourClaimStatus !== "none" ? (
+                                    <Text style={styles.referralClaimStatus}>
+                                      Your claim status:{" "}
+                                      {String(
+                                        referralState.yourClaimStatus || "none",
+                                      ).replace(/_/g, " ")}
+                                    </Text>
+                                  ) : null}
+                                  <View style={styles.referralActionsRow}>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.referralActionButton,
+                                        (referralState.loading ||
+                                          referralState.claiming) &&
+                                          styles.authButtonDisabled,
+                                      ]}
+                                      onPress={handleShareReferralLink}
+                                      disabled={
+                                        referralState.loading ||
+                                        referralState.claiming
+                                      }
+                                    >
+                                      <Text style={styles.referralActionText}>
+                                        Share link
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.referralActionButtonSecondary,
+                                        (referralState.loading ||
+                                          referralState.claiming) &&
+                                          styles.authButtonDisabled,
+                                      ]}
+                                      onPress={handleCopyReferralLink}
+                                      disabled={
+                                        referralState.loading ||
+                                        referralState.claiming
+                                      }
+                                    >
+                                      <Text
+                                        style={
+                                          styles.referralActionTextSecondary
+                                        }
+                                      >
+                                        Copy link
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                  {referralState.loading ? (
+                                    <Text style={styles.formHint}>
+                                      Loading referral details...
+                                    </Text>
+                                  ) : null}
+                                  {referralState.claiming ? (
+                                    <Text style={styles.formHint}>
+                                      Claiming referral...
+                                    </Text>
+                                  ) : null}
+                                  {referralState.error ? (
+                                    <Text style={styles.formError}>
+                                      {referralState.error}
+                                    </Text>
+                                  ) : null}
+                                  {referralState.success ? (
+                                    <Text style={styles.promoSuccess}>
+                                      {referralState.success}
+                                    </Text>
+                                  ) : null}
+                                </View>
+                              </>
                             ) : null}
 
                             <View style={styles.formCard}>
@@ -24831,6 +25524,33 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     marginBottom: 12,
   },
+  legalChecklist: {
+    marginBottom: 8,
+    gap: 8,
+  },
+  legalCheckRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  legalCheckText: {
+    flex: 1,
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+  },
+  legalLinkButton: {
+    alignSelf: "flex-start",
+    paddingVertical: 2,
+    marginBottom: 12,
+  },
+  legalLinkText: {
+    fontSize: 11,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+    textDecorationLine: "underline",
+  },
   notificationPanel: {
     backgroundColor: COLORS.white,
     borderRadius: 16,
@@ -24945,6 +25665,73 @@ const styles = StyleSheet.create({
     color: "#047857",
     fontFamily: FONT_MEDIUM,
     marginTop: 8,
+  },
+  referralCodeCard: {
+    backgroundColor: COLORS.mint,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 4,
+  },
+  referralCodeLabel: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  referralCodeValue: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    letterSpacing: 0.8,
+  },
+  referralStatsText: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+  },
+  referralClaimStatus: {
+    fontSize: 11,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+    lineHeight: 16,
+  },
+  referralActionsRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 2,
+  },
+  referralActionButton: {
+    flex: 1,
+    backgroundColor: COLORS.pine,
+    borderRadius: 12,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  referralActionText: {
+    fontSize: 12,
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM,
+  },
+  referralActionButtonSecondary: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  referralActionTextSecondary: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
   },
   notificationRow: {
     flexDirection: "row",

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wello Partners — Referral</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <div class="container">
+        <nav class="nav">
+          <a class="brand" href="/">
+            <img src="/assets/wello-logo.jpeg" alt="Wello logo" />
+            <span>Wello Partners</span>
+          </a>
+          <div class="nav-actions">
+            <a class="button secondary" href="mailto:wellopartners@gmail.com">Support</a>
+          </div>
+        </nav>
+
+        <div class="card-simple">
+          <span class="pill">Referral</span>
+          <h2>Opening Wello…</h2>
+          <p>
+            We detected a referral link. Open the app to claim your referral.
+          </p>
+          <div class="cta-row" style="justify-content:center;">
+            <a id="open-app-btn" class="button primary" href="wello://auth/callback?flow=referral">
+              Open Wello app
+            </a>
+            <a class="button secondary" href="mailto:wellopartners@gmail.com">Contact support</a>
+          </div>
+          <p id="fallback-note" class="notice" hidden>
+            If the app did not open, tap "Open Wello app" above.
+          </p>
+        </div>
+      </div>
+    </div>
+    <script>
+      (function () {
+        var params = new URLSearchParams(window.location.search || "");
+        var rawRef = String(params.get("ref") || "")
+          .trim()
+          .replace(/\s+/g, "")
+          .toUpperCase();
+        var isValidRef = /^[A-Z0-9]{6,32}$/.test(rawRef);
+        var deepLink = isValidRef
+          ? "wello://auth/callback?flow=referral&ref=" + encodeURIComponent(rawRef)
+          : "wello://auth/callback?flow=referral";
+        var fallbackNote = document.getElementById("fallback-note");
+        var openAppBtn = document.getElementById("open-app-btn");
+        if (openAppBtn) {
+          openAppBtn.setAttribute("href", deepLink);
+        }
+        function openApp() {
+          window.location.href = deepLink;
+        }
+        setTimeout(openApp, 120);
+        setTimeout(function () {
+          if (fallbackNote) fallbackNote.hidden = false;
+        }, 1600);
+      })();
+    </script>
+  </body>
+</html>
