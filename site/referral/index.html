@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Wello Partners - Referral</title>
+    <title>Wello Partners | Referral</title>
     <meta
       name="description"
       content="Open your Wello referral link in the app to claim your referral reward."
@@ -18,42 +18,49 @@
     <link rel="apple-touch-icon" href="/assets/wello-logo.jpeg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
-    <div class="page">
-      <div class="container">
-        <nav class="nav">
-          <a class="brand" href="/">
-            <img src="/assets/wello-logo.jpeg" alt="Wello logo" />
-            <span>Wello Partners</span>
-          </a>
-          <div class="nav-actions">
-            <a class="button secondary" href="mailto:support@wellopartners.com">Support</a>
-          </div>
-        </nav>
+  <body class="referral-v2">
+    <div class="v2-shell">
+      <header class="v2-nav-wrap">
+        <div class="v2-container">
+          <nav class="v2-nav" aria-label="Referral navigation">
+            <a class="v2-brand" href="/" aria-label="Wello Partners home">
+              <img src="/assets/wello-logo.jpeg" alt="Wello logo" />
+              <span>Wello Partners</span>
+            </a>
+            <a class="v2-nav-cta" href="mailto:support@wellopartners.com">Support</a>
+          </nav>
+        </div>
+      </header>
 
-        <main class="card-simple">
-          <span class="pill">Referral</span>
-          <h2>Opening Wello...</h2>
-          <p>We detected a referral link. Open the app to claim your referral.</p>
-          <div class="cta-row" style="justify-content: center">
-            <a id="open-app-btn" class="button primary" href="wello://auth/callback?flow=referral">
+      <main class="v2-referral-main">
+        <section class="v2-referral-card">
+          <p class="v2-kicker">Referral</p>
+          <h1>Open Wello</h1>
+          <p>We detected a referral link. Open the app to continue.</p>
+          <div class="v2-actions">
+            <a id="open-app-btn" class="v2-btn v2-btn-primary" href="wello://auth/callback?flow=referral">
               Open Wello app
             </a>
-            <a class="button secondary" href="mailto:support@wellopartners.com">Contact support</a>
+            <a class="v2-btn v2-btn-secondary" href="mailto:support@wellopartners.com">
+              Contact support
+            </a>
           </div>
-          <p id="fallback-note" class="notice" hidden>
+          <p id="fallback-note" class="v2-referral-note" hidden>
             If the app did not open, tap "Open Wello app" above.
           </p>
-        </main>
+        </section>
+      </main>
 
-        <footer class="footer">
-          <span>© <span id="year"></span> Wello Partners LLC</span>
-          <span>
-            <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> ·
+      <footer class="v2-footer">
+        <div class="v2-container v2-footer-row">
+          <span>&copy; <span id="year"></span> Wello Partners LLC</span>
+          <div class="v2-footer-links">
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
             <a href="/third-party-notices">Third-Party Notices</a>
-          </span>
-        </footer>
-      </div>
+          </div>
+        </div>
+      </footer>
     </div>
     <script>
       document.getElementById("year").textContent = new Date().getFullYear();
@@ -83,4 +90,3 @@
     </script>
   </body>
 </html>
-

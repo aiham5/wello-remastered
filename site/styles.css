@@ -2711,3 +2711,781 @@ body.contact-page .contact-legal-links a:hover {
     align-items: flex-start;
   }
 }
+
+/* ==========================
+   V2 Public Site (modern minimal)
+   ========================== */
+
+body.home-v2,
+body.contact-v2,
+body.referral-v2,
+body.legal-v2 {
+  --bg: #fffdf7;
+  --surface: #ffffff;
+  --text: #141414;
+  --muted: #5b6572;
+  --brand: #f4c542;
+  --brand-strong: #e2b22f;
+  --line: rgba(20, 20, 20, 0.12);
+  --radius-card: 16px;
+  --radius-pill: 999px;
+  --shadow-soft: 0 10px 30px rgba(0, 0, 0, 0.06);
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  font-family: "Rubik", system-ui, -apple-system, sans-serif;
+  background:
+    radial-gradient(42rem 32rem at 0% -12%, rgba(244, 197, 66, 0.24), transparent 58%),
+    radial-gradient(34rem 24rem at 100% -14%, rgba(244, 197, 66, 0.14), transparent 62%),
+    linear-gradient(180deg, #fffef9 0%, #fff9eb 52%, #fffdf7 100%);
+}
+
+body.home-v2 .v2-shell,
+body.contact-v2 .v2-shell,
+body.referral-v2 .v2-shell,
+body.legal-v2 .legal-shell {
+  min-height: 100vh;
+}
+
+body.home-v2 .v2-container,
+body.contact-v2 .v2-container,
+body.referral-v2 .v2-container,
+body.legal-v2 .legal-container {
+  width: min(1120px, 92%);
+  margin: 0 auto;
+}
+
+body.home-v2 .v2-nav-wrap,
+body.referral-v2 .v2-nav-wrap {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding-top: 12px;
+}
+
+body.home-v2 .v2-nav,
+body.referral-v2 .v2-nav,
+body.contact-v2 .contact-nav,
+body.legal-v2 .legal-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(8px);
+}
+
+body.home-v2 .v2-brand,
+body.referral-v2 .v2-brand,
+body.contact-v2 .contact-brand,
+body.legal-v2 .legal-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: var(--text);
+  font-weight: 700;
+}
+
+body.home-v2 .v2-brand img,
+body.referral-v2 .v2-brand img,
+body.contact-v2 .contact-brand img,
+body.legal-v2 .legal-brand img {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  object-fit: cover;
+}
+
+body.home-v2 .v2-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+body.home-v2 .v2-nav-links a,
+body.referral-v2 .v2-nav-cta,
+body.contact-v2 .contact-home-link,
+body.legal-v2 .legal-nav-link {
+  text-decoration: none;
+  color: #3f4b5a;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+body.home-v2 .v2-nav-cta,
+body.home-v2 .v2-btn-primary,
+body.referral-v2 .v2-btn-primary,
+body.contact-v2 .contact-btn {
+  background: linear-gradient(135deg, var(--brand), var(--brand-strong));
+  color: #111111;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-soft);
+}
+
+body.home-v2 .v2-nav-cta,
+body.referral-v2 .v2-nav-cta,
+body.home-v2 .v2-btn,
+body.referral-v2 .v2-btn,
+body.contact-v2 .contact-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+body.home-v2 .v2-btn-secondary,
+body.referral-v2 .v2-btn-secondary {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.9);
+  color: #2f3d4d;
+}
+
+body.home-v2 .v2-nav-links a:not(.v2-nav-cta) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+body.home-v2 .v2-nav-links a:hover,
+body.referral-v2 .v2-nav-cta:hover,
+body.contact-v2 .contact-home-link:hover,
+body.legal-v2 .legal-nav-link:hover {
+  color: #1f2a38;
+}
+
+body.home-v2 .v2-hero {
+  padding: 52px 0 20px;
+}
+
+body.home-v2 .v2-hero-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+body.home-v2 .v2-kicker,
+body.contact-v2 .contact-kicker,
+body.legal-v2 .legal-kicker {
+  margin: 0 0 10px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #796226;
+  font-weight: 700;
+}
+
+body.home-v2 h1,
+body.home-v2 h2,
+body.contact-v2 h1,
+body.contact-v2 h2,
+body.referral-v2 h1,
+body.legal-v2 .legal-prose h1,
+body.legal-v2 .legal-prose h2 {
+  margin: 0;
+  font-family: "Fraunces", "Times New Roman", serif;
+  letter-spacing: -0.02em;
+  color: #111111;
+}
+
+body.home-v2 h1 {
+  font-size: clamp(34px, 6vw, 58px);
+  line-height: 1.03;
+  max-width: 12ch;
+}
+
+body.home-v2 .v2-subtitle {
+  margin: 14px 0 0;
+  max-width: 45ch;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.56;
+}
+
+body.home-v2 .v2-actions,
+body.referral-v2 .v2-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+body.home-v2 .v2-hero-card {
+  border-radius: var(--radius-card);
+  background: #111111;
+  color: #f8f8f8;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: var(--shadow-soft);
+  padding: 20px;
+}
+
+body.home-v2 .v2-hero-card h2 {
+  color: #f9f9f9;
+  font-size: clamp(22px, 3vw, 30px);
+}
+
+body.home-v2 .v2-hero-card ul {
+  margin: 14px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 15px;
+}
+
+body.home-v2 .v2-section {
+  padding: 26px 0;
+}
+
+body.home-v2 .v2-section-soft {
+  background: rgba(255, 255, 255, 0.64);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+body.home-v2 .v2-head {
+  margin-bottom: 14px;
+}
+
+body.home-v2 .v2-head h2 {
+  font-size: clamp(28px, 4vw, 42px);
+  line-height: 1.1;
+}
+
+body.home-v2 .v2-grid-3,
+body.home-v2 .v2-trust {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+body.home-v2 .v2-card,
+body.home-v2 .v2-chip-card,
+body.home-v2 .v2-faq details,
+body.contact-v2 .contact-card,
+body.referral-v2 .v2-referral-card,
+body.legal-v2 .legal-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: var(--shadow-soft);
+}
+
+body.home-v2 .v2-card,
+body.home-v2 .v2-chip-card {
+  padding: 16px;
+}
+
+body.home-v2 .v2-card span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  background: rgba(244, 197, 66, 0.22);
+  color: #5f4a14;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+body.home-v2 .v2-card h3,
+body.home-v2 .v2-chip-card h3 {
+  margin: 12px 0 0;
+  font-size: 19px;
+}
+
+body.home-v2 .v2-card p,
+body.home-v2 .v2-chip-card p,
+body.home-v2 .v2-faq p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+  font-size: 15px;
+}
+
+body.home-v2 .v2-faq {
+  display: grid;
+  gap: 10px;
+}
+
+body.home-v2 .v2-faq details {
+  overflow: hidden;
+}
+
+body.home-v2 .v2-faq summary {
+  cursor: pointer;
+  list-style: none;
+  position: relative;
+  padding: 14px 16px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #202a37;
+}
+
+body.home-v2 .v2-faq summary::-webkit-details-marker {
+  display: none;
+}
+
+body.home-v2 .v2-faq summary::after {
+  content: "+";
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #6f5a1e;
+  font-size: 20px;
+}
+
+body.home-v2 .v2-faq details[open] summary::after {
+  content: "-";
+}
+
+body.home-v2 .v2-faq p {
+  padding: 0 16px 14px;
+}
+
+body.home-v2 .v2-faq a,
+body.home-v2 .v2-footer-links a,
+body.referral-v2 .v2-footer-links a,
+body.contact-v2 .contact-legal-links a,
+body.legal-v2 .legal-footer-links a,
+body.legal-v2 .legal-prose a {
+  color: #674f10;
+  text-decoration: none;
+}
+
+body.home-v2 .v2-faq a:hover,
+body.home-v2 .v2-footer-links a:hover,
+body.referral-v2 .v2-footer-links a:hover,
+body.contact-v2 .contact-legal-links a:hover,
+body.legal-v2 .legal-footer-links a:hover,
+body.legal-v2 .legal-prose a:hover {
+  text-decoration: underline;
+}
+
+body.home-v2 .v2-cta {
+  padding: 24px 0 40px;
+}
+
+body.home-v2 .v2-cta-row {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: var(--shadow-soft);
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+body.home-v2 .v2-cta-row h2 {
+  font-size: clamp(26px, 4vw, 38px);
+  line-height: 1.08;
+}
+
+body.home-v2 .v2-footer,
+body.referral-v2 .v2-footer,
+body.contact-v2 .contact-legal-footer,
+body.legal-v2 .legal-footer {
+  padding: 16px 0 24px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.56);
+}
+
+body.home-v2 .v2-footer-row,
+body.referral-v2 .v2-footer-row,
+body.contact-v2 .contact-legal-footer-row,
+body.legal-v2 .legal-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+body.home-v2 .v2-footer-links,
+body.referral-v2 .v2-footer-links,
+body.contact-v2 .contact-legal-links,
+body.legal-v2 .legal-footer-links {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+body.home-v2 a:focus-visible,
+body.contact-v2 a:focus-visible,
+body.referral-v2 a:focus-visible,
+body.legal-v2 a:focus-visible,
+body.home-v2 summary:focus-visible {
+  outline: 3px solid rgba(226, 178, 47, 0.5);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+body.contact-v2 .contact-container {
+  width: min(980px, 92%);
+  margin: 0 auto;
+}
+
+body.contact-v2 .contact-header {
+  padding-top: 12px;
+}
+
+body.contact-v2 .contact-main {
+  padding: 32px 0 42px;
+}
+
+body.contact-v2 .contact-hero {
+  max-width: 60ch;
+  margin-bottom: 18px;
+}
+
+body.contact-v2 .contact-hero h1 {
+  font-size: clamp(34px, 5.2vw, 52px);
+  line-height: 1.04;
+}
+
+body.contact-v2 .contact-hero p,
+body.contact-v2 .contact-card-subtitle,
+body.contact-v2 .contact-status {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+body.contact-v2 .contact-card {
+  padding: 18px;
+}
+
+body.contact-v2 .contact-card h2 {
+  font-size: 28px;
+}
+
+body.contact-v2 .contact-form {
+  display: grid;
+  gap: 14px;
+}
+
+body.contact-v2 .contact-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+body.contact-v2 .contact-field {
+  display: grid;
+  gap: 6px;
+}
+
+body.contact-v2 .contact-field-full {
+  grid-column: 1 / -1;
+}
+
+body.contact-v2 .contact-field span {
+  font-size: 12px;
+  color: #6d5622;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+body.contact-v2 .contact-field input,
+body.contact-v2 .contact-field select,
+body.contact-v2 .contact-field textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 15px;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px 12px;
+  box-sizing: border-box;
+}
+
+body.contact-v2 .contact-field textarea {
+  resize: vertical;
+  min-height: 120px;
+}
+
+body.contact-v2 .contact-field input:focus,
+body.contact-v2 .contact-field select:focus,
+body.contact-v2 .contact-field textarea:focus {
+  outline: none;
+  border-color: #d4a32a;
+  box-shadow: 0 0 0 3px rgba(226, 178, 47, 0.22);
+}
+
+body.contact-v2 .contact-turnstile {
+  overflow: hidden;
+}
+
+body.contact-v2 .contact-hp {
+  position: absolute;
+  left: -9999px;
+}
+
+body.contact-v2 .contact-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+body.contact-v2 .contact-status.is-success {
+  color: #155d3a;
+}
+
+body.contact-v2 .contact-status.is-error {
+  color: #962424;
+}
+
+body.referral-v2 .v2-referral-main {
+  width: min(920px, 92%);
+  margin: 0 auto;
+  padding: 56px 0 42px;
+}
+
+body.referral-v2 .v2-referral-card {
+  padding: 24px;
+  text-align: center;
+}
+
+body.referral-v2 .v2-referral-card h1 {
+  font-size: clamp(32px, 5vw, 48px);
+  line-height: 1.05;
+}
+
+body.referral-v2 .v2-referral-card p {
+  margin: 10px auto 0;
+  color: var(--muted);
+  max-width: 46ch;
+}
+
+body.referral-v2 .v2-actions {
+  justify-content: center;
+}
+
+body.referral-v2 .v2-referral-note {
+  margin-top: 12px;
+  font-size: 14px;
+}
+
+body.legal-v2 .legal-header {
+  padding-top: 12px;
+}
+
+body.legal-v2 .legal-nav-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+body.legal-v2 .legal-main {
+  padding: 28px 0 38px;
+}
+
+body.legal-v2 .legal-container {
+  width: min(980px, 92%);
+}
+
+body.legal-v2 .legal-card {
+  padding: 22px;
+}
+
+body.legal-v2 .legal-prose {
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+body.legal-v2 .legal-prose h1 {
+  font-size: clamp(36px, 5vw, 52px);
+  line-height: 1.04;
+}
+
+body.legal-v2 .legal-meta {
+  margin: 10px 0 0;
+  color: var(--muted);
+}
+
+body.legal-v2 .legal-note {
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(244, 197, 66, 0.1);
+  padding: 12px;
+}
+
+body.legal-v2 .legal-prose h2 {
+  margin-top: 22px;
+  font-size: 24px;
+}
+
+body.legal-v2 .legal-prose p,
+body.legal-v2 .legal-prose li {
+  color: #384758;
+}
+
+body.legal-v2 .legal-prose ul {
+  padding-left: 20px;
+  margin: 10px 0;
+}
+
+body.legal-v2 .legal-table-wrap {
+  margin-top: 14px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+body.legal-v2 .legal-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 580px;
+}
+
+body.legal-v2 .legal-table th,
+body.legal-v2 .legal-table td {
+  border-bottom: 1px solid rgba(20, 20, 20, 0.08);
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+body.legal-v2 .legal-table th {
+  color: #333;
+  background: rgba(244, 197, 66, 0.12);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  body.home-v2 .v2-card,
+  body.home-v2 .v2-chip-card,
+  body.home-v2 .v2-faq details,
+  body.home-v2 .v2-btn,
+  body.contact-v2 .contact-btn,
+  body.referral-v2 .v2-btn {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  body.home-v2 .v2-card:hover,
+  body.home-v2 .v2-chip-card:hover,
+  body.home-v2 .v2-faq details:hover,
+  body.home-v2 .v2-btn:hover,
+  body.contact-v2 .contact-btn:hover,
+  body.referral-v2 .v2-btn:hover {
+    transform: translateY(-1px);
+  }
+
+  body.home-v2 .v2-section,
+  body.contact-v2 .contact-hero,
+  body.referral-v2 .v2-referral-card,
+  body.legal-v2 .legal-card {
+    animation: v2-fade-up 0.45s ease both;
+  }
+
+  @keyframes v2-fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+@media (max-width: 980px) {
+  body.home-v2 .v2-hero-grid,
+  body.home-v2 .v2-grid-3,
+  body.home-v2 .v2-trust {
+    grid-template-columns: 1fr;
+  }
+
+  body.home-v2 .v2-cta-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 720px) {
+  body.home-v2 .v2-container,
+  body.contact-v2 .contact-container,
+  body.referral-v2 .v2-container,
+  body.legal-v2 .legal-container {
+    width: min(100%, 94%);
+  }
+
+  body.home-v2 .v2-nav,
+  body.referral-v2 .v2-nav,
+  body.contact-v2 .contact-nav,
+  body.legal-v2 .legal-nav {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  body.home-v2 .v2-nav-links {
+    width: 100%;
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 8px;
+    scrollbar-width: none;
+  }
+
+  body.home-v2 .v2-nav-links::-webkit-scrollbar {
+    display: none;
+  }
+
+  body.home-v2 .v2-nav-links a,
+  body.home-v2 .v2-nav-cta {
+    white-space: nowrap;
+  }
+
+  body.home-v2 .v2-actions,
+  body.referral-v2 .v2-actions {
+    width: 100%;
+  }
+
+  body.home-v2 .v2-btn,
+  body.referral-v2 .v2-btn,
+  body.contact-v2 .contact-btn {
+    width: 100%;
+  }
+
+  body.contact-v2 .contact-grid {
+    grid-template-columns: 1fr;
+  }
+
+  body.home-v2 .v2-footer-row,
+  body.referral-v2 .v2-footer-row,
+  body.contact-v2 .contact-legal-footer-row,
+  body.legal-v2 .legal-footer-row,
+  body.home-v2 .v2-footer-links,
+  body.referral-v2 .v2-footer-links,
+  body.contact-v2 .contact-legal-links,
+  body.legal-v2 .legal-footer-links {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}
