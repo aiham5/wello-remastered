@@ -43,5 +43,12 @@
     "@types/react": "~19.1.10",
     "dotenv": "^16.5.0",
     "typescript": "~5.9.2"
+  },
+  "expo": {
+    "doctor": {
+      "appConfigFieldsNotSyncedCheck": {
+        "enabled": false
+      }
+    }
   }
 }

@@ -740,6 +740,31 @@ const formatDisplayName = (email) => {
     .join(" ");
 };
 
+const normalizePhoneDigits = (value) => String(value || "").replace(/\D/g, "");
+
+const isValidBusinessPhoneNumber = (value) => {
+  const digits = normalizePhoneDigits(value);
+  if (digits.length === 10) return true;
+  return digits.length === 11 && digits.startsWith("1");
+};
+
+const splitFullName = (value) => {
+  const normalized = String(value || "").trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return { firstName: "", lastName: "" };
+  }
+  const parts = normalized.split(" ");
+  return {
+    firstName: parts[0] || "",
+    lastName: parts.slice(1).join(" "),
+  };
+};
+
+const joinFullNameParts = (firstName, lastName) =>
+  [String(firstName || "").trim(), String(lastName || "").trim()]
+    .filter(Boolean)
+    .join(" ");
+
 const formatHistoryTimestamp = (value) => {
   if (!value) return "Date unavailable";
   const date = new Date(value);
@@ -2958,13 +2983,16 @@ export default function App() {
   const [googleAuthState, setGoogleAuthState] = useState("idle");
   const [signInEmail, setSignInEmail] = useState("");
   const [signInPassword, setSignInPassword] = useState("");
+  const [showSignInPassword, setShowSignInPassword] = useState(false);
   const [signInError, setSignInError] = useState(null);
   const [signUpName, setSignUpName] = useState("");
   const [signUpEmail, setSignUpEmail] = useState("");
   const [signUpPassword, setSignUpPassword] = useState("");
+  const [showSignUpPassword, setShowSignUpPassword] = useState(false);
   const [signUpError, setSignUpError] = useState(null);
   const [businessEmail, setBusinessEmail] = useState("");
   const [businessPassword, setBusinessPassword] = useState("");
+  const [showBusinessPassword, setShowBusinessPassword] = useState(false);
   const [businessOwnerName, setBusinessOwnerName] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [businessCategoryKey, setBusinessCategoryKey] = useState("restaurant");
@@ -2989,6 +3017,10 @@ export default function App() {
   const [timePickerVisible, setTimePickerVisible] = useState(false);
   const [timePickerTarget, setTimePickerTarget] = useState("start");
   const [businessSignUpError, setBusinessSignUpError] = useState(null);
+  const [businessSignUpNotice, setBusinessSignUpNotice] = useState(null);
+  const [businessOtpCode, setBusinessOtpCode] = useState("");
+  const [businessOtpSentEmail, setBusinessOtpSentEmail] = useState("");
+  const [businessPendingSignup, setBusinessPendingSignup] = useState(null);
   const [businessSignUpAuthorizedChecked, setBusinessSignUpAuthorizedChecked] =
     useState(false);
   const [
@@ -3030,6 +3062,12 @@ export default function App() {
   const [securityPasswordDraft, setSecurityPasswordDraft] = useState("");
   const [securityPasswordConfirm, setSecurityPasswordConfirm] = useState("");
   const [securityCurrentPassword, setSecurityCurrentPassword] = useState("");
+  const [showSecurityCurrentPassword, setShowSecurityCurrentPassword] =
+    useState(false);
+  const [showSecurityPasswordDraft, setShowSecurityPasswordDraft] =
+    useState(false);
+  const [showSecurityPasswordConfirm, setShowSecurityPasswordConfirm] =
+    useState(false);
   const [securityActivePanel, setSecurityActivePanel] = useState(null);
   const [pendingEmailChange, setPendingEmailChange] = useState("");
   const [securityStatus, setSecurityStatus] = useState({
@@ -3098,6 +3136,9 @@ export default function App() {
   const [passwordResetModalOpen, setPasswordResetModalOpen] = useState(false);
   const [passwordResetDraft, setPasswordResetDraft] = useState("");
   const [passwordResetConfirm, setPasswordResetConfirm] = useState("");
+  const [showPasswordResetDraft, setShowPasswordResetDraft] = useState(false);
+  const [showPasswordResetConfirm, setShowPasswordResetConfirm] =
+    useState(false);
   const [passwordResetBusy, setPasswordResetBusy] = useState(false);
   const [passwordResetError, setPasswordResetError] = useState(null);
   const [passwordResetSuccess, setPasswordResetSuccess] = useState(null);
@@ -4656,6 +4697,9 @@ export default function App() {
     setProfileName("");
     setProfilePhone("");
     setProfileCompany("");
+    setShowSignInPassword(false);
+    setShowSignUpPassword(false);
+    setShowBusinessPassword(false);
     setSignInNotice(null);
     setForgotPasswordBusy(false);
     setSecurityEmailDraft("");
@@ -4663,6 +4707,9 @@ export default function App() {
     setSecurityPasswordDraft("");
     setSecurityPasswordConfirm("");
     setSecurityCurrentPassword("");
+    setShowSecurityCurrentPassword(false);
+    setShowSecurityPasswordDraft(false);
+    setShowSecurityPasswordConfirm(false);
     setSecurityActivePanel(null);
     setPendingEmailChange("");
     setSecurityStatus({ loading: false, type: null, message: null });
@@ -4670,12 +4717,18 @@ export default function App() {
     setPasswordResetModalOpen(false);
     setPasswordResetDraft("");
     setPasswordResetConfirm("");
+    setShowPasswordResetDraft(false);
+    setShowPasswordResetConfirm(false);
     setPasswordResetBusy(false);
     setPasswordResetError(null);
     setPasswordResetSuccess(null);
     setAuthBusinessDraft(null);
     setOwnerBusinessId(null);
     setReferralState(createInitialReferralState());
+    setBusinessSignUpNotice(null);
+    setBusinessOtpCode("");
+    setBusinessOtpSentEmail("");
+    setBusinessPendingSignup(null);
   }, []);
 
   const forceSignOut = useCallback(
@@ -4747,6 +4800,8 @@ export default function App() {
             if (event === "PASSWORD_RECOVERY") {
               setPasswordResetDraft("");
               setPasswordResetConfirm("");
+              setShowPasswordResetDraft(false);
+              setShowPasswordResetConfirm(false);
               setPasswordResetError(null);
               setPasswordResetSuccess(null);
               setPasswordResetModalOpen(true);
@@ -6876,6 +6931,15 @@ export default function App() {
     }
     return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
   }, [profileName, profileEmail]);
+  const signUpNameParts = useMemo(() => splitFullName(signUpName), [signUpName]);
+  const businessOwnerNameParts = useMemo(
+    () => splitFullName(businessOwnerName),
+    [businessOwnerName],
+  );
+  const profileNameParts = useMemo(
+    () => splitFullName(profileName),
+    [profileName],
+  );
 
   const pendingBusinesses = useMemo(
     () =>
@@ -7586,6 +7650,8 @@ export default function App() {
             }
             setPasswordResetDraft("");
             setPasswordResetConfirm("");
+            setShowPasswordResetDraft(false);
+            setShowPasswordResetConfirm(false);
             setPasswordResetError(null);
             setPasswordResetSuccess(null);
             setPasswordResetModalOpen(true);
@@ -7727,6 +7793,8 @@ export default function App() {
         if (callbackFlow === "recovery") {
           setPasswordResetDraft("");
           setPasswordResetConfirm("");
+          setShowPasswordResetDraft(false);
+          setShowPasswordResetConfirm(false);
           setPasswordResetError(null);
           setPasswordResetSuccess(null);
           setPasswordResetModalOpen(true);
@@ -8029,6 +8097,7 @@ export default function App() {
       setAccountRole("consumer");
       setIsSignedIn(true);
       setSignInPassword("");
+      setShowSignInPassword(false);
     } catch (error) {
       const raw = String(error?.message || "");
       const friendly =
@@ -8153,6 +8222,8 @@ export default function App() {
         setPasswordResetModalOpen(false);
         setPasswordResetDraft("");
         setPasswordResetConfirm("");
+        setShowPasswordResetDraft(false);
+        setShowPasswordResetConfirm(false);
         setPasswordResetError(null);
         setPasswordResetSuccess(null);
       }, 700);
@@ -8180,6 +8251,9 @@ export default function App() {
   const setActiveSecurityPanel = useCallback(
     (panelKey) => {
       setSecurityActivePanel((prev) => (prev === panelKey ? null : panelKey));
+      setShowSecurityCurrentPassword(false);
+      setShowSecurityPasswordDraft(false);
+      setShowSecurityPasswordConfirm(false);
       clearSecurityStatusMessage();
     },
     [clearSecurityStatusMessage],
@@ -8544,6 +8618,7 @@ export default function App() {
       await hydrateProfile(data.user, "consumer");
       setIsSignedIn(true);
       setSignUpPassword("");
+      setShowSignUpPassword(false);
       setSignUpName("");
     } finally {
       setAuthBusy(false);
@@ -8553,6 +8628,10 @@ export default function App() {
   const handleBusinessSignUp = async () => {
     if (!businessEmail.trim() || !businessPassword.trim()) {
       setBusinessSignUpError("Email and password are required.");
+      return;
+    }
+    if (String(businessPassword).length < 8) {
+      setBusinessSignUpError("Use at least 8 characters for password.");
       return;
     }
     if (!businessOwnerName.trim()) {
@@ -8565,6 +8644,10 @@ export default function App() {
     }
     if (!businessPhone.trim()) {
       setBusinessSignUpError("Phone number is required.");
+      return;
+    }
+    if (!isValidBusinessPhoneNumber(businessPhone)) {
+      setBusinessSignUpError("Enter a valid phone number.");
       return;
     }
     if (!businessHoursStart || !businessHoursEnd) {
@@ -8594,6 +8677,7 @@ export default function App() {
     if (!ensureSupabaseReady(setBusinessSignUpError)) return;
     setAuthBusy(true);
     setBusinessSignUpError(null);
+    setBusinessSignUpNotice(null);
     try {
       const email = businessEmail.trim().toLowerCase();
       const hoursValue = formatBusinessHours(
@@ -8610,7 +8694,11 @@ export default function App() {
         }
       }
       const offerHonorAcceptedAt = new Date().toISOString();
-      const businessDraft = {
+      const pendingSignup = {
+        email,
+        password: businessPassword,
+        startedAtIso: new Date().toISOString(),
+        ownerName: businessOwnerName.trim(),
         name: businessName.trim(),
         address: businessAddress.trim(),
         phone: businessPhone.trim(),
@@ -8624,83 +8712,232 @@ export default function App() {
         merchantDescriptorAliases: normalizeMerchantDescriptorAliasesInput(
           businessDescriptorAliasesInput,
         ),
+        offerHonorAcceptedAt,
       };
-      const { data, error: signUpError } = await supabase.auth.signUp({
+      const { error: otpError } = await supabase.auth.signInWithOtp({
         email,
-        password: businessPassword,
         options: {
+          shouldCreateUser: true,
           data: {
             role: "business_owner",
-            full_name: businessOwnerName.trim(),
-            phone: businessPhone.trim(),
-            company: businessName.trim(),
-            business_draft: businessDraft,
+            full_name: pendingSignup.ownerName,
+            phone: pendingSignup.phone,
+            company: pendingSignup.name,
+            business_draft: {
+              name: pendingSignup.name,
+              address: pendingSignup.address,
+              phone: pendingSignup.phone,
+              categoryKey: pendingSignup.categoryKey,
+              categoryLabel: pendingSignup.categoryLabel,
+              hours: pendingSignup.hours,
+              city: pendingSignup.city,
+              state: pendingSignup.state,
+              postalCode: pendingSignup.postalCode,
+              addressCoords: pendingSignup.addressCoords,
+              merchantDescriptorAliases: pendingSignup.merchantDescriptorAliases,
+            },
           },
         },
       });
-      if (signUpError) {
-        setBusinessSignUpError(
-          signUpError.message || "Unable to create account.",
-        );
-        return;
-      }
-      if (!data.user) {
-        setBusinessSignUpError("Check your email to confirm your account.");
-        return;
-      }
-
-      if (data.session) {
-        const profileUpsertError = await upsertProfileWithRetry({
-          id: data.user.id,
-          email,
-          full_name: businessOwnerName.trim(),
-          phone: businessPhone.trim() || null,
-          company: businessName.trim(),
-          role: "business_owner",
-        });
-        if (profileUpsertError) {
-          console.warn(
-            "Wello profile upsert failed:",
-            profileUpsertError.message,
+      if (otpError) {
+        const message = String(otpError.message || "").toLowerCase();
+        if (message.includes("already registered")) {
+          setBusinessSignUpError(
+            "This email is already registered. Sign in or use a different email.",
           );
+          return;
         }
-      }
-
-      if (data.session) {
-        await hydrateProfile(data.user, "business_owner");
-      } else {
         setBusinessSignUpError(
-          "Check your email to confirm, then sign in to finish your profile.",
+          otpError.message || "Unable to send verification code.",
         );
         return;
       }
+
+      setBusinessPendingSignup(pendingSignup);
+      setBusinessOtpSentEmail(email);
+      setBusinessOtpCode("");
+      setAuthView("business_verify");
+      setBusinessSignUpNotice(`We sent a one-time code to ${email}.`);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleResendBusinessSignUpCode = async () => {
+    if (!businessPendingSignup || !businessOtpSentEmail) {
+      setBusinessSignUpError("Start business sign-up again.");
+      setAuthView("business");
+      return;
+    }
+    if (!ensureSupabaseReady(setBusinessSignUpError)) return;
+    setAuthBusy(true);
+    setBusinessSignUpError(null);
+    setBusinessSignUpNotice(null);
+    try {
+      const { error: resendError } = await supabase.auth.signInWithOtp({
+        email: businessOtpSentEmail,
+        options: { shouldCreateUser: true },
+      });
+      if (resendError) {
+        setBusinessSignUpError(
+          resendError.message || "Unable to resend verification code.",
+        );
+        return;
+      }
+      setBusinessSignUpNotice(`We sent a new code to ${businessOtpSentEmail}.`);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleVerifyBusinessSignUpCode = async () => {
+    const code = String(businessOtpCode || "").trim();
+    if (!businessPendingSignup || !businessOtpSentEmail) {
+      setBusinessSignUpError("Start business sign-up again.");
+      setAuthView("business");
+      return;
+    }
+    if (!code) {
+      setBusinessSignUpError("Enter the one-time code.");
+      return;
+    }
+    if (code.length !== 8) {
+      setBusinessSignUpError("Enter the full 8-digit code.");
+      return;
+    }
+    if (!ensureSupabaseReady(setBusinessSignUpError)) return;
+    setAuthBusy(true);
+    setBusinessSignUpError(null);
+    setBusinessSignUpNotice(null);
+    try {
+      let verifyResult = await supabase.auth.verifyOtp({
+        email: businessOtpSentEmail,
+        token: code,
+        type: "email",
+      });
+      if (verifyResult.error) {
+        const retry = await supabase.auth.verifyOtp({
+          email: businessOtpSentEmail,
+          token: code,
+          type: "signup",
+        });
+        if (retry.error) {
+          setBusinessSignUpError(
+            retry.error.message || "Invalid or expired verification code.",
+          );
+          return;
+        }
+        verifyResult = retry;
+      }
+
+      const verifiedUser =
+        verifyResult.data?.user || verifyResult.data?.session?.user || null;
+      if (!verifiedUser?.id) {
+        setBusinessSignUpError("Unable to verify email.");
+        return;
+      }
+      const verifiedEmail = String(verifiedUser.email || "")
+        .trim()
+        .toLowerCase();
+      if (verifiedEmail && verifiedEmail !== businessPendingSignup.email) {
+        await supabase.auth.signOut().catch(() => null);
+        setBusinessPendingSignup(null);
+        setBusinessOtpSentEmail("");
+        setBusinessOtpCode("");
+        setBusinessSignUpError(
+          "Verification email mismatch. Please start business sign-up again.",
+        );
+        setAuthView("business");
+        return;
+      }
+      const signupStartedAtMs = Date.parse(
+        String(businessPendingSignup.startedAtIso || ""),
+      );
+      const verifiedCreatedAtMs = Date.parse(String(verifiedUser.created_at || ""));
+      if (
+        Number.isFinite(signupStartedAtMs) &&
+        Number.isFinite(verifiedCreatedAtMs) &&
+        verifiedCreatedAtMs < signupStartedAtMs - 5 * 60 * 1000
+      ) {
+        await supabase.auth.signOut().catch(() => null);
+        setBusinessPendingSignup(null);
+        setBusinessOtpSentEmail("");
+        setBusinessOtpCode("");
+        setBusinessSignUpError(
+          "This email is already registered. Sign in or use a different email.",
+        );
+        setAuthView("business");
+        return;
+      }
+
+      const { data: updatedData, error: updateError } =
+        await supabase.auth.updateUser({
+          password: businessPendingSignup.password,
+          data: {
+            role: "business_owner",
+            full_name: businessPendingSignup.ownerName,
+            phone: businessPendingSignup.phone,
+            company: businessPendingSignup.name,
+            business_draft: {
+              name: businessPendingSignup.name,
+              address: businessPendingSignup.address,
+              phone: businessPendingSignup.phone,
+              categoryKey: businessPendingSignup.categoryKey,
+              categoryLabel: businessPendingSignup.categoryLabel,
+              hours: businessPendingSignup.hours,
+              city: businessPendingSignup.city,
+              state: businessPendingSignup.state,
+              postalCode: businessPendingSignup.postalCode,
+              addressCoords: businessPendingSignup.addressCoords,
+              merchantDescriptorAliases:
+                businessPendingSignup.merchantDescriptorAliases,
+            },
+          },
+        });
+      if (updateError) {
+        setBusinessSignUpError(updateError.message || "Unable to finish setup.");
+        return;
+      }
+      const activeUser = updatedData?.user || verifiedUser;
+
+      const profileUpsertError = await upsertProfileWithRetry({
+        id: activeUser.id,
+        email: businessPendingSignup.email,
+        full_name: businessPendingSignup.ownerName,
+        phone: businessPendingSignup.phone || null,
+        company: businessPendingSignup.name,
+        role: "business_owner",
+      });
+      if (profileUpsertError) {
+        console.warn("Wello profile upsert failed:", profileUpsertError.message);
+      }
+
+      await hydrateProfile(activeUser, "business_owner");
 
       const { data: businessRows, error: businessError } = await supabase
         .from("businesses")
         .insert({
-          owner_id: data.user.id,
-          name: businessName.trim(),
-          address: businessAddress.trim(),
-          city: businessAddressCity.trim() || null,
-          state: businessAddressState.trim() || null,
-          postal_code: businessAddressPostal.trim() || null,
-          phone: businessPhone.trim() || null,
+          owner_id: activeUser.id,
+          name: businessPendingSignup.name,
+          address: businessPendingSignup.address,
+          city: businessPendingSignup.city || null,
+          state: businessPendingSignup.state || null,
+          postal_code: businessPendingSignup.postalCode || null,
+          phone: businessPendingSignup.phone || null,
           merchant_descriptor_aliases:
-            normalizeMerchantDescriptorAliasesInput(
-              businessDescriptorAliasesInput,
-            ),
-          category_key: categorySelection.categoryKey,
-          category_label: categorySelection.categoryLabel,
-          hours: hoursValue,
+            businessPendingSignup.merchantDescriptorAliases,
+          category_key: businessPendingSignup.categoryKey,
+          category_label: businessPendingSignup.categoryLabel,
+          hours: businessPendingSignup.hours,
           approval_status: "pending",
           status: "active",
           is_open: true,
-          latitude: signupCoords?.latitude ?? null,
-          longitude: signupCoords?.longitude ?? null,
+          latitude: businessPendingSignup.addressCoords?.latitude ?? null,
+          longitude: businessPendingSignup.addressCoords?.longitude ?? null,
           offer_honor_policy_accepted: true,
           offer_honor_policy_version: OFFER_HONOR_POLICY_VERSION,
-          offer_honor_policy_accepted_at: offerHonorAcceptedAt,
-          offer_honor_policy_accepted_by: data.user.id,
+          offer_honor_policy_accepted_at: businessPendingSignup.offerHonorAcceptedAt,
+          offer_honor_policy_accepted_by: activeUser.id,
         })
         .select(
           [
@@ -8751,6 +8988,7 @@ export default function App() {
 
       setIsSignedIn(true);
       setBusinessPassword("");
+      setShowBusinessPassword(false);
       setBusinessOwnerName("");
       setBusinessName("");
       setBusinessAddress("");
@@ -8769,6 +9007,11 @@ export default function App() {
       setBusinessHoursEndMeridiem("PM");
       setBusinessSignUpAuthorizedChecked(false);
       setBusinessSignUpHonorOffersChecked(false);
+      setBusinessOtpCode("");
+      setBusinessOtpSentEmail("");
+      setBusinessPendingSignup(null);
+      setBusinessSignUpNotice(null);
+      setAuthView("menu");
     } finally {
       setAuthBusy(false);
     }
@@ -8913,8 +9156,11 @@ export default function App() {
     void forceSignOut();
     setIsSignedIn(false);
     setSignInPassword("");
+    setShowSignInPassword(false);
     setSignUpPassword("");
+    setShowSignUpPassword(false);
     setBusinessPassword("");
+    setShowBusinessPassword(false);
     setAccountRole("consumer");
     setAuthUserId(null);
     setAuthEmail("");
@@ -8929,6 +9175,9 @@ export default function App() {
     setSecurityPasswordDraft("");
     setSecurityPasswordConfirm("");
     setSecurityCurrentPassword("");
+    setShowSecurityCurrentPassword(false);
+    setShowSecurityPasswordDraft(false);
+    setShowSecurityPasswordConfirm(false);
     setSecurityActivePanel(null);
     setPendingEmailChange("");
     setSecurityStatus({ loading: false, type: null, message: null });
@@ -8937,6 +9186,10 @@ export default function App() {
     setSignInError(null);
     setSignUpError(null);
     setBusinessSignUpError(null);
+    setBusinessSignUpNotice(null);
+    setBusinessOtpCode("");
+    setBusinessOtpSentEmail("");
+    setBusinessPendingSignup(null);
     setSignInEmail("");
     setSignUpEmail("");
     setBusinessEmail("");
@@ -8948,6 +9201,8 @@ export default function App() {
     setBusinessAddressPostal("");
     setBusinessPhone("");
     setBusinessDescriptorAliasesInput("");
+    setShowPasswordResetDraft(false);
+    setShowPasswordResetConfirm(false);
     setBusinessCategoryKey("restaurant");
     setBusinessCategoryCustomLabel("");
     setBusinessCategoryMenuOpen(false);
@@ -16638,40 +16893,78 @@ export default function App() {
                     Your reset link is valid. Enter a new password to finish.
                   </Text>
                   <Text style={styles.formLabel}>New password</Text>
-                  <AutoFocusInput
-                    style={styles.authInput}
-                    placeholder="At least 8 characters"
-                    placeholderTextColor={COLORS.muted}
-                    value={passwordResetDraft}
-                    onChangeText={(value) => {
-                      setPasswordResetDraft(value);
-                      if (passwordResetError) setPasswordResetError(null);
-                      if (passwordResetSuccess) setPasswordResetSuccess(null);
-                    }}
-                    secureTextEntry
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="next"
-                  />
+                  <View style={styles.passwordInputWrapper}>
+                    <AutoFocusInput
+                      style={[styles.authInput, styles.passwordInputWithToggle]}
+                      placeholder="At least 8 characters"
+                      placeholderTextColor={COLORS.muted}
+                      value={passwordResetDraft}
+                      onChangeText={(value) => {
+                        setPasswordResetDraft(value);
+                        if (passwordResetError) setPasswordResetError(null);
+                        if (passwordResetSuccess) setPasswordResetSuccess(null);
+                      }}
+                      secureTextEntry={!showPasswordResetDraft}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="next"
+                    />
+                    <TouchableOpacity
+                      style={styles.passwordToggleButton}
+                      onPress={() =>
+                        setShowPasswordResetDraft((prev) => !prev)
+                      }
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons
+                        name={
+                          showPasswordResetDraft
+                            ? "eye-off-outline"
+                            : "eye-outline"
+                        }
+                        size={18}
+                        color={COLORS.muted}
+                      />
+                    </TouchableOpacity>
+                  </View>
                   <Text style={styles.formLabel}>Confirm new password</Text>
-                  <AutoFocusInput
-                    style={styles.authInput}
-                    placeholder="Re-enter your new password"
-                    placeholderTextColor={COLORS.muted}
-                    value={passwordResetConfirm}
-                    onChangeText={(value) => {
-                      setPasswordResetConfirm(value);
-                      if (passwordResetError) setPasswordResetError(null);
-                      if (passwordResetSuccess) setPasswordResetSuccess(null);
-                    }}
-                    secureTextEntry
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="go"
-                    onSubmitEditing={() => {
-                      if (!passwordResetBusy) handleCompletePasswordReset();
-                    }}
-                  />
+                  <View style={styles.passwordInputWrapper}>
+                    <AutoFocusInput
+                      style={[styles.authInput, styles.passwordInputWithToggle]}
+                      placeholder="Re-enter your new password"
+                      placeholderTextColor={COLORS.muted}
+                      value={passwordResetConfirm}
+                      onChangeText={(value) => {
+                        setPasswordResetConfirm(value);
+                        if (passwordResetError) setPasswordResetError(null);
+                        if (passwordResetSuccess) setPasswordResetSuccess(null);
+                      }}
+                      secureTextEntry={!showPasswordResetConfirm}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="go"
+                      onSubmitEditing={() => {
+                        if (!passwordResetBusy) handleCompletePasswordReset();
+                      }}
+                    />
+                    <TouchableOpacity
+                      style={styles.passwordToggleButton}
+                      onPress={() =>
+                        setShowPasswordResetConfirm((prev) => !prev)
+                      }
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons
+                        name={
+                          showPasswordResetConfirm
+                            ? "eye-off-outline"
+                            : "eye-outline"
+                        }
+                        size={18}
+                        color={COLORS.muted}
+                      />
+                    </TouchableOpacity>
+                  </View>
                   {passwordResetError ? (
                     <Text style={styles.formError}>{passwordResetError}</Text>
                   ) : null}
@@ -20124,22 +20417,53 @@ export default function App() {
                                 />
 
                                 <Text style={styles.formLabel}>Password</Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="Enter your password"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={signInPassword}
-                                  onChangeText={(value) => {
-                                    setSignInPassword(value);
-                                    if (signInError) setSignInError(null);
-                                    if (signInNotice) setSignInNotice(null);
-                                  }}
-                                  secureTextEntry
-                                  returnKeyType="go"
-                                  onSubmitEditing={() => {
-                                    if (!authBusy) handleSignIn();
-                                  }}
-                                />
+                                <View style={styles.passwordInputWrapper}>
+                                  <AutoFocusInput
+                                    style={[
+                                      styles.authInput,
+                                      styles.passwordInputWithToggle,
+                                    ]}
+                                    placeholder="Enter your password"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={signInPassword}
+                                    onChangeText={(value) => {
+                                      setSignInPassword(value);
+                                      if (signInError) setSignInError(null);
+                                      if (signInNotice) setSignInNotice(null);
+                                    }}
+                                    onFocus={() => {
+                                      nudgeSheetToBottomForKeyboard(40);
+                                      nudgeSheetToBottomForKeyboard(
+                                        Platform.OS === "android" ? 220 : 180,
+                                      );
+                                      nudgeSheetToBottomForKeyboard(
+                                        Platform.OS === "android" ? 340 : 300,
+                                      );
+                                    }}
+                                    secureTextEntry={!showSignInPassword}
+                                    returnKeyType="go"
+                                    onSubmitEditing={() => {
+                                      if (!authBusy) handleSignIn();
+                                    }}
+                                  />
+                                  <TouchableOpacity
+                                    style={styles.passwordToggleButton}
+                                    onPress={() =>
+                                      setShowSignInPassword((prev) => !prev)
+                                    }
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                  >
+                                    <Ionicons
+                                      name={
+                                        showSignInPassword
+                                          ? "eye-off-outline"
+                                          : "eye-outline"
+                                      }
+                                      size={18}
+                                      color={COLORS.muted}
+                                    />
+                                  </TouchableOpacity>
+                                </View>
                                 <View style={styles.authInlineLinksRow}>
                                   <TouchableOpacity
                                     style={styles.authInlineLinkAction}
@@ -20344,14 +20668,40 @@ export default function App() {
                                   and redeem offers.
                                 </Text>
 
-                                <Text style={styles.formLabel}>Full name</Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="Full name"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={signUpName}
-                                  onChangeText={setSignUpName}
-                                />
+                                <View style={styles.formRow}>
+                                  <View style={styles.formField}>
+                                    <AutoFocusInput
+                                      style={styles.authInput}
+                                      placeholder="First name"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={signUpNameParts.firstName}
+                                      onChangeText={(value) =>
+                                        setSignUpName(
+                                          joinFullNameParts(
+                                            value,
+                                            signUpNameParts.lastName,
+                                          ),
+                                        )
+                                      }
+                                    />
+                                  </View>
+                                  <View style={styles.formField}>
+                                    <AutoFocusInput
+                                      style={styles.authInput}
+                                      placeholder="Last name"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={signUpNameParts.lastName}
+                                      onChangeText={(value) =>
+                                        setSignUpName(
+                                          joinFullNameParts(
+                                            signUpNameParts.firstName,
+                                            value,
+                                          ),
+                                        )
+                                      }
+                                    />
+                                  </View>
+                                </View>
 
                                 <Text style={styles.formLabel}>Email</Text>
                                 <AutoFocusInput
@@ -20365,14 +20715,36 @@ export default function App() {
                                 />
 
                                 <Text style={styles.formLabel}>Password</Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="Create a password"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={signUpPassword}
-                                  onChangeText={setSignUpPassword}
-                                  secureTextEntry
-                                />
+                                <View style={styles.passwordInputWrapper}>
+                                  <AutoFocusInput
+                                    style={[
+                                      styles.authInput,
+                                      styles.passwordInputWithToggle,
+                                    ]}
+                                    placeholder="Create a password"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={signUpPassword}
+                                    onChangeText={setSignUpPassword}
+                                    secureTextEntry={!showSignUpPassword}
+                                  />
+                                  <TouchableOpacity
+                                    style={styles.passwordToggleButton}
+                                    onPress={() =>
+                                      setShowSignUpPassword((prev) => !prev)
+                                    }
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                  >
+                                    <Ionicons
+                                      name={
+                                        showSignUpPassword
+                                          ? "eye-off-outline"
+                                          : "eye-outline"
+                                      }
+                                      size={18}
+                                      color={COLORS.muted}
+                                    />
+                                  </TouchableOpacity>
+                                </View>
 
                                 {signUpError && (
                                   <Text style={styles.formError}>
@@ -20415,18 +20787,43 @@ export default function App() {
                                   Create business account
                                 </Text>
                                 <Text style={styles.authSubtitle}>
-                                  Business accounts are reviewed before they
-                                  appear in Wello.
+                                  Business accounts use one-time email verification and are reviewed before going live.
                                 </Text>
 
-                                <Text style={styles.formLabel}>Full name</Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="Full name"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={businessOwnerName}
-                                  onChangeText={setBusinessOwnerName}
-                                />
+                                <View style={styles.formRow}>
+                                  <View style={styles.formField}>
+                                    <AutoFocusInput
+                                      style={styles.authInput}
+                                      placeholder="First name"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={businessOwnerNameParts.firstName}
+                                      onChangeText={(value) =>
+                                        setBusinessOwnerName(
+                                          joinFullNameParts(
+                                            value,
+                                            businessOwnerNameParts.lastName,
+                                          ),
+                                        )
+                                      }
+                                    />
+                                  </View>
+                                  <View style={styles.formField}>
+                                    <AutoFocusInput
+                                      style={styles.authInput}
+                                      placeholder="Last name"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={businessOwnerNameParts.lastName}
+                                      onChangeText={(value) =>
+                                        setBusinessOwnerName(
+                                          joinFullNameParts(
+                                            businessOwnerNameParts.firstName,
+                                            value,
+                                          ),
+                                        )
+                                      }
+                                    />
+                                  </View>
+                                </View>
 
                                 <Text style={styles.formLabel}>
                                   Business name
@@ -20762,14 +21159,36 @@ export default function App() {
                                 />
 
                                 <Text style={styles.formLabel}>Password</Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="Create a password"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={businessPassword}
-                                  onChangeText={setBusinessPassword}
-                                  secureTextEntry
-                                />
+                                <View style={styles.passwordInputWrapper}>
+                                  <AutoFocusInput
+                                    style={[
+                                      styles.authInput,
+                                      styles.passwordInputWithToggle,
+                                    ]}
+                                    placeholder="Create a password"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={businessPassword}
+                                    onChangeText={setBusinessPassword}
+                                    secureTextEntry={!showBusinessPassword}
+                                  />
+                                  <TouchableOpacity
+                                    style={styles.passwordToggleButton}
+                                    onPress={() =>
+                                      setShowBusinessPassword((prev) => !prev)
+                                    }
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                  >
+                                    <Ionicons
+                                      name={
+                                        showBusinessPassword
+                                          ? "eye-off-outline"
+                                          : "eye-outline"
+                                      }
+                                      size={18}
+                                      color={COLORS.muted}
+                                    />
+                                  </TouchableOpacity>
+                                </View>
                                 <View style={styles.legalChecklist}>
                                   <TouchableOpacity
                                     style={styles.legalCheckRow}
@@ -20850,6 +21269,11 @@ export default function App() {
                                     {businessSignUpError}
                                   </Text>
                                 )}
+                                {businessSignUpNotice && (
+                                  <Text style={styles.formSuccess}>
+                                    {businessSignUpNotice}
+                                  </Text>
+                                )}
 
                                 <TouchableOpacity
                                   style={[
@@ -20862,10 +21286,105 @@ export default function App() {
                                   <Text style={styles.authButtonText}>
                                     {authBusy
                                       ? "Please wait..."
-                                      : "Create business account"}
+                                      : "Send verification code"}
                                   </Text>
                                 </TouchableOpacity>
                               </View>
+                            )}
+                            {authView === "business_verify" && (
+                              <View style={styles.authCard}>
+                                <TouchableOpacity
+                                  style={styles.authBack}
+                                  onPress={() => {
+                                    setBusinessOtpCode("");
+                                    setBusinessSignUpError(null);
+                                    setBusinessSignUpNotice(null);
+                                    setAuthView("business");
+                                  }}
+                                  disabled={authBusy}
+                                >
+                                  <Ionicons
+                                    name="arrow-back"
+                                    size={16}
+                                    color={COLORS.muted}
+                                  />
+                                  <Text style={styles.authBackText}>
+                                    Back
+                                  </Text>
+                                </TouchableOpacity>
+
+                                <Text style={styles.authTitle}>
+                                  Verify business email
+                                </Text>
+                                <Text style={styles.authSubtitle}>
+                                  Enter the one-time code sent to{" "}
+                                  {businessOtpSentEmail || businessEmail.trim().toLowerCase()}.
+                                </Text>
+
+                                <Text style={styles.formLabel}>One-time code</Text>
+                                <AutoFocusInput
+                                  style={styles.authInput}
+                                  placeholder="8-digit code"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={businessOtpCode}
+                                  onChangeText={(value) => {
+                                    const next = String(value || "")
+                                      .replace(/\D/g, "")
+                                      .slice(0, 8);
+                                    setBusinessOtpCode(next);
+                                    if (businessSignUpError) setBusinessSignUpError(null);
+                                    if (businessSignUpNotice) setBusinessSignUpNotice(null);
+                                  }}
+                                  keyboardType="number-pad"
+                                  returnKeyType="go"
+                                  onSubmitEditing={() => {
+                                    if (!authBusy) handleVerifyBusinessSignUpCode();
+                                  }}
+                                />
+
+                                {businessSignUpError && (
+                                  <Text style={styles.formError}>
+                                    {businessSignUpError}
+                                  </Text>
+                                )}
+                                {businessSignUpNotice && (
+                                  <Text style={styles.formSuccess}>
+                                    {businessSignUpNotice}
+                                  </Text>
+                                )}
+
+                                <TouchableOpacity
+                                  style={[
+                                    styles.authButton,
+                                    authBusy && styles.authButtonDisabled,
+                                  ]}
+                                  onPress={handleVerifyBusinessSignUpCode}
+                                  disabled={authBusy}
+                                >
+                                  <Text style={styles.authButtonText}>
+                                    {authBusy ? "Verifying..." : "Verify and continue"}
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.authSecondaryButton}
+                                  onPress={handleResendBusinessSignUpCode}
+                                  disabled={authBusy}
+                                >
+                                  <Text style={styles.secondaryButtonText}>
+                                    Resend code
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            )}
+                            {keyboardInset > 0 && (
+                              <View
+                                pointerEvents="none"
+                                style={{
+                                  height:
+                                    keyboardInset +
+                                    (Platform.OS === "ios" ? 12 : 8),
+                                }}
+                              />
                             )}
                           </View>
                         ) : (
@@ -20873,9 +21392,6 @@ export default function App() {
                             <View style={styles.sectionBlock}>
                               <Text style={styles.sectionTitleAlt}>
                                 Profile
-                              </Text>
-                              <Text style={styles.sectionBody}>
-                                Manage your account details and business access.
                               </Text>
                             </View>
 
@@ -20902,31 +21418,103 @@ export default function App() {
                               </View>
                             </View>
 
-                            <View
-                              style={[
-                                styles.notificationPanel,
-                                styles.notificationPanelCompact,
-                                styles.notificationPanelMinimal,
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  styles.sectionTitleAlt,
-                                  styles.notificationSectionTitle,
-                                ]}
-                              >
-                                Notifications
-                              </Text>
+                            <View style={[styles.notificationPanel, styles.notificationPanelPro]}>
+                              <LinearGradient
+                                colors={["rgba(11, 33, 71, 0.08)", "rgba(11, 33, 71, 0)"]}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 1 }}
+                                style={styles.notificationGradientAccent}
+                              />
+                              <View style={styles.notificationHeaderRow}>
+                                <View style={styles.notificationHeaderLeft}>
+                                  <View style={styles.notificationIconWrap}>
+                                    <Ionicons
+                                      name="notifications-outline"
+                                      size={16}
+                                      color={COLORS.pine}
+                                    />
+                                  </View>
+                                  <View style={styles.notificationHeaderCopy}>
+                                    <Text style={styles.notificationTitleText}>
+                                      Notifications
+                                    </Text>
+                                    <Text style={styles.notificationSubtitleText}>
+                                      {enabledNotificationCount} of 3 enabled
+                                    </Text>
+                                  </View>
+                                </View>
+                                <View style={styles.notificationStatusPill}>
+                                  <Text style={styles.notificationStatusText}>
+                                    {enabledNotificationCount === 0
+                                      ? "Off"
+                                      : enabledNotificationCount === 3
+                                        ? "On"
+                                        : "Partial"}
+                                  </Text>
+                                </View>
+                              </View>
+
+                              <View style={styles.notificationTagsRow}>
+                                <View
+                                  style={[
+                                    styles.notificationTypePill,
+                                    notificationPreferences.new_offer &&
+                                      styles.notificationTypePillActive,
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.notificationTypeText,
+                                      notificationPreferences.new_offer &&
+                                        styles.notificationTypeTextActive,
+                                    ]}
+                                  >
+                                    New offers
+                                  </Text>
+                                </View>
+                                <View
+                                  style={[
+                                    styles.notificationTypePill,
+                                    notificationPreferences.expiring_offer &&
+                                      styles.notificationTypePillActive,
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.notificationTypeText,
+                                      notificationPreferences.expiring_offer &&
+                                        styles.notificationTypeTextActive,
+                                    ]}
+                                  >
+                                    Expiring
+                                  </Text>
+                                </View>
+                                <View
+                                  style={[
+                                    styles.notificationTypePill,
+                                    notificationPreferences.nearby_offer &&
+                                      styles.notificationTypePillActive,
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.notificationTypeText,
+                                      notificationPreferences.nearby_offer &&
+                                        styles.notificationTypeTextActive,
+                                    ]}
+                                  >
+                                    Nearby
+                                  </Text>
+                                </View>
+                              </View>
+
                               <TouchableOpacity
-                                style={styles.notificationManageRow}
+                                style={styles.notificationManageButton}
                                 onPress={() => setNotificationSettingsOpen(true)}
                               >
                                 <View style={styles.notificationManageCopy}>
                                   <Text style={styles.notificationManageTitle}>
-                                    Manage notifications
-                                  </Text>
-                                  <Text style={styles.notificationManageHint}>
-                                    {enabledNotificationCount} of 3 enabled
+                                    Manage preferences
                                   </Text>
                                 </View>
                                 <Ionicons
@@ -20943,88 +21531,10 @@ export default function App() {
                             {!isOwner && !isAdmin && !isSupervisor ? (
                               <>
                                 <View style={styles.notificationPanel}>
-                                <View style={styles.promoHeader}>
-                                  <View style={styles.promoHeaderLeft}>
-                                    <Text style={styles.sectionTitleAlt}>
-                                      Cashback
-                                    </Text>
-                                    {promoState.code ? (
-                                      <View style={styles.promoActivePill}>
-                                        <Ionicons
-                                          name="sparkles-outline"
-                                          size={12}
-                                          color={COLORS.pine}
-                                        />
-                                        <Text style={styles.promoActivePillText}>
-                                          {promoState.code}
-                                        </Text>
-                                      </View>
-                                    ) : null}
-                                  </View>
-                                  <View style={styles.promoRatePill}>
-                                    <Text style={styles.promoRateText}>
-                                      {formatCashbackRateLabel(cashbackRatePercent) ||
-                                        "Cashback"}
-                                    </Text>
-                                  </View>
-                                </View>
-                              <Text style={styles.promoHint}>
-                                Apply a promo code to increase your cashback rate.
-                              </Text>
-
-                              <View style={styles.promoRow}>
-                                <AutoFocusInput
-                                  style={styles.promoInput}
-                                  placeholder="Enter promo code"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={promoCodeInput}
-                                  onChangeText={setPromoCodeInput}
-                                  autoCapitalize="characters"
-                                  autoCorrect={false}
-                                />
-                                <TouchableOpacity
-                                  style={[
-                                    styles.promoApplyButton,
-                                    promoState.loading &&
-                                      styles.authButtonDisabled,
-                                  ]}
-                                  onPress={handleApplyPromoCode}
-                                  disabled={promoState.loading}
-                                >
-                                  <Text style={styles.promoApplyText}>
-                                    {promoState.loading ? "..." : "Apply"}
-                                  </Text>
-                                </TouchableOpacity>
-                              </View>
-                              <View style={styles.promoActions}>
-                                {promoState.code ? (
-                                  <TouchableOpacity
-                                    style={styles.promoClearButton}
-                                    onPress={handleClearPromoCode}
-                                    disabled={promoState.loading}
-                                  >
-                                    <Text style={styles.promoClearText}>
-                                      Remove
-                                    </Text>
-                                  </TouchableOpacity>
-                                ) : null}
-                              </View>
-                              {promoState.error ? (
-                                <Text style={styles.formError}>
-                                  {promoState.error}
-                                </Text>
-                              ) : null}
-                              {promoState.success ? (
-                                <Text style={styles.promoSuccess}>
-                                  {promoState.success}
-                                </Text>
-                              ) : null}
-                                </View>
-                                <View style={styles.notificationPanel}>
                                   <View style={styles.promoHeader}>
                                     <View style={styles.promoHeaderLeft}>
                                       <Text style={styles.sectionTitleAlt}>
-                                        Referrals
+                                        Refer a friend
                                       </Text>
                                     </View>
                                     <View style={styles.promoRatePill}>
@@ -21037,23 +21547,22 @@ export default function App() {
                                     </View>
                                   </View>
                                   <Text style={styles.promoHint}>
-                                    Share your referral link. Your friend gets{" "}
+                                    Invite friends. You both earn{" "}
                                     {formatCurrencyFromCents(
                                       referralState.rewardCents,
                                     )}{" "}
-                                    after their first verified purchase, and you
-                                    get the same reward.
+                                    after their first verified purchase.
                                   </Text>
                                   <View style={styles.referralCodeCard}>
                                     <Text style={styles.referralCodeLabel}>
-                                      Your referral code
+                                      Your invite code
                                     </Text>
                                     <Text style={styles.referralCodeValue}>
                                       {referralState.code || "--"}
                                     </Text>
                                   </View>
                                   <Text style={styles.referralStatsText}>
-                                    This month:{" "}
+                                    Earned this month:{" "}
                                     {formatCurrencyFromCents(
                                       referralState.referrerMonthlyEarnedCents,
                                     )}{" "}
@@ -21061,7 +21570,7 @@ export default function App() {
                                     {formatCurrencyFromCents(
                                       referralState.monthlyCapCents,
                                     )}{" "}
-                                    earned as referrer.
+                                    earned
                                   </Text>
                                   <Text style={styles.referralStatsText}>
                                     Remaining this month:{" "}
@@ -21077,7 +21586,7 @@ export default function App() {
                                   </Text>
                                   {referralState.yourClaimStatus !== "none" ? (
                                     <Text style={styles.referralClaimStatus}>
-                                      Your claim status:{" "}
+                                      Status:{" "}
                                       {String(
                                         referralState.yourClaimStatus || "none",
                                       ).replace(/_/g, " ")}
@@ -21098,7 +21607,7 @@ export default function App() {
                                       }
                                     >
                                       <Text style={styles.referralActionText}>
-                                        Share link
+                                        Share invite
                                       </Text>
                                     </TouchableOpacity>
                                     <TouchableOpacity
@@ -21119,18 +21628,91 @@ export default function App() {
                                           styles.referralActionTextSecondary
                                         }
                                       >
-                                        Copy link
+                                        Copy invite
                                       </Text>
                                     </TouchableOpacity>
                                   </View>
+                                  <View style={styles.rewardsDivider} />
+                                  <View style={styles.promoHeader}>
+                                    <View style={styles.promoHeaderLeft}>
+                                      <Text style={styles.sectionTitleAlt}>
+                                        Promo boost
+                                      </Text>
+                                      {promoState.code ? (
+                                        <View style={styles.promoActivePill}>
+                                          <Ionicons
+                                            name="sparkles-outline"
+                                            size={12}
+                                            color={COLORS.pine}
+                                          />
+                                          <Text style={styles.promoActivePillText}>
+                                            {promoState.code}
+                                          </Text>
+                                        </View>
+                                      ) : null}
+                                    </View>
+                                    <View style={styles.promoRatePill}>
+                                      <Text style={styles.promoRateText}>
+                                        {formatCashbackRateLabel(cashbackRatePercent) ||
+                                          "Cashback"}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                  <View style={styles.promoRow}>
+                                    <AutoFocusInput
+                                      style={styles.promoInput}
+                                      placeholder="Enter promo code"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={promoCodeInput}
+                                      onChangeText={setPromoCodeInput}
+                                      autoCapitalize="characters"
+                                      autoCorrect={false}
+                                    />
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.promoApplyButton,
+                                        promoState.loading &&
+                                          styles.authButtonDisabled,
+                                      ]}
+                                      onPress={handleApplyPromoCode}
+                                      disabled={promoState.loading}
+                                    >
+                                      <Text style={styles.promoApplyText}>
+                                        {promoState.loading ? "..." : "Apply"}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                  <View style={styles.promoActions}>
+                                    {promoState.code ? (
+                                      <TouchableOpacity
+                                        style={styles.promoClearButton}
+                                        onPress={handleClearPromoCode}
+                                        disabled={promoState.loading}
+                                      >
+                                        <Text style={styles.promoClearText}>
+                                          Remove
+                                        </Text>
+                                      </TouchableOpacity>
+                                    ) : null}
+                                  </View>
+                                  {promoState.error ? (
+                                    <Text style={styles.formError}>
+                                      {promoState.error}
+                                    </Text>
+                                  ) : null}
+                                  {promoState.success ? (
+                                    <Text style={styles.promoSuccess}>
+                                      {promoState.success}
+                                    </Text>
+                                  ) : null}
                                   {referralState.loading ? (
                                     <Text style={styles.formHint}>
-                                      Loading referral details...
+                                      Loading...
                                     </Text>
                                   ) : null}
                                   {referralState.claiming ? (
                                     <Text style={styles.formHint}>
-                                      Claiming referral...
+                                      Claiming...
                                     </Text>
                                   ) : null}
                                   {referralState.error ? (
@@ -21147,15 +21729,49 @@ export default function App() {
                               </>
                             ) : null}
 
-                            <View style={styles.formCard}>
-                              <Text style={styles.formLabel}>Full name</Text>
-                              <AutoFocusInput
-                                style={styles.formInput}
-                                placeholder="Full name"
-                                placeholderTextColor={COLORS.muted}
-                                value={profileName}
-                                onChangeText={setProfileName}
-                              />
+                            <View style={[styles.formCard, styles.securityCard]}>
+                              <View style={styles.accountSectionHeader}>
+                                <Ionicons
+                                  name="person-circle-outline"
+                                  size={16}
+                                  color={COLORS.pine}
+                                />
+                                <Text style={styles.formHeaderTitle}>Account</Text>
+                              </View>
+                              <View style={styles.formRow}>
+                                <View style={styles.formField}>
+                                  <AutoFocusInput
+                                    style={styles.formInput}
+                                    placeholder="First name"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={profileNameParts.firstName}
+                                    onChangeText={(value) =>
+                                      setProfileName(
+                                        joinFullNameParts(
+                                          value,
+                                          profileNameParts.lastName,
+                                        ),
+                                      )
+                                    }
+                                  />
+                                </View>
+                                <View style={styles.formField}>
+                                  <AutoFocusInput
+                                    style={styles.formInput}
+                                    placeholder="Last name"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={profileNameParts.lastName}
+                                    onChangeText={(value) =>
+                                      setProfileName(
+                                        joinFullNameParts(
+                                          profileNameParts.firstName,
+                                          value,
+                                        ),
+                                      )
+                                    }
+                                  />
+                                </View>
+                              </View>
 
                               <Text style={styles.formLabel}>Email</Text>
                               <AutoFocusInput
@@ -21167,10 +21783,6 @@ export default function App() {
                                 autoCapitalize="none"
                                 editable={false}
                               />
-                              <Text style={styles.formHint}>
-                                Use Account security below to change email,
-                                password, or phone number.
-                              </Text>
 
                               {accountRole !== "consumer" && (
                                 <>
@@ -21194,18 +21806,8 @@ export default function App() {
                                     Save profile
                                   </Text>
                                 </TouchableOpacity>
-                                <TouchableOpacity
-                                  style={styles.secondaryButton}
-                                  onPress={handleSignOut}
-                                >
-                                  <Text style={styles.secondaryButtonText}>
-                                    Sign out
-                                  </Text>
-                                </TouchableOpacity>
                               </View>
-                            </View>
-
-                            <View style={[styles.formCard, styles.securityCard]}>
+                              <View style={styles.securitySectionDivider} />
                               <View style={styles.securityTitleRow}>
                                 <Ionicons
                                   name="shield-checkmark-outline"
@@ -21214,10 +21816,10 @@ export default function App() {
                                 />
                                 <View style={styles.securityTitleCopy}>
                                   <Text style={styles.formHeaderTitle}>
-                                    Account security
+                                    Security
                                   </Text>
                                   <Text style={styles.securityIntroText}>
-                                    Sensitive updates require your current password.
+                                    Current password required.
                                   </Text>
                                 </View>
                               </View>
@@ -21284,19 +21886,43 @@ export default function App() {
                                   <Text style={styles.formLabel}>
                                     Current password
                                   </Text>
-                                  <AutoFocusInput
-                                    style={styles.formInput}
-                                    placeholder="Enter current password"
-                                    placeholderTextColor={COLORS.muted}
-                                    value={securityCurrentPassword}
-                                    onChangeText={(value) => {
-                                      setSecurityCurrentPassword(value);
-                                      clearSecurityStatusMessage();
-                                    }}
-                                    secureTextEntry
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
-                                  />
+                                  <View style={styles.passwordInputWrapper}>
+                                    <AutoFocusInput
+                                      style={[
+                                        styles.formInput,
+                                        styles.passwordInputWithToggle,
+                                      ]}
+                                      placeholder="Enter current password"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={securityCurrentPassword}
+                                      onChangeText={(value) => {
+                                        setSecurityCurrentPassword(value);
+                                        clearSecurityStatusMessage();
+                                      }}
+                                      secureTextEntry={!showSecurityCurrentPassword}
+                                      autoCapitalize="none"
+                                      autoCorrect={false}
+                                    />
+                                    <TouchableOpacity
+                                      style={styles.passwordToggleButton}
+                                      onPress={() =>
+                                        setShowSecurityCurrentPassword(
+                                          (prev) => !prev,
+                                        )
+                                      }
+                                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                    >
+                                      <Ionicons
+                                        name={
+                                          showSecurityCurrentPassword
+                                            ? "eye-off-outline"
+                                            : "eye-outline"
+                                        }
+                                        size={18}
+                                        color={COLORS.muted}
+                                      />
+                                    </TouchableOpacity>
+                                  </View>
 
                                   {securityActivePanel === "email" ? (
                                     <>
@@ -21391,41 +22017,89 @@ export default function App() {
                                       <Text style={styles.formLabel}>
                                         New password
                                       </Text>
-                                      <AutoFocusInput
-                                        style={styles.formInput}
-                                        placeholder="At least 8 characters"
-                                        placeholderTextColor={COLORS.muted}
-                                        value={securityPasswordDraft}
-                                        onChangeText={(value) => {
-                                          setSecurityPasswordDraft(value);
-                                          clearSecurityStatusMessage();
-                                        }}
-                                        secureTextEntry
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
-                                      />
+                                      <View style={styles.passwordInputWrapper}>
+                                        <AutoFocusInput
+                                          style={[
+                                            styles.formInput,
+                                            styles.passwordInputWithToggle,
+                                          ]}
+                                          placeholder="At least 8 characters"
+                                          placeholderTextColor={COLORS.muted}
+                                          value={securityPasswordDraft}
+                                          onChangeText={(value) => {
+                                            setSecurityPasswordDraft(value);
+                                            clearSecurityStatusMessage();
+                                          }}
+                                          secureTextEntry={!showSecurityPasswordDraft}
+                                          autoCapitalize="none"
+                                          autoCorrect={false}
+                                        />
+                                        <TouchableOpacity
+                                          style={styles.passwordToggleButton}
+                                          onPress={() =>
+                                            setShowSecurityPasswordDraft(
+                                              (prev) => !prev,
+                                            )
+                                          }
+                                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                        >
+                                          <Ionicons
+                                            name={
+                                              showSecurityPasswordDraft
+                                                ? "eye-off-outline"
+                                                : "eye-outline"
+                                            }
+                                            size={18}
+                                            color={COLORS.muted}
+                                          />
+                                        </TouchableOpacity>
+                                      </View>
                                       <Text style={styles.formLabel}>
                                         Confirm new password
                                       </Text>
-                                      <AutoFocusInput
-                                        style={styles.formInput}
-                                        placeholder="Re-enter new password"
-                                        placeholderTextColor={COLORS.muted}
-                                        value={securityPasswordConfirm}
-                                        onChangeText={(value) => {
-                                          setSecurityPasswordConfirm(value);
-                                          clearSecurityStatusMessage();
-                                        }}
-                                        secureTextEntry
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
-                                        returnKeyType="done"
-                                        onSubmitEditing={() => {
-                                          if (!securityStatus.loading) {
-                                            handleSecurityChangePassword();
+                                      <View style={styles.passwordInputWrapper}>
+                                        <AutoFocusInput
+                                          style={[
+                                            styles.formInput,
+                                            styles.passwordInputWithToggle,
+                                          ]}
+                                          placeholder="Re-enter new password"
+                                          placeholderTextColor={COLORS.muted}
+                                          value={securityPasswordConfirm}
+                                          onChangeText={(value) => {
+                                            setSecurityPasswordConfirm(value);
+                                            clearSecurityStatusMessage();
+                                          }}
+                                          secureTextEntry={!showSecurityPasswordConfirm}
+                                          autoCapitalize="none"
+                                          autoCorrect={false}
+                                          returnKeyType="done"
+                                          onSubmitEditing={() => {
+                                            if (!securityStatus.loading) {
+                                              handleSecurityChangePassword();
+                                            }
+                                          }}
+                                        />
+                                        <TouchableOpacity
+                                          style={styles.passwordToggleButton}
+                                          onPress={() =>
+                                            setShowSecurityPasswordConfirm(
+                                              (prev) => !prev,
+                                            )
                                           }
-                                        }}
-                                      />
+                                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                        >
+                                          <Ionicons
+                                            name={
+                                              showSecurityPasswordConfirm
+                                                ? "eye-off-outline"
+                                                : "eye-outline"
+                                            }
+                                            size={18}
+                                            color={COLORS.muted}
+                                          />
+                                        </TouchableOpacity>
+                                      </View>
                                       <TouchableOpacity
                                         style={[
                                           styles.primaryButton,
@@ -21472,10 +22146,6 @@ export default function App() {
                                 />
                                 <Text style={styles.formHeaderTitle}>Support</Text>
                               </View>
-                              <Text style={styles.formHint}>
-                                Need help or want to report a bug? Contact us and
-                                our team will follow up.
-                              </Text>
                               <View style={styles.supportActionsRow}>
                                 <TouchableOpacity
                                   style={[styles.primaryButton, styles.supportActionButton]}
@@ -21500,6 +22170,19 @@ export default function App() {
                               <Text style={styles.supportMetaText}>
                                 {SUPPORT_EMAIL_ADDRESS}
                               </Text>
+                              <TouchableOpacity
+                                style={styles.supportSignOutButton}
+                                onPress={handleSignOut}
+                              >
+                                <Ionicons
+                                  name="log-out-outline"
+                                  size={16}
+                                  color={COLORS.muted}
+                                />
+                                <Text style={styles.supportSignOutText}>
+                                  Sign out
+                                </Text>
+                              </TouchableOpacity>
                             </View>
 
                             {profileMessage && (
@@ -23392,6 +24075,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     marginBottom: 12,
+  },
+  passwordInputWrapper: {
+    position: "relative",
+  },
+  passwordInputWithToggle: {
+    paddingRight: 42,
+  },
+  passwordToggleButton: {
+    position: "absolute",
+    right: 10,
+    top: 8,
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
   },
   authButton: {
     backgroundColor: COLORS.pine,
@@ -26869,6 +27568,17 @@ const styles = StyleSheet.create({
   securityCard: {
     gap: 10,
   },
+  accountSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 2,
+  },
+  securitySectionDivider: {
+    height: 1,
+    backgroundColor: COLORS.sand,
+    marginVertical: 2,
+  },
   securityTitleRow: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -26950,6 +27660,24 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
+  supportSignOutButton: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  supportSignOutText: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
   legalChecklist: {
     marginBottom: 8,
     gap: 8,
@@ -26986,6 +27714,97 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 16,
   },
+  notificationPanelPro: {
+    overflow: "hidden",
+    backgroundColor: "#F8FBFF",
+    borderColor: "#DCE6F3",
+    gap: 10,
+  },
+  notificationGradientAccent: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    right: 0,
+    height: 64,
+  },
+  notificationHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  notificationHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+  },
+  notificationIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(11, 33, 71, 0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(11, 33, 71, 0.16)",
+  },
+  notificationHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  notificationTitleText: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  notificationSubtitleText: {
+    marginTop: 1,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  notificationStatusPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(11, 33, 71, 0.18)",
+    backgroundColor: "rgba(11, 33, 71, 0.08)",
+  },
+  notificationStatusText: {
+    fontSize: 10,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  notificationTagsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  notificationTypePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#D6E0ED",
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  notificationTypePillActive: {
+    borderColor: "rgba(11, 33, 71, 0.24)",
+    backgroundColor: "rgba(11, 33, 71, 0.10)",
+  },
+  notificationTypeText: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  notificationTypeTextActive: {
+    color: COLORS.pine,
+  },
   notificationPanelCompact: {
     paddingVertical: 10,
     gap: 4,
@@ -27010,6 +27829,18 @@ const styles = StyleSheet.create({
     gap: 10,
     borderWidth: 1,
     borderColor: "#E3EAF3",
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  notificationManageButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "#D9E3EF",
     borderRadius: 12,
     backgroundColor: COLORS.white,
     paddingHorizontal: 12,
@@ -27202,6 +28033,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
+  },
+  rewardsDivider: {
+    height: 1,
+    backgroundColor: COLORS.sand,
+    marginVertical: 4,
   },
   notificationToggleHitbox: {
     padding: 2,
