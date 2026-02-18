@@ -189,7 +189,19 @@ begin
   end if;
 
   loop
-    v_code := upper(substr(encode(gen_random_bytes(6), 'hex'), 1, 10));
+    v_code := upper(
+      substr(
+        md5(
+          coalesce(p_user_id::text, '') ||
+          ':' ||
+          clock_timestamp()::text ||
+          ':' ||
+          random()::text
+        ),
+        1,
+        10
+      )
+    );
     begin
       insert into public.referral_codes (user_id, code)
       values (p_user_id, v_code);

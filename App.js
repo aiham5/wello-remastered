@@ -85,7 +85,8 @@ if (__DEV__) {
 }
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: false,
     shouldSetBadge: false,
   }),
@@ -172,8 +173,8 @@ const formatPercentLabel = (value) => {
     ? String(rounded)
     : rounded.toFixed(1).replace(/\.0$/, "");
 };
-const CASHBACK_RATE_PERCENT = 7.5;
-const CASHBACK_BASE_RATE_BPS = 750;
+const DEFAULT_CASHBACK_RATE_BPS = 750;
+const CASHBACK_SETTING_KEY = "consumer_cashback_rate_bps";
 const MIN_CASHOUT_CENTS = 1000;
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
@@ -192,6 +193,7 @@ const STRIPE_CONNECT_REFRESH_URL =
   "https://www.wellopartners.com/stripe/refresh";
 const PRIVACY_POLICY_URL = "https://www.wellopartners.com/privacy";
 const REFERRAL_LANDING_URL = "https://www.wellopartners.com/referral";
+const SUPPORT_EMAIL_ADDRESS = "support@wellopartners.com";
 const OFFER_HONOR_POLICY_VERSION = "2026-02-17";
 const REFERRAL_REWARD_CENTS = 500;
 const REFERRAL_MONTHLY_CAP_CENTS = 50000;
@@ -604,6 +606,9 @@ const mapSupabaseBusiness = (row, index) => {
     isOpen: row.is_open ?? true,
     hours: row.hours || "Hours available upon request",
     phone: row.phone || "",
+    merchantDescriptorAliases: Array.isArray(row.merchant_descriptor_aliases)
+      ? row.merchant_descriptor_aliases.filter(Boolean)
+      : [],
     city: row.city || "",
     state: row.state || "",
     postalCode: row.postal_code || "",
@@ -802,6 +807,24 @@ const formatShortDate = (value) => {
     month: "short",
     day: "numeric",
   });
+};
+
+const maskRecoveryEmail = (value) => {
+  const email = String(value || "").trim();
+  if (!email.includes("@")) return "--";
+  const [localPart, domain] = email.split("@");
+  const localTrimmed = String(localPart || "").trim();
+  if (!localTrimmed) return `***@${domain}`;
+  if (localTrimmed.length <= 2) return `${localTrimmed[0] || "*"}***@${domain}`;
+  return `${localTrimmed.slice(0, 2)}***@${domain}`;
+};
+
+const maskRecoveryPhone = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "--";
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length < 4) return "***";
+  return `***-***-${digits.slice(-4)}`;
 };
 
 const formatReceiptTime = (value) => {
@@ -1026,6 +1049,24 @@ const normalizeTagsInput = (value) =>
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean);
 
+const normalizeMerchantDescriptorAliasesInput = (value) => {
+  const seen = new Set();
+  return String(value || "")
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 25);
+};
+
+const formatMerchantDescriptorAliasesInput = (aliases) =>
+  Array.isArray(aliases) ? aliases.filter(Boolean).join("\n") : "";
+
 const normalizeReferralCode = (value) =>
   String(value || "")
     .trim()
@@ -1065,6 +1106,8 @@ const parseAuthCallbackParams = (url) => {
     accessToken: params.get("access_token") || null,
     refreshToken: params.get("refresh_token") || null,
     flow: params.get("flow") || null,
+    type: params.get("type") || null,
+    tokenHash: params.get("token_hash") || null,
     ref: params.get("ref") || null,
     error:
       params.get("error_description") || params.get("error") || params.get("message") || null,
@@ -2935,6 +2978,8 @@ export default function App() {
   const [businessAddressState, setBusinessAddressState] = useState("");
   const [businessAddressPostal, setBusinessAddressPostal] = useState("");
   const [businessPhone, setBusinessPhone] = useState("");
+  const [businessDescriptorAliasesInput, setBusinessDescriptorAliasesInput] =
+    useState("");
   const [businessHoursStart, setBusinessHoursStart] = useState("");
   const [businessHoursStartMeridiem, setBusinessHoursStartMeridiem] =
     useState("AM");
@@ -2984,6 +3029,8 @@ export default function App() {
   const [securityPhoneDraft, setSecurityPhoneDraft] = useState("");
   const [securityPasswordDraft, setSecurityPasswordDraft] = useState("");
   const [securityPasswordConfirm, setSecurityPasswordConfirm] = useState("");
+  const [securityCurrentPassword, setSecurityCurrentPassword] = useState("");
+  const [securityActivePanel, setSecurityActivePanel] = useState(null);
   const [pendingEmailChange, setPendingEmailChange] = useState("");
   const [securityStatus, setSecurityStatus] = useState({
     loading: false,
@@ -2991,12 +3038,24 @@ export default function App() {
     message: null,
   });
   const [promoCodeInput, setPromoCodeInput] = useState("");
+  const [globalCashbackRateBps, setGlobalCashbackRateBps] = useState(
+    DEFAULT_CASHBACK_RATE_BPS,
+  );
+  const [globalCashbackConfig, setGlobalCashbackConfig] = useState({
+    loading: false,
+    saving: false,
+    error: null,
+    success: null,
+  });
+  const [globalCashbackRateInput, setGlobalCashbackRateInput] = useState(
+    (DEFAULT_CASHBACK_RATE_BPS / 100).toFixed(2),
+  );
   const [promoState, setPromoState] = useState({
     loading: false,
     error: null,
     success: null,
     code: null,
-    cashbackRateBps: CASHBACK_BASE_RATE_BPS,
+    cashbackRateBps: DEFAULT_CASHBACK_RATE_BPS,
   });
   const [referralState, setReferralState] = useState(createInitialReferralState);
   const [pendingReferralCode, setPendingReferralCode] = useState(null);
@@ -3035,6 +3094,13 @@ export default function App() {
   });
   const [notificationPermissionStatus, setNotificationPermissionStatus] =
     useState("undetermined");
+  const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
+  const [passwordResetModalOpen, setPasswordResetModalOpen] = useState(false);
+  const [passwordResetDraft, setPasswordResetDraft] = useState("");
+  const [passwordResetConfirm, setPasswordResetConfirm] = useState("");
+  const [passwordResetBusy, setPasswordResetBusy] = useState(false);
+  const [passwordResetError, setPasswordResetError] = useState(null);
+  const [passwordResetSuccess, setPasswordResetSuccess] = useState(null);
   const [expoPushToken, setExpoPushToken] = useState(null);
   const [tokenError, setTokenError] = useState(null);
   const geocodeCacheRef = useRef(new Map());
@@ -3101,6 +3167,13 @@ export default function App() {
   const [expandedAdminOffers, setExpandedAdminOffers] = useState({});
   const [expandedAdminBusinesses, setExpandedAdminBusinesses] = useState({});
   const [adminWorkspaceTab, setAdminWorkspaceTab] = useState("queue");
+  const [accountRecoveryQuery, setAccountRecoveryQuery] = useState("");
+  const [accountRecoveryResults, setAccountRecoveryResults] = useState([]);
+  const [accountRecoveryStatus, setAccountRecoveryStatus] = useState({
+    loading: false,
+    error: null,
+    queried: false,
+  });
   const [armedQueueActions, setArmedQueueActions] = useState({});
   const [armedManagementOfferDeletes, setArmedManagementOfferDeletes] =
     useState({});
@@ -3159,6 +3232,7 @@ export default function App() {
     offer: "",
     hours: "",
     tags: "",
+    merchantDescriptorAliases: "",
     isOpen: true,
   });
   const [createBusinessForm, setCreateBusinessForm] = useState({
@@ -3173,6 +3247,7 @@ export default function App() {
     offer: "",
     phone: "",
     tags: "",
+    merchantDescriptorAliases: "",
   });
   const [createBusinessCategoryMenuOpen, setCreateBusinessCategoryMenuOpen] =
     useState(false);
@@ -4008,6 +4083,8 @@ export default function App() {
     setProfileCompany(profileCompanyValue);
     setSecurityEmailDraft(profileEmailValue || email || "");
     setSecurityPhoneDraft(profilePhoneValue || "");
+    setSecurityCurrentPassword("");
+    setSecurityActivePanel(null);
     setPendingEmailChange("");
     setSecurityStatus({ loading: false, type: null, message: null });
     setAuthBusinessDraft(metadataDraft);
@@ -4015,12 +4092,134 @@ export default function App() {
     return nextRole;
   }, [upsertProfileWithRetry, hasActiveSessionForUser]);
 
+  const loadGlobalCashbackRate = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        return DEFAULT_CASHBACK_RATE_BPS;
+      }
+      if (!silent) {
+        setGlobalCashbackConfig((prev) => ({
+          ...prev,
+          loading: true,
+          error: null,
+          success: null,
+        }));
+      }
+      const { data, error } = await supabase
+        .from("app_settings")
+        .select("value_json")
+        .eq("key", CASHBACK_SETTING_KEY)
+        .maybeSingle();
+      if (error) {
+        if (!silent) {
+          setGlobalCashbackConfig((prev) => ({
+            ...prev,
+            loading: false,
+            error: error.message || "Unable to load cashback setting.",
+            success: null,
+          }));
+        }
+        return DEFAULT_CASHBACK_RATE_BPS;
+      }
+      const rawBps =
+        Number(data?.value_json?.bps) ||
+        Number(data?.value_json?.cashback_rate_bps) ||
+        DEFAULT_CASHBACK_RATE_BPS;
+      const nextBps = Number.isFinite(rawBps) && rawBps > 0
+        ? Math.round(rawBps)
+        : DEFAULT_CASHBACK_RATE_BPS;
+      setGlobalCashbackRateBps(nextBps);
+      setGlobalCashbackRateInput((nextBps / 100).toFixed(2));
+      setPromoState((prev) =>
+        prev.code ? prev : { ...prev, cashbackRateBps: nextBps },
+      );
+      if (!silent) {
+        setGlobalCashbackConfig((prev) => ({
+          ...prev,
+          loading: false,
+          error: null,
+          success: null,
+        }));
+      }
+      return nextBps;
+    },
+    [],
+  );
+
+  const handleSaveGlobalCashbackRate = useCallback(async () => {
+    if (!isAdmin) return;
+    if (!ensureSupabaseReady((message) =>
+      setGlobalCashbackConfig((prev) => ({
+        ...prev,
+        saving: false,
+        error: message,
+        success: null,
+      }))
+    )) {
+      return;
+    }
+    const normalized = Number(String(globalCashbackRateInput || "").trim());
+    if (!Number.isFinite(normalized)) {
+      setGlobalCashbackConfig((prev) => ({
+        ...prev,
+        saving: false,
+        error: "Enter a valid cashback percent.",
+        success: null,
+      }));
+      return;
+    }
+    if (normalized < 0.1 || normalized > 50) {
+      setGlobalCashbackConfig((prev) => ({
+        ...prev,
+        saving: false,
+        error: "Cashback percent must be between 0.1% and 50%.",
+        success: null,
+      }));
+      return;
+    }
+    const nextBps = Math.round(normalized * 100);
+    setGlobalCashbackConfig((prev) => ({
+      ...prev,
+      saving: true,
+      error: null,
+      success: null,
+    }));
+    const { error } = await supabase.from("app_settings").upsert(
+      {
+        key: CASHBACK_SETTING_KEY,
+        value_json: { bps: nextBps },
+        updated_by: authUserId || null,
+      },
+      { onConflict: "key" },
+    );
+    if (error) {
+      setGlobalCashbackConfig((prev) => ({
+        ...prev,
+        saving: false,
+        error: error.message || "Unable to save cashback setting.",
+        success: null,
+      }));
+      return;
+    }
+    setGlobalCashbackRateBps(nextBps);
+    setGlobalCashbackRateInput((nextBps / 100).toFixed(2));
+    setPromoState((prev) =>
+      prev.code ? prev : { ...prev, cashbackRateBps: nextBps },
+    );
+    setGlobalCashbackConfig((prev) => ({
+      ...prev,
+      saving: false,
+      error: null,
+      success: `Global cashback updated to ${(nextBps / 100).toFixed(2)}%.`,
+    }));
+  }, [authUserId, ensureSupabaseReady, globalCashbackRateInput, isAdmin]);
+
   const cashbackRatePercent = useMemo(() => {
-    if (accountRole !== "consumer") return CASHBACK_RATE_PERCENT;
+    if (accountRole !== "consumer") return globalCashbackRateBps / 100;
     const bps = Number(promoState.cashbackRateBps);
-    if (!Number.isFinite(bps) || bps <= 0) return CASHBACK_RATE_PERCENT;
+    if (!Number.isFinite(bps) || bps <= 0) return globalCashbackRateBps / 100;
     return Math.round((bps / 100) * 100) / 100;
-  }, [accountRole, promoState.cashbackRateBps]);
+  }, [accountRole, globalCashbackRateBps, promoState.cashbackRateBps]);
 
   const callAuthedEdgeFunction = useCallback(
     async (functionName, payload, options = {}) => {
@@ -4111,6 +4310,10 @@ export default function App() {
     [],
   );
 
+  useEffect(() => {
+    loadGlobalCashbackRate({ silent: true }).catch(() => {});
+  }, [loadGlobalCashbackRate]);
+
   const loadPromoStatus = useCallback(async () => {
     if (accountRole !== "consumer") {
       setPromoState((prev) => ({
@@ -4119,7 +4322,7 @@ export default function App() {
         error: null,
         success: null,
         code: null,
-        cashbackRateBps: CASHBACK_BASE_RATE_BPS,
+        cashbackRateBps: globalCashbackRateBps,
       }));
       return;
     }
@@ -4130,7 +4333,7 @@ export default function App() {
         error: null,
         success: null,
         code: null,
-        cashbackRateBps: CASHBACK_BASE_RATE_BPS,
+        cashbackRateBps: globalCashbackRateBps,
       }));
       return;
     }
@@ -4145,7 +4348,7 @@ export default function App() {
       }));
       return;
     }
-    const rateBps = Number(data?.cashbackRateBps) || CASHBACK_BASE_RATE_BPS;
+    const rateBps = Number(data?.cashbackRateBps) || globalCashbackRateBps;
     const code = data?.promo?.code ? String(data.promo.code) : null;
     setPromoState((prev) => ({
       ...prev,
@@ -4155,7 +4358,7 @@ export default function App() {
       code,
       cashbackRateBps: rateBps,
     }));
-  }, [accountRole, isSignedIn, callAuthedEdgeFunction]);
+  }, [accountRole, isSignedIn, callAuthedEdgeFunction, globalCashbackRateBps]);
 
   const loadReferralStatus = useCallback(
     async ({ silent = false } = {}) => {
@@ -4369,7 +4572,7 @@ export default function App() {
     const nextRateBps =
       Number(data?.promo?.cashbackRateBps) ||
       Number(data?.cashbackRateBps) ||
-      CASHBACK_BASE_RATE_BPS;
+      globalCashbackRateBps;
     const nextCode = data?.promo?.code ? String(data.promo.code) : null;
     setPromoState((prev) => ({
       ...prev,
@@ -4384,7 +4587,13 @@ export default function App() {
     if (!nextCode) {
       setPromoCodeInput("");
     }
-  }, [accountRole, isSignedIn, promoCodeInput, callAuthedEdgeFunction]);
+  }, [
+    accountRole,
+    isSignedIn,
+    promoCodeInput,
+    callAuthedEdgeFunction,
+    globalCashbackRateBps,
+  ]);
 
   const handleClearPromoCode = useCallback(async () => {
     setPromoCodeInput("");
@@ -4410,9 +4619,9 @@ export default function App() {
       error: null,
       success: "Promo removed.",
       code: null,
-      cashbackRateBps: CASHBACK_BASE_RATE_BPS,
+      cashbackRateBps: globalCashbackRateBps,
     }));
-  }, [callAuthedEdgeFunction]);
+  }, [callAuthedEdgeFunction, globalCashbackRateBps]);
 
   useEffect(() => {
     let isMounted = true;
@@ -4453,8 +4662,17 @@ export default function App() {
     setSecurityPhoneDraft("");
     setSecurityPasswordDraft("");
     setSecurityPasswordConfirm("");
+    setSecurityCurrentPassword("");
+    setSecurityActivePanel(null);
     setPendingEmailChange("");
     setSecurityStatus({ loading: false, type: null, message: null });
+    setNotificationSettingsOpen(false);
+    setPasswordResetModalOpen(false);
+    setPasswordResetDraft("");
+    setPasswordResetConfirm("");
+    setPasswordResetBusy(false);
+    setPasswordResetError(null);
+    setPasswordResetSuccess(null);
     setAuthBusinessDraft(null);
     setOwnerBusinessId(null);
     setReferralState(createInitialReferralState());
@@ -4504,7 +4722,7 @@ export default function App() {
               error: null,
               success: null,
               code: null,
-              cashbackRateBps: CASHBACK_BASE_RATE_BPS,
+              cashbackRateBps: DEFAULT_CASHBACK_RATE_BPS,
             }));
             setReferralState(createInitialReferralState());
           }
@@ -4523,9 +4741,17 @@ export default function App() {
     loadSession();
     const refreshResult = refreshSupabaseClient();
     const authListener = refreshResult.ok
-      ? supabase.auth.onAuthStateChange(async (_event, session) => {
+      ? supabase.auth.onAuthStateChange(async (event, session) => {
           if (!isMounted) return;
           if (session?.user) {
+            if (event === "PASSWORD_RECOVERY") {
+              setPasswordResetDraft("");
+              setPasswordResetConfirm("");
+              setPasswordResetError(null);
+              setPasswordResetSuccess(null);
+              setPasswordResetModalOpen(true);
+              setActiveTab("profile");
+            }
             const nextRole = await hydrateProfile(session.user);
             const stillActive = await hasActiveSessionForUser(session.user.id);
             if (!isMounted || !stillActive) return;
@@ -4540,7 +4766,7 @@ export default function App() {
                 error: null,
                 success: null,
                 code: null,
-                cashbackRateBps: CASHBACK_BASE_RATE_BPS,
+                cashbackRateBps: DEFAULT_CASHBACK_RATE_BPS,
               }));
               setReferralState(createInitialReferralState());
             }
@@ -4726,8 +4952,8 @@ export default function App() {
     [resolvedOwnerBusiness?.commissionRateCents],
   );
   const ownerDefaultCashbackPercent = useMemo(
-    () => ownerCommissionRatePercent / 2,
-    [ownerCommissionRatePercent],
+    () => globalCashbackRateBps / 100,
+    [globalCashbackRateBps],
   );
 
   const resolveStripeBusiness = useCallback(async () => {
@@ -4750,6 +4976,7 @@ export default function App() {
           "offer_highlight",
           "hours",
           "tags",
+          "merchant_descriptor_aliases",
           "latitude",
           "longitude",
           "qr_code",
@@ -5769,6 +5996,7 @@ export default function App() {
               "offer_highlight",
               "hours",
               "tags",
+              "merchant_descriptor_aliases",
               "latitude",
               "longitude",
               "qr_code",
@@ -6536,8 +6764,21 @@ export default function App() {
           .filter(Boolean)
       : [];
     const nextTags = normalizeTagsInput(formData.tags);
-    return currentTags.join(",") !== nextTags.join(",");
-  }, [ownerBusiness, formData.tags]);
+    const currentDescriptorAliases = Array.isArray(
+      ownerBusiness.merchantDescriptorAliases,
+    )
+      ? ownerBusiness.merchantDescriptorAliases
+          .map((alias) => String(alias || "").trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+    const nextDescriptorAliases = normalizeMerchantDescriptorAliasesInput(
+      formData.merchantDescriptorAliases,
+    ).map((alias) => alias.toLowerCase());
+    return (
+      currentTags.join(",") !== nextTags.join(",") ||
+      currentDescriptorAliases.join(",") !== nextDescriptorAliases.join(",")
+    );
+  }, [ownerBusiness, formData.tags, formData.merchantDescriptorAliases]);
   const selectedBusinessTags = useMemo(
     () => new Set(normalizeTagsInput(formData.tags)),
     [formData.tags],
@@ -6570,6 +6811,14 @@ export default function App() {
   const isStaff = isAdmin || isSupervisor;
   const showHistoryTab = !isOwner && !isStaff;
   const showCashoutTab = showHistoryTab;
+  const enabledNotificationCount = useMemo(
+    () =>
+      Object.values(notificationPreferences).reduce(
+        (count, value) => (value ? count + 1 : count),
+        0,
+      ),
+    [notificationPreferences],
+  );
   const roleLabel = isAdmin
     ? "Admin"
     : isSupervisor
@@ -6737,6 +6986,18 @@ export default function App() {
     if (activeTab === "admin" && adminWorkspaceTab === "queue") return;
     setArmedQueueActions({});
   }, [activeTab, adminWorkspaceTab]);
+  useEffect(() => {
+    if (activeTab === "admin" && adminWorkspaceTab === "management") return;
+    setAccountRecoveryStatus({ loading: false, error: null, queried: false });
+    setAccountRecoveryQuery("");
+    setAccountRecoveryResults([]);
+  }, [activeTab, adminWorkspaceTab]);
+  useEffect(() => {
+    if (!(activeTab === "admin" && adminWorkspaceTab === "management" && isAdmin)) {
+      return;
+    }
+    loadGlobalCashbackRate().catch(() => {});
+  }, [activeTab, adminWorkspaceTab, isAdmin, loadGlobalCashbackRate]);
 
   const reviewedBusinessIds = useMemo(() => {
     const ids = new Set();
@@ -7070,6 +7331,9 @@ export default function App() {
     offer: business?.offer || "",
     hours: business?.hours || "",
     tags: business?.tags?.join(", ") || "",
+    merchantDescriptorAliases: formatMerchantDescriptorAliasesInput(
+      business?.merchantDescriptorAliases,
+    ),
     isOpen: business?.isOpen ?? true,
   });
 
@@ -7150,6 +7414,11 @@ export default function App() {
       state: prev.state || authBusinessDraft.state || "",
       postalCode: prev.postalCode || authBusinessDraft.postalCode || "",
       phone: prev.phone || authBusinessDraft.phone || "",
+      merchantDescriptorAliases:
+        prev.merchantDescriptorAliases ||
+        formatMerchantDescriptorAliasesInput(
+          authBusinessDraft.merchantDescriptorAliases,
+        ),
     }));
     if (!createHoursStart && authBusinessDraft.hours) {
       const parts = authBusinessDraft.hours.split(" - ");
@@ -7286,9 +7555,9 @@ export default function App() {
       if (!ensureSupabaseReady(setSignInError)) return;
       setGoogleAuthState("finishing");
 
-      const { code, accessToken, refreshToken, flow, ref, error } =
+      const { code, accessToken, refreshToken, flow, type, tokenHash, ref, error } =
         parseAuthCallbackParams(url);
-      const callbackFlow = String(flow || "").toLowerCase();
+      const callbackFlow = String(flow || type || "").toLowerCase();
       const referralCode = normalizeReferralCode(ref);
       const hasOAuthPayload =
         Boolean(error) ||
@@ -7296,6 +7565,44 @@ export default function App() {
         Boolean(accessToken) ||
         Boolean(refreshToken);
       if (!hasOAuthPayload) {
+        if (callbackFlow === "recovery" && tokenHash) {
+          try {
+            setAuthBusy(true);
+            if (typeof supabase.auth.verifyOtp !== "function") {
+              setSignInError("Password reset is unavailable in this app version.");
+              setAuthView("forgot");
+              return;
+            }
+            const { error: verifyError } = await supabase.auth.verifyOtp({
+              type: "recovery",
+              token_hash: tokenHash,
+            });
+            if (verifyError) {
+              setSignInError(
+                verifyError.message || "This reset link is invalid or expired.",
+              );
+              setAuthView("forgot");
+              return;
+            }
+            setPasswordResetDraft("");
+            setPasswordResetConfirm("");
+            setPasswordResetError(null);
+            setPasswordResetSuccess(null);
+            setPasswordResetModalOpen(true);
+            setActiveTab("profile");
+            setSignInNotice("Set your new password to finish resetting your account.");
+          } catch (verifyError) {
+            setSignInError(
+              String(verifyError?.message || "") ||
+                "This reset link is invalid or expired.",
+            );
+            setAuthView("forgot");
+          } finally {
+            setAuthBusy(false);
+            setGoogleAuthState("idle");
+          }
+          return;
+        }
         if (callbackFlow === "referral") {
           if (!referralCode || !/^[A-Z0-9]{6,32}$/.test(referralCode)) {
             setSignInError("Referral link is invalid.");
@@ -7413,9 +7720,18 @@ export default function App() {
             error: null,
             success: null,
             code: null,
-            cashbackRateBps: CASHBACK_BASE_RATE_BPS,
+            cashbackRateBps: DEFAULT_CASHBACK_RATE_BPS,
           }));
           setReferralState(createInitialReferralState());
+        }
+        if (callbackFlow === "recovery") {
+          setPasswordResetDraft("");
+          setPasswordResetConfirm("");
+          setPasswordResetError(null);
+          setPasswordResetSuccess(null);
+          setPasswordResetModalOpen(true);
+          setActiveTab("profile");
+          setSignInNotice("Set your new password to finish resetting your account.");
         }
       } catch (callbackError) {
         setSignInError(
@@ -7706,6 +8022,8 @@ export default function App() {
       setSecurityPhoneDraft("");
       setSecurityPasswordDraft("");
       setSecurityPasswordConfirm("");
+      setSecurityCurrentPassword("");
+      setSecurityActivePanel(null);
       setPendingEmailChange("");
       setSecurityStatus({ loading: false, type: null, message: null });
       setAccountRole("consumer");
@@ -7769,6 +8087,143 @@ export default function App() {
     }
   };
 
+  const handleForgotEmailHelp = useCallback(() => {
+    const appVersion = String(
+      Constants.expoConfig?.version || Constants.nativeAppVersion || "unknown",
+    );
+    const deviceLabel = [
+      Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "",
+      Device.modelName || "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const typedEmail = String(signInEmail || "").trim();
+    const body = [
+      "Hi Wello Support,",
+      "",
+      "I can't remember the email address for my account and need help recovering access.",
+      "",
+      "Recovery details (fill in what you know)",
+      "- Full name on account: ",
+      "- Phone number on account: ",
+      `- Possible email(s): ${typedEmail || ""}`,
+      "- Approx account signup date (month/year): ",
+      "- Last time you used the app (approx): ",
+      "- Last business redeemed (if known): ",
+      `- App version: ${appVersion}`,
+      `- Device: ${deviceLabel || "Unknown device"}`,
+      "",
+      "Please reply with next steps.",
+      "",
+      "Thank you,",
+    ].join("\n");
+
+    void openSupportEmail({
+      subject: "Wello account recovery (forgot email)",
+      body,
+    });
+  }, [openSupportEmail, signInEmail]);
+
+  const handleCompletePasswordReset = useCallback(async () => {
+    const nextPassword = String(passwordResetDraft || "");
+    const confirmPassword = String(passwordResetConfirm || "");
+
+    if (nextPassword.length < 8) {
+      setPasswordResetError("Use at least 8 characters for your new password.");
+      return;
+    }
+    if (nextPassword !== confirmPassword) {
+      setPasswordResetError("Passwords do not match.");
+      return;
+    }
+    if (!ensureSupabaseReady(setPasswordResetError)) return;
+
+    setPasswordResetBusy(true);
+    setPasswordResetError(null);
+    setPasswordResetSuccess(null);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: nextPassword });
+      if (error) {
+        setPasswordResetError(error.message || "Unable to update password.");
+        return;
+      }
+      setPasswordResetSuccess("Password updated successfully.");
+      setSignInNotice("Password reset complete. You can now sign in normally.");
+      setTimeout(() => {
+        setPasswordResetModalOpen(false);
+        setPasswordResetDraft("");
+        setPasswordResetConfirm("");
+        setPasswordResetError(null);
+        setPasswordResetSuccess(null);
+      }, 700);
+    } catch (error) {
+      setPasswordResetError(
+        String(error?.message || "") || "Unable to update password.",
+      );
+    } finally {
+      setPasswordResetBusy(false);
+    }
+  }, [passwordResetConfirm, passwordResetDraft, ensureSupabaseReady]);
+
+  const clearSecurityStatusMessage = useCallback(() => {
+    setSecurityStatus((prev) =>
+      prev.message
+        ? {
+            loading: false,
+            type: null,
+            message: null,
+          }
+        : prev,
+    );
+  }, []);
+
+  const setActiveSecurityPanel = useCallback(
+    (panelKey) => {
+      setSecurityActivePanel((prev) => (prev === panelKey ? null : panelKey));
+      clearSecurityStatusMessage();
+    },
+    [clearSecurityStatusMessage],
+  );
+
+  const verifyCurrentPasswordForSecurity = useCallback(async () => {
+    const email = String(profileEmail || authEmail || "")
+      .trim()
+      .toLowerCase();
+    const currentPassword = String(securityCurrentPassword || "");
+    if (!email) {
+      return {
+        ok: false,
+        message: "Account email is missing. Please sign in again.",
+      };
+    }
+    if (!currentPassword) {
+      return {
+        ok: false,
+        message: "Enter your current password to continue.",
+      };
+    }
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password: currentPassword,
+    });
+    if (error) {
+      const rawMessage = String(error.message || "");
+      const normalized = rawMessage.toLowerCase();
+      if (normalized.includes("invalid login credentials")) {
+        return {
+          ok: false,
+          message:
+            "Current password is incorrect. If you use Google sign-in, set a password first.",
+        };
+      }
+      return {
+        ok: false,
+        message: rawMessage || "We couldn't verify your identity.",
+      };
+    }
+    return { ok: true };
+  }, [authEmail, profileEmail, securityCurrentPassword]);
+
   const handleSecurityChangePassword = async () => {
     if (!isSignedIn || !authUserId) {
       setSecurityStatus({
@@ -7803,6 +8258,15 @@ export default function App() {
     }
     setSecurityStatus({ loading: true, type: null, message: null });
     try {
+      const verification = await verifyCurrentPasswordForSecurity();
+      if (!verification.ok) {
+        setSecurityStatus({
+          loading: false,
+          type: "error",
+          message: verification.message,
+        });
+        return;
+      }
       const { error } = await supabase.auth.updateUser({
         password: nextPassword,
       });
@@ -7814,8 +8278,10 @@ export default function App() {
         });
         return;
       }
+      setSecurityCurrentPassword("");
       setSecurityPasswordDraft("");
       setSecurityPasswordConfirm("");
+      setSecurityActivePanel(null);
       setSecurityStatus({
         loading: false,
         type: "success",
@@ -7867,6 +8333,15 @@ export default function App() {
     }
     setSecurityStatus({ loading: true, type: null, message: null });
     try {
+      const verification = await verifyCurrentPasswordForSecurity();
+      if (!verification.ok) {
+        setSecurityStatus({
+          loading: false,
+          type: "error",
+          message: verification.message,
+        });
+        return;
+      }
       const { error } = await supabase.auth.updateUser(
         { email: nextEmail },
         { emailRedirectTo: GOOGLE_AUTH_REDIRECT_URL },
@@ -7880,6 +8355,9 @@ export default function App() {
         return;
       }
       setPendingEmailChange(nextEmail);
+      setSecurityCurrentPassword("");
+      setSecurityEmailDraft("");
+      setSecurityActivePanel(null);
       setSecurityStatus({
         loading: false,
         type: "success",
@@ -7910,8 +8388,34 @@ export default function App() {
       return;
     }
     const nextPhone = String(securityPhoneDraft || "").trim();
+    const currentPhone = String(profilePhone || "").trim();
+    if (nextPhone && !/^[0-9+()\-\s.]{7,20}$/.test(nextPhone)) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: "Enter a valid phone number.",
+      });
+      return;
+    }
+    if (nextPhone === currentPhone) {
+      setSecurityStatus({
+        loading: false,
+        type: "error",
+        message: "Enter a different phone number.",
+      });
+      return;
+    }
     setSecurityStatus({ loading: true, type: null, message: null });
     try {
+      const verification = await verifyCurrentPasswordForSecurity();
+      if (!verification.ok) {
+        setSecurityStatus({
+          loading: false,
+          type: "error",
+          message: verification.message,
+        });
+        return;
+      }
       const payload = {
         id: authUserId,
         phone: nextPhone || null,
@@ -7934,6 +8438,9 @@ export default function App() {
       await supabase.auth
         .updateUser({ data: { phone: nextPhone || null } })
         .catch(() => null);
+      setSecurityCurrentPassword("");
+      setSecurityPhoneDraft(nextPhone);
+      setSecurityActivePanel(null);
       setSecurityStatus({
         loading: false,
         type: "success",
@@ -8114,6 +8621,9 @@ export default function App() {
         state: businessAddressState.trim(),
         postalCode: businessAddressPostal.trim(),
         addressCoords: signupCoords,
+        merchantDescriptorAliases: normalizeMerchantDescriptorAliasesInput(
+          businessDescriptorAliasesInput,
+        ),
       };
       const { data, error: signUpError } = await supabase.auth.signUp({
         email,
@@ -8175,6 +8685,10 @@ export default function App() {
           state: businessAddressState.trim() || null,
           postal_code: businessAddressPostal.trim() || null,
           phone: businessPhone.trim() || null,
+          merchant_descriptor_aliases:
+            normalizeMerchantDescriptorAliasesInput(
+              businessDescriptorAliasesInput,
+            ),
           category_key: categorySelection.categoryKey,
           category_label: categorySelection.categoryLabel,
           hours: hoursValue,
@@ -8203,6 +8717,7 @@ export default function App() {
             "offer_highlight",
             "hours",
             "tags",
+            "merchant_descriptor_aliases",
             "latitude",
             "longitude",
             "qr_code",
@@ -8244,6 +8759,7 @@ export default function App() {
       setBusinessAddressState("");
       setBusinessAddressPostal("");
       setBusinessPhone("");
+      setBusinessDescriptorAliasesInput("");
       setBusinessCategoryKey("restaurant");
       setBusinessCategoryCustomLabel("");
       setBusinessCategoryMenuOpen(false);
@@ -8311,6 +8827,88 @@ export default function App() {
     }
   };
 
+  const openSupportEmail = useCallback(
+    async ({ subject, body }) => {
+      const mailtoUrl = `mailto:${SUPPORT_EMAIL_ADDRESS}?subject=${encodeURIComponent(
+        subject || "Wello support",
+      )}&body=${encodeURIComponent(body || "")}`;
+      try {
+        await Linking.openURL(mailtoUrl);
+      } catch (error) {
+        await Clipboard.setStringAsync(SUPPORT_EMAIL_ADDRESS).catch(() => null);
+        showAppDialog({
+          title: "Email app unavailable",
+          message: `We could not open your email app. Please email ${SUPPORT_EMAIL_ADDRESS}. We copied the address for you.`,
+          options: [{ label: "OK", variant: "primary" }],
+        });
+      }
+    },
+    [showAppDialog],
+  );
+
+  const handleContactSupport = useCallback(() => {
+    const appVersion = String(
+      Constants.expoConfig?.version || Constants.nativeAppVersion || "unknown",
+    );
+    const accountName = String(profileName || "").trim();
+    const accountEmail = String(profileEmail || authEmail || "").trim();
+    const body = [
+      "Hi Wello Support,",
+      "",
+      "I need help with:",
+      "",
+      "",
+      "Account details",
+      `- Name: ${accountName || "Not provided"}`,
+      `- Email: ${accountEmail || "Not provided"}`,
+      `- App version: ${appVersion}`,
+      "",
+      "Thank you,",
+    ].join("\n");
+
+    void openSupportEmail({
+      subject: "Wello support request",
+      body,
+    });
+  }, [authEmail, openSupportEmail, profileEmail, profileName]);
+
+  const handleReportBug = useCallback(() => {
+    const appVersion = String(
+      Constants.expoConfig?.version || Constants.nativeAppVersion || "unknown",
+    );
+    const accountName = String(profileName || "").trim();
+    const accountEmail = String(profileEmail || authEmail || "").trim();
+    const body = [
+      "Hi Wello Team,",
+      "",
+      "I found a bug.",
+      "",
+      "What happened:",
+      "",
+      "",
+      "Steps to reproduce:",
+      "1.",
+      "2.",
+      "3.",
+      "",
+      "Expected result:",
+      "",
+      "",
+      "Actual result:",
+      "",
+      "",
+      "Account details",
+      `- Name: ${accountName || "Not provided"}`,
+      `- Email: ${accountEmail || "Not provided"}`,
+      `- App version: ${appVersion}`,
+    ].join("\n");
+
+    void openSupportEmail({
+      subject: "Wello bug report",
+      body,
+    });
+  }, [authEmail, openSupportEmail, profileEmail, profileName]);
+
   const handleSignOut = () => {
     void forceSignOut();
     setIsSignedIn(false);
@@ -8330,6 +8928,8 @@ export default function App() {
     setSecurityPhoneDraft("");
     setSecurityPasswordDraft("");
     setSecurityPasswordConfirm("");
+    setSecurityCurrentPassword("");
+    setSecurityActivePanel(null);
     setPendingEmailChange("");
     setSecurityStatus({ loading: false, type: null, message: null });
     viewedOfferIdsRef.current = new Set();
@@ -8347,6 +8947,7 @@ export default function App() {
     setBusinessAddressState("");
     setBusinessAddressPostal("");
     setBusinessPhone("");
+    setBusinessDescriptorAliasesInput("");
     setBusinessCategoryKey("restaurant");
     setBusinessCategoryCustomLabel("");
     setBusinessCategoryMenuOpen(false);
@@ -8370,6 +8971,7 @@ export default function App() {
       offer: "",
       phone: "",
       tags: "",
+      merchantDescriptorAliases: "",
     });
     setCreateBusinessCategoryMenuOpen(false);
     setCreateBusinessError(null);
@@ -9195,11 +9797,15 @@ export default function App() {
   const handleSaveTags = async () => {
     if (!ownerBusiness || !tagsDirty) return;
     const tagList = normalizeTagsInput(formData.tags);
+    const merchantDescriptorAliases = normalizeMerchantDescriptorAliasesInput(
+      formData.merchantDescriptorAliases,
+    );
     const nextTags = tagList.length ? tagList : [];
     setTagSaveStatus({ saving: true, error: null, success: null });
     const updatedBusiness = {
       ...ownerBusiness,
       tags: nextTags,
+      merchantDescriptorAliases,
     };
 
     if (
@@ -9215,7 +9821,7 @@ export default function App() {
       setTagSaveStatus({
         saving: false,
         error: null,
-        success: "Tags saved.",
+        success: "Saved.",
       });
       return;
     }
@@ -9223,7 +9829,10 @@ export default function App() {
     try {
       const { data, error } = await supabase
         .from("businesses")
-        .update({ tags: nextTags })
+        .update({
+          tags: nextTags,
+          merchant_descriptor_aliases: merchantDescriptorAliases,
+        })
         .eq("id", ownerBusiness.id)
         .select(
           [
@@ -9240,6 +9849,7 @@ export default function App() {
             "offer_highlight",
             "hours",
             "tags",
+            "merchant_descriptor_aliases",
             "latitude",
             "longitude",
             "qr_code",
@@ -9279,7 +9889,7 @@ export default function App() {
       setTagSaveStatus({
         saving: false,
         error: null,
-        success: "Tags saved.",
+        success: "Saved.",
       });
     } catch (error) {
       setTagSaveStatus({
@@ -9302,6 +9912,9 @@ export default function App() {
     setFormMessage(null);
 
     const tagList = normalizeTagsInput(formData.tags);
+    const merchantDescriptorAliases = normalizeMerchantDescriptorAliasesInput(
+      formData.merchantDescriptorAliases,
+    );
     const trimmedName = formData.name.trim();
     const trimmedAddress = formData.address.trim();
     const trimmedCity = formData.city.trim();
@@ -9348,6 +9961,7 @@ export default function App() {
       categoryKey: nextCategoryKey,
       offer: ownerBusiness.offer,
       tags: tagList.length ? tagList : [],
+      merchantDescriptorAliases,
       isOpen: formData.isOpen,
       hours: formData.hours.trim() || ownerBusiness.hours,
       coordinate: hasPendingEdits
@@ -9411,6 +10025,7 @@ export default function App() {
 
       const updatePayload = {
         tags: tagList.length ? tagList : [],
+        merchant_descriptor_aliases: merchantDescriptorAliases,
         hours: formData.hours.trim() || ownerBusiness.hours || null,
         is_open: formData.isOpen,
       };
@@ -9449,6 +10064,7 @@ export default function App() {
             "offer_highlight",
             "hours",
             "tags",
+            "merchant_descriptor_aliases",
             "latitude",
             "longitude",
             "qr_code",
@@ -9533,6 +10149,7 @@ export default function App() {
           "offer_highlight",
           "hours",
           "tags",
+          "merchant_descriptor_aliases",
           "latitude",
           "longitude",
           "qr_code",
@@ -9636,6 +10253,7 @@ export default function App() {
           "offer_highlight",
           "hours",
           "tags",
+          "merchant_descriptor_aliases",
           "latitude",
           "longitude",
           "qr_code",
@@ -9770,6 +10388,7 @@ export default function App() {
           "offer_highlight",
           "hours",
           "tags",
+          "merchant_descriptor_aliases",
           "latitude",
           "longitude",
           "qr_code",
@@ -12679,6 +13298,88 @@ export default function App() {
     setProfileStatus({ loading: false, error: null });
   }, []);
 
+  const handleAccountRecoveryLookup = useCallback(async () => {
+    const query = String(accountRecoveryQuery || "").trim();
+    if (query.length < 2) {
+      setAccountRecoveryStatus({
+        loading: false,
+        error: "Enter at least 2 characters to search.",
+        queried: false,
+      });
+      setAccountRecoveryResults([]);
+      return;
+    }
+    if (
+      !ensureSupabaseReady((message) =>
+        setAccountRecoveryStatus({
+          loading: false,
+          error: message,
+          queried: false,
+        }),
+      )
+    ) {
+      return;
+    }
+    setAccountRecoveryStatus({
+      loading: true,
+      error: null,
+      queried: true,
+    });
+    setAccountRecoveryResults([]);
+    const profileSelect = "id, full_name, email, phone, role, created_at";
+    const [emailRes, nameRes, phoneRes] = await Promise.all([
+      supabase
+        .from("profiles")
+        .select(profileSelect)
+        .ilike("email", `%${query}%`)
+        .order("created_at", { ascending: false })
+        .limit(15),
+      supabase
+        .from("profiles")
+        .select(profileSelect)
+        .ilike("full_name", `%${query}%`)
+        .order("created_at", { ascending: false })
+        .limit(15),
+      supabase
+        .from("profiles")
+        .select(profileSelect)
+        .ilike("phone", `%${query}%`)
+        .order("created_at", { ascending: false })
+        .limit(15),
+    ]);
+    const firstError = emailRes.error || nameRes.error || phoneRes.error;
+    if (firstError) {
+      setAccountRecoveryStatus({
+        loading: false,
+        error: firstError.message || "Unable to search profiles right now.",
+        queried: true,
+      });
+      return;
+    }
+
+    const merged = new Map();
+    [emailRes.data, nameRes.data, phoneRes.data].forEach((rows) => {
+      (rows || []).forEach((row) => {
+        if (!row?.id) return;
+        merged.set(row.id, row);
+      });
+    });
+    const results = Array.from(merged.values())
+      .sort((a, b) => {
+        const aTime = a?.created_at ? new Date(a.created_at).getTime() : 0;
+        const bTime = b?.created_at ? new Date(b.created_at).getTime() : 0;
+        return bTime - aTime;
+      })
+      .slice(0, 20);
+
+    setAccountRecoveryResults(results);
+    setAccountRecoveryStatus({
+      loading: false,
+      error: null,
+      queried: true,
+    });
+  }, [accountRecoveryQuery, ensureSupabaseReady]);
+
   const loadRedemptions = useCallback(
     async ({ silent } = {}) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -13556,6 +14257,10 @@ export default function App() {
           offer_highlight: null,
           hours: hoursValue,
           tags: normalizeTagsInput(createBusinessForm.tags),
+          merchant_descriptor_aliases:
+            normalizeMerchantDescriptorAliasesInput(
+              createBusinessForm.merchantDescriptorAliases,
+            ),
           approval_status: "pending",
           status: "active",
           is_open: true,
@@ -13597,6 +14302,7 @@ export default function App() {
         offer: "",
         phone: "",
         tags: "",
+        merchantDescriptorAliases: "",
       });
       setCreateHoursStart("");
       setCreateHoursEnd("");
@@ -15820,6 +16526,174 @@ export default function App() {
               </View>
             </Modal>
 
+            <Modal
+              transparent
+              visible={notificationSettingsOpen}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={() => setNotificationSettingsOpen(false)}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.notificationSettingsModalCard}>
+                  <View style={styles.modalHeader}>
+                    <Text style={styles.modalTitle}>Notifications</Text>
+                    <TouchableOpacity
+                      style={styles.modalCloseButton}
+                      onPress={() => setNotificationSettingsOpen(false)}
+                    >
+                      <Ionicons name="close" size={16} color={COLORS.ink} />
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.modalSubtitle}>
+                    Choose which alerts you want to receive.
+                  </Text>
+                  {preferencesStatus.loading ? (
+                    <Text style={styles.formHint}>Saving preferences...</Text>
+                  ) : null}
+                  {preferencesStatus.error ? (
+                    <Text style={styles.formError}>{preferencesStatus.error}</Text>
+                  ) : null}
+                  <View style={styles.notificationSettingsRow}>
+                    <Text style={styles.notificationSettingsLabel}>New offers</Text>
+                    <NotificationToggle
+                      value={notificationPreferences.new_offer}
+                      onValueChange={(value) =>
+                        handlePreferenceToggle("new_offer", value)
+                      }
+                      disabled={preferencesStatus.loading}
+                    />
+                  </View>
+                  <View style={styles.notificationSettingsRow}>
+                    <Text style={styles.notificationSettingsLabel}>
+                      Offers expiring soon
+                    </Text>
+                    <NotificationToggle
+                      value={notificationPreferences.expiring_offer}
+                      onValueChange={(value) =>
+                        handlePreferenceToggle("expiring_offer", value)
+                      }
+                      disabled={preferencesStatus.loading}
+                    />
+                  </View>
+                  <View style={styles.notificationSettingsRow}>
+                    <Text style={styles.notificationSettingsLabel}>
+                      Offers nearby
+                    </Text>
+                    <NotificationToggle
+                      value={notificationPreferences.nearby_offer}
+                      onValueChange={(value) =>
+                        handlePreferenceToggle("nearby_offer", value)
+                      }
+                      disabled={preferencesStatus.loading}
+                    />
+                  </View>
+                  {notificationPermissionStatus === "denied" ? (
+                    <TouchableOpacity
+                      style={styles.pushTokenRefreshButton}
+                      onPress={() => {
+                        Linking.openSettings().catch(() => {});
+                      }}
+                    >
+                      <Ionicons
+                        name="settings-outline"
+                        size={14}
+                        color={COLORS.ink}
+                      />
+                      <Text style={styles.pushTokenRefreshText}>
+                        Open phone settings
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              </View>
+            </Modal>
+
+            <Modal
+              transparent
+              visible={passwordResetModalOpen}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={() => {
+                if (passwordResetBusy) return;
+                setPasswordResetModalOpen(false);
+              }}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.passwordResetModalCard}>
+                  <View style={styles.modalHeader}>
+                    <Text style={styles.modalTitle}>Set new password</Text>
+                    <TouchableOpacity
+                      style={styles.modalCloseButton}
+                      onPress={() => {
+                        if (passwordResetBusy) return;
+                        setPasswordResetModalOpen(false);
+                      }}
+                    >
+                      <Ionicons name="close" size={16} color={COLORS.ink} />
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.modalSubtitle}>
+                    Your reset link is valid. Enter a new password to finish.
+                  </Text>
+                  <Text style={styles.formLabel}>New password</Text>
+                  <AutoFocusInput
+                    style={styles.authInput}
+                    placeholder="At least 8 characters"
+                    placeholderTextColor={COLORS.muted}
+                    value={passwordResetDraft}
+                    onChangeText={(value) => {
+                      setPasswordResetDraft(value);
+                      if (passwordResetError) setPasswordResetError(null);
+                      if (passwordResetSuccess) setPasswordResetSuccess(null);
+                    }}
+                    secureTextEntry
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="next"
+                  />
+                  <Text style={styles.formLabel}>Confirm new password</Text>
+                  <AutoFocusInput
+                    style={styles.authInput}
+                    placeholder="Re-enter your new password"
+                    placeholderTextColor={COLORS.muted}
+                    value={passwordResetConfirm}
+                    onChangeText={(value) => {
+                      setPasswordResetConfirm(value);
+                      if (passwordResetError) setPasswordResetError(null);
+                      if (passwordResetSuccess) setPasswordResetSuccess(null);
+                    }}
+                    secureTextEntry
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="go"
+                    onSubmitEditing={() => {
+                      if (!passwordResetBusy) handleCompletePasswordReset();
+                    }}
+                  />
+                  {passwordResetError ? (
+                    <Text style={styles.formError}>{passwordResetError}</Text>
+                  ) : null}
+                  {passwordResetSuccess ? (
+                    <Text style={styles.formSuccess}>{passwordResetSuccess}</Text>
+                  ) : null}
+                  <TouchableOpacity
+                    style={[
+                      styles.authButton,
+                      passwordResetBusy && styles.authButtonDisabled,
+                    ]}
+                    onPress={handleCompletePasswordReset}
+                    disabled={passwordResetBusy}
+                  >
+                    <Text style={styles.authButtonText}>
+                      {passwordResetBusy ? "Saving..." : "Update password"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Modal>
+
             <Modal transparent visible={timePickerVisible} animationType="fade">
               <View style={styles.timePickerOverlay}>
                 <View style={styles.timePickerCard}>
@@ -16729,7 +17603,7 @@ export default function App() {
                               onPress={() =>
                                 openInfoTooltip(
                                   "Payments",
-                                  `Commission is ${formatPercentLabel(ownerCommissionRatePercent)}% of each verified receipt total for your business. Customer cashback defaults to half of that commission (${formatPercentLabel(ownerDefaultCashbackPercent)}%) and promo codes can increase it. Your commission is billed monthly. The billing portal is for payment methods and invoices.`,
+                                  `Commission is ${formatPercentLabel(ownerCommissionRatePercent)}% of each verified receipt total for your business. Customer cashback currently defaults to ${formatPercentLabel(ownerDefaultCashbackPercent)}% and promo codes can increase it. Your commission is billed monthly. The billing portal is for payment methods and invoices.`,
                                 )
                               }
                               hitSlop={{
@@ -17386,6 +18260,29 @@ export default function App() {
                               </View>
                             </View>
 
+                            <Text style={styles.formLabel}>
+                              Descriptor aliases (optional)
+                            </Text>
+                            <AutoFocusInput
+                              style={[
+                                styles.formInput,
+                                styles.descriptorInput,
+                                !canEditTags && styles.formInputDisabled,
+                              ]}
+                              placeholder="One per line (example: SQ * YOUR BUSINESS)"
+                              placeholderTextColor={COLORS.muted}
+                              value={formData.merchantDescriptorAliases}
+                              editable={canEditTags}
+                              onChangeText={(value) =>
+                                handleFormChange("merchantDescriptorAliases", value)
+                              }
+                              multiline
+                              textAlignVertical="top"
+                            />
+                            <Text style={styles.formHint}>
+                              Optional: helps improve automatic bank verification.
+                            </Text>
+
                             <Text style={styles.formLabel}>Tags</Text>
                             <View
                               style={[
@@ -17437,7 +18334,7 @@ export default function App() {
                             </View>
                             <View style={styles.tagActionsRow}>
                               <Text style={styles.formHint}>
-                                Tags save instantly.
+                                Tags and descriptor aliases save instantly.
                               </Text>
                               <TouchableOpacity
                                 style={[
@@ -17451,7 +18348,7 @@ export default function App() {
                                 <Text style={styles.tagSaveButtonText}>
                                   {tagSaveStatus.saving
                                     ? "Saving..."
-                                    : "Save tags"}
+                                    : "Save details"}
                                 </Text>
                               </TouchableOpacity>
                             </View>
@@ -17838,6 +18735,27 @@ export default function App() {
                                 </View>
                               </View>
                             </View>
+
+                            <Text style={styles.formLabel}>
+                              Descriptor aliases (optional)
+                            </Text>
+                            <AutoFocusInput
+                              style={[styles.formInput, styles.descriptorInput]}
+                              placeholder="One per line (example: SQ * YOUR BUSINESS)"
+                              placeholderTextColor={COLORS.muted}
+                              value={createBusinessForm.merchantDescriptorAliases}
+                              onChangeText={(value) =>
+                                setCreateBusinessForm((prev) => ({
+                                  ...prev,
+                                  merchantDescriptorAliases: value,
+                                }))
+                              }
+                              multiline
+                              textAlignVertical="top"
+                            />
+                            <Text style={styles.formHint}>
+                              Optional: helps improve automatic bank verification.
+                            </Text>
 
                             <Text style={styles.formLabel}>Tags</Text>
                             <View style={styles.tagOptionRow}>
@@ -19222,19 +20140,34 @@ export default function App() {
                                     if (!authBusy) handleSignIn();
                                   }}
                                 />
-                                <TouchableOpacity
-                                  style={styles.authInlineLink}
-                                  onPress={() => {
-                                    setAuthView("forgot");
-                                    if (signInError) setSignInError(null);
-                                    if (signInNotice) setSignInNotice(null);
-                                  }}
-                                  disabled={authBusy}
-                                >
-                                  <Text style={styles.authInlineLinkText}>
-                                    Forgot password?
-                                  </Text>
-                                </TouchableOpacity>
+                                <View style={styles.authInlineLinksRow}>
+                                  <TouchableOpacity
+                                    style={styles.authInlineLinkAction}
+                                    onPress={() => {
+                                      setAuthView("forgot_email");
+                                      if (signInError) setSignInError(null);
+                                      if (signInNotice) setSignInNotice(null);
+                                    }}
+                                    disabled={authBusy}
+                                  >
+                                    <Text style={styles.authInlineLinkText}>
+                                      Forgot email?
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={styles.authInlineLinkAction}
+                                    onPress={() => {
+                                      setAuthView("forgot");
+                                      if (signInError) setSignInError(null);
+                                      if (signInNotice) setSignInNotice(null);
+                                    }}
+                                    disabled={authBusy}
+                                  >
+                                    <Text style={styles.authInlineLinkText}>
+                                      Forgot password?
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
 
                                 {signInError && (
                                   <Text style={styles.formError}>
@@ -19335,6 +20268,57 @@ export default function App() {
                                       : "Send reset link"}
                                   </Text>
                                 </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.authInlineLinkCenter}
+                                  onPress={() => {
+                                    setAuthView("forgot_email");
+                                    if (signInError) setSignInError(null);
+                                    if (signInNotice) setSignInNotice(null);
+                                  }}
+                                >
+                                  <Text style={styles.authInlineLinkText}>
+                                    Forgot email?
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            )}
+
+                            {authView === "forgot_email" && (
+                              <View style={styles.authCard}>
+                                <TouchableOpacity
+                                  style={styles.authBack}
+                                  onPress={() => {
+                                    setAuthView("signin");
+                                    if (signInError) setSignInError(null);
+                                    if (signInNotice) setSignInNotice(null);
+                                  }}
+                                >
+                                  <Ionicons
+                                    name="arrow-back"
+                                    size={16}
+                                    color={COLORS.muted}
+                                  />
+                                  <Text style={styles.authBackText}>Back</Text>
+                                </TouchableOpacity>
+
+                                <Text style={styles.authTitle}>Forgot email</Text>
+                                <Text style={styles.authSubtitle}>
+                                  For security, we recover account emails through
+                                  support. Send a quick request and we'll help you
+                                  verify ownership.
+                                </Text>
+
+                                <TouchableOpacity
+                                  style={styles.authSecondaryButton}
+                                  onPress={handleForgotEmailHelp}
+                                >
+                                  <Text style={styles.secondaryButtonText}>
+                                    Email support
+                                  </Text>
+                                </TouchableOpacity>
+                                <Text style={styles.formHint}>
+                                  Support: {SUPPORT_EMAIL_ADDRESS}
+                                </Text>
                               </View>
                             )}
 
@@ -19640,6 +20624,22 @@ export default function App() {
                                 />
 
                                 <Text style={styles.formLabel}>
+                                  Descriptor aliases (optional)
+                                </Text>
+                                <AutoFocusInput
+                                  style={[styles.authInput, styles.descriptorInput]}
+                                  placeholder="One per line (example: SQ * YOUR BUSINESS)"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={businessDescriptorAliasesInput}
+                                  onChangeText={setBusinessDescriptorAliasesInput}
+                                  multiline
+                                  textAlignVertical="top"
+                                />
+                                <Text style={styles.formHint}>
+                                  Optional: helps improve automatic bank verification.
+                                </Text>
+
+                                <Text style={styles.formLabel}>
                                   Operating hours
                                 </Text>
                                 <View style={styles.timeRow}>
@@ -19902,91 +20902,45 @@ export default function App() {
                               </View>
                             </View>
 
-                            <View style={styles.notificationPanel}>
-                              <Text style={styles.sectionTitleAlt}>
+                            <View
+                              style={[
+                                styles.notificationPanel,
+                                styles.notificationPanelCompact,
+                                styles.notificationPanelMinimal,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.sectionTitleAlt,
+                                  styles.notificationSectionTitle,
+                                ]}
+                              >
                                 Notifications
                               </Text>
-                              <Text style={styles.sectionBody}>
-                                Stay informed about new or nearby offers. Toggle
-                                the categories you care about.
-                              </Text>
-                              {preferencesStatus.loading && (
-                                <Text style={styles.formHint}>
-                                  Saving preferences...
-                                </Text>
-                              )}
-                              {preferencesStatus.error && (
-                                <Text style={styles.formError}>
-                                  {preferencesStatus.error}
-                                </Text>
-                              )}
-                              <View style={styles.notificationRow}>
-                                <Text style={styles.notificationLabel}>
-                                  New offers
-                                </Text>
-                                <NotificationToggle
-                                  value={notificationPreferences.new_offer}
-                                  onValueChange={(value) =>
-                                    handlePreferenceToggle("new_offer", value)
-                                  }
-                                  disabled={preferencesStatus.loading}
-                                />
-                              </View>
-                              <View style={styles.notificationRow}>
-                                <Text style={styles.notificationLabel}>
-                                  Offers expiring soon
-                                </Text>
-                                <NotificationToggle
-                                  value={notificationPreferences.expiring_offer}
-                                  onValueChange={(value) =>
-                                    handlePreferenceToggle(
-                                      "expiring_offer",
-                                      value,
-                                    )
-                                  }
-                                  disabled={preferencesStatus.loading}
-                                />
-                              </View>
-                              <View style={styles.notificationRow}>
-                                <Text style={styles.notificationLabel}>
-                                  Offers nearby
-                                </Text>
-                                <NotificationToggle
-                                  value={notificationPreferences.nearby_offer}
-                                  onValueChange={(value) =>
-                                    handlePreferenceToggle(
-                                      "nearby_offer",
-                                      value,
-                                    )
-                                  }
-                                  disabled={preferencesStatus.loading}
-                                />
-                              </View>
-                              {notificationPermissionStatus === "denied" ? (
-                                <TouchableOpacity
-                                  style={styles.pushTokenRefreshButton}
-                                  onPress={() => {
-                                    Linking.openSettings().catch(() => {});
-                                  }}
-                                >
-                                  <Ionicons
-                                    name="settings-outline"
-                                    size={14}
-                                    color={COLORS.ink}
-                                  />
-                                  <Text style={styles.pushTokenRefreshText}>
-                                    Open settings
+                              <TouchableOpacity
+                                style={styles.notificationManageRow}
+                                onPress={() => setNotificationSettingsOpen(true)}
+                              >
+                                <View style={styles.notificationManageCopy}>
+                                  <Text style={styles.notificationManageTitle}>
+                                    Manage notifications
                                   </Text>
-                                </TouchableOpacity>
-                              ) : null}
+                                  <Text style={styles.notificationManageHint}>
+                                    {enabledNotificationCount} of 3 enabled
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name="chevron-forward"
+                                  size={16}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
                               {tokenError && (
-                                <Text style={styles.formError}>
-                                  {tokenError}
-                                </Text>
+                                <Text style={styles.formError}>{tokenError}</Text>
                               )}
                             </View>
 
-                            {accountRole === "consumer" ? (
+                            {!isOwner && !isAdmin && !isSupervisor ? (
                               <>
                                 <View style={styles.notificationPanel}>
                                 <View style={styles.promoHeader}>
@@ -20231,8 +21185,6 @@ export default function App() {
                                 </>
                               )}
 
-                              <View style={styles.profileMetaRow} />
-
                               <View style={styles.formActions}>
                                 <TouchableOpacity
                                   style={styles.primaryButton}
@@ -20253,164 +21205,251 @@ export default function App() {
                               </View>
                             </View>
 
-                            <View style={styles.formCard}>
-                              <Text style={styles.formHeaderTitle}>
-                                Account security
-                              </Text>
-                              <Text style={styles.formHint}>
-                                Keep your login details up to date.
-                              </Text>
+                            <View style={[styles.formCard, styles.securityCard]}>
+                              <View style={styles.securityTitleRow}>
+                                <Ionicons
+                                  name="shield-checkmark-outline"
+                                  size={16}
+                                  color={COLORS.pine}
+                                />
+                                <View style={styles.securityTitleCopy}>
+                                  <Text style={styles.formHeaderTitle}>
+                                    Account security
+                                  </Text>
+                                  <Text style={styles.securityIntroText}>
+                                    Sensitive updates require your current password.
+                                  </Text>
+                                </View>
+                              </View>
 
-                              <Text style={styles.formLabel}>New email</Text>
-                              <AutoFocusInput
-                                style={styles.formInput}
-                                placeholder="new-email@example.com"
-                                placeholderTextColor={COLORS.muted}
-                                value={securityEmailDraft}
-                                onChangeText={(value) => {
-                                  setSecurityEmailDraft(value);
-                                  if (securityStatus.message) {
-                                    setSecurityStatus({
-                                      loading: false,
-                                      type: null,
-                                      message: null,
-                                    });
-                                  }
-                                }}
-                                keyboardType="email-address"
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                              />
-                              <TouchableOpacity
-                                style={[
-                                  styles.secondaryButton,
-                                  securityStatus.loading &&
-                                    styles.secondaryButtonDisabled,
-                                ]}
-                                onPress={handleSecurityChangeEmail}
-                                disabled={securityStatus.loading}
-                              >
-                                <Text style={styles.secondaryButtonText}>
-                                  Change email
-                                </Text>
-                              </TouchableOpacity>
-                              {pendingEmailChange ? (
-                                <Text style={styles.formHint}>
-                                  Pending confirmation: {pendingEmailChange}
-                                </Text>
-                              ) : null}
+                              <View style={styles.securityActionPills}>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.securityActionPill,
+                                    securityActivePanel === "email" &&
+                                      styles.securityActionPillActive,
+                                  ]}
+                                  onPress={() => setActiveSecurityPanel("email")}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.securityActionPillText,
+                                      securityActivePanel === "email" &&
+                                        styles.securityActionPillTextActive,
+                                    ]}
+                                  >
+                                    Email
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.securityActionPill,
+                                    securityActivePanel === "phone" &&
+                                      styles.securityActionPillActive,
+                                  ]}
+                                  onPress={() => setActiveSecurityPanel("phone")}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.securityActionPillText,
+                                      securityActivePanel === "phone" &&
+                                        styles.securityActionPillTextActive,
+                                    ]}
+                                  >
+                                    Phone
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.securityActionPill,
+                                    securityActivePanel === "password" &&
+                                      styles.securityActionPillActive,
+                                  ]}
+                                  onPress={() => setActiveSecurityPanel("password")}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.securityActionPillText,
+                                      securityActivePanel === "password" &&
+                                        styles.securityActionPillTextActive,
+                                    ]}
+                                  >
+                                    Password
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
 
-                              <Text style={styles.formLabel}>Phone number</Text>
-                              <AutoFocusInput
-                                style={styles.formInput}
-                                placeholder="(555) 123-4567"
-                                placeholderTextColor={COLORS.muted}
-                                value={securityPhoneDraft}
-                                onChangeText={(value) => {
-                                  setSecurityPhoneDraft(value);
-                                  if (securityStatus.message) {
-                                    setSecurityStatus({
-                                      loading: false,
-                                      type: null,
-                                      message: null,
-                                    });
-                                  }
-                                }}
-                                keyboardType="phone-pad"
-                                onFocus={() => {
-                                  setIsProfilePhoneFocused(true);
-                                  isProfilePhoneFocusedRef.current = true;
-                                  nudgeSheetToBottomForKeyboard(40);
-                                  nudgeSheetToBottomForKeyboard(
-                                    Platform.OS === "android" ? 240 : 180,
-                                  );
-                                  nudgeSheetToBottomForKeyboard(
-                                    Platform.OS === "android" ? 360 : 320,
-                                  );
-                                }}
-                                onBlur={() => {
-                                  setIsProfilePhoneFocused(false);
-                                  isProfilePhoneFocusedRef.current = false;
-                                }}
-                              />
-                              <TouchableOpacity
-                                style={[
-                                  styles.secondaryButton,
-                                  securityStatus.loading &&
-                                    styles.secondaryButtonDisabled,
-                                ]}
-                                onPress={handleSecurityChangePhone}
-                                disabled={securityStatus.loading}
-                              >
-                                <Text style={styles.secondaryButtonText}>
-                                  Change phone number
-                                </Text>
-                              </TouchableOpacity>
+                              {securityActivePanel ? (
+                                <View style={styles.securityEditorCard}>
+                                  <Text style={styles.formLabel}>
+                                    Current password
+                                  </Text>
+                                  <AutoFocusInput
+                                    style={styles.formInput}
+                                    placeholder="Enter current password"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={securityCurrentPassword}
+                                    onChangeText={(value) => {
+                                      setSecurityCurrentPassword(value);
+                                      clearSecurityStatusMessage();
+                                    }}
+                                    secureTextEntry
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                  />
 
-                              <Text style={styles.formLabel}>New password</Text>
-                              <AutoFocusInput
-                                style={styles.formInput}
-                                placeholder="At least 8 characters"
-                                placeholderTextColor={COLORS.muted}
-                                value={securityPasswordDraft}
-                                onChangeText={(value) => {
-                                  setSecurityPasswordDraft(value);
-                                  if (securityStatus.message) {
-                                    setSecurityStatus({
-                                      loading: false,
-                                      type: null,
-                                      message: null,
-                                    });
-                                  }
-                                }}
-                                secureTextEntry
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                              />
+                                  {securityActivePanel === "email" ? (
+                                    <>
+                                      <Text style={styles.formLabel}>New email</Text>
+                                      <AutoFocusInput
+                                        style={styles.formInput}
+                                        placeholder="new-email@example.com"
+                                        placeholderTextColor={COLORS.muted}
+                                        value={securityEmailDraft}
+                                        onChangeText={(value) => {
+                                          setSecurityEmailDraft(value);
+                                          clearSecurityStatusMessage();
+                                        }}
+                                        keyboardType="email-address"
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                      />
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.primaryButton,
+                                          securityStatus.loading &&
+                                            styles.primaryButtonDisabled,
+                                        ]}
+                                        onPress={handleSecurityChangeEmail}
+                                        disabled={securityStatus.loading}
+                                      >
+                                        <Text style={styles.primaryButtonText}>
+                                          {securityStatus.loading
+                                            ? "Saving..."
+                                            : "Send email confirmation"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                      {pendingEmailChange ? (
+                                        <Text style={styles.securityMetaText}>
+                                          Pending confirmation: {pendingEmailChange}
+                                        </Text>
+                                      ) : null}
+                                    </>
+                                  ) : null}
 
-                              <Text style={styles.formLabel}>
-                                Confirm new password
-                              </Text>
-                              <AutoFocusInput
-                                style={styles.formInput}
-                                placeholder="Re-enter new password"
-                                placeholderTextColor={COLORS.muted}
-                                value={securityPasswordConfirm}
-                                onChangeText={(value) => {
-                                  setSecurityPasswordConfirm(value);
-                                  if (securityStatus.message) {
-                                    setSecurityStatus({
-                                      loading: false,
-                                      type: null,
-                                      message: null,
-                                    });
-                                  }
-                                }}
-                                secureTextEntry
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                returnKeyType="done"
-                                onSubmitEditing={() => {
-                                  if (!securityStatus.loading) {
-                                    handleSecurityChangePassword();
-                                  }
-                                }}
-                              />
-                              <TouchableOpacity
-                                style={[
-                                  styles.primaryButton,
-                                  securityStatus.loading &&
-                                    styles.primaryButtonDisabled,
-                                ]}
-                                onPress={handleSecurityChangePassword}
-                                disabled={securityStatus.loading}
-                              >
-                                <Text style={styles.primaryButtonText}>
-                                  {securityStatus.loading
-                                    ? "Saving..."
-                                    : "Change password"}
+                                  {securityActivePanel === "phone" ? (
+                                    <>
+                                      <Text style={styles.formLabel}>
+                                        New phone number
+                                      </Text>
+                                      <AutoFocusInput
+                                        style={styles.formInput}
+                                        placeholder="(555) 123-4567"
+                                        placeholderTextColor={COLORS.muted}
+                                        value={securityPhoneDraft}
+                                        onChangeText={(value) => {
+                                          setSecurityPhoneDraft(value);
+                                          clearSecurityStatusMessage();
+                                        }}
+                                        keyboardType="phone-pad"
+                                        onFocus={() => {
+                                          setIsProfilePhoneFocused(true);
+                                          isProfilePhoneFocusedRef.current = true;
+                                          nudgeSheetToBottomForKeyboard(40);
+                                          nudgeSheetToBottomForKeyboard(
+                                            Platform.OS === "android" ? 240 : 180,
+                                          );
+                                          nudgeSheetToBottomForKeyboard(
+                                            Platform.OS === "android" ? 360 : 320,
+                                          );
+                                        }}
+                                        onBlur={() => {
+                                          setIsProfilePhoneFocused(false);
+                                          isProfilePhoneFocusedRef.current = false;
+                                        }}
+                                      />
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.primaryButton,
+                                          securityStatus.loading &&
+                                            styles.primaryButtonDisabled,
+                                        ]}
+                                        onPress={handleSecurityChangePhone}
+                                        disabled={securityStatus.loading}
+                                      >
+                                        <Text style={styles.primaryButtonText}>
+                                          {securityStatus.loading
+                                            ? "Saving..."
+                                            : "Save phone number"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    </>
+                                  ) : null}
+
+                                  {securityActivePanel === "password" ? (
+                                    <>
+                                      <Text style={styles.formLabel}>
+                                        New password
+                                      </Text>
+                                      <AutoFocusInput
+                                        style={styles.formInput}
+                                        placeholder="At least 8 characters"
+                                        placeholderTextColor={COLORS.muted}
+                                        value={securityPasswordDraft}
+                                        onChangeText={(value) => {
+                                          setSecurityPasswordDraft(value);
+                                          clearSecurityStatusMessage();
+                                        }}
+                                        secureTextEntry
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                      />
+                                      <Text style={styles.formLabel}>
+                                        Confirm new password
+                                      </Text>
+                                      <AutoFocusInput
+                                        style={styles.formInput}
+                                        placeholder="Re-enter new password"
+                                        placeholderTextColor={COLORS.muted}
+                                        value={securityPasswordConfirm}
+                                        onChangeText={(value) => {
+                                          setSecurityPasswordConfirm(value);
+                                          clearSecurityStatusMessage();
+                                        }}
+                                        secureTextEntry
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                        returnKeyType="done"
+                                        onSubmitEditing={() => {
+                                          if (!securityStatus.loading) {
+                                            handleSecurityChangePassword();
+                                          }
+                                        }}
+                                      />
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.primaryButton,
+                                          securityStatus.loading &&
+                                            styles.primaryButtonDisabled,
+                                        ]}
+                                        onPress={handleSecurityChangePassword}
+                                        disabled={securityStatus.loading}
+                                      >
+                                        <Text style={styles.primaryButtonText}>
+                                          {securityStatus.loading
+                                            ? "Saving..."
+                                            : "Update password"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    </>
+                                  ) : null}
+                                </View>
+                              ) : (
+                                <Text style={styles.securityIdleText}>
+                                  Choose what you want to update.
                                 </Text>
-                              </TouchableOpacity>
+                              )}
+
                               {securityStatus.message ? (
                                 <Text
                                   style={
@@ -20422,6 +21461,45 @@ export default function App() {
                                   {securityStatus.message}
                                 </Text>
                               ) : null}
+                            </View>
+
+                            <View style={styles.formCard}>
+                              <View style={styles.supportHeaderRow}>
+                                <Ionicons
+                                  name="help-buoy-outline"
+                                  size={16}
+                                  color={COLORS.pine}
+                                />
+                                <Text style={styles.formHeaderTitle}>Support</Text>
+                              </View>
+                              <Text style={styles.formHint}>
+                                Need help or want to report a bug? Contact us and
+                                our team will follow up.
+                              </Text>
+                              <View style={styles.supportActionsRow}>
+                                <TouchableOpacity
+                                  style={[styles.primaryButton, styles.supportActionButton]}
+                                  onPress={handleContactSupport}
+                                >
+                                  <Text style={styles.primaryButtonText}>
+                                    Contact support
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.secondaryButton,
+                                    styles.supportActionButton,
+                                  ]}
+                                  onPress={handleReportBug}
+                                >
+                                  <Text style={styles.secondaryButtonText}>
+                                    Report a bug
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                              <Text style={styles.supportMetaText}>
+                                {SUPPORT_EMAIL_ADDRESS}
+                              </Text>
                             </View>
 
                             {profileMessage && (
@@ -21572,6 +22650,92 @@ export default function App() {
 
                         {adminWorkspaceTab === "management" && (
                           <>
+                            {isAdmin ? (
+                              <View style={styles.adminCashbackCard}>
+                                <View style={styles.adminCashbackHeader}>
+                                  <Text style={styles.adminCashbackTitle}>
+                                    Global user cashback
+                                  </Text>
+                                  <View style={styles.adminQuickMetaChip}>
+                                    <Text style={styles.adminQuickMetaText}>
+                                      {`${(globalCashbackRateBps / 100).toFixed(2)}% live`}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <Text style={styles.adminCashbackSubtitle}>
+                                  Set the default cashback % for consumers across
+                                  the app. Promo codes can still override this.
+                                </Text>
+                                <View style={styles.adminCashbackInputRow}>
+                                  <AutoFocusInput
+                                    style={[
+                                      styles.formInput,
+                                      styles.adminCashbackInput,
+                                    ]}
+                                    value={globalCashbackRateInput}
+                                    onChangeText={(value) => {
+                                      setGlobalCashbackRateInput(value);
+                                      if (globalCashbackConfig.error) {
+                                        setGlobalCashbackConfig((prev) => ({
+                                          ...prev,
+                                          error: null,
+                                        }));
+                                      }
+                                      if (globalCashbackConfig.success) {
+                                        setGlobalCashbackConfig((prev) => ({
+                                          ...prev,
+                                          success: null,
+                                        }));
+                                      }
+                                    }}
+                                    placeholder="7.50"
+                                    placeholderTextColor={COLORS.muted}
+                                    keyboardType="decimal-pad"
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                    returnKeyType="done"
+                                    onSubmitEditing={() => {
+                                      if (!globalCashbackConfig.saving) {
+                                        handleSaveGlobalCashbackRate();
+                                      }
+                                    }}
+                                  />
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.primaryButton,
+                                      styles.adminCashbackSaveButton,
+                                      (globalCashbackConfig.saving ||
+                                        globalCashbackConfig.loading) &&
+                                        styles.primaryButtonDisabled,
+                                    ]}
+                                    disabled={
+                                      globalCashbackConfig.saving ||
+                                      globalCashbackConfig.loading
+                                    }
+                                    onPress={handleSaveGlobalCashbackRate}
+                                  >
+                                    <Text style={styles.primaryButtonText}>
+                                      {globalCashbackConfig.saving
+                                        ? "Saving..."
+                                        : "Save"}
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                                <Text style={styles.formHint}>
+                                  Enter a percent value (for example `7.5`).
+                                </Text>
+                                {globalCashbackConfig.error ? (
+                                  <Text style={styles.formError}>
+                                    {globalCashbackConfig.error}
+                                  </Text>
+                                ) : null}
+                                {globalCashbackConfig.success ? (
+                                  <Text style={styles.formSuccess}>
+                                    {globalCashbackConfig.success}
+                                  </Text>
+                                ) : null}
+                              </View>
+                            ) : null}
                             <View style={styles.adminDangerNotice}>
                               <View style={styles.adminDangerHeader}>
                                 <View style={styles.adminDangerIconWrap}>
@@ -21591,6 +22755,169 @@ export default function App() {
                                 removes related offers and image files.
                               </Text>
                             </View>
+                            {isAdmin ? (
+                              <View style={styles.adminRecoveryCard}>
+                                <Text style={styles.adminRecoveryTitle}>
+                                  Account recovery lookup
+                                </Text>
+                                <Text style={styles.adminRecoverySubtitle}>
+                                  Search by name, phone, or possible email to help
+                                  users recover sign-in access.
+                                </Text>
+                                <AutoFocusInput
+                                  style={styles.formInput}
+                                  placeholder="Search by name, phone, or email"
+                                  placeholderTextColor={COLORS.muted}
+                                  autoCapitalize="none"
+                                  autoCorrect={false}
+                                  value={accountRecoveryQuery}
+                                  onChangeText={(value) => {
+                                    setAccountRecoveryQuery(value);
+                                    if (accountRecoveryStatus.error) {
+                                      setAccountRecoveryStatus((prev) => ({
+                                        ...prev,
+                                        error: null,
+                                      }));
+                                    }
+                                  }}
+                                  returnKeyType="search"
+                                  onSubmitEditing={() => {
+                                    if (!accountRecoveryStatus.loading) {
+                                      handleAccountRecoveryLookup();
+                                    }
+                                  }}
+                                />
+                                <View style={styles.adminRecoveryActions}>
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.primaryButton,
+                                      styles.adminRecoveryActionButton,
+                                      accountRecoveryStatus.loading &&
+                                        styles.primaryButtonDisabled,
+                                    ]}
+                                    disabled={accountRecoveryStatus.loading}
+                                    onPress={handleAccountRecoveryLookup}
+                                  >
+                                    <Text style={styles.primaryButtonText}>
+                                      {accountRecoveryStatus.loading
+                                        ? "Searching..."
+                                        : "Search profiles"}
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.secondaryButton,
+                                      styles.adminRecoveryActionButton,
+                                    ]}
+                                    onPress={() => {
+                                      setAccountRecoveryQuery("");
+                                      setAccountRecoveryResults([]);
+                                      setAccountRecoveryStatus({
+                                        loading: false,
+                                        error: null,
+                                        queried: false,
+                                      });
+                                    }}
+                                  >
+                                    <Text style={styles.secondaryButtonText}>
+                                      Clear
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                                {accountRecoveryStatus.error ? (
+                                  <Text style={styles.formError}>
+                                    {accountRecoveryStatus.error}
+                                  </Text>
+                                ) : null}
+                                {!accountRecoveryStatus.loading &&
+                                accountRecoveryStatus.queried &&
+                                accountRecoveryResults.length === 0 &&
+                                !accountRecoveryStatus.error ? (
+                                  <Text style={styles.formHint}>
+                                    No matching profiles found.
+                                  </Text>
+                                ) : null}
+                                {accountRecoveryResults.map((profile) => {
+                                  const createdLabel = formatHistoryTimestamp(
+                                    profile?.created_at,
+                                  );
+                                  return (
+                                    <View
+                                      key={profile.id}
+                                      style={styles.adminRecoveryResult}
+                                    >
+                                      <View style={styles.adminHeader}>
+                                        <Text style={styles.adminTitle}>
+                                          {profile.full_name ||
+                                            "Unnamed account"}
+                                        </Text>
+                                        <Text style={styles.adminMeta}>
+                                          {`Joined ${createdLabel}`}
+                                        </Text>
+                                      </View>
+                                      <View style={styles.adminQuickMetaRow}>
+                                        <View style={styles.adminQuickMetaChip}>
+                                          <Text
+                                            style={styles.adminQuickMetaText}
+                                          >
+                                            {profile.role || "consumer"}
+                                          </Text>
+                                        </View>
+                                      </View>
+                                      <Text style={styles.adminRecoveryLine}>
+                                        {`Email: ${maskRecoveryEmail(
+                                          profile.email,
+                                        )}`}
+                                      </Text>
+                                      <Text style={styles.adminRecoveryLine}>
+                                        {`Phone: ${maskRecoveryPhone(
+                                          profile.phone,
+                                        )}`}
+                                      </Text>
+                                      {profile.email ? (
+                                        <View
+                                          style={styles.adminRecoveryResultActions}
+                                        >
+                                          <TouchableOpacity
+                                            style={[
+                                              styles.secondaryButton,
+                                              styles.adminRecoveryMiniButton,
+                                            ]}
+                                            onPress={() =>
+                                              showAppDialog({
+                                                title: "Recovered email",
+                                                message: String(profile.email),
+                                                options: [
+                                                  {
+                                                    label: "Done",
+                                                    variant: "ghost",
+                                                  },
+                                                  {
+                                                    label: "Copy",
+                                                    variant: "primary",
+                                                    onPress: () => {
+                                                      Clipboard.setStringAsync(
+                                                        String(profile.email),
+                                                      ).catch(() => null);
+                                                    },
+                                                  },
+                                                ],
+                                              })
+                                            }
+                                          >
+                                            <Text
+                                              style={styles.secondaryButtonText}
+                                            >
+                                              Reveal email
+                                            </Text>
+                                          </TouchableOpacity>
+                                        </View>
+                                      ) : null}
+                                    </View>
+                                  );
+                                })}
+                              </View>
+                            ) : null}
                             <View style={styles.sectionBlock}>
                               <Text style={styles.sectionTitleAlt}>
                                 Offer management
@@ -22128,10 +23455,20 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
-  authInlineLink: {
-    alignSelf: "flex-end",
+  authInlineLinksRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     marginTop: -4,
     marginBottom: 6,
+  },
+  authInlineLinkAction: {
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  authInlineLinkCenter: {
+    alignSelf: "center",
+    marginTop: 10,
     paddingVertical: 4,
     paddingHorizontal: 2,
   },
@@ -25485,6 +26822,11 @@ const styles = StyleSheet.create({
   formTextarea: {
     minHeight: 88,
   },
+  descriptorInput: {
+    minHeight: 84,
+    paddingTop: 10,
+    paddingBottom: 10,
+  },
   formInputDisabled: {
     backgroundColor: "#EEF2F7",
     color: "#94A3B8",
@@ -25524,6 +26866,90 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     marginBottom: 12,
   },
+  securityCard: {
+    gap: 10,
+  },
+  securityTitleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    marginBottom: 2,
+  },
+  securityTitleCopy: {
+    flex: 1,
+  },
+  securityIntroText: {
+    marginTop: 2,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  securityActionPills: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  securityActionPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  securityActionPillActive: {
+    borderColor: COLORS.pine,
+    backgroundColor: COLORS.pine,
+  },
+  securityActionPillText: {
+    fontSize: 11,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  securityActionPillTextActive: {
+    color: COLORS.white,
+  },
+  securityEditorCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 10,
+    backgroundColor: COLORS.mint,
+  },
+  securityIdleText: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+  },
+  securityMetaText: {
+    marginTop: 8,
+    fontSize: 10,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  supportHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 2,
+  },
+  supportActionsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  supportActionButton: {
+    flex: 1,
+    minWidth: 130,
+    alignItems: "center",
+  },
+  supportMetaText: {
+    marginTop: 10,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
   legalChecklist: {
     marginBottom: 8,
     gap: 8,
@@ -25559,6 +26985,50 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 8,
     marginBottom: 16,
+  },
+  notificationPanelCompact: {
+    paddingVertical: 10,
+    gap: 4,
+    marginBottom: 12,
+  },
+  notificationPanelMinimal: {
+    backgroundColor: "#F8FBFF",
+    borderColor: "#E4ECF5",
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+  },
+  notificationSectionTitle: {
+    fontSize: 14,
+    marginBottom: 2,
+  },
+  notificationManageRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "#E3EAF3",
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  notificationManageCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  notificationManageTitle: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  notificationManageHint: {
+    marginTop: 2,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
   },
   promoHeader: {
     flexDirection: "row",
@@ -25733,31 +27203,13 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
-  notificationRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    backgroundColor: COLORS.white,
-    borderWidth: 1,
-    borderColor: COLORS.sand,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  notificationLabel: {
-    fontSize: 12,
-    color: COLORS.ink,
-    fontFamily: FONT_MEDIUM,
-    flex: 1,
-  },
   notificationToggleHitbox: {
     padding: 2,
     marginRight: -2,
   },
   notificationToggleTrack: {
-    width: 50,
-    height: 30,
+    width: 40,
+    height: 24,
     borderRadius: 999,
     backgroundColor: "#D4DCE7",
     borderWidth: 1,
@@ -25773,8 +27225,8 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
   notificationToggleThumb: {
-    width: 24,
-    height: 24,
+    width: 20,
+    height: 20,
     borderRadius: 999,
     backgroundColor: COLORS.white,
     borderWidth: 1,
@@ -25785,6 +27237,40 @@ const styles = StyleSheet.create({
     alignSelf: "flex-end",
     backgroundColor: COLORS.pine,
     borderColor: COLORS.pine,
+  },
+  notificationSettingsModalCard: {
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: "80%",
+    gap: 8,
+  },
+  notificationSettingsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 12,
+    backgroundColor: COLORS.cream,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  notificationSettingsLabel: {
+    flex: 1,
+    marginRight: 10,
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+  },
+  passwordResetModalCard: {
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: "80%",
   },
   pushTokenRow: {
     flexDirection: "row",
@@ -27982,6 +29468,101 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     lineHeight: 17,
   },
+  adminCashbackCard: {
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 14,
+    backgroundColor: COLORS.white,
+    padding: 12,
+    marginBottom: 12,
+  },
+  adminCashbackHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  adminCashbackTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+  },
+  adminCashbackSubtitle: {
+    marginTop: 4,
+    marginBottom: 8,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+  },
+  adminCashbackInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  adminCashbackInput: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  adminCashbackSaveButton: {
+    minWidth: 92,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+  },
+  adminRecoveryCard: {
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 14,
+    backgroundColor: COLORS.white,
+    padding: 12,
+    marginBottom: 12,
+  },
+  adminRecoveryTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+  },
+  adminRecoverySubtitle: {
+    marginTop: 4,
+    marginBottom: 8,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+  },
+  adminRecoveryActions: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 8,
+  },
+  adminRecoveryActionButton: {
+    flex: 1,
+    alignItems: "center",
+  },
+  adminRecoveryResult: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 12,
+    backgroundColor: COLORS.mint,
+    padding: 10,
+  },
+  adminRecoveryLine: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    marginTop: 2,
+  },
+  adminRecoveryResultActions: {
+    marginTop: 8,
+    flexDirection: "row",
+    gap: 8,
+  },
+  adminRecoveryMiniButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
   adminRolesCard: {
     backgroundColor: COLORS.white,
     borderRadius: 16,
@@ -28438,6 +30019,8 @@ const styles = StyleSheet.create({
     transform: [{ rotate: "45deg" }],
   },
 });
+
+
 
 
 

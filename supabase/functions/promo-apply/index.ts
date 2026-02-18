@@ -43,6 +43,22 @@ const createAuthClient = () =>
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
+const DEFAULT_CASHBACK_RATE_BPS = 750;
+const CASHBACK_SETTING_KEY = "consumer_cashback_rate_bps";
+
+const resolveBaseCashbackRateBps = async (adminClient: any) => {
+  const { data } = await adminClient
+    .from("app_settings")
+    .select("value_json")
+    .eq("key", CASHBACK_SETTING_KEY)
+    .maybeSingle();
+  const value = Number(data?.value_json?.bps);
+  if (!Number.isFinite(value) || value < 10 || value > 5000) {
+    return DEFAULT_CASHBACK_RATE_BPS;
+  }
+  return Math.round(value);
+};
+
 const json = (req: Request, status: number, body: unknown) =>
   new Response(JSON.stringify(body), {
     status,
@@ -82,6 +98,7 @@ Deno.serve(async (req) => {
   }
 
   const adminClient = createAdminClient();
+  const baseCashbackRateBps = await resolveBaseCashbackRateBps(adminClient);
 
   const { data: profile, error: profileError } = await adminClient
     .from("profiles")
@@ -100,7 +117,11 @@ Deno.serve(async (req) => {
       .update({ promo_code_id: null })
       .eq("id", userId);
     if (error) return json(req, 500, { error: error.message || "Update failed" });
-    return json(req, 200, { ok: true, cleared: true, cashbackRateBps: 750 });
+    return json(req, 200, {
+      ok: true,
+      cleared: true,
+      cashbackRateBps: baseCashbackRateBps,
+    });
   }
 
   if (profile?.role && String(profile.role) !== "consumer") {
@@ -180,7 +201,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  const rateBps = Number(resolved.cashback_rate_bps) || 750;
+  const rateBps = Number(resolved.cashback_rate_bps) || baseCashbackRateBps;
   const { error: updateError } = await adminClient
     .from("profiles")
     .update({ promo_code_id: resolved.id })

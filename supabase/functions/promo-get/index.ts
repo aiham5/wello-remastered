@@ -41,6 +41,22 @@ const createAuthClient = () =>
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
+const DEFAULT_CASHBACK_RATE_BPS = 750;
+const CASHBACK_SETTING_KEY = "consumer_cashback_rate_bps";
+
+const resolveBaseCashbackRateBps = async (adminClient: any) => {
+  const { data } = await adminClient
+    .from("app_settings")
+    .select("value_json")
+    .eq("key", CASHBACK_SETTING_KEY)
+    .maybeSingle();
+  const value = Number(data?.value_json?.bps);
+  if (!Number.isFinite(value) || value < 10 || value > 5000) {
+    return DEFAULT_CASHBACK_RATE_BPS;
+  }
+  return Math.round(value);
+};
+
 const json = (req: Request, status: number, body: unknown) =>
   new Response(JSON.stringify(body), {
     status,
@@ -77,6 +93,7 @@ Deno.serve(async (req) => {
   }
 
   const adminClient = createAdminClient();
+  const baseCashbackRateBps = await resolveBaseCashbackRateBps(adminClient);
   const { data: profile, error: profileError } = await adminClient
     .from("profiles")
     .select("role, promo_code_id")
@@ -88,12 +105,20 @@ Deno.serve(async (req) => {
 
   if (profile?.role && String(profile.role) !== "consumer") {
     // Promo codes are a consumer-only feature.
-    return json(req, 200, { ok: true, cashbackRateBps: 750, promo: null });
+    return json(req, 200, {
+      ok: true,
+      cashbackRateBps: baseCashbackRateBps,
+      promo: null,
+    });
   }
 
   const promoId = profile?.promo_code_id || null;
   if (!promoId) {
-    return json(req, 200, { ok: true, cashbackRateBps: 750, promo: null });
+    return json(req, 200, {
+      ok: true,
+      cashbackRateBps: baseCashbackRateBps,
+      promo: null,
+    });
   }
 
   const nowIso = new Date().toISOString();
@@ -106,7 +131,11 @@ Deno.serve(async (req) => {
     .maybeSingle();
 
   if (promoError || !promo?.id) {
-    return json(req, 200, { ok: true, cashbackRateBps: 750, promo: null });
+    return json(req, 200, {
+      ok: true,
+      cashbackRateBps: baseCashbackRateBps,
+      promo: null,
+    });
   }
 
   const isActive =
@@ -115,7 +144,11 @@ Deno.serve(async (req) => {
     (!promo.ends_at || String(promo.ends_at) >= nowIso);
 
   if (!isActive) {
-    return json(req, 200, { ok: true, cashbackRateBps: 750, promo: null });
+    return json(req, 200, {
+      ok: true,
+      cashbackRateBps: baseCashbackRateBps,
+      promo: null,
+    });
   }
 
   const maxUsesPerUser = Number(promo.max_uses_per_user) || 0;
@@ -139,11 +172,15 @@ Deno.serve(async (req) => {
         .eq("id", userId)
         .eq("promo_code_id", promo.id);
 
-      return json(req, 200, { ok: true, cashbackRateBps: 750, promo: null });
+      return json(req, 200, {
+        ok: true,
+        cashbackRateBps: baseCashbackRateBps,
+        promo: null,
+      });
     }
   }
 
-  const rateBps = Number(promo.cashback_rate_bps) || 750;
+  const rateBps = Number(promo.cashback_rate_bps) || baseCashbackRateBps;
   return json(req, 200, {
     ok: true,
     cashbackRateBps: rateBps,

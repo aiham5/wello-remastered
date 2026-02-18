@@ -34,6 +34,7 @@ type Candidate = {
   transactionId: string;
   accountId: string;
   merchant: string;
+  expectedMerchantMatch: string;
   amountCents: number;
   postedOn: string;
   pending: boolean;
@@ -73,6 +74,36 @@ const merchantSimilarity = (expected: string, actual: string) => {
   if (!shared) return 0;
   const denominator = Math.max(aTokens.size, bTokens.size);
   return Math.round((shared / denominator) * 24);
+};
+
+const uniqueNonEmptyStrings = (values: unknown[]) => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  values.forEach((value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return;
+    const normalized = normalizeText(raw);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    out.push(raw);
+  });
+  return out;
+};
+
+const merchantSimilarityAcrossExpectations = (
+  expectedMerchants: string[],
+  actualMerchant: string,
+) => {
+  let bestScore = 0;
+  let bestExpected = expectedMerchants[0] || "";
+  expectedMerchants.forEach((expected) => {
+    const score = merchantSimilarity(expected, actualMerchant);
+    if (score > bestScore) {
+      bestScore = score;
+      bestExpected = expected;
+    }
+  });
+  return { score: bestScore, expectedMerchant: bestExpected };
 };
 
 const toDateOnly = (value: unknown) => {
@@ -330,7 +361,7 @@ serve(async (req) => {
     const { data: redemption, error: redemptionError } = await supabase
       .from("redemptions")
       .select(
-        "id, scanned_by, business_id, created_at, business:businesses(id, name), receipt_uploads(id, review_status, uploaded_at, receipt_total_cents)",
+        "id, scanned_by, business_id, created_at, business:businesses(id, name, merchant_descriptor_aliases), receipt_uploads(id, review_status, uploaded_at, receipt_total_cents)",
       )
       .eq("id", redemptionId)
       .maybeSingle();
@@ -347,7 +378,18 @@ serve(async (req) => {
       ? redemption.business[0]
       : redemption.business;
     const businessName = String(businessRelation?.name || "").trim();
-    const expectedMerchant = requestedMerchant || businessName;
+    const descriptorAliases = Array.isArray(
+      businessRelation?.merchant_descriptor_aliases,
+    )
+      ? businessRelation.merchant_descriptor_aliases
+      : [];
+    const expectedMerchantCandidates = uniqueNonEmptyStrings([
+      requestedMerchant,
+      businessName,
+      ...descriptorAliases,
+    ]);
+    const expectedMerchant =
+      expectedMerchantCandidates[0] || requestedMerchant || businessName;
     const expectedDate =
       requestedPurchaseDate ||
       toDateOnly(redemption.created_at) ||
@@ -403,7 +445,8 @@ serve(async (req) => {
         reason_code: reasonCode,
         expected_amount_cents: expectedAmountCents,
         matched_amount_cents: details.matched?.amountCents || null,
-        expected_merchant: expectedMerchant || null,
+        expected_merchant:
+          details.matched?.expectedMerchantMatch || expectedMerchant || null,
         matched_merchant: details.matched?.merchant || null,
         expected_posted_on: expectedDate || null,
         matched_posted_on: details.matched?.postedOn || null,
@@ -571,8 +614,25 @@ serve(async (req) => {
         rows.forEach((txn: PlaidTransaction) => {
           const amountCents = Math.round(Math.abs(Number(txn.amount || 0)) * 100);
           if (!txn.transaction_id || !amountCents) return;
-          const merchant = String(txn.merchant_name || txn.name || "").trim();
-          const merchantScore = merchantSimilarity(expectedMerchant, merchant);
+          const merchantCandidates = uniqueNonEmptyStrings([
+            txn.merchant_name,
+            txn.name,
+          ]);
+          const fallbackMerchant = String(txn.merchant_name || txn.name || "").trim();
+          let merchant = merchantCandidates[0] || fallbackMerchant;
+          let merchantScore = 0;
+          let expectedMerchantMatch = expectedMerchant || "";
+          merchantCandidates.forEach((candidateMerchant) => {
+            const match = merchantSimilarityAcrossExpectations(
+              expectedMerchantCandidates,
+              candidateMerchant,
+            );
+            if (match.score > merchantScore) {
+              merchantScore = match.score;
+              merchant = candidateMerchant;
+              expectedMerchantMatch = match.expectedMerchant;
+            }
+          });
           const amountDiff =
             expectedAmountCents !== null
               ? Math.abs(amountCents - expectedAmountCents)
@@ -606,6 +666,7 @@ serve(async (req) => {
             transactionId: txn.transaction_id,
             accountId: txn.account_id,
             merchant,
+            expectedMerchantMatch,
             amountCents,
             postedOn: postedOn || expectedDate || "",
             pending: Boolean(txn.pending),
