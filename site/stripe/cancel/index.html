@@ -33,11 +33,27 @@
             required to keep receiving verified redemptions.
           </p>
           <div class="cta-row" style="justify-content:center;">
-            <a class="button primary" href="/">Back to Wello Partners</a>
+            <a id="open-app-btn" class="button primary" href="wello://auth/callback?flow=stripe_refresh">Open Wello app</a>
             <a class="button secondary" href="mailto:wellopartners@gmail.com">Contact support</a>
           </div>
+          <p id="fallback-note" class="notice" hidden>
+            If the app did not open, tap "Open Wello app" above.
+          </p>
         </div>
       </div>
     </div>
+    <script>
+      (function () {
+        var deepLink = "wello://auth/callback?flow=stripe_refresh";
+        var fallbackNote = document.getElementById("fallback-note");
+        function openApp() {
+          window.location.href = deepLink;
+        }
+        setTimeout(openApp, 120);
+        setTimeout(function () {
+          if (fallbackNote) fallbackNote.hidden = false;
+        }, 1600);
+      })();
+    </script>
   </body>
 </html>

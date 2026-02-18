@@ -21,6 +21,8 @@ const CHECKOUT_SUCCESS_URL =
   Deno.env.get("STRIPE_CHECKOUT_SUCCESS_URL") ?? "";
 const CHECKOUT_CANCEL_URL =
   Deno.env.get("STRIPE_CHECKOUT_CANCEL_URL") ?? "";
+const ALLOWED_CHECKOUT_RETURN_PREFIX =
+  "https://www.wellopartners.com/stripe/";
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -28,6 +30,11 @@ const stripe = new Stripe(STRIPE_SECRET_KEY, {
 
 const normalizeStripeId = (value: unknown) =>
   typeof value === "string" ? value.trim() : "";
+const normalizeCheckoutReturnUrl = (value: unknown) => {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return "";
+  return raw.startsWith(ALLOWED_CHECKOUT_RETURN_PREFIX) ? raw : "";
+};
 
 serve(async (req) => {
   if (req.method !== "POST") {
@@ -37,9 +44,7 @@ serve(async (req) => {
     if (
       !SUPABASE_URL ||
       !SUPABASE_SERVICE_ROLE_KEY ||
-      !STRIPE_SECRET_KEY ||
-      !CHECKOUT_SUCCESS_URL ||
-      !CHECKOUT_CANCEL_URL
+      !STRIPE_SECRET_KEY
     ) {
       return new Response(
         JSON.stringify({
@@ -48,8 +53,6 @@ serve(async (req) => {
             SUPABASE_URL: !SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY: !SUPABASE_SERVICE_ROLE_KEY,
             STRIPE_SECRET_KEY: !STRIPE_SECRET_KEY,
-            STRIPE_CHECKOUT_SUCCESS_URL: !CHECKOUT_SUCCESS_URL,
-            STRIPE_CHECKOUT_CANCEL_URL: !CHECKOUT_CANCEL_URL,
           },
         }),
         { status: 500 },
@@ -80,10 +83,20 @@ serve(async (req) => {
     }
 
     const { businessId } = body ?? {};
+    const requestedSuccessUrl = normalizeCheckoutReturnUrl(body?.successUrl);
+    const requestedCancelUrl = normalizeCheckoutReturnUrl(body?.cancelUrl);
+    const successUrl = requestedSuccessUrl || CHECKOUT_SUCCESS_URL;
+    const cancelUrl = requestedCancelUrl || CHECKOUT_CANCEL_URL;
     if (!businessId) {
       return new Response(JSON.stringify({ error: "Missing businessId" }), {
         status: 400,
       });
+    }
+    if (!successUrl || !cancelUrl) {
+      return new Response(
+        JSON.stringify({ error: "Missing checkout return URLs." }),
+        { status: 500 },
+      );
     }
 
     const { data: business, error: businessError } = await supabaseAdmin
@@ -154,8 +167,8 @@ serve(async (req) => {
       mode: "setup",
       customer: customerId,
       payment_method_types: ["card"],
-      success_url: CHECKOUT_SUCCESS_URL,
-      cancel_url: CHECKOUT_CANCEL_URL,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
       metadata: { business_id: businessId },
     });
 

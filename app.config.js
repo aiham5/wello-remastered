@@ -37,7 +37,7 @@ const uniqueValues = (list) => Array.from(new Set(list.filter(Boolean)));
 
 if (!googleMapsApiKey) {
   throw new Error(
-    "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY is required to build the dev client."
+    "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY is required for EAS builds."
   );
 }
 

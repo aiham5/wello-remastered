@@ -47,7 +47,10 @@ import {
 import MapView, { Marker } from "react-native-maps";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Font from "expo-font";
-import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import {
+  SafeAreaProvider,
+  SafeAreaView,
+} from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
 import * as ImagePicker from "expo-image-picker";
@@ -135,10 +138,8 @@ const SCANNER_FRAME = Math.min(
 );
 const SCANNER_CARD_WIDTH = Math.max(280, SCREEN_WIDTH - 40);
 const SCANNER_CARD_HEIGHT = SCANNER_FRAME + (IS_COMPACT ? 160 : 180);
-// How close the customer must be to redeem. Keep this strict, but not so strict
-// that normal GPS drift blocks legitimate in-store redemptions.
-const REDEEM_RADIUS_METERS = 40;
-const REDEEM_BLOCKED_MESSAGE = "You need to be in store to redeem.";
+// Redemption no longer requires user proximity to the business location.
+const REDEEM_BLOCKED_MESSAGE = "Unable to redeem right now. Try again.";
 const PLAID_AUTO_VERIFY_COPY =
   "Cashback is automatically verified when purchases are visible through your linked bank.";
 const PLAID_FALLBACK_COPY =
@@ -191,6 +192,8 @@ const GOOGLE_AUTH_REDIRECT_URL = `${APP_SCHEME}://${AUTH_CALLBACK_PATH}`;
 const STRIPE_CONNECT_RETURN_URL = "https://www.wellopartners.com/stripe/return";
 const STRIPE_CONNECT_REFRESH_URL =
   "https://www.wellopartners.com/stripe/refresh";
+const STRIPE_CHECKOUT_SUCCESS_URL = "https://www.wellopartners.com/stripe/success";
+const STRIPE_CHECKOUT_CANCEL_URL = "https://www.wellopartners.com/stripe/cancel";
 const PRIVACY_POLICY_URL = "https://www.wellopartners.com/privacy";
 const REFERRAL_LANDING_URL = "https://www.wellopartners.com/referral";
 const SUPPORT_EMAIL_ADDRESS = "support@wellopartners.com";
@@ -1115,6 +1118,41 @@ const getReferralClaimMessage = (status) => {
   return "Referral status updated.";
 };
 
+const getReferralClaimStatusMeta = (status) => {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (!normalized || normalized === "none") return null;
+  if (normalized === "pending" || normalized === "already_pending") {
+    return {
+      label: "Pending verification",
+      icon: "time-outline",
+      tone: "pending",
+    };
+  }
+  if (normalized === "rewarded" || normalized === "already_rewarded") {
+    return {
+      label: "Rewarded",
+      icon: "checkmark-circle-outline",
+      tone: "rewarded",
+    };
+  }
+  if (
+    normalized === "capped" ||
+    normalized === "already_capped" ||
+    normalized === "rewarded_referred_only_referrer_capped"
+  ) {
+    return {
+      label: "Reward capped this month",
+      icon: "shield-outline",
+      tone: "capped",
+    };
+  }
+  return {
+    label: normalized.replace(/_/g, " "),
+    icon: "information-circle-outline",
+    tone: "neutral",
+  };
+};
+
 const parseAuthCallbackParams = (url) => {
   const value = String(url || "");
   const hashIndex = value.indexOf("#");
@@ -1843,6 +1881,27 @@ const formatMetricValue = (value) => {
 const formatCurrencyFromCents = (cents) => {
   const amount = Number.isFinite(Number(cents)) ? Number(cents) : 0;
   return `$${(amount / 100).toFixed(2)}`;
+};
+
+const sanitizeCashoutDigits = (value) =>
+  String(value ?? "")
+    .replace(/\D/g, "")
+    .slice(0, 9);
+
+const formatCashoutAmountInput = (value) => {
+  const digits = sanitizeCashoutDigits(value);
+  if (!digits) return "";
+  const padded = digits.padStart(3, "0");
+  const dollars = padded.slice(0, -2).replace(/^0+(?=\d)/, "") || "0";
+  const cents = padded.slice(-2);
+  return `${dollars}.${cents}`;
+};
+
+const parseCashoutAmountToCents = (value) => {
+  const digits = sanitizeCashoutDigits(value);
+  if (!digits) return null;
+  const cents = Number(digits);
+  return Number.isFinite(cents) ? cents : null;
 };
 
 const computeContainedSize = (
@@ -2917,6 +2976,10 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
 }
 
 export default function App() {
+  const uiTopInset =
+    Platform.OS === "ios"
+      ? (Constants.statusBarHeight || 0) + (IS_COMPACT ? 8 : 12)
+      : SAFE_TOP;
   const [fontsLoaded, setFontsLoaded] = useState(false);
   const [fontError, setFontError] = useState(null);
   const mapRef = useRef(null);
@@ -3142,6 +3205,7 @@ export default function App() {
   const [passwordResetBusy, setPasswordResetBusy] = useState(false);
   const [passwordResetError, setPasswordResetError] = useState(null);
   const [passwordResetSuccess, setPasswordResetSuccess] = useState(null);
+  const [passwordRecoveryMode, setPasswordRecoveryMode] = useState(false);
   const [expoPushToken, setExpoPushToken] = useState(null);
   const [tokenError, setTokenError] = useState(null);
   const geocodeCacheRef = useRef(new Map());
@@ -3422,10 +3486,12 @@ export default function App() {
     success: null,
   });
   const [cashoutAmountText, setCashoutAmountText] = useState("");
+  const [cashoutHistoryExpanded, setCashoutHistoryExpanded] = useState(false);
+  const [cashoutPayoutHistory, setCashoutPayoutHistory] = useState([]);
   const cashoutPreview = useMemo(() => {
     const availableCents = Number(cashbackBalance.availableCents) || 0;
-    const cleaned = String(cashoutAmountText || "").trim();
-    if (!cleaned) {
+    const inputCents = parseCashoutAmountToCents(cashoutAmountText);
+    if (inputCents === null) {
       return {
         mode: availableCents > 0 && availableCents < MIN_CASHOUT_CENTS
           ? "below_min"
@@ -3437,11 +3503,10 @@ export default function App() {
             : "Cash out now",
       };
     }
-    const parsed = Number(cleaned);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
+    if (!Number.isFinite(inputCents) || inputCents <= 0) {
       return { mode: "invalid", amountCents: 0, label: "Cash out now" };
     }
-    const cents = Math.round(parsed * 100);
+    const cents = Math.round(inputCents);
     if (cents <= 0 || cents > availableCents) {
       return { mode: "invalid", amountCents: 0, label: "Cash out now" };
     }
@@ -3885,6 +3950,12 @@ export default function App() {
     },
     [logDiscoverGestureDebug],
   );
+  const expandSheetForSearch = useCallback(() => {
+    if (sheetIndexRef.current === 1) return;
+    requestAnimationFrame(() => {
+      bottomSheetRef.current?.snapToIndex(1);
+    });
+  }, []);
   useEffect(() => {
     if (!DEBUG_DISCOVER_SCROLL) return;
     console.log("[DiscoverGestureDebug]", "boot", {
@@ -4261,6 +4332,25 @@ export default function App() {
     if (!Number.isFinite(bps) || bps <= 0) return globalCashbackRateBps / 100;
     return Math.round((bps / 100) * 100) / 100;
   }, [accountRole, globalCashbackRateBps, promoState.cashbackRateBps]);
+  const referralMonthlyCapCents = Math.max(
+    0,
+    Number(referralState.monthlyCapCents) || 0,
+  );
+  const referralMonthlyEarnedCents = Math.max(
+    0,
+    Number(referralState.referrerMonthlyEarnedCents) || 0,
+  );
+  const referralMonthlyRemainingCents = Math.max(
+    0,
+    Number(referralState.referrerMonthlyRemainingCents) || 0,
+  );
+  const referralProgressFraction =
+    referralMonthlyCapCents > 0
+      ? Math.min(1, referralMonthlyEarnedCents / referralMonthlyCapCents)
+      : 0;
+  const referralClaimStatusMeta = getReferralClaimStatusMeta(
+    referralState.yourClaimStatus,
+  );
 
   const callAuthedEdgeFunction = useCallback(
     async (functionName, payload, options = {}) => {
@@ -4722,6 +4812,7 @@ export default function App() {
     setPasswordResetBusy(false);
     setPasswordResetError(null);
     setPasswordResetSuccess(null);
+    setPasswordRecoveryMode(false);
     setAuthBusinessDraft(null);
     setOwnerBusinessId(null);
     setReferralState(createInitialReferralState());
@@ -4738,6 +4829,16 @@ export default function App() {
       if (reason) {
         setCashoutStatusState({ loading: false, error: reason });
       }
+    },
+    [resetAuthState],
+  );
+
+  const leavePasswordRecoveryMode = useCallback(
+    async (notice = null) => {
+      await safeLocalSignOut();
+      resetAuthState();
+      setAuthView("signin");
+      if (notice) setSignInNotice(notice);
     },
     [resetAuthState],
   );
@@ -4798,6 +4899,7 @@ export default function App() {
           if (!isMounted) return;
           if (session?.user) {
             if (event === "PASSWORD_RECOVERY") {
+              setPasswordRecoveryMode(true);
               setPasswordResetDraft("");
               setPasswordResetConfirm("");
               setShowPasswordResetDraft(false);
@@ -4805,7 +4907,16 @@ export default function App() {
               setPasswordResetError(null);
               setPasswordResetSuccess(null);
               setPasswordResetModalOpen(true);
+              setIsSignedIn(false);
+              setAuthView("signin");
               setActiveTab("profile");
+              setSignInNotice("Set your new password to finish resetting your account.");
+              return;
+            }
+            if (passwordRecoveryMode) {
+              setIsSignedIn(false);
+              setAuthView("signin");
+              return;
             }
             const nextRole = await hydrateProfile(session.user);
             const stillActive = await hasActiveSessionForUser(session.user.id);
@@ -4838,6 +4949,7 @@ export default function App() {
   }, [
     hydrateProfile,
     resetAuthState,
+    passwordRecoveryMode,
     loadPromoStatus,
     loadReferralStatus,
     hasActiveSessionForUser,
@@ -5011,8 +5123,9 @@ export default function App() {
     [globalCashbackRateBps],
   );
 
-  const resolveStripeBusiness = useCallback(async () => {
-    if (resolvedOwnerBusiness?.id) return resolvedOwnerBusiness;
+  const resolveStripeBusiness = useCallback(async (options = {}) => {
+    const forceRefresh = Boolean(options?.forceRefresh);
+    if (!forceRefresh && resolvedOwnerBusiness?.id) return resolvedOwnerBusiness;
     if (!authUserId || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
     const { data, error } = await supabase
       .from("businesses")
@@ -5149,7 +5262,11 @@ export default function App() {
     setStripeActionStatus({ loading: true, error: null, success: null });
     const { data, error } = await callStripeFunction(
       "stripe-create-setup-session",
-      { businessId: targetBusiness.id },
+      {
+        businessId: targetBusiness.id,
+        successUrl: STRIPE_CHECKOUT_SUCCESS_URL,
+        cancelUrl: STRIPE_CHECKOUT_CANCEL_URL,
+      },
     );
     if (error || !data?.url) {
       const errorMessage =
@@ -5295,27 +5412,36 @@ export default function App() {
           totalCents: 0,
           updatedAt: Date.now(),
         });
+        setCashoutPayoutHistory([]);
         setCashbackBalanceState({ loading: false, error: null });
         return;
       }
       if (!silent) {
         setCashbackBalanceState({ loading: true, error: null });
       }
-      const { data, error } = await supabase
-        .from("cashback_events")
-        .select("amount_cents, status")
-        .eq("user_id", authUserId);
-      if (error) {
+      const [eventsResult, payoutsResult] = await Promise.all([
+        supabase
+          .from("cashback_events")
+          .select("amount_cents, status")
+          .eq("user_id", authUserId),
+        supabase
+          .from("cashout_payouts")
+          .select("id, amount_cents, status, created_at, processed_at")
+          .eq("user_id", authUserId)
+          .order("created_at", { ascending: false })
+          .limit(25),
+      ]);
+      if (eventsResult.error) {
         setCashbackBalanceState({
           loading: false,
-          error: error.message || "Unable to load cashback.",
+          error: eventsResult.error.message || "Unable to load cashback.",
         });
         return;
       }
       let availableCents = 0;
       let paidCents = 0;
       let totalCents = 0;
-      (Array.isArray(data) ? data : []).forEach((row) => {
+      (Array.isArray(eventsResult.data) ? eventsResult.data : []).forEach((row) => {
         const amount = Number(row?.amount_cents) || 0;
         if (!amount) return;
         totalCents += amount;
@@ -5333,6 +5459,21 @@ export default function App() {
         totalCents,
         updatedAt: Date.now(),
       });
+      if (payoutsResult.error) {
+        setCashoutPayoutHistory([]);
+      } else {
+        setCashoutPayoutHistory(
+          (Array.isArray(payoutsResult.data) ? payoutsResult.data : []).map((row) => ({
+            id: String(row.id),
+            amountCents: Math.max(0, Number(row.amount_cents) || 0),
+            status: String(row.status || "pending").toLowerCase(),
+            createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+            processedAt: row.processed_at
+              ? new Date(row.processed_at).getTime()
+              : null,
+          })),
+        );
+      }
       if (!silent) {
         setCashbackBalanceState({ loading: false, error: null });
       } else {
@@ -5516,12 +5657,11 @@ export default function App() {
       });
       return;
     }
-    const cleaned = String(cashoutAmountText || "").trim();
+    const parsedInputCents = parseCashoutAmountToCents(cashoutAmountText);
     let amountCentsToCashout = availableCents;
 
-    if (cleaned) {
-      const parsed = Number(cleaned);
-      if (!Number.isFinite(parsed) || parsed <= 0) {
+    if (parsedInputCents !== null) {
+      if (!Number.isFinite(parsedInputCents) || parsedInputCents <= 0) {
         setCashoutActionStatus({
           loading: false,
           error: "Enter a valid cashout amount.",
@@ -5529,7 +5669,7 @@ export default function App() {
         });
         return;
       }
-      amountCentsToCashout = Math.round(parsed * 100);
+      amountCentsToCashout = Math.round(parsedInputCents);
       if (amountCentsToCashout <= 0) {
         setCashoutActionStatus({
           loading: false,
@@ -6803,6 +6943,8 @@ export default function App() {
     Boolean(ownerBusiness) && !ownerBusiness?.pendingEdits;
   const canEditBusiness = isEditingBusiness && !ownerBusiness?.pendingEdits;
   const canEditTags = Boolean(ownerBusiness);
+  const ownerBusinessRejected =
+    Boolean(ownerBusiness) && ownerBusiness.rejected;
   const ownerBusinessAwaitingApproval =
     Boolean(ownerBusiness) &&
     !ownerBusiness.approved &&
@@ -7234,6 +7376,39 @@ export default function App() {
     [redemptionHistory],
   );
   const pendingHistoryCount = pendingReviewCount + pendingReceiptCount;
+  const cashoutEarnedHistoryEntries = useMemo(() => {
+    return [...redemptionHistory]
+      .filter((entry) => {
+        const cents = Number(entry?.receipt?.cashbackCents) || 0;
+        if (cents <= 0) return false;
+        const status = String(entry?.receipt?.cashbackStatus || "").toLowerCase();
+        return status !== "reversed" && status !== "failed";
+      })
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }, [redemptionHistory]);
+  const cashoutEarnedTotalCents = useMemo(
+    () =>
+      cashoutEarnedHistoryEntries.reduce(
+        (sum, entry) => sum + (Number(entry?.receipt?.cashbackCents) || 0),
+        0,
+      ),
+    [cashoutEarnedHistoryEntries],
+  );
+  const cashoutWithdrawalEntries = useMemo(
+    () =>
+      [...(Array.isArray(cashoutPayoutHistory) ? cashoutPayoutHistory : [])].sort(
+        (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
+      ),
+    [cashoutPayoutHistory],
+  );
+  const cashoutWithdrawnTotalCents = useMemo(
+    () =>
+      cashoutWithdrawalEntries.reduce((sum, entry) => {
+        if (String(entry?.status || "").toLowerCase() !== "paid") return sum;
+        return sum + (Number(entry?.amountCents) || 0);
+      }, 0),
+    [cashoutWithdrawalEntries],
+  );
   const highlightedHistoryEntry = useMemo(() => {
     if (!highlightedHistoryEntryId) return null;
     return (
@@ -7344,6 +7519,7 @@ export default function App() {
       totalCents: 0,
       updatedAt: Date.now(),
     });
+    setCashoutPayoutHistory([]);
     setCashbackBalanceState({ loading: false, error: null });
     setPlaidLinkState({
       loading: false,
@@ -7654,7 +7830,10 @@ export default function App() {
             setShowPasswordResetConfirm(false);
             setPasswordResetError(null);
             setPasswordResetSuccess(null);
+            setPasswordRecoveryMode(true);
             setPasswordResetModalOpen(true);
+            setIsSignedIn(false);
+            setAuthView("signin");
             setActiveTab("profile");
             setSignInNotice("Set your new password to finish resetting your account.");
           } catch (verifyError) {
@@ -7695,6 +7874,15 @@ export default function App() {
           }
         }
         if (callbackFlow === "stripe_return" || callbackFlow === "stripe_refresh") {
+          setStripeActionStatus((prev) => ({
+            ...prev,
+            loading: false,
+            error: null,
+            success:
+              callbackFlow === "stripe_refresh"
+                ? "Stripe setup was interrupted. Continue in Payments to finish setup."
+                : "Returned from Stripe. Updating payment status...",
+          }));
           setCashoutActionStatus((prev) => ({
             ...prev,
             loading: false,
@@ -7704,8 +7892,10 @@ export default function App() {
                 ? "Stripe setup interrupted. Continue payout setup to enable cashout."
                 : "Returned from Stripe. Updating payout status...",
           }));
+          resolveStripeBusiness({ forceRefresh: true }).catch(() => null);
           loadCashoutStatus().catch(() => null);
           setTimeout(() => {
+            resolveStripeBusiness({ forceRefresh: true }).catch(() => null);
             loadCashoutStatus({ silent: true }).catch(() => null);
           }, 1400);
         }
@@ -7770,6 +7960,22 @@ export default function App() {
           setProfileEmail(sessionEmail);
           setProfileName(formatDisplayName(sessionEmail));
         }
+        if (callbackFlow === "recovery") {
+          setPasswordRecoveryMode(true);
+          setPasswordResetDraft("");
+          setPasswordResetConfirm("");
+          setShowPasswordResetDraft(false);
+          setShowPasswordResetConfirm(false);
+          setPasswordResetError(null);
+          setPasswordResetSuccess(null);
+          setPasswordResetModalOpen(true);
+          setIsSignedIn(false);
+          setAuthView("signin");
+          setActiveTab("profile");
+          setSignInNotice("Set your new password to finish resetting your account.");
+          return;
+        }
+
         setAccountRole("consumer");
         setIsSignedIn(true);
         setAuthView("menu");
@@ -7789,17 +7995,6 @@ export default function App() {
             cashbackRateBps: DEFAULT_CASHBACK_RATE_BPS,
           }));
           setReferralState(createInitialReferralState());
-        }
-        if (callbackFlow === "recovery") {
-          setPasswordResetDraft("");
-          setPasswordResetConfirm("");
-          setShowPasswordResetDraft(false);
-          setShowPasswordResetConfirm(false);
-          setPasswordResetError(null);
-          setPasswordResetSuccess(null);
-          setPasswordResetModalOpen(true);
-          setActiveTab("profile");
-          setSignInNotice("Set your new password to finish resetting your account.");
         }
       } catch (callbackError) {
         setSignInError(
@@ -7821,6 +8016,7 @@ export default function App() {
       loadPromoStatus,
       loadReferralStatus,
       loadCashoutStatus,
+      resolveStripeBusiness,
     ],
   );
 
@@ -8217,16 +8413,9 @@ export default function App() {
         return;
       }
       setPasswordResetSuccess("Password updated successfully.");
-      setSignInNotice("Password reset complete. You can now sign in normally.");
-      setTimeout(() => {
-        setPasswordResetModalOpen(false);
-        setPasswordResetDraft("");
-        setPasswordResetConfirm("");
-        setShowPasswordResetDraft(false);
-        setShowPasswordResetConfirm(false);
-        setPasswordResetError(null);
-        setPasswordResetSuccess(null);
-      }, 700);
+      await leavePasswordRecoveryMode(
+        "Password reset complete. Sign in with your new password.",
+      );
     } catch (error) {
       setPasswordResetError(
         String(error?.message || "") || "Unable to update password.",
@@ -8234,7 +8423,12 @@ export default function App() {
     } finally {
       setPasswordResetBusy(false);
     }
-  }, [passwordResetConfirm, passwordResetDraft, ensureSupabaseReady]);
+  }, [
+    passwordResetConfirm,
+    passwordResetDraft,
+    ensureSupabaseReady,
+    leavePasswordRecoveryMode,
+  ]);
 
   const clearSecurityStatusMessage = useCallback(() => {
     setSecurityStatus((prev) =>
@@ -9277,80 +9471,12 @@ export default function App() {
     setRedeemGateBusy(true);
     setScannerStatus("checking");
     setRedeemGate({
-      allowed: false,
-      reason: "Checking your location...",
+      allowed: true,
+      reason: null,
       distanceMeters: null,
     });
     try {
-      let businessCoords = getBusinessCoordinate(business);
-      if (!businessCoords && business.address) {
-        const geocoded = await geocodeAddress(business.address);
-        if (geocoded) businessCoords = geocoded;
-      }
-      if (!businessCoords) {
-        setRedeemGate({
-          allowed: false,
-          reason: REDEEM_BLOCKED_MESSAGE,
-          distanceMeters: null,
-        });
-        setScannerStatus("blocked");
-        return false;
-      }
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
-        setRedeemGate({
-          allowed: false,
-          reason: REDEEM_BLOCKED_MESSAGE,
-          distanceMeters: null,
-        });
-        setScannerStatus("blocked");
-        return false;
-      }
-      let position = null;
-      try {
-        position = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-      } catch (error) {
-        setRedeemGate({
-          allowed: false,
-          reason: REDEEM_BLOCKED_MESSAGE,
-          distanceMeters: null,
-        });
-        setScannerStatus("blocked");
-        return false;
-      }
-      const distance = distanceBetweenMeters(
-        {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-        },
-        businessCoords,
-      );
-      if (!Number.isFinite(distance)) {
-        setRedeemGate({
-          allowed: false,
-          reason: REDEEM_BLOCKED_MESSAGE,
-          distanceMeters: null,
-        });
-        setScannerStatus("blocked");
-        return false;
-      }
-      if (distance <= REDEEM_RADIUS_METERS) {
-        setRedeemGate({
-          allowed: true,
-          reason: null,
-          distanceMeters: distance,
-        });
-        return true;
-      }
-      setRedeemGate({
-        allowed: false,
-        reason: REDEEM_BLOCKED_MESSAGE,
-        distanceMeters: distance,
-      });
-      setScannerStatus("blocked");
-      return false;
+      return true;
     } finally {
       setRedeemGateBusy(false);
     }
@@ -12914,12 +13040,14 @@ export default function App() {
       setOfferError("Create your business profile first.");
       return;
     }
-    const isBusinessStripeConnected = Boolean(
-      resolvedOwnerBusiness?.stripeAccountId || ownerBusiness?.stripeAccountId,
+    const isBusinessStripeReadyForOffers = Boolean(
+      (resolvedOwnerBusiness?.stripeAccountId || ownerBusiness?.stripeAccountId) &&
+        (resolvedOwnerBusiness?.stripePaymentMethodId ||
+          ownerBusiness?.stripePaymentMethodId),
     );
-    if (!isBusinessStripeConnected) {
+    if (!isBusinessStripeReadyForOffers) {
       setOfferError(
-        "Connect Stripe in Dashboard > Payments before creating offers.",
+        "Connect Stripe and add a payment method in Dashboard > Payments before creating offers.",
       );
       return;
     }
@@ -13077,8 +13205,10 @@ export default function App() {
   };
 
   const renderCreateOfferCard = () => {
-    const stripeConnectedForOffers = Boolean(
-      resolvedOwnerBusiness?.stripeAccountId || ownerBusiness?.stripeAccountId,
+    const stripeReadyForOffers = Boolean(
+      (resolvedOwnerBusiness?.stripeAccountId || ownerBusiness?.stripeAccountId) &&
+        (resolvedOwnerBusiness?.stripePaymentMethodId ||
+          ownerBusiness?.stripePaymentMethodId),
     );
     return (
       <View style={styles.formCard}>
@@ -13450,25 +13580,25 @@ export default function App() {
         <TouchableOpacity
           style={[
             styles.primaryButton,
-            (offerBusy || !stripeConnectedForOffers) &&
+            (offerBusy || !stripeReadyForOffers) &&
               styles.primaryButtonDisabled,
           ]}
           onPress={handleCreateOffer}
-          disabled={offerBusy || !stripeConnectedForOffers}
+          disabled={offerBusy || !stripeReadyForOffers}
         >
           <Text style={styles.primaryButtonText}>
             {offerBusy
               ? "Saving..."
-              : stripeConnectedForOffers
+              : stripeReadyForOffers
                 ? "Create offer"
-                : "Connect Stripe to create offers"}
+                : "Set up payments to create offers"}
           </Text>
         </TouchableOpacity>
       </View>
-      {!stripeConnectedForOffers && (
+      {!stripeReadyForOffers && (
         <View style={styles.formCardDisabledOverlay}>
           <Text style={styles.formCardDisabledOverlayText}>
-            Connect Stripe in Dashboard {" > "} Payments to create offers
+            Connect Stripe and add a payment method in Dashboard {" > "} Payments to create offers
           </Text>
         </View>
       )}
@@ -14650,7 +14780,7 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <SafeAreaView style={styles.screen}>
+        <SafeAreaView style={styles.screen} edges={["left", "right", "bottom"]}>
           <StatusBar
             barStyle="dark-content"
             translucent
@@ -14758,7 +14888,7 @@ export default function App() {
               style={styles.mapShade}
             />
 
-            <View style={styles.topMeta} pointerEvents="box-none">
+            <View style={[styles.topMeta, { top: uiTopInset }]} pointerEvents="box-none">
               <View
                 style={[
                   styles.navContainer,
@@ -14957,11 +15087,11 @@ export default function App() {
                             ? "checkmark-circle"
                             : scannerStatus === "blocked"
                               ? "alert-circle"
-                              : scannerStatus === "error"
-                                ? "warning"
+                                : scannerStatus === "error"
+                                  ? "warning"
                                 : scannerStatus === "redeeming"
                                   ? "card"
-                                  : "locate"
+                                  : "card"
                         }
                         size={42}
                         color={
@@ -14981,24 +15111,13 @@ export default function App() {
                             : scannerStatus === "redeeming"
                               ? "Redeeming offer..."
                               : scannerStatus === "checking"
-                                ? "Checking your location..."
+                                ? "Preparing redemption..."
                                 : scannerStatus === "blocked"
                                   ? REDEEM_BLOCKED_MESSAGE
                                   : scannerStatus === "error"
                                     ? "Unable to redeem right now. Try again."
-                                    : "Checking your location..."}
+                                    : "Preparing redemption..."}
                       </Text>
-                      {Number.isFinite(redeemGate?.distanceMeters) &&
-                        redeemGate.distanceMeters !== null && (
-                          <Text style={styles.scannerDistanceText}>
-                            Distance:{" "}
-                            {redeemGate.distanceMeters < 1000
-                              ? `${Math.round(redeemGate.distanceMeters)} m`
-                              : `${(redeemGate.distanceMeters / 1000).toFixed(
-                                  1,
-                                )} km`}
-                          </Text>
-                        )}
                     </View>
                     <View
                       style={styles.scannerFrameOutline}
@@ -15009,18 +15128,18 @@ export default function App() {
                   <View style={styles.scannerStatus}>
                     <Text style={styles.scannerStatusText}>
                       {scannerStatus === "success"
-                        ? "Offer redeemed. Show this confirmation to the staff."
+                        ? "Offer redeemed."
                         : scannerMessage
                           ? scannerMessage
                           : scannerStatus === "redeeming"
                             ? "Hang tight. This will only take a moment."
                             : scannerStatus === "checking"
-                              ? "Checking your location..."
+                              ? "Preparing redemption..."
                               : scannerStatus === "blocked"
                                 ? REDEEM_BLOCKED_MESSAGE
                                 : scannerStatus === "error"
                                   ? "We couldn't complete that redemption."
-                                  : "Checking your location..."}
+                                  : "Preparing redemption..."}
                     </Text>
                   </View>
 
@@ -15033,43 +15152,14 @@ export default function App() {
                         <Text style={styles.primaryButtonText}>Done</Text>
                       </TouchableOpacity>
                     ) : scannerStatus === "blocked" ? (
-                      <View style={styles.scannerBlockedActionsRow}>
-                        <TouchableOpacity
-                          style={[
-                            styles.secondaryButton,
-                            styles.scannerActionFlex,
-                            redeemGateBusy && styles.secondaryButtonDisabled,
-                          ]}
-                          onPress={() => {
-                            if (!redeemGateBusy) {
-                              void (async () => {
-                                const allowed =
-                                  await runRedeemGate(scannerBusiness);
-                                if (allowed) {
-                                  await redeemOfferInStore(
-                                    scannerBusiness,
-                                    scannerOffer,
-                                  );
-                                }
-                              })();
-                            }
-                          }}
-                          disabled={redeemGateBusy}
-                        >
-                          <Text style={styles.secondaryButtonText}>
-                            {redeemGateBusy ? "Checking..." : "Check again"}
-                          </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={[styles.secondaryButton, styles.scannerActionFlex]}
-                          onPress={() =>
-                            openMapsForBusiness(scannerBusiness || scannerOffer?.business)
-                          }
-                          disabled={!scannerBusiness && !scannerOffer?.business}
-                        >
-                          <Text style={styles.secondaryButtonText}>Directions</Text>
-                        </TouchableOpacity>
-                      </View>
+                      <TouchableOpacity
+                        style={styles.secondaryButton}
+                        onPress={() => {
+                          void redeemOfferInStore(scannerBusiness, scannerOffer);
+                        }}
+                      >
+                        <Text style={styles.secondaryButtonText}>Try again</Text>
+                      </TouchableOpacity>
                     ) : scannerStatus === "checking" ||
                       scannerStatus === "redeeming" ? (
                       <View
@@ -15081,24 +15171,14 @@ export default function App() {
                         <Text style={styles.secondaryButtonText}>
                           {scannerStatus === "redeeming"
                             ? "Redeeming..."
-                            : "Checking..."}
+                            : "Preparing..."}
                         </Text>
                       </View>
                     ) : scannerStatus === "error" ? (
                       <TouchableOpacity
                         style={styles.secondaryButton}
                         onPress={() => {
-                          void (async () => {
-                            setScannerStatus("checking");
-                            const allowed =
-                              await runRedeemGate(scannerBusiness);
-                            if (allowed) {
-                              await redeemOfferInStore(
-                                scannerBusiness,
-                                scannerOffer,
-                              );
-                            }
-                          })();
+                          void redeemOfferInStore(scannerBusiness, scannerOffer);
                         }}
                       >
                         <Text style={styles.secondaryButtonText}>
@@ -15252,24 +15332,28 @@ export default function App() {
                         {businessDetail?.category || "Local business"}
                       </Text>
                     </View>
-                    <TouchableOpacity
-                      style={styles.detailClose}
-                      onPress={closeBusinessDetail}
-                    >
-                      <Ionicons name="close" size={18} color={COLORS.ink} />
-                    </TouchableOpacity>
+                    <View style={styles.detailHeaderActions}>
+                      <TouchableOpacity
+                        style={styles.detailHeaderDirections}
+                        onPress={() => openMapsForBusiness(businessDetail)}
+                      >
+                        <Ionicons
+                          name="navigate-outline"
+                          size={14}
+                          color={COLORS.pine}
+                        />
+                        <Text style={styles.detailHeaderDirectionsText}>
+                          Directions
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.detailClose}
+                        onPress={closeBusinessDetail}
+                      >
+                        <Ionicons name="close" size={18} color={COLORS.ink} />
+                      </TouchableOpacity>
+                    </View>
                   </View>
-
-                  {businessDetail?.address ? (
-                    <Text style={styles.detailAddress}>
-                      {businessDetail.address}
-                    </Text>
-                  ) : null}
-                  {businessDetail?.hours ? (
-                    <Text style={styles.detailHours}>
-                      {businessDetail.hours}
-                    </Text>
-                  ) : null}
 
                   <ScrollView
                     style={styles.detailBody}
@@ -15289,17 +15373,31 @@ export default function App() {
                               ) / total;
                         return (
                           <>
-                            <Ionicons
-                              name="star"
-                              size={16}
-                              color={COLORS.sun}
-                            />
-                            <Text style={styles.detailRatingText}>
-                              {avg ? avg.toFixed(1) : "New"}
-                            </Text>
-                            <Text style={styles.detailRatingCount}>
-                              {total ? `${total} reviews` : "No reviews yet"}
-                            </Text>
+                            <View style={styles.detailMetaPill}>
+                              <Ionicons
+                                name="star"
+                                size={14}
+                                color={COLORS.sun}
+                              />
+                              <Text style={styles.detailRatingText}>
+                                {avg ? avg.toFixed(1) : "New"}
+                              </Text>
+                              <Text style={styles.detailRatingCount}>
+                                {total ? `${total} reviews` : "No reviews yet"}
+                              </Text>
+                            </View>
+                            {businessDetail?.hours ? (
+                              <View style={styles.detailMetaPill}>
+                                <Ionicons
+                                  name="time-outline"
+                                  size={13}
+                                  color={COLORS.muted}
+                                />
+                                <Text style={styles.detailHoursPillText}>
+                                  {businessDetail.hours}
+                                </Text>
+                              </View>
+                            ) : null}
                           </>
                         );
                       })()}
@@ -16759,7 +16857,10 @@ export default function App() {
               presentationStyle="overFullScreen"
               statusBarTranslucent
             >
-              <View style={styles.cashoutCelebrationOverlay} pointerEvents="none">
+              <View
+                style={[styles.cashoutCelebrationOverlay, { paddingTop: uiTopInset + 14 }]}
+                pointerEvents="none"
+              >
                 <View style={styles.cashoutCelebrationCard}>
                   <View style={styles.cashoutCelebrationIconWrap}>
                     <Ionicons name="trophy-outline" size={16} color={COLORS.white} />
@@ -16872,10 +16973,18 @@ export default function App() {
               statusBarTranslucent
               onRequestClose={() => {
                 if (passwordResetBusy) return;
+                if (passwordRecoveryMode) {
+                  void leavePasswordRecoveryMode();
+                  return;
+                }
                 setPasswordResetModalOpen(false);
               }}
             >
-              <View style={styles.modalOverlay}>
+              <KeyboardAvoidingView
+                style={styles.modalOverlay}
+                behavior={Platform.OS === "ios" ? "padding" : "height"}
+                keyboardVerticalOffset={Platform.OS === "ios" ? uiTopInset : 0}
+              >
                 <View style={styles.passwordResetModalCard}>
                   <View style={styles.modalHeader}>
                     <Text style={styles.modalTitle}>Set new password</Text>
@@ -16883,6 +16992,10 @@ export default function App() {
                       style={styles.modalCloseButton}
                       onPress={() => {
                         if (passwordResetBusy) return;
+                        if (passwordRecoveryMode) {
+                          void leavePasswordRecoveryMode();
+                          return;
+                        }
                         setPasswordResetModalOpen(false);
                       }}
                     >
@@ -16984,7 +17097,7 @@ export default function App() {
                     </Text>
                   </TouchableOpacity>
                 </View>
-              </View>
+              </KeyboardAvoidingView>
             </Modal>
 
             <Modal transparent visible={timePickerVisible} animationType="fade">
@@ -17086,7 +17199,10 @@ export default function App() {
                         style={styles.searchInput}
                         value={query}
                         onChangeText={setQuery}
-                        onFocus={() => setDiscoverSearchFocused(true)}
+                        onFocus={() => {
+                          setDiscoverSearchFocused(true);
+                          expandSheetForSearch();
+                        }}
                         onBlur={() => setDiscoverSearchFocused(false)}
                         returnKeyType="search"
                         autoCorrect={false}
@@ -17364,7 +17480,10 @@ export default function App() {
                         style={styles.searchInput}
                         value={demoQuery}
                         onChangeText={setDemoQuery}
-                        onFocus={() => setDemoSearchFocused(true)}
+                        onFocus={() => {
+                          setDemoSearchFocused(true);
+                          expandSheetForSearch();
+                        }}
                         onBlur={() => setDemoSearchFocused(false)}
                         returnKeyType="search"
                         autoCorrect={false}
@@ -17715,7 +17834,7 @@ export default function App() {
                 <KeyboardAvoidingView
                   behavior={Platform.OS === "ios" ? "padding" : "height"}
                   keyboardVerticalOffset={
-                    activeTab === "profile" ? 0 : SAFE_TOP + 20
+                    activeTab === "profile" ? 0 : uiTopInset + 20
                   }
                   style={styles.sheetScroll}
                 >
@@ -17777,25 +17896,37 @@ export default function App() {
                           </View>
                         </View>
 
-                        {ownerBusinessAwaitingApproval ? (
+                        {ownerBusinessAwaitingApproval || ownerBusinessRejected ? (
                           <View style={styles.dashboardReviewCard}>
                             <View style={styles.dashboardReviewIconWrap}>
                               <Ionicons
-                                name="hourglass-outline"
+                                name={
+                                  ownerBusinessRejected
+                                    ? "alert-circle-outline"
+                                    : "hourglass-outline"
+                                }
                                 size={18}
                                 color={COLORS.pine}
                               />
                             </View>
                             <Text style={styles.dashboardReviewTitle}>
-                              Business profile under review
+                              {ownerBusinessRejected
+                                ? "Business profile not approved"
+                                : "Business profile under review"}
                             </Text>
                             <Text style={styles.dashboardReviewBody}>
-                              {ownerBusiness?.name
-                                ? `Thanks for submitting ${ownerBusiness.name}. Our team is currently reviewing your business profile. Dashboard tools will unlock as soon as your listing is approved.`
-                                : "Thanks for submitting your business profile. Our team is currently reviewing your information. Dashboard tools will unlock as soon as your listing is approved."}
+                              {ownerBusinessRejected
+                                ? ownerBusiness?.name
+                                  ? `${ownerBusiness.name} is currently rejected and remains inactive. Business tools stay locked until an admin approves the listing.`
+                                  : "This business is currently rejected and remains inactive. Business tools stay locked until an admin approves the listing."
+                                : ownerBusiness?.name
+                                  ? `Thanks for submitting ${ownerBusiness.name}. Our team is currently reviewing your business profile. Dashboard tools will unlock as soon as your listing is approved.`
+                                  : "Thanks for submitting your business profile. Our team is currently reviewing your information. Dashboard tools will unlock as soon as your listing is approved."}
                             </Text>
                             <Text style={styles.dashboardReviewMeta}>
-                              Most reviews are completed within 12-24 hours.
+                              {ownerBusinessRejected
+                                ? "Contact support if you believe this was a mistake."
+                                : "Most reviews are completed within 12-24 hours."}
                             </Text>
                           </View>
                         ) : (
@@ -19913,7 +20044,9 @@ export default function App() {
                                 </Text>
                               </View>
                             </View>
-                            <View style={[styles.pointsCard, styles.cashoutHeroCard]}>
+                            <View
+                              style={[styles.pointsCard, styles.cashoutHeroCard]}
+                            >
                               <View
                                 style={[
                                   styles.pointsHeader,
@@ -19965,24 +20098,14 @@ export default function App() {
                                     <AutoFocusInput
                                       style={styles.cashoutAmountInput}
                                       value={cashoutAmountText}
-                                      onChangeText={setCashoutAmountText}
-                                      placeholder="Enter amount (optional)"
+                                      onChangeText={(value) =>
+                                        setCashoutAmountText(
+                                          formatCashoutAmountInput(value),
+                                        )}
+                                      placeholder="0.00"
                                       placeholderTextColor={COLORS.muted}
-                                      keyboardType="decimal-pad"
+                                      keyboardType="number-pad"
                                       returnKeyType="done"
-                                      onBlur={() => {
-                                        const cleaned = String(
-                                          cashoutAmountText || "",
-                                        ).trim();
-                                        if (!cleaned) return;
-                                        const parsed = Number(cleaned);
-                                        if (
-                                          !Number.isFinite(parsed) ||
-                                          parsed <= 0
-                                        )
-                                          return;
-                                        setCashoutAmountText(parsed.toFixed(2));
-                                      }}
                                     />
                                   </View>
                                   <TouchableOpacity
@@ -20055,6 +20178,188 @@ export default function App() {
                                 </Text>
                               )}
                             </View>
+                            <View style={styles.sectionBlock}>
+                              <TouchableOpacity
+                                style={styles.cashoutCollapseHeader}
+                                activeOpacity={0.85}
+                                onPress={() =>
+                                  setCashoutHistoryExpanded((prev) => !prev)
+                                }
+                              >
+                                <View style={styles.cashoutTitleRow}>
+                                  <View style={styles.sectionTitleIcon}>
+                                    <Ionicons
+                                      name="time-outline"
+                                      size={16}
+                                      color={COLORS.ink}
+                                    />
+                                  </View>
+                                  <Text style={styles.sectionTitleAlt}>
+                                    Activity
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name={
+                                    cashoutHistoryExpanded
+                                      ? "chevron-up"
+                                      : "chevron-down"
+                                  }
+                                  size={16}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
+                            </View>
+                            {cashoutHistoryExpanded ? (
+                              <View
+                                style={[
+                                  styles.sectionBlock,
+                                  styles.cashoutEarnedHistoryCard,
+                                ]}
+                              >
+                                <View style={styles.cashoutActivitySection}>
+                                  <Text style={styles.cashoutActivitySectionTitle}>
+                                    Earned cashback
+                                  </Text>
+                                  <Text style={styles.cashoutActivitySummary}>
+                                    Total earned:{" "}
+                                    {formatCurrencyFromCents(cashoutEarnedTotalCents)}
+                                  </Text>
+                                  {cashoutEarnedHistoryEntries.length === 0 ? (
+                                    <Text style={styles.formHint}>
+                                      No earned cashback yet.
+                                    </Text>
+                                  ) : (
+                                    <View style={styles.cashoutEarnedList}>
+                                      {cashoutEarnedHistoryEntries
+                                        .slice(0, 8)
+                                        .map((entry) => (
+                                          <View
+                                            key={`cashout-earned-${entry.id}`}
+                                            style={styles.cashoutEarnedRow}
+                                          >
+                                            <View
+                                              style={styles.cashoutEarnedRowMain}
+                                            >
+                                              <Text
+                                                style={styles.cashoutEarnedOffer}
+                                                numberOfLines={1}
+                                              >
+                                                {entry.offer?.title ||
+                                                  "Redeemed offer"}
+                                              </Text>
+                                              <Text
+                                                style={styles.cashoutEarnedTime}
+                                                numberOfLines={1}
+                                              >
+                                                {formatHistoryTimestamp(
+                                                  entry.createdAt,
+                                                )}
+                                              </Text>
+                                            </View>
+                                            <Text
+                                              style={styles.cashoutEarnedAmount}
+                                            >
+                                              +
+                                              {formatCurrencyFromCents(
+                                                Number(
+                                                  entry?.receipt?.cashbackCents,
+                                                ) || 0,
+                                              )}
+                                            </Text>
+                                          </View>
+                                        ))}
+                                    </View>
+                                  )}
+                                </View>
+                                <View style={styles.cashoutActivityDivider} />
+                                <View style={styles.cashoutActivitySection}>
+                                  <Text style={styles.cashoutActivitySectionTitle}>
+                                    Cashouts / Withdrawals
+                                  </Text>
+                                  <Text style={styles.cashoutActivitySummary}>
+                                    Total withdrawn:{" "}
+                                    {formatCurrencyFromCents(
+                                      cashoutWithdrawnTotalCents,
+                                    )}
+                                  </Text>
+                                  {cashoutWithdrawalEntries.length === 0 ? (
+                                    <Text style={styles.formHint}>
+                                      No withdrawals yet.
+                                    </Text>
+                                  ) : (
+                                    <View style={styles.cashoutWithdrawalList}>
+                                      {cashoutWithdrawalEntries
+                                        .slice(0, 8)
+                                        .map((entry) => (
+                                          <View
+                                            key={`cashout-withdraw-${entry.id}`}
+                                            style={styles.cashoutWithdrawalRow}
+                                          >
+                                            <View style={styles.cashoutEarnedRowMain}>
+                                              <Text
+                                                style={styles.cashoutEarnedOffer}
+                                                numberOfLines={1}
+                                              >
+                                                Withdrawal
+                                              </Text>
+                                              <Text
+                                                style={styles.cashoutWithdrawalMeta}
+                                                numberOfLines={1}
+                                              >
+                                                {formatHistoryTimestamp(
+                                                  entry.processedAt ||
+                                                    entry.createdAt,
+                                                )}
+                                              </Text>
+                                            </View>
+                                            <View
+                                              style={
+                                                styles.cashoutWithdrawalRight
+                                              }
+                                            >
+                                              <Text
+                                                style={
+                                                  styles.cashoutWithdrawalAmount
+                                                }
+                                              >
+                                                -
+                                                {formatCurrencyFromCents(
+                                                  entry.amountCents,
+                                                )}
+                                              </Text>
+                                              <View
+                                                style={[
+                                                  styles.cashoutWithdrawalStatusPill,
+                                                  entry.status === "paid" &&
+                                                    styles.cashoutWithdrawalStatusPillPaid,
+                                                  entry.status === "failed" &&
+                                                    styles.cashoutWithdrawalStatusPillFailed,
+                                                ]}
+                                              >
+                                                <Text
+                                                  style={[
+                                                    styles.cashoutWithdrawalStatusText,
+                                                    entry.status === "paid" &&
+                                                      styles.cashoutWithdrawalStatusTextPaid,
+                                                    entry.status === "failed" &&
+                                                      styles.cashoutWithdrawalStatusTextFailed,
+                                                  ]}
+                                                >
+                                                  {entry.status === "paid"
+                                                    ? "Paid"
+                                                    : entry.status === "failed"
+                                                      ? "Failed"
+                                                      : "Pending"}
+                                                </Text>
+                                              </View>
+                                            </View>
+                                          </View>
+                                        ))}
+                                    </View>
+                                  )}
+                                </View>
+                              </View>
+                            ) : null}
                             <View style={[styles.sectionBlock, styles.cashoutBankPanel]}>
                               <View style={styles.cashoutTitleRow}>
                                 <View style={styles.sectionTitleIcon}>
@@ -21561,36 +21866,92 @@ export default function App() {
                                       {referralState.code || "--"}
                                     </Text>
                                   </View>
-                                  <Text style={styles.referralStatsText}>
-                                    Earned this month:{" "}
-                                    {formatCurrencyFromCents(
-                                      referralState.referrerMonthlyEarnedCents,
-                                    )}{" "}
-                                    of{" "}
-                                    {formatCurrencyFromCents(
-                                      referralState.monthlyCapCents,
-                                    )}{" "}
-                                    earned
-                                  </Text>
-                                  <Text style={styles.referralStatsText}>
-                                    Remaining this month:{" "}
-                                    {formatCurrencyFromCents(
-                                      referralState.referrerMonthlyRemainingCents,
-                                    )}
-                                  </Text>
-                                  <Text style={styles.referralStatsText}>
-                                    Pending: {referralState.stats.pendingCount}{" "}
-                                    | Rewarded:{" "}
-                                    {referralState.stats.rewardedBothCount} |
-                                    Capped: {referralState.stats.cappedCount}
-                                  </Text>
-                                  {referralState.yourClaimStatus !== "none" ? (
-                                    <Text style={styles.referralClaimStatus}>
-                                      Status:{" "}
-                                      {String(
-                                        referralState.yourClaimStatus || "none",
-                                      ).replace(/_/g, " ")}
+                                  <View style={styles.referralProgressCard}>
+                                    <View style={styles.referralProgressHeader}>
+                                      <Text style={styles.referralProgressTitle}>
+                                        Monthly referral progress
+                                      </Text>
+                                      <Text style={styles.referralProgressAmount}>
+                                        {formatCurrencyFromCents(
+                                          referralMonthlyEarnedCents,
+                                        )}{" "}
+                                        /{" "}
+                                        {formatCurrencyFromCents(
+                                          referralMonthlyCapCents,
+                                        )}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.referralProgressTrack}>
+                                      <View
+                                        style={[
+                                          styles.referralProgressFill,
+                                          {
+                                            width: `${Math.round(
+                                              referralProgressFraction * 100,
+                                            )}%`,
+                                          },
+                                        ]}
+                                      />
+                                    </View>
+                                    <Text style={styles.referralProgressMeta}>
+                                      Remaining{" "}
+                                      {formatCurrencyFromCents(
+                                        referralMonthlyRemainingCents,
+                                      )}{" "}
+                                      • Pending {referralState.stats.pendingCount}{" "}
+                                      • Rewarded{" "}
+                                      {referralState.stats.rewardedBothCount} •
+                                      Capped {referralState.stats.cappedCount}
                                     </Text>
+                                  </View>
+                                  {referralClaimStatusMeta ? (
+                                    <View
+                                      style={[
+                                        styles.referralClaimPill,
+                                        referralClaimStatusMeta.tone ===
+                                          "pending" &&
+                                          styles.referralClaimPillPending,
+                                        referralClaimStatusMeta.tone ===
+                                          "rewarded" &&
+                                          styles.referralClaimPillRewarded,
+                                        referralClaimStatusMeta.tone ===
+                                          "capped" &&
+                                          styles.referralClaimPillCapped,
+                                      ]}
+                                    >
+                                      <Ionicons
+                                        name={referralClaimStatusMeta.icon}
+                                        size={13}
+                                        color={
+                                          referralClaimStatusMeta.tone ===
+                                          "pending"
+                                            ? "#92400E"
+                                            : referralClaimStatusMeta.tone ===
+                                                "rewarded"
+                                              ? "#065F46"
+                                              : referralClaimStatusMeta.tone ===
+                                                  "capped"
+                                                ? "#1E3A8A"
+                                                : COLORS.muted
+                                        }
+                                      />
+                                      <Text
+                                        style={[
+                                          styles.referralClaimPillText,
+                                          referralClaimStatusMeta.tone ===
+                                            "pending" &&
+                                            styles.referralClaimPillTextPending,
+                                          referralClaimStatusMeta.tone ===
+                                            "rewarded" &&
+                                            styles.referralClaimPillTextRewarded,
+                                          referralClaimStatusMeta.tone ===
+                                            "capped" &&
+                                            styles.referralClaimPillTextCapped,
+                                        ]}
+                                      >
+                                        {referralClaimStatusMeta.label}
+                                      </Text>
+                                    </View>
                                   ) : null}
                                   <View style={styles.referralActionsRow}>
                                     <TouchableOpacity
@@ -21636,7 +21997,7 @@ export default function App() {
                                   <View style={styles.promoHeader}>
                                     <View style={styles.promoHeaderLeft}>
                                       <Text style={styles.sectionTitleAlt}>
-                                        Promo boost
+                                        Promo code
                                       </Text>
                                       {promoState.code ? (
                                         <View style={styles.promoActivePill}>
@@ -24046,19 +24407,19 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   authBrand: {
-    fontSize: 22,
+    fontSize: 23,
     color: COLORS.pine,
     fontFamily: FONT_DISPLAY,
     marginBottom: 6,
   },
   authTitle: {
-    fontSize: 18,
+    fontSize: 19,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
     marginBottom: 6,
   },
   authSubtitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 18,
@@ -24070,7 +24431,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     fontFamily: FONT_TEXT,
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     borderWidth: 1,
     borderColor: COLORS.sand,
@@ -24123,14 +24484,14 @@ const styles = StyleSheet.create({
   },
   authGoogleButtonText: {
     color: COLORS.ink,
-    fontSize: 14,
+    fontSize: 15,
     fontFamily: FONT_MEDIUM,
   },
   authGoogleStatusRow: {
     marginTop: 8,
   },
   authGoogleStatusText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -24140,7 +24501,7 @@ const styles = StyleSheet.create({
   },
   authButtonText: {
     color: COLORS.white,
-    fontSize: 14,
+    fontSize: 15,
     fontFamily: FONT_MEDIUM,
   },
   authBack: {
@@ -24150,7 +24511,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   authBackText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -24172,7 +24533,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   authInlineLinkText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
@@ -24187,7 +24548,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   timeLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -24216,7 +24577,7 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   timeSelectText: {
-    fontSize: IS_COMPACT ? 12 : 13,
+    fontSize: IS_COMPACT ? 13 : 14,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     flexShrink: 1,
@@ -24246,7 +24607,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.pine,
   },
   timeMeridiemText: {
-    fontSize: IS_COMPACT ? 10 : 11,
+    fontSize: IS_COMPACT ? 11 : 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -24278,7 +24639,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   timePickerTitle: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -24304,7 +24665,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
   },
   timePickerText: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -24321,7 +24682,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 12,
     color: COLORS.coral,
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: FONT_MEDIUM,
   },
   redeemButton: {
@@ -24347,7 +24708,7 @@ const styles = StyleSheet.create({
   },
   redeemButtonText: {
     color: COLORS.white,
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: FONT_SEMIBOLD,
     letterSpacing: 0.3,
   },
@@ -24374,7 +24735,7 @@ const styles = StyleSheet.create({
     opacity: 0.92,
   },
   directionsButtonText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
@@ -24386,7 +24747,6 @@ const styles = StyleSheet.create({
   },
   topMeta: {
     position: "absolute",
-    top: SAFE_TOP,
     left: IS_COMPACT ? 8 : 12,
     right: IS_COMPACT ? 8 : 12,
   },
@@ -24451,7 +24811,7 @@ const styles = StyleSheet.create({
     maxWidth: 180,
   },
   locateErrorText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     textAlign: "center",
@@ -24495,18 +24855,18 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   scannerTitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   scannerSubtitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
   },
   scannerOfferTitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     marginTop: 4,
@@ -24545,14 +24905,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   scannerBlockedText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.white,
     fontFamily: FONT_TEXT,
     textAlign: "center",
   },
   scannerDistanceText: {
     marginTop: 8,
-    fontSize: 11,
+    fontSize: 12,
     color: "rgba(255, 255, 255, 0.9)",
     fontFamily: FONT_MEDIUM,
     textAlign: "center",
@@ -24566,7 +24926,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   scannerStatusText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     textAlign: "center",
@@ -24605,18 +24965,18 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   reviewTitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   reviewSubtitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
   },
   reviewOffer: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     marginTop: 4,
@@ -24660,15 +25020,36 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     gap: 12,
-    marginBottom: 6,
+    marginBottom: 8,
+  },
+  detailHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  detailHeaderDirections: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "#D5DEE9",
+    backgroundColor: "#F8FAFC",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  detailHeaderDirectionsText: {
+    fontSize: 12,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
   },
   detailTitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   detailSubtitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -24683,23 +25064,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
   },
-  detailAddress: {
-    fontSize: 12,
-    color: COLORS.ink,
-    fontFamily: FONT_TEXT,
-    marginTop: 4,
-  },
-  detailHours: {
-    fontSize: 11,
-    color: COLORS.muted,
-    fontFamily: FONT_TEXT,
-    marginTop: 2,
-  },
   detailRatingRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    flexWrap: "wrap",
+    gap: 8,
     marginTop: 10,
+  },
+  detailMetaPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#DDE6F0",
+    backgroundColor: "#F8FAFC",
   },
   detailRatingText: {
     fontSize: 12,
@@ -24707,7 +25088,12 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   detailRatingCount: {
-    fontSize: 11,
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  detailHoursPillText: {
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -24724,14 +25110,14 @@ const styles = StyleSheet.create({
   detailReviewButtonText: {
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
-    fontSize: 12,
+    fontSize: 13,
   },
   detailOffersSection: {
     marginTop: 16,
     gap: 12,
   },
   detailSectionTitle: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -24743,12 +25129,12 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.cream,
   },
   detailOfferTitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   detailOfferText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 4,
@@ -24761,7 +25147,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   detailOfferMeta: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -24780,12 +25166,12 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === "ios" ? 8 : 0,
   },
   receiptsTitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   receiptsSubtitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -24821,7 +25207,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F4F6F9",
   },
   detailOfferTagText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -24836,7 +25222,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#D5DDE8",
   },
   detailOfferRedemptionText: {
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: FONT_MEDIUM,
     color: COLORS.white,
   },
@@ -24860,7 +25246,7 @@ const styles = StyleSheet.create({
     opacity: 0.92,
   },
   detailOfferDirectionsText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
@@ -24889,12 +25275,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   detailReviewUser: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   detailReviewTime: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -24904,7 +25290,7 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   detailReviewText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 6,
@@ -24973,7 +25359,7 @@ const styles = StyleSheet.create({
   navPillTextTight: {
     ...Platform.select({
       android: {
-        fontSize: IS_COMPACT ? 10.5 : 11,
+        fontSize: IS_COMPACT ? 11.5 : 12,
         lineHeight: IS_COMPACT ? 14 : 16,
         letterSpacing: -0.1,
       },
@@ -24998,7 +25384,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.white,
   },
   navPillBadgeText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
   },
@@ -25014,7 +25400,7 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: COLORS.white,
     fontFamily: FONT_DISPLAY,
-    fontSize: 13,
+    fontSize: 14,
   },
   secondaryButton: {
     borderWidth: 1,
@@ -25030,7 +25416,7 @@ const styles = StyleSheet.create({
   secondaryButtonText: {
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    fontSize: 13,
+    fontSize: 14,
   },
   offerUploadRow: {
     flexDirection: "row",
@@ -25050,7 +25436,7 @@ const styles = StyleSheet.create({
   offerRemoveButtonText: {
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
-    fontSize: 12,
+    fontSize: 13,
   },
   offerPhotoHeader: {
     flexDirection: "row",
@@ -25110,7 +25496,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.pine,
   },
   limitOptionText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -25162,7 +25548,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#E6F5EE",
   },
   limitPeriodText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -25199,7 +25585,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255, 255, 255, 0.22)",
   },
   offerUploadOverlayText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
   },
@@ -25215,7 +25601,7 @@ const styles = StyleSheet.create({
   },
   offerUploadHint: {
     marginTop: 6,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     textAlign: "center",
@@ -25276,7 +25662,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   sheetHint: {
-    fontSize: IS_COMPACT ? 11 : 12,
+    fontSize: IS_COMPACT ? 12 : 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -25317,7 +25703,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: IS_COMPACT ? 8 : 10,
     fontFamily: FONT_TEXT,
-    fontSize: IS_COMPACT ? 13 : 14,
+    fontSize: IS_COMPACT ? 14 : 15,
     color: COLORS.ink,
   },
   searchClearButton: {
@@ -25353,7 +25739,7 @@ const styles = StyleSheet.create({
   filterButtonText: {
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    fontSize: IS_COMPACT ? 12 : 13,
+    fontSize: IS_COMPACT ? 13 : 14,
   },
   filterButtonTextActive: {
     color: COLORS.white,
@@ -25367,12 +25753,12 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   statValue: {
-    fontSize: 17,
+    fontSize: 18,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   statLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -25396,7 +25782,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.pine,
   },
   filterText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -25408,7 +25794,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   filterRadiusLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
     marginBottom: 6,
@@ -25431,7 +25817,7 @@ const styles = StyleSheet.create({
     borderColor: "#B5CAE7",
   },
   filterRadiusText: {
-    fontSize: 11,
+    fontSize: 12,
     color: "#334155",
     fontFamily: FONT_MEDIUM,
   },
@@ -25463,14 +25849,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   discoverPlaidPromptTitle: {
-    fontSize: 12,
+    fontSize: 13,
     lineHeight: 16,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
   discoverPlaidPromptBody: {
     marginTop: 2,
-    fontSize: 11,
+    fontSize: 12,
     lineHeight: 14,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
@@ -25492,7 +25878,7 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   discoverPlaidPromptConnectText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.white,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -25510,12 +25896,12 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   sectionMeta: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -25539,7 +25925,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   demoIntroTitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -25554,13 +25940,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoIntroBadgeText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#18407B",
     fontFamily: FONT_MEDIUM,
   },
   demoIntroSubtitle: {
     marginTop: 7,
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 18,
@@ -25573,7 +25959,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   demoIntroMetaText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#64748B",
     fontFamily: FONT_MEDIUM,
   },
@@ -25611,7 +25997,7 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
   demoLayoutPillText: {
-    fontSize: 11,
+    fontSize: 12,
     color: "#334155",
     fontFamily: FONT_MEDIUM,
   },
@@ -25673,7 +26059,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoEditorialSplitCategoryText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#E2E8F0",
     fontFamily: FONT_MEDIUM,
   },
@@ -25688,7 +26074,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoEditorialSplitCashbackText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
@@ -25705,12 +26091,12 @@ const styles = StyleSheet.create({
   },
   demoEditorialSplitName: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
   demoEditorialSplitOpenText: {
-    fontSize: 10,
+    fontSize: 11,
     fontFamily: FONT_MEDIUM,
   },
   demoEditorialSplitOpenTextOpen: {
@@ -25721,7 +26107,7 @@ const styles = StyleSheet.create({
   },
   demoEditorialSplitOffer: {
     marginTop: 1,
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -25796,7 +26182,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(180, 35, 24, 0.24)",
   },
   demoEditorialStackOpenText: {
-    fontSize: 10,
+    fontSize: 11,
     fontFamily: FONT_MEDIUM,
   },
   demoEditorialStackOpenTextOpen: {
@@ -25812,13 +26198,13 @@ const styles = StyleSheet.create({
     bottom: 12,
   },
   demoEditorialStackOverlayName: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.white,
     fontFamily: FONT_SEMIBOLD,
   },
   demoEditorialStackOverlayOffer: {
     marginTop: 3,
-    fontSize: 12,
+    fontSize: 13,
     color: "#E2E8F0",
     fontFamily: FONT_MEDIUM,
   },
@@ -25839,7 +26225,7 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
   demoEditorialStackDescription: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 15,
@@ -25862,7 +26248,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoEditorialStackCategoryText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#475569",
     fontFamily: FONT_MEDIUM,
   },
@@ -25877,7 +26263,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoEditorialStackCashbackText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
@@ -25919,7 +26305,7 @@ const styles = StyleSheet.create({
   },
   demoSpotlightName: {
     flex: 1,
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -25940,7 +26326,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(180, 35, 24, 0.24)",
   },
   demoSpotlightOpenPillText: {
-    fontSize: 10,
+    fontSize: 11,
     fontFamily: FONT_MEDIUM,
   },
   demoSpotlightOpenPillTextOpen: {
@@ -25962,19 +26348,19 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoSpotlightCategoryPillText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#475569",
     fontFamily: FONT_MEDIUM,
   },
   demoSpotlightOffer: {
     marginTop: 7,
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
   demoSpotlightDescription: {
     marginTop: 5,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -25998,12 +26384,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   demoSpotlightCashbackText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
   demoPreviewOnlyText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -26048,7 +26434,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoShowcaseCashbackText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
@@ -26063,12 +26449,12 @@ const styles = StyleSheet.create({
   },
   demoShowcaseName: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
   demoShowcaseOpenText: {
-    fontSize: 10,
+    fontSize: 11,
     fontFamily: FONT_MEDIUM,
   },
   demoShowcaseOpenTextOpen: {
@@ -26079,19 +26465,19 @@ const styles = StyleSheet.create({
   },
   demoShowcaseCategory: {
     marginTop: 4,
-    fontSize: 10,
+    fontSize: 11,
     color: "#64748B",
     fontFamily: FONT_MEDIUM,
   },
   demoShowcaseOffer: {
     marginTop: 6,
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
   demoShowcaseDescription: {
     marginTop: 4,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -26155,7 +26541,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoEditorialCategoryPillText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#E2E8F0",
     fontFamily: FONT_MEDIUM,
   },
@@ -26170,25 +26556,25 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoEditorialCashbackText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
   demoEditorialName: {
     marginTop: 10,
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.white,
     fontFamily: FONT_SEMIBOLD,
   },
   demoEditorialOffer: {
     marginTop: 3,
-    fontSize: 12,
+    fontSize: 13,
     color: "#F8FAFC",
     fontFamily: FONT_MEDIUM,
   },
   demoEditorialDescription: {
     marginTop: 4,
-    fontSize: 11,
+    fontSize: 12,
     color: "#DCE4EE",
     fontFamily: FONT_TEXT,
     lineHeight: 15,
@@ -26220,7 +26606,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(180, 35, 24, 0.24)",
   },
   demoEditorialOpenText: {
-    fontSize: 10,
+    fontSize: 11,
     fontFamily: FONT_MEDIUM,
   },
   demoEditorialOpenTextOpen: {
@@ -26248,18 +26634,18 @@ const styles = StyleSheet.create({
     borderColor: "#D4DCE8",
   },
   analyticsValue: {
-    fontSize: 18,
+    fontSize: 19,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   analyticsLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
   },
   analyticsHint: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 6,
@@ -26279,12 +26665,12 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   paymentLabel: {
-    fontSize: 14,
+    fontSize: 15,
     fontFamily: "Rubik-Medium",
     color: COLORS.text,
   },
   paymentAmount: {
-    fontSize: 14,
+    fontSize: 15,
     fontFamily: "Rubik-SemiBold",
     color: COLORS.text,
   },
@@ -26301,7 +26687,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255, 155, 0, 0.12)",
   },
   paymentBadgeText: {
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: "Rubik-Medium",
     color: COLORS.text,
   },
@@ -26324,7 +26710,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   analyticsTooltipText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     lineHeight: 15,
@@ -26348,7 +26734,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   modalTitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
@@ -26361,7 +26747,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.mint,
   },
   modalSubtitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginBottom: 12,
@@ -26384,12 +26770,12 @@ const styles = StyleSheet.create({
   modalRowTitle: {
     flex: 1,
     marginRight: 12,
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
   },
   modalRowValue: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -26435,7 +26821,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   liveEditorialStackClosedText: {
-    fontSize: 12,
+    fontSize: 13,
     color: "#334155",
     fontFamily: FONT_SEMIBOLD,
   },
@@ -26457,7 +26843,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   liveEditorialStackMediaLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -26485,7 +26871,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   liveEditorialStackCategoryText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#E2E8F0",
     fontFamily: FONT_MEDIUM,
   },
@@ -26503,7 +26889,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   liveEditorialStackOfferTypeText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#E2E8F0",
     fontFamily: FONT_MEDIUM,
     flexShrink: 1,
@@ -26516,13 +26902,13 @@ const styles = StyleSheet.create({
     bottom: 12,
   },
   liveEditorialStackName: {
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.white,
     fontFamily: FONT_DISPLAY,
   },
   liveEditorialStackOffer: {
     marginTop: 3,
-    fontSize: 12,
+    fontSize: 13,
     color: "#DCE4EE",
     fontFamily: FONT_MEDIUM,
   },
@@ -26544,7 +26930,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   liveEditorialStackTagText: {
-    fontSize: 9,
+    fontSize: 10,
     color: "#E2E8F0",
     fontFamily: FONT_MEDIUM,
   },
@@ -26568,7 +26954,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   liveEditorialStackMeta: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#64748B",
     fontFamily: FONT_MEDIUM,
   },
@@ -26586,7 +26972,7 @@ const styles = StyleSheet.create({
   },
   liveEditorialStackHoursText: {
     flexShrink: 1,
-    fontSize: 10,
+    fontSize: 11,
     color: "#475569",
     fontFamily: FONT_MEDIUM,
   },
@@ -26603,7 +26989,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   liveEditorialStackRatingText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#A16207",
     fontFamily: FONT_MEDIUM,
   },
@@ -26626,7 +27012,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   liveEditorialStackRedeemText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.white,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -26651,7 +27037,7 @@ const styles = StyleSheet.create({
     opacity: 0.92,
   },
   liveEditorialStackDirectionsText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
@@ -26671,7 +27057,7 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   liveEditorialStackCashbackText: {
-    fontSize: 12,
+    fontSize: 13,
     color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
@@ -26703,7 +27089,7 @@ const styles = StyleSheet.create({
   cardName: {
     flex: 1,
     paddingRight: 12,
-    fontSize: IS_COMPACT ? 14 : 15,
+    fontSize: IS_COMPACT ? 15 : 16,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
@@ -26724,7 +27110,7 @@ const styles = StyleSheet.create({
     borderColor: "#E5C0C0",
   },
   cardBadgeText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
@@ -26743,12 +27129,12 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   cardCashbackText: {
-    fontSize: 11,
+    fontSize: 12,
     color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
   cardCategory: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 8,
@@ -26756,13 +27142,13 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   cardOfferTitle: {
-    fontSize: IS_COMPACT ? 14 : 15,
+    fontSize: IS_COMPACT ? 15 : 16,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     marginTop: 8,
   },
   cardOffer: {
-    fontSize: IS_COMPACT ? 12 : 13,
+    fontSize: IS_COMPACT ? 13 : 14,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     marginTop: 6,
@@ -26804,7 +27190,7 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   cardLimitBadgeText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.coral,
     fontFamily: FONT_MEDIUM,
   },
@@ -26830,7 +27216,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   cardMeta: {
-    fontSize: IS_COMPACT ? 10 : 11,
+    fontSize: IS_COMPACT ? 11 : 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -26878,7 +27264,7 @@ const styles = StyleSheet.create({
   },
   cardMediaLabel: {
     marginTop: 6,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -26894,7 +27280,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255, 255, 255, 0.9)",
   },
   tagText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
   },
@@ -26922,7 +27308,7 @@ const styles = StyleSheet.create({
   tagSaveButtonText: {
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
-    fontSize: 12,
+    fontSize: 13,
   },
   tagOptionRow: {
     flexDirection: "row",
@@ -26949,7 +27335,7 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   tagOptionText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -26965,13 +27351,13 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   emptyTitle: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
     marginBottom: 4,
   },
   emptyCopy: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -26980,7 +27366,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   sectionTitleAlt: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
     marginBottom: 4,
@@ -26989,6 +27375,17 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+  },
+  cashoutCollapseHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderWidth: 1,
+    borderColor: "#D8E0EB",
+    borderRadius: 14,
+    backgroundColor: "#F9FBFE",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   sectionTitleIcon: {
     width: 30,
@@ -27059,18 +27456,18 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   offersCtaTitle: {
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.white,
     fontFamily: FONT_DISPLAY,
   },
   offersCtaMeta: {
     marginTop: 2,
-    fontSize: 11,
+    fontSize: 12,
     color: "rgba(255, 255, 255, 0.84)",
     fontFamily: FONT_TEXT,
   },
   sectionBody: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -27093,7 +27490,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   formCardDisabledOverlayText: {
-    fontSize: 13,
+    fontSize: 14,
     lineHeight: 18,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
@@ -27118,13 +27515,13 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   paymentTitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     marginBottom: 4,
   },
   paymentBody: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -27158,7 +27555,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   infoTooltipTitle: {
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
@@ -27173,7 +27570,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(15, 23, 42, 0.08)",
   },
   infoTooltipBody: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 18,
@@ -27189,12 +27586,12 @@ const styles = StyleSheet.create({
     paddingRight: 10,
   },
   formHeaderTitle: {
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   formHeaderMeta: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -27217,13 +27614,13 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   pendingNoticeTitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     marginBottom: 4,
   },
   pendingNoticeBody: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -27245,7 +27642,7 @@ const styles = StyleSheet.create({
     borderColor: "#E5D1B2",
   },
   pendingPillText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -27270,20 +27667,20 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   dashboardReviewTitle: {
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
     marginBottom: 6,
   },
   dashboardReviewBody: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 18,
   },
   dashboardReviewMeta: {
     marginTop: 10,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
@@ -27312,7 +27709,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   profileInitials: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.pine,
     fontFamily: FONT_DISPLAY,
   },
@@ -27320,12 +27717,12 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   profileName: {
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   profileEmail: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -27339,7 +27736,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   profileRoleText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
@@ -27365,7 +27762,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.pine,
   },
   rolePillText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -27382,7 +27779,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   formSuccess: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
@@ -27404,18 +27801,18 @@ const styles = StyleSheet.create({
     paddingRight: 12,
   },
   supervisorName: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   supervisorDetails: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 4,
   },
   supervisorRole: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -27429,7 +27826,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.pine,
   },
   supervisorActionText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
   },
@@ -27447,7 +27844,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
   },
   supervisorActionTextAlt: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -27468,7 +27865,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.mint,
   },
   supervisorBadgeText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
@@ -27488,20 +27885,20 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   profileMetaLabel: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     textTransform: "uppercase",
     letterSpacing: 0.6,
   },
   profileMetaValue: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     marginTop: 4,
   },
   formLabel: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     marginBottom: 6,
@@ -27512,7 +27909,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontFamily: FONT_TEXT,
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     borderWidth: 1,
     borderColor: COLORS.sand,
@@ -27540,7 +27937,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   editGateText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -27554,13 +27951,13 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   editGateActiveText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     lineHeight: 16,
   },
   formHint: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginBottom: 12,
@@ -27590,7 +27987,7 @@ const styles = StyleSheet.create({
   },
   securityIntroText: {
     marginTop: 2,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -27612,7 +28009,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.pine,
   },
   securityActionPillText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -27627,14 +28024,14 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.mint,
   },
   securityIdleText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
   },
   securityMetaText: {
     marginTop: 8,
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -27656,7 +28053,7 @@ const styles = StyleSheet.create({
   },
   supportMetaText: {
     marginTop: 10,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -27674,7 +28071,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   supportSignOutText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -27689,7 +28086,7 @@ const styles = StyleSheet.create({
   },
   legalCheckText: {
     flex: 1,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -27700,7 +28097,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   legalLinkText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
     textDecorationLine: "underline",
@@ -27755,13 +28152,13 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   notificationTitleText: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   notificationSubtitleText: {
     marginTop: 1,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -27774,7 +28171,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(11, 33, 71, 0.08)",
   },
   notificationStatusText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
     textTransform: "uppercase",
@@ -27798,7 +28195,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(11, 33, 71, 0.10)",
   },
   notificationTypeText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -27819,7 +28216,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   notificationSectionTitle: {
-    fontSize: 14,
+    fontSize: 15,
     marginBottom: 2,
   },
   notificationManageRow: {
@@ -27851,13 +28248,13 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   notificationManageTitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   notificationManageHint: {
     marginTop: 2,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -27888,7 +28285,7 @@ const styles = StyleSheet.create({
     maxWidth: 160,
   },
   promoActivePillText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
@@ -27901,12 +28298,12 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(31, 78, 140, 0.08)",
   },
   promoRateText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
   promoHint: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -27924,7 +28321,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     fontFamily: FONT_TEXT,
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     borderWidth: 1,
     borderColor: COLORS.sand,
@@ -27939,7 +28336,7 @@ const styles = StyleSheet.create({
     minWidth: 84,
   },
   promoApplyText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
   },
@@ -27957,12 +28354,12 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
   },
   promoClearText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
   promoSuccess: {
-    fontSize: 11,
+    fontSize: 12,
     color: "#047857",
     fontFamily: FONT_MEDIUM,
     marginTop: 8,
@@ -27977,27 +28374,95 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   referralCodeLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
   referralCodeValue: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     letterSpacing: 0.8,
   },
-  referralStatsText: {
-    fontSize: 11,
+  referralProgressCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  referralProgressHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  referralProgressTitle: {
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    lineHeight: 16,
   },
-  referralClaimStatus: {
-    fontSize: 11,
-    color: COLORS.pine,
+  referralProgressAmount: {
+    fontSize: 12,
+    color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
+  },
+  referralProgressTrack: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "#E6ECF5",
+    overflow: "hidden",
+  },
+  referralProgressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: COLORS.pine,
+  },
+  referralProgressMeta: {
+    fontSize: 12,
     lineHeight: 16,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  referralClaimPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  referralClaimPillPending: {
+    backgroundColor: "#FEF3C7",
+    borderColor: "#FCD34D",
+  },
+  referralClaimPillRewarded: {
+    backgroundColor: "#D1FAE5",
+    borderColor: "#86EFAC",
+  },
+  referralClaimPillCapped: {
+    backgroundColor: "#DBEAFE",
+    borderColor: "#93C5FD",
+  },
+  referralClaimPillText: {
+    fontSize: 12,
+    fontFamily: FONT_MEDIUM,
+    color: COLORS.ink,
+  },
+  referralClaimPillTextPending: {
+    color: "#92400E",
+  },
+  referralClaimPillTextRewarded: {
+    color: "#065F46",
+  },
+  referralClaimPillTextCapped: {
+    color: "#1E3A8A",
   },
   referralActionsRow: {
     flexDirection: "row",
@@ -28014,7 +28479,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   referralActionText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
   },
@@ -28030,7 +28495,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   referralActionTextSecondary: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -28097,7 +28562,7 @@ const styles = StyleSheet.create({
   notificationSettingsLabel: {
     flex: 1,
     marginRight: 10,
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
   },
@@ -28127,12 +28592,12 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   pushTokenLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
   pushTokenValue: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
     lineHeight: 15,
@@ -28152,7 +28617,7 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
   pushTokenCopyText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -28169,7 +28634,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   pushTokenRefreshText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -28183,7 +28648,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   remoteNoticeText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     textAlign: "center",
@@ -28219,18 +28684,18 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   receiptOfferTitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   receiptOfferSub: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 4,
   },
   receiptSectionTitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
     marginBottom: 10,
@@ -28284,13 +28749,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   receiptAmountValue: {
-    fontSize: 18,
+    fontSize: 19,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
     textAlign: "center",
   },
   receiptAmountHint: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -28309,7 +28774,7 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   redeemTileBadgeText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#B42318",
     fontFamily: FONT_MEDIUM,
   },
@@ -28330,13 +28795,13 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   receiptTileDate: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     textAlign: "left",
   },
   receiptTileTime: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 4,
@@ -28362,12 +28827,12 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === "ios" ? 4 : 0,
   },
   editOfferTitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   editOfferSubtitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 6,
@@ -28420,7 +28885,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#EFF3F8",
   },
   offerCropFallbackText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -28469,12 +28934,12 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   receiptPreviewTitle: {
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   receiptPreviewMeta: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -28516,7 +28981,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   receiptPreviewPlaceholderText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -28568,7 +29033,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   receiptNoticeTitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -28589,7 +29054,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(21, 128, 61, 0.24)",
   },
   receiptNoticeStatusPillText: {
-    fontSize: 9,
+    fontSize: 10,
     fontFamily: FONT_MEDIUM,
   },
   receiptNoticeStatusPillTextAttention: {
@@ -28607,13 +29072,13 @@ const styles = StyleSheet.create({
   },
   receiptNoticeMeta: {
     marginTop: 6,
-    fontSize: 10,
+    fontSize: 11,
     color: "#334155",
     fontFamily: FONT_MEDIUM,
   },
   receiptNoticeMetaError: {
     marginTop: 6,
-    fontSize: 11,
+    fontSize: 12,
     color: "#B42318",
     fontFamily: FONT_MEDIUM,
   },
@@ -28649,12 +29114,12 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   receiptNoticeActionPrimaryText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
   },
   receiptNoticeActionSecondaryText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#334155",
     fontFamily: FONT_MEDIUM,
   },
@@ -28675,7 +29140,7 @@ const styles = StyleSheet.create({
     height: 24,
   },
   receiptQueuePillText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#B42318",
     fontFamily: FONT_MEDIUM,
   },
@@ -28688,7 +29153,7 @@ const styles = StyleSheet.create({
   },
   receiptCollapsedMeta: {
     flex: 1,
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -28704,7 +29169,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   receiptCollapsedManageText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -28715,7 +29180,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   receiptCollapseButtonText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -28746,13 +29211,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   historyVerifyNoticeTitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   historyVerifyNoticeBody: {
     marginTop: 8,
-    fontSize: 11,
+    fontSize: 12,
     lineHeight: 16,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
@@ -28786,13 +29251,13 @@ const styles = StyleSheet.create({
     elevation: 7,
   },
   appDialogTitle: {
-    fontSize: 20,
+    fontSize: 21,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
     marginBottom: 6,
   },
   appDialogMessage: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 19,
@@ -28822,7 +29287,7 @@ const styles = StyleSheet.create({
     borderColor: "#E2E8F0",
   },
   appDialogButtonText: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.pine,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -28837,13 +29302,13 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   noticeTitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
     marginBottom: 6,
   },
   noticeBody: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 18,
@@ -28898,13 +29363,13 @@ const styles = StyleSheet.create({
     marginLeft: 12,
   },
   uploadTitle: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   uploadMessage: {
     marginTop: 4,
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 18,
@@ -28959,7 +29424,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   historyGroupAvatarText: {
-    fontSize: 13,
+    fontSize: 14,
     fontFamily: FONT_BOLD,
     letterSpacing: 0.4,
   },
@@ -28968,7 +29433,7 @@ const styles = StyleSheet.create({
   },
   historyGroupTitle: {
     flex: 1,
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -28976,7 +29441,7 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   historyGroupSub: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -28993,7 +29458,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   historyGroupEarnedBarText: {
-    fontSize: 11,
+    fontSize: 12,
     color: "#2F6F4F",
     fontFamily: FONT_MEDIUM,
   },
@@ -29018,7 +29483,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
   },
   historyPendingSummaryText: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#B42318",
     fontFamily: FONT_MEDIUM,
   },
@@ -29035,7 +29500,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#EEF2FF",
   },
   historyReviewLinkText: {
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: FONT_MEDIUM,
     color: "#1E3A8A",
   },
@@ -29054,7 +29519,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   historySectionTitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     letterSpacing: 0.2,
@@ -29086,7 +29551,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255, 255, 255, 0.7)",
   },
   historySectionCountText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -29119,13 +29584,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   historyReviewText: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   historyReviewSubtext: {
     marginTop: 2,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -29151,6 +29616,124 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     elevation: 0,
   },
+  cashoutEarnedHistoryCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#D8E0EB",
+    backgroundColor: "#F9FBFE",
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  cashoutActivitySection: {
+    gap: 8,
+  },
+  cashoutActivitySectionTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutActivitySummary: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutActivityDivider: {
+    height: 1,
+    backgroundColor: "#E1E8F1",
+    marginVertical: 10,
+  },
+  cashoutEarnedList: {
+    gap: 8,
+  },
+  cashoutEarnedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderWidth: 1,
+    borderColor: "#E1E8F1",
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    gap: 10,
+  },
+  cashoutEarnedRowMain: {
+    flex: 1,
+    gap: 2,
+  },
+  cashoutEarnedOffer: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutEarnedTime: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutEarnedAmount: {
+    fontSize: 13,
+    color: "#166534",
+    fontFamily: FONT_BOLD,
+  },
+  cashoutWithdrawalList: {
+    gap: 8,
+  },
+  cashoutWithdrawalRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderWidth: 1,
+    borderColor: "#E1E8F1",
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    gap: 10,
+  },
+  cashoutWithdrawalMeta: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutWithdrawalRight: {
+    alignItems: "flex-end",
+    gap: 4,
+  },
+  cashoutWithdrawalAmount: {
+    fontSize: 13,
+    color: "#9F1239",
+    fontFamily: FONT_BOLD,
+  },
+  cashoutWithdrawalStatusPill: {
+    minHeight: 20,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#D5DEE9",
+    backgroundColor: "#EEF2F6",
+    paddingHorizontal: 8,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  cashoutWithdrawalStatusPillPaid: {
+    backgroundColor: "#DCFCE7",
+    borderColor: "#86EFAC",
+  },
+  cashoutWithdrawalStatusPillFailed: {
+    backgroundColor: "#FEE2E2",
+    borderColor: "#FCA5A5",
+  },
+  cashoutWithdrawalStatusText: {
+    fontSize: 11,
+    color: "#334155",
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutWithdrawalStatusTextPaid: {
+    color: "#166534",
+  },
+  cashoutWithdrawalStatusTextFailed: {
+    color: "#B91C1C",
+  },
   cashoutBalanceHeader: {
     marginBottom: 10,
     paddingHorizontal: 0,
@@ -29165,7 +29748,7 @@ const styles = StyleSheet.create({
     borderBottomColor: "#E1E8F1",
   },
   cashoutBalanceValue: {
-    fontSize: 30,
+    fontSize: 31,
     lineHeight: 34,
     letterSpacing: -0.3,
     color: "#0B1F3B",
@@ -29173,7 +29756,7 @@ const styles = StyleSheet.create({
   },
   cashoutSectionLead: {
     marginTop: 6,
-    fontSize: 12,
+    fontSize: 13,
     lineHeight: 18,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
@@ -29201,7 +29784,7 @@ const styles = StyleSheet.create({
     borderColor: "#F4D6A5",
   },
   cashoutBalanceBadgeText: {
-    fontSize: 10,
+    fontSize: 11,
     fontFamily: FONT_MEDIUM,
   },
   cashoutBalanceBadgeTextReady: {
@@ -29222,17 +29805,17 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   pointsLabel: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
   pointsValue: {
-    fontSize: 18,
+    fontSize: 19,
     color: COLORS.ink,
     fontFamily: FONT_BOLD,
   },
   pointsMeta: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -29249,12 +29832,12 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   cashoutAmountTitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   cashoutAmountMeta: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -29275,14 +29858,14 @@ const styles = StyleSheet.create({
     borderColor: "#D5DEE9",
   },
   cashoutAmountPrefix: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
     marginRight: 8,
   },
   cashoutAmountInput: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     padding: 0,
@@ -29297,13 +29880,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   cashoutAmountMaxText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   cashoutAmountHint: {
     marginTop: 8,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -29321,7 +29904,7 @@ const styles = StyleSheet.create({
     opacity: 0.58,
   },
   cashoutPayoutButtonText: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.white,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -29351,7 +29934,7 @@ const styles = StyleSheet.create({
   },
   cashoutStatusLineText: {
     flex: 1,
-    fontSize: 11,
+    fontSize: 12,
     color: "#334155",
     fontFamily: FONT_MEDIUM,
   },
@@ -29362,7 +29945,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   cashoutStatusText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -29401,7 +29984,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#EEF2F7",
   },
   cashoutSelectedAccountTag: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#334155",
     fontFamily: FONT_MEDIUM,
   },
@@ -29418,7 +30001,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   cashoutChangeBankButtonText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -29443,13 +30026,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   cashoutLinkedAccountTitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   cashoutLinkedAccountMeta: {
     marginTop: 2,
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -29458,26 +30041,25 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
   },
   cashoutShowMoreButtonText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   cashoutErrorText: {
     marginTop: 8,
-    fontSize: 11,
+    fontSize: 12,
     color: "#B42318",
     fontFamily: FONT_MEDIUM,
   },
   cashoutSuccessText: {
     marginTop: 8,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
   cashoutCelebrationOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
-    paddingTop: SAFE_TOP + 14,
   },
   cashoutCelebrationCard: {
     width: Math.min(SCREEN_WIDTH - 36, 360),
@@ -29504,13 +30086,13 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   cashoutCelebrationTitle: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   cashoutCelebrationBody: {
     marginTop: 2,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     textAlign: "center",
@@ -29571,7 +30153,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   cashoutActionTitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -29583,7 +30165,7 @@ const styles = StyleSheet.create({
   },
   cashoutActionSubtitle: {
     marginTop: 2,
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 14,
@@ -29621,13 +30203,13 @@ const styles = StyleSheet.create({
   },
   historyEntryTitle: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   historyEntrySubtitle: {
     marginTop: 4,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -29638,7 +30220,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   historyEntryTime: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -29653,7 +30235,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   historyStatusText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -29688,7 +30270,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFBFA",
   },
   historyCashbackPillText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -29711,7 +30293,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   historyUploadHintText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -29739,7 +30321,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(180, 35, 24, 0.2)",
   },
   historyFlagChipText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -29753,13 +30335,13 @@ const styles = StyleSheet.create({
     color: "#B42318",
   },
   historyEntryPending: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#B42318",
     fontFamily: FONT_MEDIUM,
     marginTop: 4,
   },
   historyEntryDescription: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 6,
@@ -29779,7 +30361,7 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   receiptUploadButtonText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -29809,7 +30391,7 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   historyPrimaryActionText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
   },
@@ -29817,7 +30399,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   historyInlineActionText: {
-    fontSize: 11,
+    fontSize: 12,
     color: "#1D4ED8",
     fontFamily: FONT_MEDIUM,
   },
@@ -29827,12 +30409,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   historyVerifyButtonText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   historyReceiptUploadButtonText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -29880,19 +30462,19 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   offerTitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   offerDescription: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 6,
     lineHeight: 16,
   },
   offerStatus: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 8,
@@ -29919,7 +30501,7 @@ const styles = StyleSheet.create({
     borderColor: "#B7C3D3",
   },
   offerActionText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
   },
@@ -29932,12 +30514,12 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
   },
   offerActionTextGhost: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   formError: {
-    fontSize: 11,
+    fontSize: 12,
     color: "#B42318",
     fontFamily: FONT_TEXT,
     marginBottom: 12,
@@ -29957,12 +30539,12 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.sand,
   },
   suggestionTitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   suggestionSubtitle: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -29986,7 +30568,7 @@ const styles = StyleSheet.create({
   },
   selectInputText: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     paddingRight: 8,
@@ -30011,7 +30593,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.mint,
   },
   selectMenuOptionText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -30035,7 +30617,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.pine,
   },
   categoryChipText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -30068,7 +30650,7 @@ const styles = StyleSheet.create({
     borderColor: "#D6DEE8",
   },
   planOptionName: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     marginBottom: 4,
@@ -30077,7 +30659,7 @@ const styles = StyleSheet.create({
     color: COLORS.white,
   },
   planOptionPrice: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_BOLD,
     marginBottom: 6,
@@ -30086,7 +30668,7 @@ const styles = StyleSheet.create({
     color: COLORS.white,
   },
   planOptionDesc: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 15,
@@ -30099,7 +30681,7 @@ const styles = StyleSheet.create({
   },
   planOptionBadge: {
     marginTop: 8,
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -30124,7 +30706,7 @@ const styles = StyleSheet.create({
     borderColor: "#E3A2A2",
   },
   alertText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
   },
@@ -30140,12 +30722,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   submissionTitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   submissionMeta: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -30165,7 +30747,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F5DDDD",
   },
   statusText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -30226,7 +30808,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   adminWorkspaceTabCountText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -30234,7 +30816,7 @@ const styles = StyleSheet.create({
     color: COLORS.pine,
   },
   adminWorkspaceTabLabel: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -30243,7 +30825,7 @@ const styles = StyleSheet.create({
   },
   adminWorkspaceTabSubtitle: {
     marginTop: 2,
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -30257,13 +30839,13 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   adminWorkspaceLeadTitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   adminWorkspaceLeadCopy: {
     marginTop: 3,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 17,
@@ -30293,13 +30875,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   adminDangerTitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   adminDangerBody: {
     marginTop: 6,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 17,
@@ -30319,14 +30901,14 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   adminCashbackTitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   adminCashbackSubtitle: {
     marginTop: 4,
     marginBottom: 8,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -30355,14 +30937,14 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   adminRecoveryTitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   adminRecoverySubtitle: {
     marginTop: 4,
     marginBottom: 8,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -30385,7 +30967,7 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   adminRecoveryLine: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -30408,12 +30990,12 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   adminRolesTitle: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   adminRolesSubtitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 18,
@@ -30436,13 +31018,13 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   adminRoleHeading: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     marginBottom: 6,
   },
   adminRoleItem: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -30470,18 +31052,18 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   adminTitle: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   adminMeta: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
   },
   adminOffer: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     marginBottom: 10,
@@ -30501,7 +31083,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   adminQuickMetaText: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -30516,7 +31098,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   adminDetailLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
     textTransform: "uppercase",
@@ -30524,18 +31106,18 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   adminDetailValue: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     marginBottom: 2,
   },
   adminDetailValueNew: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
   adminDetailValueFull: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     lineHeight: 18,
@@ -30560,7 +31142,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   adminOfferImagePlaceholderText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -30584,7 +31166,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#E6F0F8",
   },
   adminRateOptionText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -30603,7 +31185,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   adminRouteButtonText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -30634,12 +31216,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   adminDeleteArmText: {
-    fontSize: 12,
+    fontSize: 13,
     color: "#9F3E3E",
     fontFamily: FONT_MEDIUM,
   },
   adminDangerStep: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -30663,12 +31245,12 @@ const styles = StyleSheet.create({
     paddingRight: 12,
   },
   qrTitle: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   qrMeta: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
@@ -30699,19 +31281,19 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.mint,
   },
   qrFallbackText: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
   qrCodeLabel: {
     marginTop: 10,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
   qrCodeNote: {
     marginTop: 6,
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     textAlign: "center",
@@ -30766,7 +31348,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   adminActionText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.white,
     fontFamily: FONT_MEDIUM,
     textAlign: "center",
@@ -30797,13 +31379,13 @@ const styles = StyleSheet.create({
   },
   planTitle: {
     color: COLORS.ink,
-    fontSize: IS_COMPACT ? 12 : 13,
+    fontSize: IS_COMPACT ? 13 : 14,
     fontFamily: FONT_MEDIUM,
     marginBottom: 4,
   },
   planCopy: {
     color: COLORS.muted,
-    fontSize: IS_COMPACT ? 11 : 12,
+    fontSize: IS_COMPACT ? 12 : 13,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
   },
@@ -30819,7 +31401,7 @@ const styles = StyleSheet.create({
   },
   planButtonText: {
     color: COLORS.white,
-    fontSize: IS_COMPACT ? 11 : 12,
+    fontSize: IS_COMPACT ? 12 : 13,
     fontFamily: FONT_MEDIUM,
   },
   markerWrap: {
@@ -30855,6 +31437,7 @@ const styles = StyleSheet.create({
     transform: [{ rotate: "45deg" }],
   },
 });
+
 
 
 
