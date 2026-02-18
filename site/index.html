@@ -44,7 +44,6 @@
             </a>
             <div class="v2-nav-links">
               <a href="#how">How it works</a>
-              <a href="#flow">Live flow</a>
               <a href="#faq">FAQ</a>
               <a class="v2-nav-cta" href="/contact">Contact support</a>
             </div>
@@ -63,7 +62,7 @@
               </p>
               <div class="v2-actions">
                 <a class="v2-btn v2-btn-primary" href="/contact">Open support form</a>
-                <a class="v2-btn v2-btn-secondary" href="#flow">See live flow</a>
+                <a class="v2-btn v2-btn-secondary" href="#how">How it works</a>
               </div>
             </div>
             <aside class="v2-hero-card" aria-label="Platform highlights">
@@ -74,47 +73,6 @@
                 <li>Clear status from publish to reward</li>
               </ul>
             </aside>
-          </div>
-        </section>
-
-        <section id="flow" class="v2-section v2-section-soft">
-          <div class="v2-container">
-            <div class="v2-head">
-              <p class="v2-kicker">Interactive walkthrough</p>
-              <h2>See Wello in motion</h2>
-            </div>
-            <div class="v2-sim" aria-live="polite">
-              <div class="v2-sim-tabs" role="tablist" aria-label="Workflow stages">
-                <button type="button" class="v2-sim-tab is-active" role="tab" aria-selected="true" data-step="publish">Publish</button>
-                <button type="button" class="v2-sim-tab" role="tab" aria-selected="false" data-step="redeem">Redeem</button>
-                <button type="button" class="v2-sim-tab" role="tab" aria-selected="false" data-step="verify">Verify</button>
-              </div>
-              <article class="v2-sim-panel">
-                <div class="v2-sim-top">
-                  <span id="v2-sim-phase" class="v2-sim-phase">Offer live</span>
-                  <span id="v2-sim-status" class="v2-sim-status">Ready</span>
-                </div>
-                <h3 id="v2-sim-title">Offer published for nearby users.</h3>
-                <p id="v2-sim-copy">Your business offer is now visible to relevant customers in your coverage area.</p>
-                <div class="v2-sim-metrics">
-                  <div class="v2-sim-metric">
-                    <span id="v2-sim-m1-label">Reach</span>
-                    <strong id="v2-sim-m1-value">2.4k users</strong>
-                  </div>
-                  <div class="v2-sim-metric">
-                    <span id="v2-sim-m2-label">Claim rate</span>
-                    <strong id="v2-sim-m2-value">18%</strong>
-                  </div>
-                  <div class="v2-sim-metric">
-                    <span id="v2-sim-m3-label">Status</span>
-                    <strong id="v2-sim-m3-value">In market</strong>
-                  </div>
-                </div>
-                <div class="v2-sim-progress" aria-hidden="true">
-                  <span id="v2-sim-progress-bar"></span>
-                </div>
-              </article>
-            </div>
           </div>
         </section>
 
@@ -219,89 +177,6 @@
     </div>
     <script>
       document.getElementById("year").textContent = new Date().getFullYear();
-
-      const flowData = {
-        publish: {
-          phase: "Offer live",
-          status: "Ready",
-          title: "Offer published for nearby users.",
-          copy: "Your business offer is now visible to relevant customers in your coverage area.",
-          m1Label: "Reach",
-          m1Value: "2.4k users",
-          m2Label: "Claim rate",
-          m2Value: "18%",
-          m3Label: "Status",
-          m3Value: "In market",
-          progress: "34%"
-        },
-        redeem: {
-          phase: "Redemption",
-          status: "Active",
-          title: "Customers redeem in-store.",
-          copy: "Customers claim your offer and complete a clear redemption step in the app.",
-          m1Label: "Claims",
-          m1Value: "196 today",
-          m2Label: "Completion",
-          m2Value: "82%",
-          m3Label: "Status",
-          m3Value: "Tracking",
-          progress: "66%"
-        },
-        verify: {
-          phase: "Verification",
-          status: "Confirmed",
-          title: "Wello verifies and finalizes rewards.",
-          copy: "Verification paths confirm eligibility and complete reward outcomes with control.",
-          m1Label: "Verified",
-          m1Value: "142",
-          m2Label: "Pending",
-          m2Value: "14",
-          m3Label: "Status",
-          m3Value: "Settling",
-          progress: "100%"
-        }
-      };
-
-      const tabs = Array.from(document.querySelectorAll(".v2-sim-tab"));
-      const phase = document.getElementById("v2-sim-phase");
-      const status = document.getElementById("v2-sim-status");
-      const title = document.getElementById("v2-sim-title");
-      const copy = document.getElementById("v2-sim-copy");
-      const m1Label = document.getElementById("v2-sim-m1-label");
-      const m1Value = document.getElementById("v2-sim-m1-value");
-      const m2Label = document.getElementById("v2-sim-m2-label");
-      const m2Value = document.getElementById("v2-sim-m2-value");
-      const m3Label = document.getElementById("v2-sim-m3-label");
-      const m3Value = document.getElementById("v2-sim-m3-value");
-      const progress = document.getElementById("v2-sim-progress-bar");
-
-      const renderStep = (key) => {
-        const next = flowData[key];
-        if (!next) return;
-        phase.textContent = next.phase;
-        status.textContent = next.status;
-        title.textContent = next.title;
-        copy.textContent = next.copy;
-        m1Label.textContent = next.m1Label;
-        m1Value.textContent = next.m1Value;
-        m2Label.textContent = next.m2Label;
-        m2Value.textContent = next.m2Value;
-        m3Label.textContent = next.m3Label;
-        m3Value.textContent = next.m3Value;
-        progress.style.width = next.progress;
-      };
-
-      tabs.forEach((tab) => {
-        tab.addEventListener("click", () => {
-          tabs.forEach((item) => {
-            item.classList.remove("is-active");
-            item.setAttribute("aria-selected", "false");
-          });
-          tab.classList.add("is-active");
-          tab.setAttribute("aria-selected", "true");
-          renderStep(tab.dataset.step);
-        });
-      });
     </script>
   </body>
 </html>
