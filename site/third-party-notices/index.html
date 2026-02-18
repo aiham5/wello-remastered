@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Third-Party Notices | Wello Partners</title>
+    <meta
+      name="description"
+      content="Third-party provider and open-source notices for Wello Partners LLC."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Rubik:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+    <link rel="apple-touch-icon" href="/assets/wello-logo.jpeg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="legal-page">
+    <div class="legal-shell">
+      <header class="legal-header">
+        <div class="legal-container">
+          <nav class="legal-nav" aria-label="Legal page navigation">
+            <a class="legal-brand" href="/">
+              <img src="/assets/wello-logo.jpeg" alt="Wello logo" />
+              <span>Wello Partners</span>
+            </a>
+            <div class="legal-nav-actions">
+              <a class="legal-nav-link" href="/">Home</a>
+              <a class="legal-nav-link" href="/contact">Contact</a>
+            </div>
+          </nav>
+        </div>
+      </header>
+
+      <main class="legal-main">
+        <div class="legal-container">
+          <article class="legal-card legal-prose">
+            <p class="legal-kicker">Legal</p>
+            <h1>Third-Party Notices</h1>
+            <p class="legal-meta">Updated: February 18, 2026</p>
+
+            <section>
+              <h2>1. Third-Party Service Providers</h2>
+              <p>
+                Wello Partners LLC relies on third-party service providers to operate and secure
+                the platform.
+              </p>
+              <ul>
+                <li><strong>Supabase</strong>: backend, auth, database, and storage services.</li>
+                <li><strong>Stripe</strong>: billing and payout operations.</li>
+                <li><strong>Plaid</strong>: bank-link and transaction verification services.</li>
+                <li><strong>Brevo</strong>: transactional/support email infrastructure.</li>
+                <li><strong>Cloudflare</strong>: website hosting, edge delivery, and Turnstile protection.</li>
+                <li><strong>Expo Push Services</strong>: push-notification delivery pipeline.</li>
+                <li><strong>Google Maps / Places APIs</strong>: mapping and place lookup features.</li>
+              </ul>
+            </section>
+
+            <section>
+              <h2>2. Open-Source Software Notices</h2>
+              <p>
+                Wello uses open-source packages. Their licenses and repository links are listed in
+                the downloadable manifest.
+              </p>
+              <div class="legal-note">
+                <p>
+                  Manifest: <a href="/third-party-notices/licenses.json" download>Download licenses.json</a>
+                </p>
+                <p id="licenses-generated-at">Generated: loading...</p>
+              </div>
+
+              <div class="legal-table-wrap" role="region" aria-label="Open-source license table">
+                <table class="legal-table" id="licenses-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Package</th>
+                      <th scope="col">License</th>
+                      <th scope="col">Repository</th>
+                    </tr>
+                  </thead>
+                  <tbody id="licenses-table-body">
+                    <tr>
+                      <td colspan="3">Loading license manifest...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </article>
+        </div>
+      </main>
+
+      <footer class="legal-footer">
+        <div class="legal-container legal-footer-row">
+          <span>© <span id="year"></span> Wello Partners LLC</span>
+          <div class="legal-footer-links">
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
+            <a href="/third-party-notices">Third-Party Notices</a>
+            <a href="/contact">Contact</a>
+          </div>
+        </div>
+      </footer>
+    </div>
+
+    <script>
+      document.getElementById("year").textContent = new Date().getFullYear();
+
+      const body = document.getElementById("licenses-table-body");
+      const generatedAtEl = document.getElementById("licenses-generated-at");
+
+      const formatDate = (value) => {
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return value || "Unknown";
+        return parsed.toLocaleString();
+      };
+
+      const escapeHtml = (value) =>
+        String(value || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+
+      fetch("/third-party-notices/licenses.json", { cache: "no-store" })
+        .then((response) => {
+          if (!response.ok) throw new Error("Unable to load license manifest.");
+          return response.json();
+        })
+        .then((data) => {
+          const entries = Array.isArray(data?.entries) ? data.entries : [];
+          generatedAtEl.textContent = `Generated: ${formatDate(data?.generatedAt || "")}`;
+
+          if (!entries.length) {
+            body.innerHTML = '<tr><td colspan="3">No package entries found.</td></tr>';
+            return;
+          }
+
+          const rows = entries
+            .map((entry) => {
+              const pkg = escapeHtml(entry?.package || "");
+              const license = escapeHtml(entry?.license || "UNKNOWN");
+              const repo = String(entry?.repository || "").trim();
+              const repoCell = repo
+                ? `<a href="${encodeURI(repo)}" target="_blank" rel="noopener noreferrer">${escapeHtml(repo)}</a>`
+                : '<span class="legal-muted">Not provided</span>';
+              return `<tr><td>${pkg}</td><td>${license}</td><td>${repoCell}</td></tr>`;
+            })
+            .join("");
+
+          body.innerHTML = rows;
+        })
+        .catch((error) => {
+          generatedAtEl.textContent = "Generated: unavailable";
+          body.innerHTML = `<tr><td colspan="3">${error.message}</td></tr>`;
+        });
+    </script>
+  </body>
+</html>
+

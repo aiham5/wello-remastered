@@ -195,6 +195,9 @@ const STRIPE_CONNECT_REFRESH_URL =
 const STRIPE_CHECKOUT_SUCCESS_URL = "https://www.wellopartners.com/stripe/success";
 const STRIPE_CHECKOUT_CANCEL_URL = "https://www.wellopartners.com/stripe/cancel";
 const PRIVACY_POLICY_URL = "https://www.wellopartners.com/privacy";
+const TERMS_URL = "https://www.wellopartners.com/terms";
+const THIRD_PARTY_NOTICES_URL =
+  "https://www.wellopartners.com/third-party-notices";
 const REFERRAL_LANDING_URL = "https://www.wellopartners.com/referral";
 const SUPPORT_EMAIL_ADDRESS = "support@wellopartners.com";
 const OFFER_HONOR_POLICY_VERSION = "2026-02-17";
@@ -20821,6 +20824,48 @@ export default function App() {
                                     {authBusy ? "Please wait..." : "Sign in"}
                                   </Text>
                                 </TouchableOpacity>
+                                <View style={styles.authLegalBlock}>
+                                  <Text style={styles.authLegalCopy}>
+                                    By continuing, you agree to our Terms and Privacy.
+                                  </Text>
+                                  <View style={styles.authLegalLinksRow}>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(TERMS_URL).catch(
+                                          () => null,
+                                        )
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Terms
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(
+                                          PRIVACY_POLICY_URL,
+                                        ).catch(() => null)
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Privacy
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(
+                                          THIRD_PARTY_NOTICES_URL,
+                                        ).catch(() => null)
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Third-Party Notices
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
                               </View>
                             )}
 
@@ -20909,6 +20954,48 @@ export default function App() {
                                     Forgot email?
                                   </Text>
                                 </TouchableOpacity>
+                                <View style={styles.authLegalBlock}>
+                                  <Text style={styles.authLegalCopy}>
+                                    By continuing, you agree to our Terms and Privacy.
+                                  </Text>
+                                  <View style={styles.authLegalLinksRow}>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(TERMS_URL).catch(
+                                          () => null,
+                                        )
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Terms
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(
+                                          PRIVACY_POLICY_URL,
+                                        ).catch(() => null)
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Privacy
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(
+                                          THIRD_PARTY_NOTICES_URL,
+                                        ).catch(() => null)
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Third-Party Notices
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
                               </View>
                             )}
 
@@ -21071,6 +21158,48 @@ export default function App() {
                                       : "Create account"}
                                   </Text>
                                 </TouchableOpacity>
+                                <View style={styles.authLegalBlock}>
+                                  <Text style={styles.authLegalCopy}>
+                                    By continuing, you agree to our Terms and Privacy.
+                                  </Text>
+                                  <View style={styles.authLegalLinksRow}>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(TERMS_URL).catch(
+                                          () => null,
+                                        )
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Terms
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(
+                                          PRIVACY_POLICY_URL,
+                                        ).catch(() => null)
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Privacy
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(
+                                          THIRD_PARTY_NOTICES_URL,
+                                        ).catch(() => null)
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Third-Party Notices
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
                               </View>
                             )}
 
@@ -21556,19 +21685,6 @@ export default function App() {
                                     </Text>
                                   </TouchableOpacity>
                                 </View>
-                                <TouchableOpacity
-                                  style={styles.legalLinkButton}
-                                  onPress={() =>
-                                    Linking.openURL(PRIVACY_POLICY_URL).catch(
-                                      () => null,
-                                    )
-                                  }
-                                >
-                                  <Text style={styles.legalLinkText}>
-                                    Review Privacy Policy
-                                  </Text>
-                                </TouchableOpacity>
-
                                 {businessSignUpError && (
                                   <Text style={styles.formError}>
                                     {businessSignUpError}
@@ -21594,6 +21710,48 @@ export default function App() {
                                       : "Send verification code"}
                                   </Text>
                                 </TouchableOpacity>
+                                <View style={styles.authLegalBlock}>
+                                  <Text style={styles.authLegalCopy}>
+                                    By continuing, you agree to our Terms and Privacy.
+                                  </Text>
+                                  <View style={styles.authLegalLinksRow}>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(TERMS_URL).catch(
+                                          () => null,
+                                        )
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Terms
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(
+                                          PRIVACY_POLICY_URL,
+                                        ).catch(() => null)
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Privacy
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        Linking.openURL(
+                                          THIRD_PARTY_NOTICES_URL,
+                                        ).catch(() => null)
+                                      }
+                                    >
+                                      <Text style={styles.authLegalLinkText}>
+                                        Third-Party Notices
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
                               </View>
                             )}
                             {authView === "business_verify" && (
@@ -24536,6 +24694,33 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
+  },
+  authLegalBlock: {
+    marginTop: 10,
+    gap: 5,
+  },
+  authLegalCopy: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 16,
+  },
+  authLegalLinksRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  authLegalLinkText: {
+    fontSize: 12,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+    textDecorationLine: "underline",
+  },
+  authLegalDivider: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
   },
   timeRow: {
     flexDirection: "column",

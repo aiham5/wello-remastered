@@ -5,6 +5,10 @@
 /plaid-link      /plaid-link/index.html      200
 /contact         /contact/index.html         200
 /contact/*       /contact/index.html         200
+/terms           /terms/index.html           200
+/terms/*         /terms/index.html           200
+/third-party-notices    /third-party-notices/index.html    200
+/third-party-notices/*  /third-party-notices/index.html    200
 /referral       /referral/index.html        200
 /referral/*     /referral/index.html        200
 /admin           /admin/index.html           200

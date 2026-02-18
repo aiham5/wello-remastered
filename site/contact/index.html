@@ -134,9 +134,21 @@
           </section>
         </div>
       </main>
+
+      <footer class="contact-legal-footer">
+        <div class="contact-container contact-legal-footer-row">
+          <span>&copy; <span id="year"></span> Wello Partners LLC</span>
+          <div class="contact-legal-links">
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
+            <a href="/third-party-notices">Third-Party Notices</a>
+          </div>
+        </div>
+      </footer>
     </div>
 
     <script>
+      document.getElementById("year").textContent = new Date().getFullYear();
       const form = document.getElementById("contact-form");
       const submitButton = document.getElementById("contact-submit");
       const statusEl = document.getElementById("contact-status");
