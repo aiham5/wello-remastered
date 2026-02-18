@@ -2364,14 +2364,21 @@ body.contact-page .contact-btn {
   letter-spacing: 0.005em;
   line-height: 1;
   text-rendering: geometricPrecision;
+  text-align: center;
 }
 
 body.home-page .home-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 15px;
   font-weight: 700;
 }
 
 body.home-page .home-nav-links a.home-nav-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 14px;
   font-weight: 700;
 }
@@ -2381,11 +2388,17 @@ body.home-page .home-nav-cta-label-mobile {
 }
 
 body.home-page .home-nav-links a:not(.home-nav-cta) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 13.5px;
   font-weight: 600;
 }
 
 body.contact-page .contact-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 15px;
   font-weight: 700;
 }
