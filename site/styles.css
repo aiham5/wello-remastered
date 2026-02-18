@@ -2376,6 +2376,10 @@ body.home-page .home-nav-links a.home-nav-cta {
   font-weight: 700;
 }
 
+body.home-page .home-nav-cta-label-mobile {
+  display: none;
+}
+
 body.home-page .home-nav-links a:not(.home-nav-cta) {
   font-size: 13.5px;
   font-weight: 600;
@@ -2389,7 +2393,17 @@ body.contact-page .contact-btn {
 @media (max-width: 680px) {
   body.home-page .home-nav-links a.home-nav-cta,
   body.home-page .home-nav-links a:not(.home-nav-cta) {
-    font-size: 13px;
+    font-size: 12px;
+    min-height: 32px;
+    padding: 0 8px;
+  }
+
+  body.home-page .home-nav-cta-label-desktop {
+    display: none;
+  }
+
+  body.home-page .home-nav-cta-label-mobile {
+    display: inline;
   }
 
   body.home-page .home-btn,
