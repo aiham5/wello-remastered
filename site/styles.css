@@ -2187,16 +2187,40 @@ body.contact-page .contact-turnstile {
   }
 
   body.home-page .home-nav-links {
-    display: grid;
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
     width: 100%;
+    gap: 8px;
+    row-gap: 0;
+    padding-bottom: 2px;
+  }
+
+  body.home-page .home-nav-links::-webkit-scrollbar {
+    display: none;
   }
 
   body.home-page .home-nav-links a,
   body.home-page .home-nav-links a.home-nav-cta {
-    width: 100%;
-    justify-content: flex-start;
-    min-height: 40px;
+    flex: 0 0 auto;
+    width: auto;
+    min-height: 34px;
+    padding: 0 12px;
+    justify-content: center;
+    white-space: nowrap;
+  }
+
+  body.home-page .home-nav-links a:not(.home-nav-cta) {
+    border-radius: 999px;
+    border: 1px solid rgba(17, 17, 17, 0.12);
+    background: rgba(255, 255, 255, 0.78);
+  }
+
+  body.home-page .home-nav-links a.home-nav-cta {
+    margin-left: 2px;
   }
 
   body.home-page .home-hero {
