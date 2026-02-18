@@ -2353,3 +2353,48 @@ body.contact-page .contact-turnstile {
   }
 }
 
+/* ==========================
+   Button text polish
+   ========================== */
+
+body.home-page .home-btn,
+body.home-page .home-nav-links a,
+body.contact-page .contact-btn {
+  font-family: "Rubik", system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.005em;
+  line-height: 1;
+  text-rendering: geometricPrecision;
+}
+
+body.home-page .home-btn {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+body.home-page .home-nav-links a.home-nav-cta {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+body.home-page .home-nav-links a:not(.home-nav-cta) {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+body.contact-page .contact-btn {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+@media (max-width: 680px) {
+  body.home-page .home-nav-links a.home-nav-cta,
+  body.home-page .home-nav-links a:not(.home-nav-cta) {
+    font-size: 13px;
+  }
+
+  body.home-page .home-btn,
+  body.contact-page .contact-btn {
+    font-size: 14px;
+  }
+}
+
