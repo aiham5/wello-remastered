@@ -45,6 +45,7 @@ export default ({ config }) => ({
   ...config,
   plugins: uniqueValues([
     ...(Array.isArray(config.plugins) ? config.plugins : []),
+    "expo-secure-store",
     "expo-web-browser",
   ]),
   extra: {

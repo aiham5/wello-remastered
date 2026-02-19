@@ -2323,6 +2323,97 @@ const normalizeReceiptImage = async (asset) => {
   }
 };
 
+const normalizeOfferImage = async (asset) => {
+  if (!asset?.uri) {
+    return { image: null, error: "Invalid image selection." };
+  }
+
+  let sourceWidth = Number(asset.width) || 0;
+  let sourceHeight = Number(asset.height) || 0;
+  if (!sourceWidth || !sourceHeight) {
+    const dims = await getImageDimensionsFromUri(asset.uri);
+    sourceWidth = Number(dims.width) || 0;
+    sourceHeight = Number(dims.height) || 0;
+  }
+
+  const expectedAspect = OFFER_IMAGE_ASPECT;
+  const measuredAspect =
+    sourceWidth && sourceHeight ? sourceWidth / sourceHeight : expectedAspect;
+  const aspectDrift = expectedAspect
+    ? Math.abs(measuredAspect - expectedAspect) / expectedAspect
+    : 0;
+  const needsSafetyCrop = aspectDrift > 0.02;
+
+  const manipulator = await loadImageManipulator();
+  if (!manipulator?.manipulateAsync) {
+    if (needsSafetyCrop) {
+      console.warn(
+        "Wello offer image aspect mismatch detected but manipulator is unavailable for safety crop.",
+        {
+          measuredAspect,
+          expectedAspect,
+          aspectDrift,
+        },
+      );
+    }
+    return {
+      image: {
+        uri: asset.uri,
+        mimeType: asset.mimeType || "image/jpeg",
+        fileName: `offer-${Date.now()}.jpg`,
+        base64: null,
+      },
+      error: null,
+    };
+  }
+
+  try {
+    const actions = [];
+    let normalizedWidth = sourceWidth;
+
+    if (needsSafetyCrop && sourceWidth && sourceHeight) {
+      const fallbackCrop = getCenteredOfferCrop(sourceWidth, sourceHeight);
+      if (fallbackCrop) {
+        actions.push({ crop: fallbackCrop });
+        normalizedWidth = Number(fallbackCrop.width) || sourceWidth;
+        console.warn(
+          "Wello offer image applied centered safety crop to restore 1.91:1 framing.",
+          {
+            measuredAspect,
+            expectedAspect,
+            aspectDrift,
+          },
+        );
+      }
+    }
+
+    if (normalizedWidth > OFFER_UPLOAD_WIDTH) {
+      actions.push({ resize: { width: OFFER_UPLOAD_WIDTH } });
+    }
+
+    const result = await manipulator.manipulateAsync(asset.uri, actions, {
+      compress: 0.9,
+      format: manipulator.SaveFormat.JPEG,
+      base64: true,
+    });
+
+    return {
+      image: {
+        uri: result.uri,
+        mimeType: "image/jpeg",
+        fileName: `offer-${Date.now()}.jpg`,
+        base64: result.base64 || null,
+      },
+      error: null,
+    };
+  } catch (error) {
+    return {
+      image: null,
+      error: error?.message || "Unable to process the offer image.",
+    };
+  }
+};
+
 const uploadOfferImage = async (image, businessId) => {
   if (!image?.uri && !image?.base64) return { url: null, error: null };
   const safeBusinessId = String(businessId || "business").replace(
@@ -3057,8 +3148,13 @@ export default function App() {
   const [showSignUpPassword, setShowSignUpPassword] = useState(false);
   const [signUpError, setSignUpError] = useState(null);
   const [businessEmail, setBusinessEmail] = useState("");
-  const [businessPassword, setBusinessPassword] = useState("");
-  const [showBusinessPassword, setShowBusinessPassword] = useState(false);
+  const [businessVerifyPassword, setBusinessVerifyPassword] = useState("");
+  const [businessVerifyPasswordConfirm, setBusinessVerifyPasswordConfirm] =
+    useState("");
+  const [showBusinessVerifyPassword, setShowBusinessVerifyPassword] =
+    useState(false);
+  const [showBusinessVerifyPasswordConfirm, setShowBusinessVerifyPasswordConfirm] =
+    useState(false);
   const [businessOwnerName, setBusinessOwnerName] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [businessCategoryKey, setBusinessCategoryKey] = useState("restaurant");
@@ -3232,6 +3328,9 @@ export default function App() {
     loading: false,
     error: null,
   });
+  const [hasLoadedBusinessesOnce, setHasLoadedBusinessesOnce] = useState(
+    !(SUPABASE_URL && SUPABASE_ANON_KEY),
+  );
   const [offerStatus, setOfferStatus] = useState({
     loading: false,
     error: null,
@@ -4792,7 +4891,8 @@ export default function App() {
     setProfileCompany("");
     setShowSignInPassword(false);
     setShowSignUpPassword(false);
-    setShowBusinessPassword(false);
+    setShowBusinessVerifyPassword(false);
+    setShowBusinessVerifyPasswordConfirm(false);
     setSignInNotice(null);
     setForgotPasswordBusy(false);
     setSecurityEmailDraft("");
@@ -4822,6 +4922,8 @@ export default function App() {
     setBusinessSignUpNotice(null);
     setBusinessOtpCode("");
     setBusinessOtpSentEmail("");
+    setBusinessVerifyPassword("");
+    setBusinessVerifyPasswordConfirm("");
     setBusinessPendingSignup(null);
   }, []);
 
@@ -6165,6 +6267,7 @@ export default function App() {
   const loadRemoteBusinesses = useCallback(
     async ({ silent } = {}) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setHasLoadedBusinessesOnce(true);
         if (!silent) {
           setRemoteStatus({
             loading: false,
@@ -6217,6 +6320,7 @@ export default function App() {
           .order("created_at", { ascending: false });
 
         if (error) {
+          setHasLoadedBusinessesOnce(true);
           if (!silent) {
             setRemoteStatus({
               loading: false,
@@ -6240,6 +6344,7 @@ export default function App() {
           mergeBusinesses(mapped);
           hydrateBusinessCoordinatesRef.current?.(mapped);
         }
+        setHasLoadedBusinessesOnce(true);
         if (!silent) {
           setRemoteStatus({ loading: false, error: null });
         } else {
@@ -6248,6 +6353,7 @@ export default function App() {
           );
         }
       } catch (err) {
+        setHasLoadedBusinessesOnce(true);
         const message =
           err?.message || "Unable to load businesses. Check your connection.";
         if (!silent) {
@@ -7011,6 +7117,54 @@ export default function App() {
   const isStaff = isAdmin || isSupervisor;
   const showHistoryTab = !isOwner && !isStaff;
   const showCashoutTab = showHistoryTab;
+  const shouldResolveOwnerBusinessStatus =
+    isOwner && isSignedIn && Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+  const ownerBusinessStatusLoading =
+    shouldResolveOwnerBusinessStatus &&
+    (!hasLoadedBusinessesOnce || (remoteStatus.loading && !ownerBusiness));
+  const ownerBusinessStatusError =
+    shouldResolveOwnerBusinessStatus &&
+    !ownerBusiness &&
+    hasLoadedBusinessesOnce &&
+    Boolean(remoteStatus.error);
+  const ownerDashboardLocked =
+    ownerBusinessStatusLoading ||
+    ownerBusinessStatusError ||
+    ownerBusinessAwaitingApproval ||
+    ownerBusinessRejected;
+  const ownerDashboardLockTitle = ownerBusinessStatusLoading
+    ? "Checking business profile"
+    : ownerBusinessStatusError
+      ? "Unable to verify business status"
+      : ownerBusinessRejected
+        ? "Business profile not approved"
+        : "Business profile under review";
+  const ownerDashboardLockMessage = ownerBusinessStatusLoading
+    ? "We're loading your business profile status. Dashboard tools stay locked until verification is complete."
+    : ownerBusinessStatusError
+      ? remoteStatus.error ||
+        "We couldn't confirm your business profile status. Dashboard tools remain locked for safety."
+      : ownerBusinessRejected
+        ? ownerBusiness?.name
+          ? `${ownerBusiness.name} is currently rejected and remains inactive. Business tools stay locked until an admin approves the listing.`
+          : "This business is currently rejected and remains inactive. Business tools stay locked until an admin approves the listing."
+        : ownerBusiness?.name
+          ? `Thanks for submitting ${ownerBusiness.name}. Our team is currently reviewing your business profile. Dashboard tools will unlock as soon as your listing is approved.`
+          : "Thanks for submitting your business profile. Our team is currently reviewing your information. Dashboard tools will unlock as soon as your listing is approved.";
+  const ownerDashboardLockMeta = ownerBusinessStatusLoading
+    ? "This usually takes a few seconds."
+    : ownerBusinessStatusError
+      ? "Check your connection and try again."
+      : ownerBusinessRejected
+        ? "Contact support if you believe this was a mistake."
+        : "Most reviews are completed within 12-24 hours.";
+  const ownerDashboardLockIconName = ownerBusinessStatusError
+    ? "warning-outline"
+    : ownerBusinessStatusLoading
+      ? "hourglass-outline"
+      : ownerBusinessRejected
+        ? "alert-circle-outline"
+        : "hourglass-outline";
   const enabledNotificationCount = useMemo(
     () =>
       Object.values(notificationPreferences).reduce(
@@ -8823,12 +8977,8 @@ export default function App() {
   };
 
   const handleBusinessSignUp = async () => {
-    if (!businessEmail.trim() || !businessPassword.trim()) {
-      setBusinessSignUpError("Email and password are required.");
-      return;
-    }
-    if (String(businessPassword).length < 8) {
-      setBusinessSignUpError("Use at least 8 characters for password.");
+    if (!businessEmail.trim()) {
+      setBusinessSignUpError("Email is required.");
       return;
     }
     if (!businessOwnerName.trim()) {
@@ -8893,7 +9043,6 @@ export default function App() {
       const offerHonorAcceptedAt = new Date().toISOString();
       const pendingSignup = {
         email,
-        password: businessPassword,
         startedAtIso: new Date().toISOString(),
         ownerName: businessOwnerName.trim(),
         name: businessName.trim(),
@@ -8953,6 +9102,10 @@ export default function App() {
       setBusinessPendingSignup(pendingSignup);
       setBusinessOtpSentEmail(email);
       setBusinessOtpCode("");
+      setBusinessVerifyPassword("");
+      setBusinessVerifyPasswordConfirm("");
+      setShowBusinessVerifyPassword(false);
+      setShowBusinessVerifyPasswordConfirm(false);
       setAuthView("business_verify");
       setBusinessSignUpNotice(`We sent a one-time code to ${email}.`);
     } finally {
@@ -8963,6 +9116,10 @@ export default function App() {
   const handleResendBusinessSignUpCode = async () => {
     if (!businessPendingSignup || !businessOtpSentEmail) {
       setBusinessSignUpError("Start business sign-up again.");
+      setBusinessVerifyPassword("");
+      setBusinessVerifyPasswordConfirm("");
+      setShowBusinessVerifyPassword(false);
+      setShowBusinessVerifyPasswordConfirm(false);
       setAuthView("business");
       return;
     }
@@ -8989,6 +9146,8 @@ export default function App() {
 
   const handleVerifyBusinessSignUpCode = async () => {
     const code = String(businessOtpCode || "").trim();
+    const nextPassword = String(businessVerifyPassword || "");
+    const confirmPassword = String(businessVerifyPasswordConfirm || "");
     if (!businessPendingSignup || !businessOtpSentEmail) {
       setBusinessSignUpError("Start business sign-up again.");
       setAuthView("business");
@@ -9000,6 +9159,14 @@ export default function App() {
     }
     if (code.length !== 8) {
       setBusinessSignUpError("Enter the full 8-digit code.");
+      return;
+    }
+    if (nextPassword.length < 8) {
+      setBusinessSignUpError("Use at least 8 characters for password.");
+      return;
+    }
+    if (nextPassword !== confirmPassword) {
+      setBusinessSignUpError("Passwords do not match.");
       return;
     }
     if (!ensureSupabaseReady(setBusinessSignUpError)) return;
@@ -9041,6 +9208,10 @@ export default function App() {
         setBusinessPendingSignup(null);
         setBusinessOtpSentEmail("");
         setBusinessOtpCode("");
+        setBusinessVerifyPassword("");
+        setBusinessVerifyPasswordConfirm("");
+        setShowBusinessVerifyPassword(false);
+        setShowBusinessVerifyPasswordConfirm(false);
         setBusinessSignUpError(
           "Verification email mismatch. Please start business sign-up again.",
         );
@@ -9060,6 +9231,10 @@ export default function App() {
         setBusinessPendingSignup(null);
         setBusinessOtpSentEmail("");
         setBusinessOtpCode("");
+        setBusinessVerifyPassword("");
+        setBusinessVerifyPasswordConfirm("");
+        setShowBusinessVerifyPassword(false);
+        setShowBusinessVerifyPasswordConfirm(false);
         setBusinessSignUpError(
           "This email is already registered. Sign in or use a different email.",
         );
@@ -9069,7 +9244,7 @@ export default function App() {
 
       const { data: updatedData, error: updateError } =
         await supabase.auth.updateUser({
-          password: businessPendingSignup.password,
+          password: nextPassword,
           data: {
             role: "business_owner",
             full_name: businessPendingSignup.ownerName,
@@ -9184,8 +9359,6 @@ export default function App() {
       }
 
       setIsSignedIn(true);
-      setBusinessPassword("");
-      setShowBusinessPassword(false);
       setBusinessOwnerName("");
       setBusinessName("");
       setBusinessAddress("");
@@ -9204,6 +9377,10 @@ export default function App() {
       setBusinessHoursEndMeridiem("PM");
       setBusinessSignUpAuthorizedChecked(false);
       setBusinessSignUpHonorOffersChecked(false);
+      setBusinessVerifyPassword("");
+      setBusinessVerifyPasswordConfirm("");
+      setShowBusinessVerifyPassword(false);
+      setShowBusinessVerifyPasswordConfirm(false);
       setBusinessOtpCode("");
       setBusinessOtpSentEmail("");
       setBusinessPendingSignup(null);
@@ -9356,8 +9533,10 @@ export default function App() {
     setShowSignInPassword(false);
     setSignUpPassword("");
     setShowSignUpPassword(false);
-    setBusinessPassword("");
-    setShowBusinessPassword(false);
+    setBusinessVerifyPassword("");
+    setBusinessVerifyPasswordConfirm("");
+    setShowBusinessVerifyPassword(false);
+    setShowBusinessVerifyPasswordConfirm(false);
     setAccountRole("consumer");
     setAuthUserId(null);
     setAuthEmail("");
@@ -9386,6 +9565,8 @@ export default function App() {
     setBusinessSignUpNotice(null);
     setBusinessOtpCode("");
     setBusinessOtpSentEmail("");
+    setBusinessVerifyPassword("");
+    setBusinessVerifyPasswordConfirm("");
     setBusinessPendingSignup(null);
     setSignInEmail("");
     setSignUpEmail("");
@@ -11707,8 +11888,9 @@ export default function App() {
       const mediaTypes = getImagePickerMediaTypes();
       const pickerOptions = {
         ...(mediaTypes ? { mediaTypes } : {}),
-        allowsEditing: false,
-        quality: 0.85,
+        allowsEditing: true,
+        aspect: [191, 100],
+        quality: 0.9,
         base64: false,
       };
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -11716,7 +11898,13 @@ export default function App() {
       });
       if (result.canceled) return;
       const asset = result.assets?.[0];
-      if (!asset?.uri) return;
+      if (!asset?.uri) {
+        setOfferImageStatus({
+          uploading: false,
+          error: "Unable to load that photo. Please try again.",
+        });
+        return;
+      }
       if (!isImageAsset(asset)) {
         setOfferImageStatus({
           uploading: false,
@@ -11724,7 +11912,17 @@ export default function App() {
         });
         return;
       }
-      await openOfferCropModalForAsset(asset, "create");
+      setOfferImageStatus({ uploading: true, error: null });
+      const { image, error } = await normalizeOfferImage(asset);
+      if (error || !image?.uri) {
+        setOfferImageStatus({
+          uploading: false,
+          error: error || "Unable to process this photo.",
+        });
+        return;
+      }
+      setOfferImage(image);
+      setOfferImageStatus({ uploading: false, error: null });
     } catch (error) {
       setOfferImageStatus({
         uploading: false,
@@ -11748,8 +11946,9 @@ export default function App() {
       const mediaTypes = getImagePickerMediaTypes();
       const pickerOptions = {
         ...(mediaTypes ? { mediaTypes } : {}),
-        allowsEditing: false,
-        quality: 0.85,
+        allowsEditing: true,
+        aspect: [191, 100],
+        quality: 0.9,
         base64: false,
       };
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -11757,7 +11956,13 @@ export default function App() {
       });
       if (result.canceled) return;
       const asset = result.assets?.[0];
-      if (!asset?.uri) return;
+      if (!asset?.uri) {
+        setEditOfferStatus({
+          saving: false,
+          error: "Unable to load that photo. Please try again.",
+        });
+        return;
+      }
       if (!isImageAsset(asset)) {
         setEditOfferStatus({
           saving: false,
@@ -11765,7 +11970,16 @@ export default function App() {
         });
         return;
       }
-      await openOfferCropModalForAsset(asset, "edit");
+      const { image, error } = await normalizeOfferImage(asset);
+      if (error || !image?.uri) {
+        setEditOfferStatus({
+          saving: false,
+          error: error || "Unable to process this photo.",
+        });
+        return;
+      }
+      setEditOfferImage({ ...image, isRemote: false });
+      setEditOfferStatus((prev) => ({ ...prev, error: null }));
     } catch (error) {
       setEditOfferStatus({
         saving: false,
@@ -13524,7 +13738,7 @@ export default function App() {
             />
             <View style={styles.offerUploadOverlay}>
               <Text style={styles.offerUploadOverlayText}>
-                Tap to recrop or replace
+                Tap to replace photo
               </Text>
             </View>
           </>
@@ -13532,7 +13746,7 @@ export default function App() {
           <View style={styles.offerUploadPlaceholder}>
             <Ionicons name="image-outline" size={18} color={COLORS.muted} />
             <Text style={styles.offerUploadHint}>
-              Tap to upload and crop a photo.
+              Tap to choose and crop photo.
             </Text>
           </View>
         )}
@@ -13543,7 +13757,7 @@ export default function App() {
         )}
       </TouchableOpacity>
       <Text style={styles.formHint}>
-        Crop before saving. The preview is how your offer will appear.
+        Use native crop to match the final offer preview.
       </Text>
       <View style={styles.legalChecklist}>
         <TouchableOpacity
@@ -16423,7 +16637,7 @@ export default function App() {
                     )}
                   </View>
                   <Text style={styles.formHint}>
-                    Upload and crop to control how the offer photo appears.
+                    Choose and crop to control how the offer photo appears.
                   </Text>
                   <View style={styles.offerUploadFrame}>
                     {editOfferImage?.uri ? (
@@ -17899,37 +18113,23 @@ export default function App() {
                           </View>
                         </View>
 
-                        {ownerBusinessAwaitingApproval || ownerBusinessRejected ? (
+                        {ownerDashboardLocked ? (
                           <View style={styles.dashboardReviewCard}>
                             <View style={styles.dashboardReviewIconWrap}>
                               <Ionicons
-                                name={
-                                  ownerBusinessRejected
-                                    ? "alert-circle-outline"
-                                    : "hourglass-outline"
-                                }
+                                name={ownerDashboardLockIconName}
                                 size={18}
                                 color={COLORS.pine}
                               />
                             </View>
                             <Text style={styles.dashboardReviewTitle}>
-                              {ownerBusinessRejected
-                                ? "Business profile not approved"
-                                : "Business profile under review"}
+                              {ownerDashboardLockTitle}
                             </Text>
                             <Text style={styles.dashboardReviewBody}>
-                              {ownerBusinessRejected
-                                ? ownerBusiness?.name
-                                  ? `${ownerBusiness.name} is currently rejected and remains inactive. Business tools stay locked until an admin approves the listing.`
-                                  : "This business is currently rejected and remains inactive. Business tools stay locked until an admin approves the listing."
-                                : ownerBusiness?.name
-                                  ? `Thanks for submitting ${ownerBusiness.name}. Our team is currently reviewing your business profile. Dashboard tools will unlock as soon as your listing is approved.`
-                                  : "Thanks for submitting your business profile. Our team is currently reviewing your information. Dashboard tools will unlock as soon as your listing is approved."}
+                              {ownerDashboardLockMessage}
                             </Text>
                             <Text style={styles.dashboardReviewMeta}>
-                              {ownerBusinessRejected
-                                ? "Contact support if you believe this was a mistake."
-                                : "Most reviews are completed within 12-24 hours."}
+                              {ownerDashboardLockMeta}
                             </Text>
                           </View>
                         ) : (
@@ -21591,38 +21791,6 @@ export default function App() {
                                   keyboardType="email-address"
                                   autoCapitalize="none"
                                 />
-
-                                <Text style={styles.formLabel}>Password</Text>
-                                <View style={styles.passwordInputWrapper}>
-                                  <AutoFocusInput
-                                    style={[
-                                      styles.authInput,
-                                      styles.passwordInputWithToggle,
-                                    ]}
-                                    placeholder="Create a password"
-                                    placeholderTextColor={COLORS.muted}
-                                    value={businessPassword}
-                                    onChangeText={setBusinessPassword}
-                                    secureTextEntry={!showBusinessPassword}
-                                  />
-                                  <TouchableOpacity
-                                    style={styles.passwordToggleButton}
-                                    onPress={() =>
-                                      setShowBusinessPassword((prev) => !prev)
-                                    }
-                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                                  >
-                                    <Ionicons
-                                      name={
-                                        showBusinessPassword
-                                          ? "eye-off-outline"
-                                          : "eye-outline"
-                                      }
-                                      size={18}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                </View>
                                 <View style={styles.legalChecklist}>
                                   <TouchableOpacity
                                     style={styles.legalCheckRow}
@@ -21760,6 +21928,10 @@ export default function App() {
                                   style={styles.authBack}
                                   onPress={() => {
                                     setBusinessOtpCode("");
+                                    setBusinessVerifyPassword("");
+                                    setBusinessVerifyPasswordConfirm("");
+                                    setShowBusinessVerifyPassword(false);
+                                    setShowBusinessVerifyPasswordConfirm(false);
                                     setBusinessSignUpError(null);
                                     setBusinessSignUpNotice(null);
                                     setAuthView("business");
@@ -21782,6 +21954,7 @@ export default function App() {
                                 <Text style={styles.authSubtitle}>
                                   Enter the one-time code sent to{" "}
                                   {businessOtpSentEmail || businessEmail.trim().toLowerCase()}.
+                                  Then create your password.
                                 </Text>
 
                                 <Text style={styles.formLabel}>One-time code</Text>
@@ -21804,6 +21977,82 @@ export default function App() {
                                     if (!authBusy) handleVerifyBusinessSignUpCode();
                                   }}
                                 />
+                                <Text style={styles.formLabel}>Password</Text>
+                                <View style={styles.passwordInputWrapper}>
+                                  <AutoFocusInput
+                                    style={[
+                                      styles.authInput,
+                                      styles.passwordInputWithToggle,
+                                    ]}
+                                    placeholder="Create a password"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={businessVerifyPassword}
+                                    onChangeText={(value) => {
+                                      setBusinessVerifyPassword(value);
+                                      if (businessSignUpError) setBusinessSignUpError(null);
+                                      if (businessSignUpNotice) setBusinessSignUpNotice(null);
+                                    }}
+                                    secureTextEntry={!showBusinessVerifyPassword}
+                                  />
+                                  <TouchableOpacity
+                                    style={styles.passwordToggleButton}
+                                    onPress={() =>
+                                      setShowBusinessVerifyPassword((prev) => !prev)
+                                    }
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                  >
+                                    <Ionicons
+                                      name={
+                                        showBusinessVerifyPassword
+                                          ? "eye-off-outline"
+                                          : "eye-outline"
+                                      }
+                                      size={18}
+                                      color={COLORS.muted}
+                                    />
+                                  </TouchableOpacity>
+                                </View>
+                                <Text style={styles.formLabel}>Confirm password</Text>
+                                <View style={styles.passwordInputWrapper}>
+                                  <AutoFocusInput
+                                    style={[
+                                      styles.authInput,
+                                      styles.passwordInputWithToggle,
+                                    ]}
+                                    placeholder="Re-enter password"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={businessVerifyPasswordConfirm}
+                                    onChangeText={(value) => {
+                                      setBusinessVerifyPasswordConfirm(value);
+                                      if (businessSignUpError) setBusinessSignUpError(null);
+                                      if (businessSignUpNotice) setBusinessSignUpNotice(null);
+                                    }}
+                                    secureTextEntry={!showBusinessVerifyPasswordConfirm}
+                                    returnKeyType="go"
+                                    onSubmitEditing={() => {
+                                      if (!authBusy) handleVerifyBusinessSignUpCode();
+                                    }}
+                                  />
+                                  <TouchableOpacity
+                                    style={styles.passwordToggleButton}
+                                    onPress={() =>
+                                      setShowBusinessVerifyPasswordConfirm(
+                                        (prev) => !prev,
+                                      )
+                                    }
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                  >
+                                    <Ionicons
+                                      name={
+                                        showBusinessVerifyPasswordConfirm
+                                          ? "eye-off-outline"
+                                          : "eye-outline"
+                                      }
+                                      size={18}
+                                      color={COLORS.muted}
+                                    />
+                                  </TouchableOpacity>
+                                </View>
 
                                 {businessSignUpError && (
                                   <Text style={styles.formError}>

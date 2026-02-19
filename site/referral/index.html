@@ -41,12 +41,15 @@
             <a id="open-app-btn" class="v2-btn v2-btn-primary" href="wello://auth/callback?flow=referral">
               Open Wello app
             </a>
+            <a id="open-store-btn" class="v2-btn v2-btn-secondary" href="#">
+              Download app
+            </a>
             <a class="v2-btn v2-btn-secondary" href="mailto:support@wellopartners.com">
               Contact support
             </a>
           </div>
           <p id="fallback-note" class="v2-referral-note" hidden>
-            If the app did not open, tap "Open Wello app" above.
+            If the app did not open, we'll take you to the download page.
           </p>
         </section>
       </main>
@@ -74,15 +77,54 @@
         var deepLink = isValidRef
           ? "wello://auth/callback?flow=referral&ref=" + encodeURIComponent(rawRef)
           : "wello://auth/callback?flow=referral";
+        var IOS_APP_STORE_URL = "https://apps.apple.com/us/app/id6759310025";
+        var ANDROID_PLAY_STORE_URL =
+          "https://play.google.com/store/apps/details?id=com.wellopartners.wello";
+        var FALLBACK_WEB_URL = "https://www.wellopartners.com/contact";
         var fallbackNote = document.getElementById("fallback-note");
         var openAppBtn = document.getElementById("open-app-btn");
+        var openStoreBtn = document.getElementById("open-store-btn");
+        var platform = (function () {
+          var ua = navigator.userAgent || "";
+          if (/android/i.test(ua)) return "android";
+          if (/iphone|ipad|ipod/i.test(ua)) return "ios";
+          return "other";
+        })();
+        var storeUrl =
+          platform === "android"
+            ? ANDROID_PLAY_STORE_URL
+            : platform === "ios"
+              ? IOS_APP_STORE_URL
+              : FALLBACK_WEB_URL;
         if (openAppBtn) {
           openAppBtn.setAttribute("href", deepLink);
         }
+        if (openStoreBtn) {
+          openStoreBtn.setAttribute("href", storeUrl);
+        }
+
+        var fallbackTimer = null;
+        var hasNavigatedToStore = false;
+        function openStore() {
+          if (hasNavigatedToStore) return;
+          hasNavigatedToStore = true;
+          window.location.href = storeUrl;
+        }
+
+        document.addEventListener("visibilitychange", function () {
+          if (document.hidden && fallbackTimer) {
+            clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+          }
+        });
+
         function openApp() {
           window.location.href = deepLink;
         }
         setTimeout(openApp, 120);
+        fallbackTimer = setTimeout(function () {
+          openStore();
+        }, 1300);
         setTimeout(function () {
           if (fallbackNote) fallbackNote.hidden = false;
         }, 1600);
