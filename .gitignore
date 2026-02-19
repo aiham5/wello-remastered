@@ -4,6 +4,9 @@ node_modules/
 .env.*
 !.env.example
 supabase/.temp/
+backups/
+seed-assets/
+CON
 
 # Firebase / Push credentials
 google-services.json
