@@ -241,6 +241,8 @@ const PLAID_ANDROID_PACKAGE_NAME =
   "com.wellopartners.wello";
 const ANDROID_MARKER_SIZE = 34;
 const ANDROID_MARKER_SELECTED_SIZE = 44;
+const MARKER_ICON_SIZE = 20;
+const FORCE_VECTOR_MARKERS = false;
 const CONFETTI_PIECES = 20;
 const NOTIFICATION_DEFAULTS = {
   new_offer: true,
@@ -452,7 +454,9 @@ const BUSINESSES = [
     isOpen: true,
     hours: "7:00 AM - 6:00 PM",
     createdAt: daysAgo(3),
-    coordinate: { latitude: 40.7138, longitude: -74.0065 },
+    coordinate: USE_FAKE_LOCATION
+      ? createDemoCoordinate(0)
+      : { latitude: 40.7138, longitude: -74.0065 },
     approved: true,
     rejected: false,
     source: "seed",
@@ -470,7 +474,9 @@ const BUSINESSES = [
     isOpen: true,
     hours: "5:30 AM - 9:00 PM",
     createdAt: daysAgo(8),
-    coordinate: { latitude: 40.7119, longitude: -74.0018 },
+    coordinate: USE_FAKE_LOCATION
+      ? createDemoCoordinate(1)
+      : { latitude: 40.7119, longitude: -74.0018 },
     approved: true,
     rejected: false,
     source: "seed",
@@ -488,7 +494,9 @@ const BUSINESSES = [
     isOpen: true,
     hours: "8:00 AM - 8:00 PM",
     createdAt: daysAgo(14),
-    coordinate: { latitude: 40.7152, longitude: -74.0083 },
+    coordinate: USE_FAKE_LOCATION
+      ? createDemoCoordinate(2)
+      : { latitude: 40.7152, longitude: -74.0083 },
     approved: true,
     rejected: false,
     source: "seed",
@@ -506,7 +514,9 @@ const BUSINESSES = [
     isOpen: false,
     hours: "10:00 AM - 7:00 PM",
     createdAt: daysAgo(2),
-    coordinate: { latitude: 40.7096, longitude: -74.0105 },
+    coordinate: USE_FAKE_LOCATION
+      ? createDemoCoordinate(3)
+      : { latitude: 40.7096, longitude: -74.0105 },
     approved: true,
     rejected: false,
     source: "seed",
@@ -524,7 +534,9 @@ const BUSINESSES = [
     isOpen: true,
     hours: "3:00 PM - 11:00 PM",
     createdAt: daysAgo(6),
-    coordinate: { latitude: 40.7145, longitude: -74.0034 },
+    coordinate: USE_FAKE_LOCATION
+      ? createDemoCoordinate(4)
+      : { latitude: 40.7145, longitude: -74.0034 },
     approved: true,
     rejected: false,
     source: "seed",
@@ -542,7 +554,9 @@ const BUSINESSES = [
     isOpen: true,
     hours: "10:00 AM - 8:00 PM",
     createdAt: daysAgo(20),
-    coordinate: { latitude: 40.7121, longitude: -74.0121 },
+    coordinate: USE_FAKE_LOCATION
+      ? createDemoCoordinate(5)
+      : { latitude: 40.7121, longitude: -74.0121 },
     approved: true,
     rejected: false,
     source: "seed",
@@ -560,7 +574,9 @@ const BUSINESSES = [
     isOpen: true,
     hours: "9:00 AM - 6:30 PM",
     createdAt: daysAgo(9),
-    coordinate: { latitude: 40.7107, longitude: -74.0042 },
+    coordinate: USE_FAKE_LOCATION
+      ? createDemoCoordinate(6)
+      : { latitude: 40.7107, longitude: -74.0042 },
     approved: true,
     rejected: false,
     source: "seed",
@@ -578,7 +594,9 @@ const BUSINESSES = [
     isOpen: true,
     hours: "11:00 AM - 10:00 PM",
     createdAt: daysAgo(1),
-    coordinate: { latitude: 40.7161, longitude: -74.005 },
+    coordinate: USE_FAKE_LOCATION
+      ? createDemoCoordinate(7)
+      : { latitude: 40.7161, longitude: -74.005 },
     approved: true,
     rejected: false,
     source: "seed",
@@ -612,24 +630,49 @@ const BUSINESS_ANALYTICS = {
 };
 const DEFAULT_ANALYTICS = { views: 0, saves: 0, redemptions: 0, reach: "0" };
 
-const MAP_REGION = {
+const USE_FAKE_LOCATION = true;
+const DEFAULT_MAP_REGION = {
   latitude: 40.7128,
   longitude: -74.006,
   latitudeDelta: 0.055,
   longitudeDelta: 0.045,
 };
+const DEMO_MAP_CENTER = {
+  latitude: 41.7508,
+  longitude: -88.1535,
+};
+const DEMO_MAP_REGION = {
+  latitude: DEMO_MAP_CENTER.latitude,
+  longitude: DEMO_MAP_CENTER.longitude,
+  latitudeDelta: 0.055,
+  longitudeDelta: 0.045,
+};
+const MAP_REGION = USE_FAKE_LOCATION ? DEMO_MAP_REGION : DEFAULT_MAP_REGION;
 const MAP_REGION_EPSILON = 0.00003;
+const createDemoCoordinate = (index = 0) => {
+  const seed = Number.isFinite(index) ? index + 1 : 1;
+  const angle = (seed * 137.5 * Math.PI) / 180;
+  const radius = 0.003 + (seed % 6) * 0.0016;
+  return {
+    latitude: DEMO_MAP_CENTER.latitude + Math.sin(angle) * radius,
+    longitude: DEMO_MAP_CENTER.longitude + Math.cos(angle) * radius,
+  };
+};
 
 const mapSupabaseBusiness = (row, index) => {
   const categoryKey = row.category_key || "restaurant";
   const categoryConfig = getCategoryConfig(categoryKey);
   const offerHighlight =
     typeof row.offer_highlight === "string" ? row.offer_highlight.trim() : "";
+  const safeIndex = Number.isFinite(index) ? index : 0;
   const latitude = row.latitude !== null ? Number(row.latitude) : null;
   const longitude = row.longitude !== null ? Number(row.longitude) : null;
-  const hasCoordinates =
-    Number.isFinite(latitude) && Number.isFinite(longitude);
-  const safeIndex = Number.isFinite(index) ? index : 0;
+  const demoCoordinate = USE_FAKE_LOCATION
+    ? createDemoCoordinate(safeIndex)
+    : null;
+  const hasCoordinates = USE_FAKE_LOCATION
+    ? true
+    : Number.isFinite(latitude) && Number.isFinite(longitude);
   const fallbackCoordinate = {
     latitude: MAP_REGION.latitude + safeIndex * 0.002,
     longitude: MAP_REGION.longitude - safeIndex * 0.002,
@@ -655,7 +698,11 @@ const mapSupabaseBusiness = (row, index) => {
     state: row.state || "",
     postalCode: row.postal_code || "",
     createdAt: row.created_at ? new Date(row.created_at).getTime() : daysAgo(5),
-    coordinate: hasCoordinates ? { latitude, longitude } : null,
+    coordinate: USE_FAKE_LOCATION
+      ? demoCoordinate
+      : hasCoordinates
+        ? { latitude, longitude }
+        : null,
     fallbackCoordinate,
     hasCoordinates,
     approved: row.approval_status === "approved",
@@ -2091,8 +2138,8 @@ const parseAddressComponents = (components = []) => {
 const MAP_STYLE = [
   {
     featureType: "all",
-    elementType: "labels.text.fill",
-    stylers: [{ color: "#4B5563" }],
+    elementType: "labels",
+    stylers: [{ visibility: "off" }],
   },
   {
     featureType: "administrative",
@@ -5125,6 +5172,12 @@ export default function App() {
     let isMounted = true;
     const loadInitialLocation = async () => {
       try {
+        if (USE_FAKE_LOCATION) {
+          if (!isMounted) return;
+          setMapRegion(DEMO_MAP_REGION);
+          animateMapToRegion(DEMO_MAP_REGION, 700);
+          return;
+        }
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== "granted") return;
         const position = await Location.getCurrentPositionAsync({
@@ -6611,7 +6664,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (Platform.OS !== "android") return;
+    if (Platform.OS !== "android" || FORCE_VECTOR_MARKERS) return;
     let isMounted = true;
     const loadAndroidMarkerIcons = async () => {
       try {
@@ -9976,6 +10029,11 @@ export default function App() {
     try {
       setLocating(true);
       setLocationError(null);
+      if (USE_FAKE_LOCATION) {
+        setMapRegion(DEMO_MAP_REGION);
+        animateMapToRegion(DEMO_MAP_REGION, 700);
+        return;
+      }
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== "granted") {
         setLocationError("Location permission denied.");
@@ -15104,12 +15162,23 @@ export default function App() {
               onPress={handleMapPress}
               onRegionChangeComplete={handleMapRegionChangeComplete}
               customMapStyle={MAP_STYLE}
-              showsUserLocation
+              showsUserLocation={!USE_FAKE_LOCATION}
               showsMyLocationButton={false}
               showsCompass={false}
               showsScale={false}
               showsPointsOfInterest={false}
             >
+              {USE_FAKE_LOCATION && (
+                <Marker
+                  coordinate={DEMO_MAP_CENTER}
+                  anchor={{ x: 0.5, y: 0.5 }}
+                  zIndex={3}
+                >
+                  <View style={styles.fakeUserMarkerOuter}>
+                    <View style={styles.fakeUserMarkerInner} />
+                  </View>
+                </Marker>
+              )}
               {filteredBusinesses.map((business) => {
                 const category = getCategoryConfig(business.categoryKey);
                 const isSelected = selectedId === business.id;
@@ -15119,7 +15188,7 @@ export default function App() {
                 const androidIcon = androidMarkerIcons?.normal?.[markerKey];
                 const androidHalo = androidMarkerIcons?.halo?.[markerKey];
                 const useAndroidImages =
-                  Platform.OS === "android" && androidIcon;
+                  Platform.OS === "android" && androidIcon && !FORCE_VECTOR_MARKERS;
                 const markerAnchor =
                   Platform.OS === "android" && useAndroidImages
                     ? { x: 0.5, y: 0.5 }
@@ -15171,7 +15240,7 @@ export default function App() {
                           >
                             <Ionicons
                               name={category.icon}
-                              size={20}
+                              size={MARKER_ICON_SIZE}
                               color={COLORS.white}
                             />
                           </View>
@@ -22287,9 +22356,6 @@ export default function App() {
                                 <View style={styles.profileHeaderText}>
                                   <Text style={styles.profileName}>
                                     {profileName || "Wello Owner"}
-                                  </Text>
-                                  <Text style={styles.profileEmail}>
-                                    {profileEmail || authEmail}
                                   </Text>
                                 </View>
                                 <View style={styles.profileRolePill}>
@@ -32086,7 +32152,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
-    borderColor: "transparent",
+    borderColor: "rgba(255,255,255,0.9)",
   },
   markerIconSelected: {
     borderColor: COLORS.white,
@@ -32103,6 +32169,22 @@ const styles = StyleSheet.create({
     height: 10,
     borderRadius: 2,
     transform: [{ rotate: "45deg" }],
+  },
+  fakeUserMarkerOuter: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "rgba(37, 99, 235, 0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
+  },
+  fakeUserMarkerInner: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#2563EB",
   },
 });
 

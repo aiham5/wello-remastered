@@ -515,11 +515,17 @@ const getReceiptCashbackEvent = (receipt) => {
   return ranked[0] || null;
 };
 
+const roundCentsDown = (value) => {
+  if (!Number.isFinite(value)) return 0;
+  // Avoid rounding up on fractional cents.
+  return value >= 0 ? Math.floor(value + 1e-8) : Math.ceil(value - 1e-8);
+};
+
 const calculateCashbackCents = (commissionCents, cashbackRateBps) => {
   const cents = Number(commissionCents) || 0;
   const bps = Number(cashbackRateBps) || CASHBACK_BASE_RATE_BPS;
   if (cents <= 0 || bps <= 0) return 0;
-  return Math.round((cents * bps) / 10000);
+  return roundCentsDown((cents * bps) / 10000);
 };
 
 const calculateCommissionCents = (
@@ -529,14 +535,14 @@ const calculateCommissionCents = (
   const cents = Number(receiptTotalCents) || 0;
   const rateBps = Number(commissionRateBps) || DEFAULT_MERCHANT_COMMISSION_RATE_BPS;
   if (cents <= 0 || rateBps <= 0) return 0;
-  return Math.round((cents * rateBps) / 10000);
+  return roundCentsDown((cents * rateBps) / 10000);
 };
 
 const calculatePromoDiscountCents = (receiptTotalCents, promoRateBps) => {
   const cents = Number(receiptTotalCents) || 0;
   const bps = Number(promoRateBps) || 0;
   if (cents <= 0 || bps <= 0) return 0;
-  return Math.round((cents * bps) / 10000);
+  return roundCentsDown((cents * bps) / 10000);
 };
 
 const formatRatePct = (bps) => {
@@ -2262,9 +2268,9 @@ const selectReceipt = async (receiptId, options = {}) => {
         promoRateBps,
       )}% of receipt total (enter a receipt total to calculate).`;
     } else {
-      ui.detailPromoHelp.textContent = `${formatRatePct(
+      ui.detailPromoHelp.textContent = `Promo cashback is ${formatRatePct(
         promoRateBps,
-      )}% of receipt total. Merchant commission is capped at ${commissionRatePct}%.`;
+      )}% of receipt total. Merchant commission remains ${commissionRatePct}% of receipt total.`;
     }
   }
 
@@ -2284,12 +2290,19 @@ const selectReceipt = async (receiptId, options = {}) => {
         ? calculatePromoDiscountCents(totalCents, promoRateBps)
         : calculateCashbackCents(commissionCents, CASHBACK_BASE_RATE_BPS)
       : 0;
-  const cashbackCents = eventCashbackCents || estimatedCashbackCents || 0;
-  const subsidyCents = eventCashbackCents
-    ? eventSubsidyCents || Math.max(cashbackCents - commissionCents, 0)
-    : isPromo
-      ? Math.max(cashbackCents - commissionCents, 0)
+  const prefersComputed = isPromo && totalCents > 0;
+  const cashbackCents = prefersComputed
+    ? estimatedCashbackCents
+    : eventCashbackCents || estimatedCashbackCents || 0;
+  const subsidyCents = isPromo
+    ? Math.max(cashbackCents - commissionCents, 0)
+    : eventCashbackCents
+      ? eventSubsidyCents || 0
       : 0;
+  const cashbackMismatch =
+    prefersComputed &&
+    eventCashbackCents > 0 &&
+    eventCashbackCents !== cashbackCents;
 
   ui.detailCashback.value =
     cashbackCents > 0 ? (cashbackCents / 100).toFixed(2) : "";
@@ -2329,7 +2342,9 @@ const selectReceipt = async (receiptId, options = {}) => {
     if (subsidyCents > 0) {
       parts.push(`Platform subsidy: ${formatCurrency(subsidyCents)}`);
     }
-    if (eventCashbackCents > 0) {
+    if (cashbackMismatch) {
+      parts.push(`Recorded cashback differs (${formatCurrency(eventCashbackCents)})`);
+    } else if (eventCashbackCents > 0) {
       parts.push(eventBasis ? `Recorded (${eventBasis})` : "Recorded");
     } else if (totalCents > 0) {
       parts.push("Estimated");
@@ -3213,9 +3228,9 @@ const attachListeners = () => {
           promoRateBps,
         )}% of receipt total (enter a receipt total to calculate).`;
       } else {
-        ui.detailPromoHelp.textContent = `${formatRatePct(
+        ui.detailPromoHelp.textContent = `Promo cashback is ${formatRatePct(
           promoRateBps,
-        )}% of receipt total. Merchant commission is capped at ${commissionRatePct}%.`;
+        )}% of receipt total. Merchant commission remains ${commissionRatePct}% of receipt total.`;
       }
     }
 
