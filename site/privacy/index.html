@@ -40,7 +40,7 @@
           <article class="legal-card legal-prose">
             <p class="legal-kicker">Legal</p>
             <h1>Privacy Policy</h1>
-            <p class="legal-meta">Effective date: February 18, 2026</p>
+            <p class="legal-meta">Effective date: February 19, 2026</p>
 
             <div class="legal-note">
               <p>
@@ -151,6 +151,39 @@
                 compliance, dispute resolution, and enforcement of agreements. We apply reasonable
                 administrative, technical, and organizational safeguards, but no system is fully
                 immune from risk.
+              </p>
+              <h3>Data retention baseline</h3>
+              <ul>
+                <li>
+                  <strong>Account/profile data</strong> is retained while your account is active
+                  and as needed for account recovery, fraud prevention, and legal compliance.
+                </li>
+                <li>
+                  <strong>Operational records</strong> (offers, redemptions, payouts, support
+                  records, and audit logs) are retained as needed for service operations, security,
+                  accounting, and legal obligations.
+                </li>
+              </ul>
+              <h3>Plaid offboarding and revocation handling</h3>
+              <ul>
+                <li>
+                  If a user unlinks a bank or Plaid sends revocation webhooks, we stop using that
+                  connection for verification and clear active access token references from our
+                  linked-item records.
+                </li>
+                <li>
+                  Linked account metadata associated with revoked access is marked inactive and no
+                  longer used for payout/account-selection operations.
+                </li>
+              </ul>
+              <h3>Deletion requests</h3>
+              <p>
+                You can request deletion of your account data by emailing
+                <a href="mailto:support@wellopartners.com">support@wellopartners.com</a>
+                with the subject line "Data Deletion Request". After identity verification, we
+                process deletion requests within a commercially reasonable timeframe, subject to
+                records we are required to retain for legal, tax, fraud-prevention, security, or
+                dispute-resolution purposes.
               </p>
             </section>
 

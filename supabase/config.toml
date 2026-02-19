@@ -30,6 +30,9 @@ verify_jwt = false
 [functions.plaid-verify-purchase]
 verify_jwt = false
 
+[functions.plaid-webhook]
+verify_jwt = false
+
 [functions.promo-apply]
 verify_jwt = false
 

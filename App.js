@@ -40,6 +40,7 @@ import {
 import BottomSheet, {
   BottomSheetScrollView,
 } from "@gorhom/bottom-sheet";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   configureReanimatedLogger,
   ReanimatedLogLevel,
@@ -146,6 +147,10 @@ const PLAID_FALLBACK_COPY =
   "Some cards or banks may require receipt upload for verification.";
 const PLAID_PENDING_COPY =
   "Cashback may appear as pending while verification completes.";
+const PLAID_LINK_UNAVAILABLE_COPY =
+  "Bank linking is temporarily unavailable right now. Please try again shortly.";
+const PLAID_LINK_OPEN_FAILED_COPY =
+  "Unable to open bank linking right now. Please try again.";
 const DISCOVER_DEMO_LAYOUTS = [
   { key: "editorial_split", label: "Editorial Split" },
   { key: "editorial_stack", label: "Editorial Stack" },
@@ -198,6 +203,9 @@ const PRIVACY_POLICY_URL = "https://www.wellopartners.com/privacy";
 const TERMS_URL = "https://www.wellopartners.com/terms";
 const THIRD_PARTY_NOTICES_URL =
   "https://www.wellopartners.com/third-party-notices";
+const PLAID_LINK_CONSENT_VERSION = "2026-02-19";
+const getPlaidLinkConsentKey = (userId) =>
+  `wello_plaid_link_consent_v${PLAID_LINK_CONSENT_VERSION}:${String(userId || "").trim() || "anon"}`;
 const REFERRAL_LANDING_URL = "https://www.wellopartners.com/referral";
 const SUPPORT_EMAIL_ADDRESS = "support@wellopartners.com";
 const OFFER_HONOR_POLICY_VERSION = "2026-02-17";
@@ -257,6 +265,34 @@ const AUTO_VERIFY_LOCAL_COOLDOWN_MS = 1000 * 60 * 2;
 const AUTO_VERIFY_MAX_REDEMPTION_AGE_MS = 1000 * 60 * 60 * 24;
 const HISTORY_VERIFY_HIGHLIGHT_MS = 1000 * 15;
 const DEFAULT_PAYOUT_SWITCH_LIMIT = 2;
+const createInitialPlaidLinkState = () => ({
+  initialized: false,
+  loading: false,
+  linked: false,
+  linkedCount: 0,
+  linkedSinceMs: null,
+  linkedAccounts: [],
+  selectedPayoutAccountId: null,
+  selectedPayoutLabel: null,
+  selectedPayoutSyncedAt: null,
+  payoutSwitchPolicy: {
+    monthlyLimit: DEFAULT_PAYOUT_SWITCH_LIMIT,
+    switchesUsed: 0,
+    switchesRemaining: DEFAULT_PAYOUT_SWITCH_LIMIT,
+    monthResetsAt: null,
+    canSwitch: true,
+  },
+  updateMode: {
+    required: false,
+    accountSelectionAvailable: false,
+    needsAttention: false,
+    reason: null,
+    reasonLabel: null,
+    itemId: null,
+    detectedAt: null,
+  },
+  error: null,
+});
 const TIME_OPTIONS = [
   "12:00",
   "12:30",
@@ -3638,25 +3674,12 @@ export default function App() {
   });
   const [historyVerifyNotice, setHistoryVerifyNotice] = useState(null);
   const [highlightedHistoryEntryId, setHighlightedHistoryEntryId] = useState(null);
-  const [plaidLinkState, setPlaidLinkState] = useState({
-    loading: false,
-    linked: false,
-    linkedCount: 0,
-    linkedSinceMs: null,
-    linkedAccounts: [],
-    selectedPayoutAccountId: null,
-    selectedPayoutLabel: null,
-    selectedPayoutSyncedAt: null,
-    payoutSwitchPolicy: {
-      monthlyLimit: DEFAULT_PAYOUT_SWITCH_LIMIT,
-      switchesUsed: 0,
-      switchesRemaining: DEFAULT_PAYOUT_SWITCH_LIMIT,
-      monthResetsAt: null,
-      canSwitch: true,
-    },
-    error: null,
-  });
+  const [plaidLinkState, setPlaidLinkState] = useState(createInitialPlaidLinkState);
   const [plaidLinkAction, setPlaidLinkAction] = useState("idle");
+  const [plaidConsentModalVisible, setPlaidConsentModalVisible] =
+    useState(false);
+  const [plaidConsentSaving, setPlaidConsentSaving] = useState(false);
+  const plaidLinkAfterConsentRef = useRef(false);
   const [discoverPlaidPromptDismissed, setDiscoverPlaidPromptDismissed] =
     useState(false);
   const [historyVerificationExpanded, setHistoryVerificationExpanded] =
@@ -3672,20 +3695,51 @@ export default function App() {
     plaidLinkState.linkedCount,
     plaidLinkState.linkedAccounts,
   ]);
+  const plaidNeedsAttention = useMemo(
+    () => Boolean(plaidLinkState.updateMode?.needsAttention),
+    [plaidLinkState.updateMode],
+  );
+  const plaidPromptCopy = useMemo(() => {
+    const reasonLabel = String(plaidLinkState.updateMode?.reasonLabel || "").trim();
+    if (plaidLinkState.updateMode?.required) {
+      return {
+        title: "Update bank connection",
+        body: reasonLabel
+          ? `${reasonLabel}. Reconnect to keep instant cashback verification active.`
+          : "Reconnect your bank to keep instant cashback verification active.",
+        cta: "Update",
+      };
+    }
+    if (plaidLinkState.updateMode?.accountSelectionAvailable) {
+      return {
+        title: "New accounts available",
+        body: "Review your linked bank and choose any newly eligible accounts.",
+        cta: "Review",
+      };
+    }
+    return {
+      title: "Link bank for instant cashback",
+      body: "Connect your bank to receive instant cashback with auto verification.",
+      cta: "Connect",
+    };
+  }, [plaidLinkState.updateMode]);
   const plaidPromptBusy =
     plaidLinkAction === "linking" || Boolean(plaidLinkState.loading);
   const shouldShowDiscoverPlaidPrompt = useMemo(() => {
     if (activeTab !== "discover") return false;
     if (!isSignedIn) return false;
     if (accountRole !== "consumer") return false;
-    if (hasLinkedPlaidBank) return false;
-    if (discoverPlaidPromptDismissed) return false;
+    if (!plaidLinkState.initialized) return false;
+    if (hasLinkedPlaidBank && !plaidNeedsAttention) return false;
+    if (discoverPlaidPromptDismissed && !plaidNeedsAttention) return false;
     return true;
   }, [
     activeTab,
     isSignedIn,
     accountRole,
+    plaidLinkState.initialized,
     hasLinkedPlaidBank,
+    plaidNeedsAttention,
     discoverPlaidPromptDismissed,
   ]);
   const cashoutPayoutStatusCopy = useMemo(() => {
@@ -7678,24 +7732,7 @@ export default function App() {
     });
     setCashoutPayoutHistory([]);
     setCashbackBalanceState({ loading: false, error: null });
-    setPlaidLinkState({
-      loading: false,
-      linked: false,
-      linkedCount: 0,
-      linkedSinceMs: null,
-      linkedAccounts: [],
-      selectedPayoutAccountId: null,
-      selectedPayoutLabel: null,
-      selectedPayoutSyncedAt: null,
-      payoutSwitchPolicy: {
-        monthlyLimit: DEFAULT_PAYOUT_SWITCH_LIMIT,
-        switchesUsed: 0,
-        switchesRemaining: DEFAULT_PAYOUT_SWITCH_LIMIT,
-        monthResetsAt: null,
-        canSwitch: true,
-      },
-      error: null,
-    });
+    setPlaidLinkState(createInitialPlaidLinkState());
   }, [authUserId, isSignedIn]);
 
   useEffect(() => {
@@ -11991,24 +12028,7 @@ export default function App() {
   const loadPlaidLinkState = useCallback(
     async ({ silent } = {}) => {
       if (!isSignedIn || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
-        setPlaidLinkState({
-          loading: false,
-          linked: false,
-          linkedCount: 0,
-          linkedSinceMs: null,
-          linkedAccounts: [],
-          selectedPayoutAccountId: null,
-          selectedPayoutLabel: null,
-          selectedPayoutSyncedAt: null,
-          payoutSwitchPolicy: {
-            monthlyLimit: DEFAULT_PAYOUT_SWITCH_LIMIT,
-            switchesUsed: 0,
-            switchesRemaining: DEFAULT_PAYOUT_SWITCH_LIMIT,
-            monthResetsAt: null,
-            canSwitch: true,
-          },
-          error: null,
-        });
+        setPlaidLinkState(createInitialPlaidLinkState());
         return;
       }
       if (!silent) {
@@ -12016,13 +12036,12 @@ export default function App() {
       }
       const { data, error } = await callPlaidFunction("plaid-get-link-status", {});
       if (error) {
-        if (!silent) {
-          setPlaidLinkState((prev) => ({
-            ...prev,
-            loading: false,
-            error,
-          }));
-        }
+        setPlaidLinkState((prev) => ({
+          ...prev,
+          initialized: true,
+          loading: false,
+          error: silent ? prev.error : error,
+        }));
         return;
       }
       const monthlyLimit = Math.max(
@@ -12038,7 +12057,9 @@ export default function App() {
         data?.payoutSwitchPolicy?.switchesRemaining != null
           ? Math.max(Number(data.payoutSwitchPolicy.switchesRemaining) || 0, 0)
           : Math.max(monthlyLimit - switchesUsed, 0);
+      const updateMode = data?.updateMode || {};
       setPlaidLinkState({
+        initialized: true,
         loading: false,
         linked: Boolean(data?.linked),
         linkedCount: Number(data?.linkedCount) || 0,
@@ -12083,6 +12104,17 @@ export default function App() {
               ? Boolean(data.payoutSwitchPolicy.canSwitch)
               : switchesRemaining > 0,
         },
+        updateMode: {
+          required: Boolean(updateMode?.required),
+          accountSelectionAvailable: Boolean(
+            updateMode?.accountSelectionAvailable,
+          ),
+          needsAttention: Boolean(updateMode?.needsAttention),
+          reason: String(updateMode?.reason || "").trim() || null,
+          reasonLabel: String(updateMode?.reasonLabel || "").trim() || null,
+          itemId: String(updateMode?.itemId || "").trim() || null,
+          detectedAt: updateMode?.detectedAt || null,
+        },
         error: null,
       });
     },
@@ -12113,7 +12145,22 @@ export default function App() {
     [],
   );
 
-  const handleLinkPurchaseVerificationBank = useCallback(async () => {
+  const hasAcceptedPlaidLinkConsent = useCallback(async () => {
+    const key = getPlaidLinkConsentKey(authUserId);
+    try {
+      const value = await AsyncStorage.getItem(key);
+      return String(value || "").trim() === "1";
+    } catch {
+      return false;
+    }
+  }, [authUserId]);
+
+  const persistPlaidLinkConsent = useCallback(async () => {
+    const key = getPlaidLinkConsentKey(authUserId);
+    await AsyncStorage.setItem(key, "1");
+  }, [authUserId]);
+
+  const handleLinkPurchaseVerificationBank = useCallback(async (options = {}) => {
     if (!isSignedIn) {
       setPurchaseVerifyStatus({
         loading: false,
@@ -12130,6 +12177,14 @@ export default function App() {
         error: "Supabase is not configured for purchase verification.",
       }));
       return;
+    }
+    if (!options.skipConsent) {
+      const hasConsent = await hasAcceptedPlaidLinkConsent();
+      if (!hasConsent) {
+        plaidLinkAfterConsentRef.current = true;
+        setPlaidConsentModalVisible(true);
+        return;
+      }
     }
 
     setPlaidLinkAction("linking");
@@ -12188,8 +12243,7 @@ export default function App() {
         setPlaidLinkState((prev) => ({
           ...prev,
           loading: false,
-          error:
-            "Plaid is not available in this app build. Install a fresh development/standalone build and try again.",
+          error: PLAID_LINK_UNAVAILABLE_COPY,
         }));
         return;
       }
@@ -12318,8 +12372,10 @@ export default function App() {
             setPlaidLinkState((prev) => ({
               ...prev,
               loading: false,
-              error:
-                openError?.message || "Unable to open Plaid Link in this build.",
+              error: toUserFacingError(
+                openError?.message,
+                PLAID_LINK_OPEN_FAILED_COPY,
+              ),
             }));
           });
         }
@@ -12351,8 +12407,7 @@ export default function App() {
           setPlaidLinkState((prev) => ({
             ...prev,
             loading: false,
-            error:
-              "Plaid Link did not open. Rebuild/restart the app and try again.",
+            error: PLAID_LINK_OPEN_FAILED_COPY,
           }));
         });
       }, 8000);
@@ -12364,7 +12419,26 @@ export default function App() {
         error: error?.message || "Unable to open bank linking.",
       }));
     }
-  }, [isSignedIn, loadPlaidLinkState]);
+  }, [isSignedIn, loadPlaidLinkState, hasAcceptedPlaidLinkConsent]);
+
+  const closePlaidConsentModal = useCallback(() => {
+    plaidLinkAfterConsentRef.current = false;
+    setPlaidConsentSaving(false);
+    setPlaidConsentModalVisible(false);
+  }, []);
+
+  const handleAcceptPlaidConsent = useCallback(async () => {
+    setPlaidConsentSaving(true);
+    try {
+      await persistPlaidLinkConsent();
+    } catch {}
+    setPlaidConsentSaving(false);
+    setPlaidConsentModalVisible(false);
+    if (plaidLinkAfterConsentRef.current) {
+      plaidLinkAfterConsentRef.current = false;
+      void handleLinkPurchaseVerificationBank({ skipConsent: true });
+    }
+  }, [persistPlaidLinkConsent, handleLinkPurchaseVerificationBank]);
 
   const handleUnlinkLinkedBanks = useCallback(async () => {
     if (!isSignedIn) return;
@@ -14566,6 +14640,13 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (activeTab !== "discover") return;
+    if (!isSignedIn) return;
+    if (accountRole !== "consumer") return;
+    loadPlaidLinkState({ silent: true });
+  }, [activeTab, isSignedIn, accountRole, loadPlaidLinkState]);
+
+  useEffect(() => {
     if (!isSignedIn || !showHistoryTab) {
       setUserReviews([]);
       setReviewStatus({ loading: false, error: null });
@@ -14607,6 +14688,17 @@ export default function App() {
   useEffect(() => {
     setDiscoverPlaidPromptDismissed(false);
   }, [authUserId]);
+
+  useEffect(() => {
+    plaidLinkAfterConsentRef.current = false;
+    setPlaidConsentSaving(false);
+    setPlaidConsentModalVisible(false);
+  }, [authUserId, isSignedIn]);
+
+  useEffect(() => {
+    if (!plaidNeedsAttention) return;
+    setDiscoverPlaidPromptDismissed(false);
+  }, [plaidNeedsAttention]);
 
   useEffect(() => {
     if (!isSignedIn || !showHistoryTab) {
@@ -17184,6 +17276,73 @@ export default function App() {
 
             <Modal
               transparent
+              visible={plaidConsentModalVisible}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={closePlaidConsentModal}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.plaidConsentModalCard}>
+                  <View style={styles.modalHeader}>
+                    <Text style={styles.modalTitle}>Before you connect a bank</Text>
+                    <TouchableOpacity
+                      style={styles.modalCloseButton}
+                      onPress={closePlaidConsentModal}
+                      disabled={plaidConsentSaving}
+                    >
+                      <Ionicons name="close" size={16} color={COLORS.ink} />
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.modalSubtitle}>
+                    Wello uses linked bank data to verify eligible purchases for cashback and to help prevent fraud.
+                  </Text>
+                  <Text style={styles.plaidConsentBodyText}>
+                    By continuing, you agree to our Terms and Privacy Policy.
+                  </Text>
+                  <View style={styles.plaidConsentLinksRow}>
+                    <TouchableOpacity
+                      style={styles.plaidConsentLink}
+                      onPress={() => Linking.openURL(TERMS_URL).catch(() => null)}
+                    >
+                      <Text style={styles.plaidConsentLinkText}>Terms</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.plaidConsentDot}>•</Text>
+                    <TouchableOpacity
+                      style={styles.plaidConsentLink}
+                      onPress={() =>
+                        Linking.openURL(PRIVACY_POLICY_URL).catch(() => null)}
+                    >
+                      <Text style={styles.plaidConsentLinkText}>Privacy</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <View style={styles.plaidConsentActionsRow}>
+                    <TouchableOpacity
+                      style={styles.plaidConsentCancelButton}
+                      onPress={closePlaidConsentModal}
+                      disabled={plaidConsentSaving}
+                    >
+                      <Text style={styles.plaidConsentCancelText}>Not now</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.plaidConsentAgreeButton,
+                        plaidConsentSaving && styles.authButtonDisabled,
+                      ]}
+                      onPress={handleAcceptPlaidConsent}
+                      disabled={plaidConsentSaving}
+                    >
+                      <Text style={styles.plaidConsentAgreeText}>
+                        {plaidConsentSaving ? "Saving..." : "Agree and continue"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+
+            <Modal
+              transparent
               visible={passwordResetModalOpen}
               animationType="fade"
               presentationStyle="overFullScreen"
@@ -17474,10 +17633,10 @@ export default function App() {
                       </View>
                       <View style={styles.discoverPlaidPromptCopy}>
                         <Text style={styles.discoverPlaidPromptTitle}>
-                          Link bank for instant cashback
+                          {plaidPromptCopy.title}
                         </Text>
                         <Text style={styles.discoverPlaidPromptBody}>
-                          Connect your bank to receive instant cashback with auto verification.
+                          {plaidPromptCopy.body}
                         </Text>
                       </View>
                       <View style={styles.discoverPlaidPromptActions}>
@@ -17491,7 +17650,7 @@ export default function App() {
                           disabled={plaidPromptBusy}
                         >
                           <Text style={styles.discoverPlaidPromptConnectText}>
-                            {plaidPromptBusy ? "Opening..." : "Connect"}
+                            {plaidPromptBusy ? "Opening..." : plaidPromptCopy.cta}
                           </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
@@ -19677,6 +19836,8 @@ export default function App() {
                                     styles.receiptNoticeStatusPill,
                                     pendingReceiptCount > 0
                                       ? styles.receiptNoticeStatusPillAlert
+                                      : plaidNeedsAttention
+                                        ? styles.receiptNoticeStatusPillAttention
                                       : hasLinkedPlaidBank
                                         ? styles.receiptNoticeStatusPillReady
                                         : styles.receiptNoticeStatusPillAttention,
@@ -19687,6 +19848,8 @@ export default function App() {
                                       styles.receiptNoticeStatusPillText,
                                       pendingReceiptCount > 0
                                         ? styles.receiptNoticeStatusPillTextAlert
+                                        : plaidNeedsAttention
+                                          ? styles.receiptNoticeStatusPillTextAttention
                                         : hasLinkedPlaidBank
                                           ? styles.receiptNoticeStatusPillTextReady
                                           : styles.receiptNoticeStatusPillTextAttention,
@@ -19694,6 +19857,8 @@ export default function App() {
                                   >
                                     {pendingReceiptCount > 0
                                       ? "Receipts needed"
+                                      : plaidNeedsAttention
+                                      ? "Update needed"
                                       : hasLinkedPlaidBank
                                       ? "Bank linked"
                                       : "Action needed"}
@@ -19701,6 +19866,7 @@ export default function App() {
                                 </View>
                               </View>
                               {hasLinkedPlaidBank &&
+                              !plaidNeedsAttention &&
                               !historyVerificationExpanded ? (
                                 <View style={styles.receiptCollapsedRow}>
                                   <Text style={styles.receiptCollapsedMeta}>
@@ -19753,6 +19919,8 @@ export default function App() {
                                       >
                                         {plaidLinkAction === "linking"
                                           ? "Opening Plaid Link..."
+                                          : plaidNeedsAttention
+                                            ? plaidPromptCopy.cta
                                           : hasLinkedPlaidBank
                                             ? "Link another bank"
                                             : "Enable auto verification"}
@@ -19787,6 +19955,8 @@ export default function App() {
                                   <Text style={styles.receiptNoticeMeta}>
                                     {plaidLinkState.loading
                                       ? "Checking linked bank status..."
+                                      : plaidNeedsAttention
+                                        ? plaidPromptCopy.body
                                       : hasLinkedPlaidBank
                                         ? `Linked banks: ${plaidLinkState.linkedCount}`
                                         : "No linked bank yet"}
@@ -27185,6 +27355,70 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginBottom: 12,
+  },
+  plaidConsentModalCard: {
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+  },
+  plaidConsentBodyText: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    lineHeight: 18,
+  },
+  plaidConsentLinksRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 10,
+    marginBottom: 16,
+  },
+  plaidConsentLink: {
+    paddingVertical: 2,
+  },
+  plaidConsentLinkText: {
+    fontSize: 13,
+    color: COLORS.coral,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  plaidConsentDot: {
+    marginHorizontal: 8,
+    color: COLORS.muted,
+    fontSize: 12,
+    fontFamily: FONT_TEXT,
+  },
+  plaidConsentActionsRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  plaidConsentCancelButton: {
+    flex: 1,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.white,
+  },
+  plaidConsentCancelText: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  plaidConsentAgreeButton: {
+    flex: 1.4,
+    height: 42,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.pine,
+  },
+  plaidConsentAgreeText: {
+    fontSize: 14,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
   },
   modalList: {
     paddingBottom: 20,

@@ -1,8 +1,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import {
-  HttpError,
   authenticateRequest,
   createAdminSupabase,
+  HttpError,
   json,
 } from "../_shared/auth.ts";
 
@@ -27,18 +27,46 @@ serve(async (req) => {
     const { data, error } = await supabase
       .from("plaid_linked_items")
       .select(
-        "plaid_item_id, institution_id, institution_name, status, consent_expires_at, last_sync_at, created_at",
+        "plaid_item_id, institution_id, institution_name, status, consent_expires_at, last_sync_at, created_at, update_mode_required, update_mode_reason, update_mode_detected_at, new_accounts_available",
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
     if (error) {
-      throw new HttpError(error.message || "Unable to load bank link status.", 500);
+      throw new HttpError(
+        error.message || "Unable to load bank link status.",
+        500,
+      );
     }
 
-    const active = (Array.isArray(data) ? data : []).filter(
+    const rows = Array.isArray(data) ? data : [];
+    const actionableRows = rows.filter((item) => item.status !== "revoked");
+    const active = actionableRows.filter(
       (item) => item.status === "active",
     );
+    const updateRequiredItem = actionableRows.find((item) =>
+      Boolean(item?.update_mode_required)
+    );
+    const newAccountsItem = actionableRows.find((item) =>
+      !item?.update_mode_required && Boolean(item?.new_accounts_available)
+    );
+    const attentionItem = updateRequiredItem || newAccountsItem || null;
+    const updateModeReasonRaw = String(attentionItem?.update_mode_reason || "")
+      .trim()
+      .toLowerCase();
+    const updateModeReasonLabel = (() => {
+      switch (updateModeReasonRaw) {
+        case "item_login_required":
+          return "Bank login required";
+        case "pending_expiration":
+          return "Access expiring soon";
+        case "pending_disconnect":
+          return "Reconnect needed";
+        default:
+          return null;
+      }
+    })();
+
     const activeItemIds = active
       .map((item) => String(item?.plaid_item_id || "").trim())
       .filter(Boolean);
@@ -80,13 +108,14 @@ serve(async (req) => {
       switchesUsed = 0;
       switchesRemaining = TEST_UNLIMITED_SWITCH_LIMIT;
     } else {
-      const { data: switchPolicyRows, error: switchPolicyError } = await supabase.rpc(
-        "get_cashout_bank_switch_policy",
-        {
-          p_user_id: userId,
-          p_monthly_limit: DEFAULT_MONTHLY_SWITCH_LIMIT,
-        },
-      );
+      const { data: switchPolicyRows, error: switchPolicyError } =
+        await supabase.rpc(
+          "get_cashout_bank_switch_policy",
+          {
+            p_user_id: userId,
+            p_monthly_limit: DEFAULT_MONTHLY_SWITCH_LIMIT,
+          },
+        );
       if (switchPolicyError) {
         throw new HttpError(
           switchPolicyError.message || "Unable to load payout switch policy.",
@@ -101,10 +130,9 @@ serve(async (req) => {
         1,
       );
       switchesUsed = Math.max(Number(switchPolicyRow?.switches_used) || 0, 0);
-      switchesRemaining =
-        switchPolicyRow?.switches_remaining != null
-          ? Math.max(Number(switchPolicyRow.switches_remaining) || 0, 0)
-          : Math.max(monthlyLimit - switchesUsed, 0);
+      switchesRemaining = switchPolicyRow?.switches_remaining != null
+        ? Math.max(Number(switchPolicyRow.switches_remaining) || 0, 0)
+        : Math.max(monthlyLimit - switchesUsed, 0);
     }
 
     const selectedPayoutAccountId = String(
@@ -142,14 +170,14 @@ serve(async (req) => {
           mask,
           subtype: String(account?.account_subtype || "").trim() || null,
           type: String(account?.account_type || "").trim() || null,
-          selectedForPayout:
-            Boolean(selectedPayoutAccountId) &&
+          selectedForPayout: Boolean(selectedPayoutAccountId) &&
             selectedPayoutAccountId === accountId,
         };
       }),
       payoutSelection: {
         selectedAccountId: selectedPayoutAccountId || null,
-        label: String(profileData?.stripe_cashout_account_label || "").trim() || null,
+        label: String(profileData?.stripe_cashout_account_label || "").trim() ||
+          null,
         syncedAt: profileData?.stripe_cashout_bank_synced_at || null,
       },
       payoutSwitchPolicy: {
@@ -160,6 +188,17 @@ serve(async (req) => {
           ? null
           : switchPolicyRow?.month_resets_at || null,
         canSwitch: CASHOUT_SWITCH_LIMIT_DISABLED || switchesRemaining > 0,
+      },
+      updateMode: {
+        required: Boolean(updateRequiredItem),
+        accountSelectionAvailable: Boolean(
+          !updateRequiredItem && newAccountsItem,
+        ),
+        needsAttention: Boolean(attentionItem),
+        reason: updateModeReasonRaw || null,
+        reasonLabel: updateModeReasonLabel,
+        itemId: attentionItem?.plaid_item_id || null,
+        detectedAt: attentionItem?.update_mode_detected_at || null,
       },
       items: active.map((item) => ({
         itemId: item.plaid_item_id,

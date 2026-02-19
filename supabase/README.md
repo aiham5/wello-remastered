@@ -28,6 +28,16 @@ Stripe (commission billing):
 - In Stripe, add the webhook URL for `stripe-webhook`.
 - Schedule `stripe-create-monthly-invoices` monthly (Supabase scheduled functions), sending header `x-cron-secret: <BILLING_CRON_SECRET>`.
 
+Plaid webhooks:
+- Deploy `plaid-webhook`.
+- Set `PLAID_WEBHOOK_URL` to your deployed function URL:
+  - `https://<project-ref>.functions.supabase.co/plaid-webhook`
+  - Optional hardening: append `?secret=<PLAID_WEBHOOK_SECRET>`
+- Optional hardening secret:
+  - `PLAID_WEBHOOK_SECRET` (same value in function env and webhook URL query param, or sent via `x-plaid-webhook-secret` header).
+- In Plaid Dashboard, set the webhook URL for your app/item setup.
+- Test in sandbox using `/sandbox/item/fire_webhook` with webhook code `NEW_ACCOUNTS_AVAILABLE`.
+
 Invite codes + roles:
 - Re-run the updated `supabase/schema.sql` to create the `invites` table.
 - The schema also adds a `consumer` role for regular users.

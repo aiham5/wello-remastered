@@ -1,8 +1,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import {
-  HttpError,
   authenticateRequest,
   createAdminSupabase,
+  HttpError,
   json,
 } from "../_shared/auth.ts";
 import {
@@ -37,7 +37,9 @@ serve(async (req) => {
     let institutionName: string | null = null;
     if (institutionId) {
       try {
-        const institution = await plaidGetInstitutionById(institutionId, ["US"]);
+        const institution = await plaidGetInstitutionById(institutionId, [
+          "US",
+        ]);
         institutionName = institution?.institution?.name || null;
       } catch {
         institutionName = null;
@@ -45,6 +47,27 @@ serve(async (req) => {
     }
 
     const supabase = createAdminSupabase();
+    const { data: existingItem, error: existingItemError } = await supabase
+      .from("plaid_linked_items")
+      .select("user_id")
+      .eq("plaid_item_id", exchange.item_id)
+      .maybeSingle();
+    if (existingItemError) {
+      throw new HttpError(
+        existingItemError.message ||
+          "Unable to validate linked bank ownership.",
+        500,
+      );
+    }
+    const existingOwnerId = String(existingItem?.user_id || "").trim();
+    if (existingOwnerId && existingOwnerId !== userId) {
+      throw new HttpError(
+        "This bank connection is already linked to another account.",
+        409,
+        { reason: "plaid_item_owned_by_another_user" },
+      );
+    }
+
     const { error: upsertError } = await supabase
       .from("plaid_linked_items")
       .upsert(
@@ -59,28 +82,40 @@ serve(async (req) => {
           billed_products: item?.item?.billed_products || [],
           consent_expires_at: item?.item?.consent_expiration_time || null,
           last_sync_at: null,
+          update_mode_required: false,
+          update_mode_reason: null,
+          update_mode_detected_at: null,
+          new_accounts_available: false,
+          last_webhook_code: "LINK_SUCCESS",
         },
         { onConflict: "plaid_item_id" },
       );
 
     if (upsertError) {
-      throw new HttpError(upsertError.message || "Unable to save linked bank.", 500);
+      throw new HttpError(
+        upsertError.message || "Unable to save linked bank.",
+        500,
+      );
     }
 
-    const accountRows = (Array.isArray(accounts.accounts) ? accounts.accounts : [])
-      .filter((account) => String(account?.account_id || "").trim().length > 0)
-      .map((account) => ({
-        user_id: userId,
-        plaid_item_id: exchange.item_id,
-        plaid_account_id: String(account.account_id).trim(),
-        account_name: String(
-          account.official_name || account.name || account.subtype || "Bank account",
-        ).trim(),
-        account_mask: String(account.mask || "").trim() || null,
-        account_subtype: String(account.subtype || "").trim() || null,
-        account_type: String(account.type || "").trim() || null,
-        status: "active",
-      }));
+    const accountRows =
+      (Array.isArray(accounts.accounts) ? accounts.accounts : [])
+        .filter((account) =>
+          String(account?.account_id || "").trim().length > 0
+        )
+        .map((account) => ({
+          user_id: userId,
+          plaid_item_id: exchange.item_id,
+          plaid_account_id: String(account.account_id).trim(),
+          account_name: String(
+            account.official_name || account.name || account.subtype ||
+              "Bank account",
+          ).trim(),
+          account_mask: String(account.mask || "").trim() || null,
+          account_subtype: String(account.subtype || "").trim() || null,
+          account_type: String(account.type || "").trim() || null,
+          status: "active",
+        }));
 
     if (accountRows.length > 0) {
       const { error: accountUpsertError } = await supabase
@@ -90,7 +125,8 @@ serve(async (req) => {
         });
       if (accountUpsertError) {
         throw new HttpError(
-          accountUpsertError.message || "Unable to save linked account details.",
+          accountUpsertError.message ||
+            "Unable to save linked account details.",
           500,
         );
       }
@@ -103,7 +139,9 @@ serve(async (req) => {
         .eq("plaid_item_id", exchange.item_id)
         .eq("status", "active");
       const staleIds = (Array.isArray(activeRows) ? activeRows : [])
-        .filter((row) => !keepIds.has(String(row?.plaid_account_id || "").trim()))
+        .filter((row) =>
+          !keepIds.has(String(row?.plaid_account_id || "").trim())
+        )
         .map((row) => row.id)
         .filter(Boolean);
       if (staleIds.length > 0) {
@@ -118,7 +156,8 @@ serve(async (req) => {
         .select("stripe_cashout_plaid_item_id, stripe_cashout_plaid_account_id")
         .eq("id", userId)
         .maybeSingle();
-      const selectedItemId = String(profile?.stripe_cashout_plaid_item_id || "").trim();
+      const selectedItemId = String(profile?.stripe_cashout_plaid_item_id || "")
+        .trim();
       const selectedAccountId = String(
         profile?.stripe_cashout_plaid_account_id || "",
       ).trim();

@@ -4,12 +4,11 @@ const PLAID_CLIENT_ID = Deno.env.get("PLAID_CLIENT_ID") ?? "";
 const PLAID_SECRET = Deno.env.get("PLAID_SECRET") ?? "";
 const PLAID_ENV = (Deno.env.get("PLAID_ENV") ?? "sandbox").toLowerCase();
 const PLAID_CLIENT_NAME = Deno.env.get("PLAID_CLIENT_NAME") ?? "Wello";
-const PLAID_COUNTRY_CODES =
-  Deno.env.get("PLAID_COUNTRY_CODES") ?? "US";
+const PLAID_COUNTRY_CODES = Deno.env.get("PLAID_COUNTRY_CODES") ?? "US";
 const PLAID_WEBHOOK_URL = Deno.env.get("PLAID_WEBHOOK_URL") ?? "";
 const PLAID_REDIRECT_URI = Deno.env.get("PLAID_REDIRECT_URI") ?? "";
-const PLAID_ANDROID_PACKAGE_NAME =
-  Deno.env.get("PLAID_ANDROID_PACKAGE_NAME") ?? "";
+const PLAID_ANDROID_PACKAGE_NAME = Deno.env.get("PLAID_ANDROID_PACKAGE_NAME") ??
+  "";
 const PLAID_REQUEST_TIMEOUT_MS = Math.max(
   Number(Deno.env.get("PLAID_REQUEST_TIMEOUT_MS") || 15000) || 15000,
   5000,
@@ -43,7 +42,10 @@ const plaidRequest = async <T>(
 ): Promise<T> => {
   ensurePlaidEnv();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), PLAID_REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(
+    () => controller.abort(),
+    PLAID_REQUEST_TIMEOUT_MS,
+  );
   let response: Response;
   try {
     response = await fetch(`${PLAID_BASE_URL}${path}`, {
@@ -88,7 +90,9 @@ const plaidRequest = async <T>(
 
   if (!response.ok) {
     throw new HttpError(
-      String(parsed?.error_message || parsed?.message || "Plaid request failed."),
+      String(
+        parsed?.error_message || parsed?.message || "Plaid request failed.",
+      ),
       response.status >= 400 && response.status < 600 ? response.status : 500,
       {
         plaid_error_type: parsed?.error_type || null,
@@ -126,31 +130,48 @@ export const plaidCreateLinkToken = (payload: {
   fullName?: string | null;
   platform?: string | null;
   androidPackageName?: string | null;
+  accessToken?: string | null;
+  accountSelectionEnabled?: boolean;
 }) => {
-  const products = ["transactions"];
-  const optionalProducts = ["identity"];
   const countryCodes = PLAID_COUNTRY_CODES.split(",")
     .map((v) => v.trim().toUpperCase())
     .filter(Boolean);
+  const accessToken = String(payload.accessToken || "").trim();
+  const request: Record<string, unknown> = accessToken
+    ? {
+      client_name: PLAID_CLIENT_NAME,
+      country_codes: countryCodes.length ? countryCodes : ["US"],
+      language: "en",
+      user: { client_user_id: payload.userId },
+      access_token: accessToken,
+    }
+    : (() => {
+      const products = ["transactions"];
+      const optionalProducts = ["identity"];
 
-  const request: Record<string, unknown> = {
-    client_name: PLAID_CLIENT_NAME,
-    country_codes: countryCodes.length ? countryCodes : ["US"],
-    language: "en",
-    user: { client_user_id: payload.userId },
-    products,
-    optional_products: optionalProducts,
-    transactions: {
-      days_requested: 30,
-    },
-  };
+      return {
+        client_name: PLAID_CLIENT_NAME,
+        country_codes: countryCodes.length ? countryCodes : ["US"],
+        language: "en",
+        user: { client_user_id: payload.userId },
+        products,
+        optional_products: optionalProducts,
+        transactions: {
+          days_requested: 30,
+        },
+      };
+    })();
+
+  if (accessToken && payload.accountSelectionEnabled) {
+    request.update = { account_selection_enabled: true };
+  }
 
   const platform = String(payload.platform || "").toLowerCase().trim();
   const androidPackageName = String(
     payload.androidPackageName || PLAID_ANDROID_PACKAGE_NAME || "",
   ).trim();
 
-  if (PLAID_WEBHOOK_URL) request.webhook = PLAID_WEBHOOK_URL;
+  if (!accessToken && PLAID_WEBHOOK_URL) request.webhook = PLAID_WEBHOOK_URL;
   // For OAuth support:
   // - Android link tokens require `android_package_name` and NO `redirect_uri`.
   // - iOS link tokens use `redirect_uri` and should not include `android_package_name`.
@@ -251,7 +272,9 @@ export const plaidGetIdentity = async (
 ): Promise<string[]> => {
   try {
     const response = await plaidRequest<{
-      accounts?: Array<{ account_id: string; owners?: Array<{ names?: string[] }> }>;
+      accounts?: Array<
+        { account_id: string; owners?: Array<{ names?: string[] }> }
+      >;
     }>("/identity/get", {
       access_token: accessToken,
       options: { account_ids: [accountId] },
