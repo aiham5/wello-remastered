@@ -57,7 +57,7 @@ export default ({ config }) => ({
   android: {
     ...config.android,
     // Required for Android push tokens in dev/prod builds. File is uploaded to EAS via `.easignore`.
-    googleServicesFile: "./android/app/google-services.json",
+    googleServicesFile: "./google-services.json",
     config: {
       ...(config.android?.config ?? {}),
       googleMaps: {
