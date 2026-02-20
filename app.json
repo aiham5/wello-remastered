@@ -28,7 +28,7 @@
                                                "NSCameraUsageDescription":  "Wello uses the camera to take photos of receipts and offers.",
                                                "NSPhotoLibraryUsageDescription":  "Wello needs photo access to upload offer images."
                                            },
-                             "buildNumber":  "2"
+                             "buildNumber":  "3"
                          },
                  "android":  {
                                  "icon":  "./assets/logo/wello-logo.png",
