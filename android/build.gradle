@@ -1,28 +1,14 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
-// Keep AGP pinned to a version compatible with our RN native deps.
-// Some RN libraries bundle their own buildscript with a pinned AGP version;
-// if the app uses a newer AGP, Gradle variant resolution can fail ("No variants exist").
-ext {
-  // Expo SDK 54 currently builds fine on API 35; pinning avoids AGP 8.11/SDK 36 edge issues.
-  buildToolsVersion = "35.0.0"
-  minSdkVersion = 24
-  compileSdkVersion = 35
-  targetSdkVersion = 35
-  ndkVersion = "27.1.12297006"
-}
-
 buildscript {
   repositories {
     google()
     mavenCentral()
   }
   dependencies {
-    // Pin to match libraries that pin AGP in their own buildscript (ex: RNGH).
-    classpath('com.android.tools.build:gradle:8.10.1')
+    classpath('com.android.tools.build:gradle')
     classpath('com.facebook.react:react-native-gradle-plugin')
     classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
-    classpath('com.google.gms:google-services:4.4.2')
   }
 }
 
