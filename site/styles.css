@@ -45,8 +45,17 @@ html[data-theme="dark"] {
 
 body {
   margin: 0;
-  font-family: "Rubik", system-ui, -apple-system, sans-serif;
-  background: linear-gradient(160deg, var(--bg-start) 0%, var(--bg-mid) 45%, var(--bg-end) 100%);
+  font-family:
+    "Rubik",
+    system-ui,
+    -apple-system,
+    sans-serif;
+  background: linear-gradient(
+    160deg,
+    var(--bg-start) 0%,
+    var(--bg-mid) 45%,
+    var(--bg-end) 100%
+  );
   color: var(--ink);
   min-height: 100vh;
 }
@@ -70,7 +79,11 @@ body {
 .page::before {
   width: 520px;
   height: 520px;
-  background: radial-gradient(circle at 30% 30%, var(--orb-top) 0%, transparent 65%);
+  background: radial-gradient(
+    circle at 30% 30%,
+    var(--orb-top) 0%,
+    transparent 65%
+  );
   top: -180px;
   right: -200px;
 }
@@ -78,18 +91,22 @@ body {
 .page::after {
   width: 600px;
   height: 600px;
-  background: radial-gradient(circle at 70% 70%, var(--orb-bottom) 0%, transparent 70%);
+  background: radial-gradient(
+    circle at 70% 70%,
+    var(--orb-bottom) 0%,
+    transparent 70%
+  );
   bottom: -260px;
   left: -200px;
 }
 
-.container { 
-  position: relative; 
-  z-index: 1; 
-  width: min(1100px, 92%); 
-  margin: 0 auto; 
-  padding: 56px 0 72px; 
-} 
+.container {
+  position: relative;
+  z-index: 1;
+  width: min(1100px, 92%);
+  margin: 0 auto;
+  padding: 56px 0 72px;
+}
 
 /* Admin pages need more horizontal real estate for wide tables. */
 .admin .container.admin-container {
@@ -145,7 +162,10 @@ body {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+  transition:
+    transform 0.2s ease,
+    background 0.2s ease,
+    border-color 0.2s ease;
 }
 
 .theme-toggle:hover {
@@ -217,7 +237,9 @@ h1 {
   border: none;
   text-decoration: none;
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
 .button.primary {
@@ -506,11 +528,11 @@ html[data-theme="dark"] .field select option {
   color: var(--ink);
 }
 
-.receipts-layout { 
-  display: grid; 
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); 
-  gap: 20px; 
-} 
+.receipts-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 20px;
+}
 
 /* Give the receipts table more space vs. the detail panel on desktop. */
 .admin .receipts-layout {
@@ -541,32 +563,32 @@ html[data-theme="dark"] .field select option {
   flex-wrap: wrap;
 }
 
-.table-scroll { 
-  overflow-x: auto; 
-} 
+.table-scroll {
+  overflow-x: auto;
+}
 
 /* Prefer wrapping over horizontal scroll on desktop admin. */
 .admin .table-scroll {
   overflow-x: visible;
 }
 
-.receipt-table { 
-  width: 100%; 
-  border-collapse: collapse; 
-  font-size: 14px; 
-} 
+.receipt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
 
 /* Keep the receipts table readable without needing horizontal scroll. */
 .admin .receipt-table {
   table-layout: fixed;
 }
 
-.receipt-table th, 
-.receipt-table td { 
-  padding: 12px 10px; 
-  text-align: left; 
-  border-bottom: 1px solid var(--line); 
-} 
+.receipt-table th,
+.receipt-table td {
+  padding: 12px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
 
 .admin .receipt-table th,
 .admin .receipt-table td {
@@ -1164,8 +1186,16 @@ body.home-page {
   min-height: 100vh;
   color: #0f2237;
   background:
-    radial-gradient(42rem 42rem at 8% -5%, rgba(237, 203, 115, 0.26), transparent 62%),
-    radial-gradient(34rem 34rem at 98% -8%, rgba(128, 179, 255, 0.24), transparent 62%),
+    radial-gradient(
+      42rem 42rem at 8% -5%,
+      rgba(237, 203, 115, 0.26),
+      transparent 62%
+    ),
+    radial-gradient(
+      34rem 34rem at 98% -8%,
+      rgba(128, 179, 255, 0.24),
+      transparent 62%
+    ),
     linear-gradient(180deg, #f8fbff 0%, #f2f6fc 52%, #f6f4ef 100%);
 }
 
@@ -1306,7 +1336,10 @@ body.home-page .home-btn {
   text-decoration: none;
   font-weight: 700;
   letter-spacing: 0.01em;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease;
 }
 
 body.home-page .home-btn:hover {
@@ -1326,7 +1359,11 @@ body.home-page .home-btn-secondary {
 }
 
 body.home-page .home-hero-panel {
-  background: linear-gradient(160deg, rgba(18, 50, 82, 0.98), rgba(12, 32, 53, 0.98));
+  background: linear-gradient(
+    160deg,
+    rgba(18, 50, 82, 0.98),
+    rgba(12, 32, 53, 0.98)
+  );
   color: #eef5ff;
   border-radius: 26px;
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -1551,7 +1588,11 @@ body.home-page .home-cta-content {
   border-radius: 24px;
   border: 1px solid rgba(15, 34, 55, 0.12);
   background:
-    radial-gradient(28rem 20rem at 100% 0, rgba(231, 186, 67, 0.2), transparent 68%),
+    radial-gradient(
+      28rem 20rem at 100% 0,
+      rgba(231, 186, 67, 0.2),
+      transparent 68%
+    ),
     rgba(255, 255, 255, 0.9);
   box-shadow: 0 22px 44px rgba(15, 34, 55, 0.1);
   padding: 28px;
@@ -1616,7 +1657,9 @@ body.home-page summary:focus-visible {
   body.home-page .home-trust-card,
   body.home-page .home-step,
   body.home-page .home-faq-item {
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition:
+      transform 0.2s ease,
+      box-shadow 0.2s ease;
   }
 
   body.home-page .home-feature-card:hover,
@@ -1713,7 +1756,11 @@ body.contact-page {
   min-height: 100vh;
   color: #12263d;
   background:
-    radial-gradient(36rem 36rem at 100% -10%, rgba(224, 194, 114, 0.2), transparent 62%),
+    radial-gradient(
+      36rem 36rem at 100% -10%,
+      rgba(224, 194, 114, 0.2),
+      transparent 62%
+    ),
     linear-gradient(180deg, #f7fbff 0%, #eef4fb 100%);
 }
 
@@ -1857,7 +1904,11 @@ body.contact-page .contact-field textarea {
   color: #102840;
   padding: 12px 13px;
   font-size: 15px;
-  font-family: "Rubik", system-ui, -apple-system, sans-serif;
+  font-family:
+    "Rubik",
+    system-ui,
+    -apple-system,
+    sans-serif;
 }
 
 body.contact-page .contact-field textarea {
@@ -1965,8 +2016,16 @@ body.home-page {
 body.home-page {
   color: var(--brand-text);
   background:
-    radial-gradient(44rem 44rem at 8% -5%, rgba(244, 197, 66, 0.28), transparent 62%),
-    radial-gradient(34rem 34rem at 98% -8%, rgba(15, 47, 82, 0.16), transparent 62%),
+    radial-gradient(
+      44rem 44rem at 8% -5%,
+      rgba(244, 197, 66, 0.28),
+      transparent 62%
+    ),
+    radial-gradient(
+      34rem 34rem at 98% -8%,
+      rgba(15, 47, 82, 0.16),
+      transparent 62%
+    ),
     linear-gradient(180deg, #fffdfa 0%, #fbf5e8 52%, #f5efe2 100%);
 }
 
@@ -1976,7 +2035,11 @@ body.home-page .home-eyebrow {
 
 body.home-page .home-nav-links a.home-nav-cta,
 body.home-page .home-btn-primary {
-  background: linear-gradient(135deg, var(--brand-yellow), var(--brand-yellow-strong));
+  background: linear-gradient(
+    135deg,
+    var(--brand-yellow),
+    var(--brand-yellow-strong)
+  );
   color: var(--brand-black);
   box-shadow: 0 14px 28px rgba(228, 178, 51, 0.34);
 }
@@ -2010,7 +2073,11 @@ body.home-page .home-footer-row {
 }
 
 body.home-page .home-hero-panel {
-  background: linear-gradient(160deg, rgba(17, 17, 17, 0.98), rgba(0, 0, 0, 0.98));
+  background: linear-gradient(
+    160deg,
+    rgba(17, 17, 17, 0.98),
+    rgba(0, 0, 0, 0.98)
+  );
   border-color: rgba(244, 197, 66, 0.28);
 }
 
@@ -2049,7 +2116,11 @@ body.home-page .home-nav-links a:hover {
 body.home-page .home-cta-content {
   border-color: rgba(122, 91, 19, 0.18);
   background:
-    radial-gradient(28rem 20rem at 100% 0, rgba(244, 197, 66, 0.26), transparent 68%),
+    radial-gradient(
+      28rem 20rem at 100% 0,
+      rgba(244, 197, 66, 0.26),
+      transparent 68%
+    ),
     rgba(255, 255, 255, 0.92);
 }
 
@@ -2069,7 +2140,11 @@ body.contact-page {
 body.contact-page {
   color: var(--brand-text);
   background:
-    radial-gradient(38rem 38rem at 100% -10%, rgba(244, 197, 66, 0.24), transparent 62%),
+    radial-gradient(
+      38rem 38rem at 100% -10%,
+      rgba(244, 197, 66, 0.24),
+      transparent 62%
+    ),
     linear-gradient(180deg, #fffcf4 0%, #f8f2e5 100%);
 }
 
@@ -2083,7 +2158,11 @@ body.contact-page .contact-card-subtitle a {
 }
 
 body.contact-page .contact-btn {
-  background: linear-gradient(135deg, var(--brand-yellow), var(--brand-yellow-strong));
+  background: linear-gradient(
+    135deg,
+    var(--brand-yellow),
+    var(--brand-yellow-strong)
+  );
   color: var(--brand-black);
   box-shadow: 0 14px 26px rgba(228, 178, 51, 0.3);
 }
@@ -2360,7 +2439,11 @@ body.contact-page .contact-turnstile {
 body.home-page .home-btn,
 body.home-page .home-nav-links a,
 body.contact-page .contact-btn {
-  font-family: "Rubik", system-ui, -apple-system, sans-serif;
+  font-family:
+    "Rubik",
+    system-ui,
+    -apple-system,
+    sans-serif;
   letter-spacing: 0.005em;
   line-height: 1;
   text-rendering: geometricPrecision;
@@ -2425,7 +2508,6 @@ body.contact-page .contact-btn {
   }
 }
 
-
 /* ==========================
    Legal pages (scoped)
    ========================== */
@@ -2435,8 +2517,16 @@ body.legal-page {
   min-height: 100vh;
   color: #121212;
   background:
-    radial-gradient(44rem 44rem at 8% -5%, rgba(244, 197, 66, 0.28), transparent 62%),
-    radial-gradient(34rem 34rem at 98% -8%, rgba(15, 47, 82, 0.16), transparent 62%),
+    radial-gradient(
+      44rem 44rem at 8% -5%,
+      rgba(244, 197, 66, 0.28),
+      transparent 62%
+    ),
+    radial-gradient(
+      34rem 34rem at 98% -8%,
+      rgba(15, 47, 82, 0.16),
+      transparent 62%
+    ),
     linear-gradient(180deg, #fffdfa 0%, #fbf5e8 52%, #f5efe2 100%);
 }
 
@@ -2511,7 +2601,11 @@ body.legal-page .legal-card {
   border-radius: 24px;
   border: 1px solid rgba(17, 17, 17, 0.12);
   background:
-    radial-gradient(28rem 20rem at 100% 0, rgba(244, 197, 66, 0.2), transparent 68%),
+    radial-gradient(
+      28rem 20rem at 100% 0,
+      rgba(244, 197, 66, 0.2),
+      transparent 68%
+    ),
     rgba(255, 255, 255, 0.9);
   box-shadow: 0 22px 44px rgba(15, 34, 55, 0.12);
   padding: 28px;
@@ -2733,10 +2827,22 @@ body.legal-v2 {
   margin: 0;
   min-height: 100vh;
   color: var(--text);
-  font-family: "Rubik", system-ui, -apple-system, sans-serif;
+  font-family:
+    "Rubik",
+    system-ui,
+    -apple-system,
+    sans-serif;
   background:
-    radial-gradient(42rem 32rem at 0% -12%, rgba(244, 197, 66, 0.24), transparent 58%),
-    radial-gradient(34rem 24rem at 100% -14%, rgba(244, 197, 66, 0.14), transparent 62%),
+    radial-gradient(
+      42rem 32rem at 0% -12%,
+      rgba(244, 197, 66, 0.24),
+      transparent 58%
+    ),
+    radial-gradient(
+      34rem 24rem at 100% -14%,
+      rgba(244, 197, 66, 0.14),
+      transparent 62%
+    ),
     linear-gradient(180deg, #fffef9 0%, #fff9eb 52%, #fffdf7 100%);
 }
 
@@ -2898,7 +3004,11 @@ body.referral-v2 h1,
 body.legal-v2 .legal-prose h1,
 body.legal-v2 .legal-prose h2 {
   margin: 0;
-  font-family: "Rubik", system-ui, -apple-system, sans-serif;
+  font-family:
+    "Rubik",
+    system-ui,
+    -apple-system,
+    sans-serif;
   letter-spacing: -0.015em;
   font-weight: 700;
   color: #111111;
@@ -2933,7 +3043,7 @@ body.home-v2 .v2-hero-media {
 body.home-v2 .v2-hero-media-track {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0;
+  gap: 1;
 }
 
 body.home-v2 .v2-section {
@@ -3386,7 +3496,9 @@ body.legal-v2 .legal-table th {
   body.home-v2 .v2-btn,
   body.contact-v2 .contact-btn,
   body.referral-v2 .v2-btn {
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition:
+      transform 0.2s ease,
+      box-shadow 0.2s ease;
   }
 
   body.home-v2 .v2-card:hover,
