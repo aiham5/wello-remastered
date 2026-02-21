@@ -3043,7 +3043,7 @@ body.home-v2 .v2-hero-media {
 body.home-v2 .v2-hero-media-track {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1;
+  gap: 10px;
 }
 
 body.home-v2 .v2-section {
