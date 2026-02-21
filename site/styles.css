@@ -2954,7 +2954,8 @@ body.home-v2 .v2-section {
 }
 
 body.home-v2 .v2-showcase {
-  padding-top: 10px;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 body.home-v2 .v2-showcase-scroll {
@@ -2972,11 +2973,11 @@ body.home-v2 .v2-showcase-track {
 
 body.home-v2 .v2-shot {
   margin: 0;
-  border-radius: 20px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  background: #ffffff;
-  box-shadow: var(--shadow-soft);
+  border-radius: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 body.home-v2 .v2-shot img {
