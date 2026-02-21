@@ -142,16 +142,15 @@ const SCANNER_CARD_HEIGHT = SCANNER_FRAME + (IS_COMPACT ? 160 : 180);
 // Redemption no longer requires user proximity to the business location.
 const REDEEM_BLOCKED_MESSAGE = "Unable to redeem right now. Try again.";
 const PLAID_AUTO_VERIFY_COPY =
-  "Bank linked. Purchases verify automatically when detected.";
+  "Cashback is automatically verified when purchases are visible through your linked bank.";
 const PLAID_FALLBACK_COPY =
-  "Can't find a transaction yet? Upload a receipt.";
+  "Some cards or banks may require receipt upload for verification.";
 const PLAID_PENDING_COPY =
-  "Verification is in progress. Cashback may appear as pending.";
+  "Cashback may appear as pending while verification completes.";
 const PLAID_LINK_UNAVAILABLE_COPY =
   "Bank linking is temporarily unavailable right now. Please try again shortly.";
 const PLAID_LINK_OPEN_FAILED_COPY =
   "Unable to open bank linking right now. Please try again.";
-const DEFAULT_OPERATING_DAYS = "Mon-Sun";
 const DISCOVER_DEMO_LAYOUTS = [
   { key: "editorial_split", label: "Editorial Split" },
   { key: "editorial_stack", label: "Editorial Stack" },
@@ -322,28 +321,15 @@ const TIME_OPTIONS = [
   "11:00",
   "11:30",
 ];
-const OPERATING_DAY_OPTIONS = [
-  { key: "Mon", label: "Mon" },
-  { key: "Tue", label: "Tue" },
-  { key: "Wed", label: "Wed" },
-  { key: "Thu", label: "Thu" },
-  { key: "Fri", label: "Fri" },
-  { key: "Sat", label: "Sat" },
-  { key: "Sun", label: "Sun" },
-];
-const OPERATING_DAY_INDEX = OPERATING_DAY_OPTIONS.reduce((acc, day, index) => {
-  acc[day.key.toLowerCase()] = index;
-  return acc;
-}, {});
 const CONFETTI_COLORS = [
-  "#93C5FD",
-  "#FCA5A5",
-  "#BFDBFE",
-  "#C4B5FD",
-  "#F5D0FE",
-  "#E2E8F0",
-  "#A5B4FC",
-  "#FBCFE8",
+  "#F8C27A",
+  "#F59E8B",
+  "#8EC5F8",
+  "#9DE3C1",
+  "#F6A6C9",
+  "#F2D36B",
+  "#7FB7E8",
+  "#C0E8B4",
 ];
 
 const FONT_REGULAR = "Rubik-Regular";
@@ -354,19 +340,18 @@ const FONT_DISPLAY = FONT_SEMIBOLD;
 const FONT_TEXT = FONT_REGULAR;
 
 const COLORS = {
-  ink: "#0F172A",
-  text: "#0F172A",
-  cream: "#F8FAFC",
-  sand: "#D3DDEA",
-  mint: "#F2F5FA",
-  coral: "#334155",
-  sun: "#1F3A5C",
-  pine: "#102A4C",
+  ink: "#111318",
+  cream: "#FFFCF6",
+  sand: "#E8DFC9",
+  mint: "#F7F1E4",
+  coral: "#B45309",
+  sun: "#F4C430",
+  pine: "#1A1F2E",
   white: "#FFFFFF",
-  shadow: "rgba(15, 23, 42, 0.12)",
-  muted: "#5E6B7E",
-  surfaceAlt: "#EEF2F8",
-  success: "#2563EB",
+  shadow: "rgba(17, 19, 24, 0.14)",
+  muted: "#6B7280",
+  surfaceAlt: "#FBF6EA",
+  success: "#15803D",
   warning: "#B45309",
   danger: "#B42318",
   info: "#1D4ED8",
@@ -382,23 +367,23 @@ const RADII = {
 const ELEVATION = {
   soft: {
     shadowColor: COLORS.shadow,
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
     elevation: 2,
   },
   medium: {
     shadowColor: COLORS.shadow,
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
     elevation: 4,
   },
   modal: {
     shadowColor: COLORS.shadow,
-    shadowOpacity: 0.14,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.24,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
     elevation: 6,
   },
 };
@@ -1003,7 +988,7 @@ const formatPurchaseVerificationReason = (reasonCode, reasonDetail) => {
   if (reasonDetail) return reasonDetail;
   switch (String(reasonCode || "").trim()) {
     case "bank_not_linked":
-      return "Link your bank for instant verification, or upload a receipt.";
+      return "Link a bank for automatic verification, or upload a receipt.";
     case "transaction_pending":
       return "Matching transaction found but still pending settlement.";
     case "transaction_delayed":
@@ -1026,25 +1011,6 @@ const formatPurchaseVerificationReason = (reasonCode, reasonDetail) => {
 const formatBusinessHours = (startTime, startMeridiem, endTime, endMeridiem) =>
   `${startTime} ${startMeridiem} - ${endTime} ${endMeridiem}`;
 
-const formatBusinessSchedule = (
-  operatingDays,
-  startTime,
-  startMeridiem,
-  endTime,
-  endMeridiem,
-) => {
-  const timeRange = formatBusinessHours(
-    startTime,
-    startMeridiem,
-    endTime,
-    endMeridiem,
-  );
-  const days = String(operatingDays || "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return days ? `${days} · ${timeRange}` : timeRange;
-};
-
 const mergeVerificationCopy = (...parts) => {
   const unique = [];
   parts.forEach((part) => {
@@ -1066,32 +1032,8 @@ const isTransientProfileUpsertRls = (message) => {
 
 const parseBusinessHours = (value) => {
   if (!value) return null;
-  const normalized = String(value)
-    .replace(/[\u2013\u2014]/g, "-")
-    .replace(/\s+/g, " ")
-    .trim();
-  let days = "";
-  let timePart = normalized;
-
-  if (normalized.includes("·")) {
-    const [daysPart, ...timeParts] = normalized.split("·");
-    days = String(daysPart || "").trim();
-    timePart = String(timeParts.join("·") || "").trim();
-  } else if (normalized.includes("|")) {
-    const [daysPart, ...timeParts] = normalized.split("|");
-    days = String(daysPart || "").trim();
-    timePart = String(timeParts.join("|") || "").trim();
-  } else {
-    const looseMatch = normalized.match(
-      /^(.+?)\s+(\d{1,2}(?::\d{2})?\s*(?:AM|PM)?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:AM|PM)?)$/i,
-    );
-    if (looseMatch) {
-      days = String(looseMatch[1] || "").trim();
-      timePart = String(looseMatch[2] || "").trim();
-    }
-  }
-
-  const parts = timePart
+  const normalized = String(value).replace(/[\u2013\u2014]/g, "-");
+  const parts = normalized
     .split("-")
     .map((part) => part.trim())
     .filter(Boolean);
@@ -1108,7 +1050,6 @@ const parseBusinessHours = (value) => {
   const end = parsePart(parts[1]);
   if (!start || !end) return null;
   return {
-    days,
     startTime: start.time,
     startMeridiem: start.meridiem,
     endTime: end.time,
@@ -1425,10 +1366,6 @@ const formatPlaidFunctionError = (parsed, fallbackMessage) => {
     parsed?.plaid_error_code || parsed?.code || "",
   ).toUpperCase();
   switch (code) {
-    case "MISSING_FIELDS":
-    case "INVALID_FIELD":
-    case "INVALID_REQUEST":
-      return PLAID_LINK_UNAVAILABLE_COPY;
     case "NO_AUTH_ACCOUNTS":
       return "No checking or savings account was shared. Link a bank and select a checking or savings account.";
     case "ITEM_LOGIN_REQUIRED":
@@ -1876,6 +1813,14 @@ const callPlaidFunction = async (functionName, payload) => {
     }
 
     if (!attempt.ok) {
+      console.warn("Plaid function failed", {
+        functionName,
+        status: attempt.status,
+        error: attempt.errorMessage,
+        plaidErrorCode:
+          attempt.parsed?.plaid_error_code || attempt.parsed?.code || null,
+        parsed: attempt.parsed,
+      });
       return {
         data: null,
         error: toUserFacingError(
@@ -2239,12 +2184,12 @@ const MAP_STYLE = [
   {
     featureType: "poi",
     elementType: "geometry.fill",
-    stylers: [{ color: "#F4F7FC" }],
+    stylers: [{ color: "#F7F1E5" }],
   },
   {
     featureType: "poi.park",
     elementType: "geometry.fill",
-    stylers: [{ color: "#DFE7F2" }],
+    stylers: [{ color: "#D7E6DD" }],
   },
   {
     featureType: "road",
@@ -2254,7 +2199,7 @@ const MAP_STYLE = [
   {
     featureType: "road",
     elementType: "geometry.stroke",
-    stylers: [{ color: "#D6E0EC" }],
+    stylers: [{ color: "#E5D9C1" }],
   },
   {
     featureType: "water",
@@ -2333,7 +2278,7 @@ const CATEGORY_CONFIG = {
   },
   auto: {
     label: "AU",
-    color: "#1E3A8A",
+    color: "#196A55",
     display: "Carwash / Auto Cosmetic",
     icon: "car",
   },
@@ -3222,7 +3167,7 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
           ) : null}
         {cashbackLabel ? (
             <View style={styles.liveEditorialStackCashbackPill}>
-              <Ionicons name="cash-outline" size={14} color="#166534" />
+              <Ionicons name="cash-outline" size={14} color="#065F46" />
               <Text style={styles.liveEditorialStackCashbackText}>
                 {cashbackLabel} Cashback
               </Text>
@@ -3343,9 +3288,6 @@ export default function App() {
   const [businessPhone, setBusinessPhone] = useState("");
   const [businessDescriptorAliasesInput, setBusinessDescriptorAliasesInput] =
     useState("");
-  const [businessHoursDays, setBusinessHoursDays] = useState(
-    DEFAULT_OPERATING_DAYS,
-  );
   const [businessHoursStart, setBusinessHoursStart] = useState("");
   const [businessHoursStartMeridiem, setBusinessHoursStartMeridiem] =
     useState("AM");
@@ -3641,12 +3583,10 @@ export default function App() {
   const [createBusinessHonorOffersChecked, setCreateBusinessHonorOffersChecked] =
     useState(false);
   const [createHoursStart, setCreateHoursStart] = useState("");
-  const [createHoursDays, setCreateHoursDays] = useState(DEFAULT_OPERATING_DAYS);
   const [createHoursStartMeridiem, setCreateHoursStartMeridiem] =
     useState("AM");
   const [createHoursEnd, setCreateHoursEnd] = useState("");
   const [createHoursEndMeridiem, setCreateHoursEndMeridiem] = useState("PM");
-  const [editHoursDays, setEditHoursDays] = useState(DEFAULT_OPERATING_DAYS);
   const [editHoursStart, setEditHoursStart] = useState("");
   const [editHoursStartMeridiem, setEditHoursStartMeridiem] = useState("AM");
   const [editHoursEnd, setEditHoursEnd] = useState("");
@@ -3845,23 +3785,23 @@ export default function App() {
     const reasonLabel = String(plaidLinkState.updateMode?.reasonLabel || "").trim();
     if (plaidLinkState.updateMode?.required) {
       return {
-        title: "Reconnect bank",
+        title: "Update bank connection",
         body: reasonLabel
-          ? `${reasonLabel}. Reconnect to keep instant verification active.`
-          : "Reconnect your bank to keep instant verification active.",
-        cta: "Reconnect",
+          ? `${reasonLabel}. Reconnect to keep instant cashback verification active.`
+          : "Reconnect your bank to keep instant cashback verification active.",
+        cta: "Update",
       };
     }
     if (plaidLinkState.updateMode?.accountSelectionAvailable) {
       return {
-        title: "New accounts found",
-        body: "Review your linked bank and add newly eligible accounts.",
+        title: "New accounts available",
+        body: "Review your linked bank and choose any newly eligible accounts.",
         cta: "Review",
       };
     }
     return {
       title: "Link bank for instant cashback",
-      body: "Connect your bank to enable instant purchase verification.",
+      body: "Connect your bank to receive instant cashback with auto verification.",
       cta: "Connect",
     };
   }, [plaidLinkState.updateMode]);
@@ -7768,6 +7708,14 @@ export default function App() {
       }, 0),
     [cashoutWithdrawalEntries],
   );
+  const highlightedHistoryEntry = useMemo(() => {
+    if (!highlightedHistoryEntryId) return null;
+    return (
+      redemptionHistory.find((entry) => entry.id === highlightedHistoryEntryId) ||
+      null
+    );
+  }, [redemptionHistory, highlightedHistoryEntryId]);
+
   useEffect(() => {
     if (!businesses.length) return;
     if (authUserId) {
@@ -7918,13 +7866,11 @@ export default function App() {
     setIsEditingBusiness(false);
     const parsed = parseBusinessHours(ownerBusiness.hours);
     if (parsed) {
-      setEditHoursDays(parsed.days || DEFAULT_OPERATING_DAYS);
       setEditHoursStart(parsed.startTime);
       setEditHoursStartMeridiem(parsed.startMeridiem);
       setEditHoursEnd(parsed.endTime);
       setEditHoursEndMeridiem(parsed.endMeridiem);
     } else {
-      setEditHoursDays(DEFAULT_OPERATING_DAYS);
       setEditHoursStart("");
       setEditHoursEnd("");
     }
@@ -7997,13 +7943,15 @@ export default function App() {
         ),
     }));
     if (!createHoursStart && authBusinessDraft.hours) {
-      const parsed = parseBusinessHours(authBusinessDraft.hours);
-      if (parsed) {
-        if (parsed.days) setCreateHoursDays(parsed.days);
-        if (parsed.startTime) setCreateHoursStart(parsed.startTime);
-        if (parsed.startMeridiem) setCreateHoursStartMeridiem(parsed.startMeridiem);
-        if (parsed.endTime) setCreateHoursEnd(parsed.endTime);
-        if (parsed.endMeridiem) setCreateHoursEndMeridiem(parsed.endMeridiem);
+      const parts = authBusinessDraft.hours.split(" - ");
+      if (parts.length === 2) {
+        const [start, end] = parts;
+        const [startTime, startMeridiem] = start.trim().split(" ");
+        const [endTime, endMeridiem] = end.trim().split(" ");
+        if (startTime) setCreateHoursStart(startTime);
+        if (startMeridiem) setCreateHoursStartMeridiem(startMeridiem);
+        if (endTime) setCreateHoursEnd(endTime);
+        if (endMeridiem) setCreateHoursEndMeridiem(endMeridiem);
       }
     }
   }, [activeTab, ownerBusiness, isOwner, authBusinessDraft, createHoursStart]);
@@ -8013,8 +7961,7 @@ export default function App() {
     if (!editHoursStart || !editHoursEnd) return;
     setFormData((prev) => ({
       ...prev,
-      hours: formatBusinessSchedule(
-        editHoursDays,
+      hours: formatBusinessHours(
         editHoursStart,
         editHoursStartMeridiem,
         editHoursEnd,
@@ -8023,7 +7970,6 @@ export default function App() {
     }));
   }, [
     isEditingBusiness,
-    editHoursDays,
     editHoursStart,
     editHoursStartMeridiem,
     editHoursEnd,
@@ -9206,8 +9152,7 @@ export default function App() {
     setBusinessSignUpNotice(null);
     try {
       const email = businessEmail.trim().toLowerCase();
-      const hoursValue = formatBusinessSchedule(
-        businessHoursDays,
+      const hoursValue = formatBusinessHours(
         businessHoursStart,
         businessHoursStartMeridiem,
         businessHoursEnd,
@@ -9551,7 +9496,6 @@ export default function App() {
       setBusinessCategoryKey("restaurant");
       setBusinessCategoryCustomLabel("");
       setBusinessCategoryMenuOpen(false);
-      setBusinessHoursDays(DEFAULT_OPERATING_DAYS);
       setBusinessHoursStart("");
       setBusinessHoursEnd("");
       setBusinessHoursStartMeridiem("AM");
@@ -9765,7 +9709,6 @@ export default function App() {
     setBusinessCategoryKey("restaurant");
     setBusinessCategoryCustomLabel("");
     setBusinessCategoryMenuOpen(false);
-    setBusinessHoursDays(DEFAULT_OPERATING_DAYS);
     setBusinessHoursStart("");
     setBusinessHoursEnd("");
     setBusinessHoursStartMeridiem("AM");
@@ -9792,7 +9735,6 @@ export default function App() {
     setCreateBusinessError(null);
     setCreateBusinessAuthorizedChecked(false);
     setCreateBusinessHonorOffersChecked(false);
-    setCreateHoursDays(DEFAULT_OPERATING_DAYS);
     setCreateHoursStart("");
     setCreateHoursEnd("");
     setCreateHoursStartMeridiem("AM");
@@ -12362,7 +12304,10 @@ export default function App() {
       setPlaidLinkState((prev) => ({
         ...prev,
         loading: false,
-        error: PLAID_LINK_UNAVAILABLE_COPY,
+        error:
+          error ||
+          data?.error ||
+          "Unable to start bank linking. Please try again.",
       }));
       return;
     }
@@ -12564,7 +12509,7 @@ export default function App() {
       setPlaidLinkState((prev) => ({
         ...prev,
         loading: false,
-        error: toUserFacingError(error?.message, PLAID_LINK_OPEN_FAILED_COPY),
+        error: error?.message || "Unable to open bank linking.",
       }));
     }
   }, [isSignedIn, loadPlaidLinkState, hasAcceptedPlaidLinkConsent]);
@@ -15074,8 +15019,7 @@ export default function App() {
     setCreateBusinessError(null);
     try {
       const offerHonorAcceptedAt = new Date().toISOString();
-      const hoursValue = formatBusinessSchedule(
-        createHoursDays,
+      const hoursValue = formatBusinessHours(
         createHoursStart,
         createHoursStartMeridiem,
         createHoursEnd,
@@ -15147,7 +15091,6 @@ export default function App() {
         tags: "",
         merchantDescriptorAliases: "",
       });
-      setCreateHoursDays(DEFAULT_OPERATING_DAYS);
       setCreateHoursStart("");
       setCreateHoursEnd("");
       setCreateHoursStartMeridiem("AM");
@@ -15566,7 +15509,7 @@ export default function App() {
                         size={42}
                         color={
                           scannerStatus === "success"
-                            ? "#1D4ED8"
+                            ? "#047857"
                             : scannerStatus === "blocked" ||
                                 scannerStatus === "error"
                               ? "#B42318"
@@ -16131,6 +16074,11 @@ export default function App() {
                     {businessRedemptionStatus.error && (
                       <Text style={styles.formError}>
                         {businessRedemptionStatus.error}
+                      </Text>
+                    )}
+                    {__DEV__ && receiptDebug && (
+                      <Text style={styles.cashoutErrorText}>
+                        {receiptDebug}
                       </Text>
                     )}
 
@@ -17163,7 +17111,7 @@ export default function App() {
             >
               <View style={styles.noticeOverlay}>
                 <View style={styles.noticeCard}>
-                  <Text style={styles.noticeTitle}>Receipt uploads</Text>
+                  <Text style={styles.noticeTitle}>Receipts needed</Text>
                   <Text style={styles.noticeBody}>
                     Upload receipts within 24 hours of redeeming offers to
                     verify them.
@@ -17272,7 +17220,7 @@ export default function App() {
                         size={18}
                         color={
                           receiptUploadOverlay.phase === "success"
-                            ? "#1E3A8A"
+                            ? "#14532D"
                             : "#B42318"
                         }
                       />
@@ -19081,21 +19029,6 @@ export default function App() {
                             </View>
 
                             <Text style={styles.formLabel}>
-                              Operating days
-                            </Text>
-                            <AutoFocusInput
-                              style={[
-                                styles.formInput,
-                                !canEditBusiness && styles.formInputDisabled,
-                              ]}
-                              placeholder="Mon-Sun"
-                              placeholderTextColor={COLORS.muted}
-                              value={editHoursDays}
-                              editable={canEditBusiness}
-                              onChangeText={(value) => setEditHoursDays(value)}
-                            />
-
-                            <Text style={styles.formLabel}>
                               Operating hours
                             </Text>
                             <View style={styles.timeRow}>
@@ -19590,17 +19523,6 @@ export default function App() {
                             />
 
                             <Text style={styles.formLabel}>
-                              Operating days
-                            </Text>
-                            <AutoFocusInput
-                              style={styles.formInput}
-                              placeholder="Mon-Sun"
-                              placeholderTextColor={COLORS.muted}
-                              value={createHoursDays}
-                              onChangeText={setCreateHoursDays}
-                            />
-
-                            <Text style={styles.formLabel}>
                               Operating hours
                             </Text>
                             <View style={styles.timeRow}>
@@ -19969,7 +19891,26 @@ export default function App() {
                                 <Text style={styles.historyVerifyNoticeBody}>
                                   {historyVerifyNotice.message}
                                 </Text>
+                                {highlightedHistoryEntry && (
+                                  <View style={styles.historyVerifyNoticeActions}>
+                                    <TouchableOpacity
+                                      style={styles.secondaryButton}
+                                      onPress={() =>
+                                        promptReceiptUpload(highlightedHistoryEntry)
+                                      }
+                                    >
+                                      <Text style={styles.secondaryButtonText}>
+                                        Upload receipt for highlighted redemption
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                )}
                               </View>
+                            )}
+                            {__DEV__ && receiptDebug && (
+                              <Text style={styles.cashoutErrorText}>
+                                {receiptDebug}
+                              </Text>
                             )}
                             <View
                               style={[
@@ -19990,7 +19931,7 @@ export default function App() {
                                   </View>
                                   <View style={styles.receiptNoticeHeaderCopy}>
                                     <Text style={styles.receiptNoticeTitle}>
-                                      Instant verification
+                                      Auto purchase verification
                                     </Text>
                                   </View>
                                 </View>
@@ -20019,12 +19960,12 @@ export default function App() {
                                     ]}
                                   >
                                     {pendingReceiptCount > 0
-                                      ? "Upload needed"
+                                      ? "Receipts needed"
                                       : plaidNeedsAttention
-                                      ? "Reconnect needed"
+                                      ? "Update needed"
                                       : hasLinkedPlaidBank
                                       ? "Bank linked"
-                                      : "Not linked"}
+                                      : "Action needed"}
                                   </Text>
                                 </View>
                               </View>
@@ -20038,7 +19979,7 @@ export default function App() {
                                       : pendingReceiptCount > 0
                                         ? `${pendingReceiptCount} receipt${
                                             pendingReceiptCount === 1 ? "" : "s"
-                                          } pending`
+                                          } waiting`
                                         : `Linked banks: ${plaidLinkState.linkedCount}`}
                                   </Text>
                                   <TouchableOpacity
@@ -20084,9 +20025,9 @@ export default function App() {
                                           ? "Opening Plaid Link..."
                                           : plaidNeedsAttention
                                             ? plaidPromptCopy.cta
-                                        : hasLinkedPlaidBank
+                                          : hasLinkedPlaidBank
                                             ? "Link another bank"
-                                            : "Enable instant verification"}
+                                            : "Enable auto verification"}
                                       </Text>
                                     </TouchableOpacity>
                                     {hasLinkedPlaidBank && (
@@ -20115,14 +20056,14 @@ export default function App() {
                                       </TouchableOpacity>
                                     )}
                                   </View>
-                                    <Text style={styles.receiptNoticeMeta}>
-                                      {plaidLinkState.loading
-                                        ? "Checking linked bank status..."
+                                  <Text style={styles.receiptNoticeMeta}>
+                                    {plaidLinkState.loading
+                                      ? "Checking linked bank status..."
                                       : plaidNeedsAttention
                                         ? plaidPromptCopy.body
-                                        : hasLinkedPlaidBank
+                                      : hasLinkedPlaidBank
                                         ? `Linked banks: ${plaidLinkState.linkedCount}`
-                                        : "Link a bank for instant verification"}
+                                        : "No linked bank yet"}
                                   </Text>
                                   {plaidLinkState.error && (
                                     <Text style={styles.receiptNoticeMetaError}>
@@ -20138,7 +20079,7 @@ export default function App() {
                                           color="#B42318"
                                         />
                                         <Text style={styles.receiptQueuePillText}>
-                                          Upload receipts: {pendingReceiptCount}
+                                          Receipts needed: {pendingReceiptCount}
                                         </Text>
                                       </View>
                                     </View>
@@ -20151,7 +20092,7 @@ export default function App() {
                                       }
                                     >
                                       <Text style={styles.receiptCollapseButtonText}>
-                                        Hide details
+                                        Collapse
                                       </Text>
                                     </TouchableOpacity>
                                   )}
@@ -20238,41 +20179,41 @@ export default function App() {
                                         if (verificationStatus === "pending") {
                                           return {
                                             icon: "time-outline",
-                                            text: "Checking purchase",
+                                            text: "Bank verification pending",
                                             tone: "pending",
                                           };
                                         }
                                         if (canUploadReceipt) {
                                           return {
                                             icon: "document-text-outline",
-                                            text: "Upload receipt",
+                                            text: "Receipt needed",
                                             tone: "info",
                                           };
                                         }
                                         return {
                                           icon: "close-circle-outline",
-                                          text: "Receipt window closed",
+                                          text: "Receipt window expired",
                                           tone: "danger",
                                         };
                                       }
                                       if (receiptReviewStatus === "pending") {
                                         return {
                                           icon: "time-outline",
-                                            text: "Review in progress",
+                                          text: "Pending review",
                                           tone: "pending",
                                         };
                                       }
                                       if (receiptReviewStatus === "rejected") {
                                         return {
                                           icon: "alert-circle-outline",
-                                          text: "Receipt not approved",
+                                          text: "Receipt rejected",
                                           tone: "danger",
                                         };
                                       }
                                       if (cashbackStatus === "reversed") {
                                         return {
                                           icon: "alert-circle-outline",
-                                          text: "Cashback removed",
+                                          text: "Cashback reversed",
                                           tone: "danger",
                                         };
                                       }
@@ -20288,7 +20229,7 @@ export default function App() {
                                       }
                                       return {
                                         icon: "checkmark-circle-outline",
-                                        text: "Verified purchase",
+                                        text: "Verified",
                                         tone: "neutral",
                                       };
                                     })();
@@ -20525,7 +20466,7 @@ export default function App() {
                                                 color="#1E3A8A"
                                               />
                                               <Text style={styles.historyReviewLinkText}>
-                                                Rate visit
+                                                Leave a review
                                               </Text>
                                               <Ionicons
                                                 name="chevron-forward"
@@ -20551,7 +20492,8 @@ export default function App() {
                           <View style={styles.authCard}>
                             <Text style={styles.authTitle}>Cash out</Text>
                             <Text style={styles.authSubtitle}>
-                              Sign in to set up payouts and withdraw cashback.
+                              Sign in to complete Stripe payout setup and
+                              withdraw cashback.
                             </Text>
                             <TouchableOpacity
                               style={styles.authPrimaryButton}
@@ -20622,7 +20564,7 @@ export default function App() {
                                   </Text>
                                 </View>
                                 <Text style={styles.cashoutAmountHint}>
-                                  Minimum:{" "}
+                                  Minimum cashout:{" "}
                                   {formatCurrencyFromCents(MIN_CASHOUT_CENTS)}
                                 </Text>
                                 <View style={styles.cashoutAmountRow}>
@@ -20809,7 +20751,7 @@ export default function App() {
                                 <View style={styles.cashoutActivityDivider} />
                                 <View style={styles.cashoutActivitySection}>
                                   <Text style={styles.cashoutActivitySectionTitle}>
-                                    Withdrawals
+                                    Cashouts / Withdrawals
                                   </Text>
                                   <Text style={styles.cashoutActivitySummary}>
                                     Total withdrawn:{" "}
@@ -22003,17 +21945,6 @@ export default function App() {
                                 </Text>
 
                                 <Text style={styles.formLabel}>
-                                  Operating days
-                                </Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="Mon-Sun"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={businessHoursDays}
-                                  onChangeText={setBusinessHoursDays}
-                                />
-
-                                <Text style={styles.formLabel}>
                                   Operating hours
                                 </Text>
                                 <View style={styles.timeRow}>
@@ -22566,7 +22497,7 @@ export default function App() {
                               >
                                 <View style={styles.notificationManageCopy}>
                                   <Text style={styles.notificationManageTitle}>
-                                    Manage notifications
+                                    Manage preferences
                                   </Text>
                                 </View>
                                 <Ionicons
@@ -22616,7 +22547,7 @@ export default function App() {
                                   <View style={styles.referralProgressCard}>
                                     <View style={styles.referralProgressHeader}>
                                       <Text style={styles.referralProgressTitle}>
-                                        Monthly progress
+                                        Monthly referral progress
                                       </Text>
                                       <Text style={styles.referralProgressAmount}>
                                         {formatCurrencyFromCents(
@@ -22641,11 +22572,14 @@ export default function App() {
                                       />
                                     </View>
                                     <Text style={styles.referralProgressMeta}>
-                                      Left this month{" "}
+                                      Remaining{" "}
                                       {formatCurrencyFromCents(
                                         referralMonthlyRemainingCents,
                                       )}{" "}
-                                      | Rewarded {referralState.stats.rewardedBothCount}
+                                      | Pending {referralState.stats.pendingCount}{" "}
+                                      | Rewarded{" "}
+                                      {referralState.stats.rewardedBothCount} |
+                                      Capped {referralState.stats.cappedCount}
                                     </Text>
                                   </View>
                                   {referralClaimStatusMeta ? (
@@ -22672,7 +22606,7 @@ export default function App() {
                                             ? "#92400E"
                                             : referralClaimStatusMeta.tone ===
                                                 "rewarded"
-                                              ? "#1E3A8A"
+                                              ? "#065F46"
                                               : referralClaimStatusMeta.tone ===
                                                   "capped"
                                                 ? "#1E3A8A"
@@ -22712,7 +22646,7 @@ export default function App() {
                                       }
                                     >
                                       <Text style={styles.referralActionText}>
-                                        Share
+                                        Share invite
                                       </Text>
                                     </TouchableOpacity>
                                     <TouchableOpacity
@@ -22733,7 +22667,7 @@ export default function App() {
                                           styles.referralActionTextSecondary
                                         }
                                       >
-                                        Copy link
+                                        Copy invite
                                       </Text>
                                     </TouchableOpacity>
                                   </View>
@@ -25130,7 +25064,7 @@ const styles = StyleSheet.create({
   },
   authContainer: {
     flex: 1,
-    paddingHorizontal: 22,
+    paddingHorizontal: 20,
     justifyContent: "center",
   },
   authStack: {
@@ -25140,10 +25074,10 @@ const styles = StyleSheet.create({
   },
   authCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 22,
-    padding: 24,
+    borderRadius: RADII.lg,
+    padding: 22,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.09)",
+    borderColor: COLORS.sand,
     ...ELEVATION.medium,
   },
   authBrand: {
@@ -25153,23 +25087,23 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   authTitle: {
-    fontSize: 23,
+    fontSize: 21,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
     marginBottom: 6,
   },
   authSubtitle: {
-    fontSize: 16,
+    fontSize: 15,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    lineHeight: 22,
-    marginBottom: 16,
+    lineHeight: 21,
+    marginBottom: 14,
   },
   authInput: {
-    backgroundColor: COLORS.surfaceAlt,
-    borderRadius: 14,
+    backgroundColor: COLORS.mint,
+    borderRadius: RADII.sm,
     paddingHorizontal: 14,
-    paddingVertical: 13,
+    paddingVertical: 11,
     fontFamily: FONT_TEXT,
     fontSize: 16,
     color: COLORS.ink,
@@ -25195,23 +25129,17 @@ const styles = StyleSheet.create({
   },
   authButton: {
     backgroundColor: COLORS.pine,
-    borderRadius: 14,
-    minHeight: 48,
-    justifyContent: "center",
+    borderRadius: RADII.sm,
+    paddingVertical: 13,
     alignItems: "center",
-    borderWidth: 1,
-    borderColor: "rgba(11, 31, 58, 0.96)",
     marginTop: 4,
     ...ELEVATION.soft,
   },
   authPrimaryButton: {
     backgroundColor: COLORS.pine,
-    borderRadius: 14,
-    minHeight: 48,
-    justifyContent: "center",
+    borderRadius: RADII.sm,
+    paddingVertical: 13,
     alignItems: "center",
-    borderWidth: 1,
-    borderColor: "rgba(11, 31, 58, 0.96)",
     marginTop: 8,
     ...ELEVATION.soft,
   },
@@ -25220,8 +25148,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.white,
-    borderRadius: 14,
-    minHeight: 48,
+    borderRadius: RADII.sm,
+    paddingVertical: 13,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
@@ -25245,8 +25173,7 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   authButtonDisabled: {
-    backgroundColor: "#A7B4C8",
-    borderColor: "#A7B4C8",
+    backgroundColor: "#BFAE83",
   },
   authButtonText: {
     color: COLORS.white,
@@ -25283,7 +25210,7 @@ const styles = StyleSheet.create({
   },
   authInlineLinkText: {
     fontSize: 14,
-    color: "#27476B",
+    color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
   authLegalBlock: {
@@ -25304,7 +25231,7 @@ const styles = StyleSheet.create({
   },
   authLegalLinkText: {
     fontSize: 13,
-    color: "#27476B",
+    color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
     textDecorationLine: "underline",
   },
@@ -25339,7 +25266,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 140,
     backgroundColor: COLORS.mint,
-    borderRadius: 14,
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
@@ -25362,7 +25289,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     borderWidth: 1,
     borderColor: COLORS.sand,
-    borderRadius: 14,
+    borderRadius: 12,
     overflow: "hidden",
     minHeight: 42,
     width: 84,
@@ -25472,7 +25399,7 @@ const styles = StyleSheet.create({
     ...ELEVATION.soft,
   },
   redeemButtonDisabled: {
-    backgroundColor: "#DDE5F1",
+    backgroundColor: "#EADFC9",
     borderWidth: 1,
     borderColor: COLORS.sand,
     shadowOpacity: 0,
@@ -25496,14 +25423,14 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
     paddingHorizontal: 14,
     paddingVertical: 10,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.white,
   },
   directionsButtonPressed: {
-    backgroundColor: "#EEF3FA",
-    borderColor: "#CBD6E6",
+    backgroundColor: "#F3EBD9",
+    borderColor: "#D9C9A7",
     opacity: 0.92,
   },
   directionsButtonText: {
@@ -25524,13 +25451,13 @@ const styles = StyleSheet.create({
   },
   navContainer: {
     alignSelf: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.97)",
-    borderRadius: 24,
+    backgroundColor: "rgba(255, 252, 246, 0.98)",
+    borderRadius: IS_COMPACT ? RADII.md : RADII.lg,
     paddingHorizontal: NAV_PADDING - 2,
     paddingBottom: NAV_PADDING - 2,
     paddingTop: NAV_PADDING,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
+    borderColor: "rgba(26, 31, 46, 0.08)",
     ...ELEVATION.medium,
   },
   navContainerTight: {
@@ -25540,10 +25467,10 @@ const styles = StyleSheet.create({
   },
   navRow: {
     flexDirection: "row",
-    paddingHorizontal: 4,
-    paddingVertical: 4,
-    borderRadius: 16,
-    backgroundColor: "#EDF2F8",
+    paddingHorizontal: 2,
+    paddingVertical: 2,
+    borderRadius: RADII.sm,
+    backgroundColor: "#F4EFDF",
   },
   navRowTight: {
     paddingHorizontal: 1,
@@ -25570,7 +25497,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderWidth: 1,
-    borderColor: "#C7D3E2",
+    borderColor: "#F1D4A8",
     alignItems: "center",
     maxWidth: 180,
   },
@@ -25588,8 +25515,8 @@ const styles = StyleSheet.create({
   },
   scannerCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 22,
-    padding: 18,
+    borderRadius: 20,
+    padding: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
   },
@@ -25684,7 +25611,7 @@ const styles = StyleSheet.create({
   scannerStatus: {
     marginTop: 12,
     backgroundColor: COLORS.mint,
-    borderRadius: 14,
+    borderRadius: 12,
     padding: 10,
     borderWidth: 1,
     borderColor: COLORS.sand,
@@ -25716,8 +25643,8 @@ const styles = StyleSheet.create({
   },
   reviewCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 20,
-    padding: 18,
+    borderRadius: 18,
+    padding: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
     gap: 12,
@@ -25796,8 +25723,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 6,
     borderWidth: 1,
-    borderColor: COLORS.sand,
-    backgroundColor: COLORS.white,
+    borderColor: "#E3D7BE",
+    backgroundColor: "#FBF7EF",
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 7,
@@ -25843,8 +25770,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: COLORS.sand,
-    backgroundColor: COLORS.white,
+    borderColor: "#DDE6F0",
+    backgroundColor: "#FBF7EF",
   },
   detailRatingText: {
     fontSize: 12,
@@ -25866,7 +25793,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.pine,
     paddingVertical: 10,
     paddingHorizontal: 12,
-    borderRadius: 14,
+    borderRadius: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -25888,9 +25815,9 @@ const styles = StyleSheet.create({
   detailOfferCard: {
     borderWidth: 1,
     borderColor: COLORS.sand,
-    borderRadius: 14,
-    padding: 14,
-    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: COLORS.cream,
   },
   detailOfferTitle: {
     fontSize: 14,
@@ -25978,7 +25905,7 @@ const styles = StyleSheet.create({
   detailOfferRedemption: {
     marginTop: 10,
     paddingVertical: 10,
-    borderRadius: 14,
+    borderRadius: 12,
     backgroundColor: COLORS.pine,
     alignItems: "center",
   },
@@ -25999,14 +25926,14 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
     paddingHorizontal: 14,
     paddingVertical: 10,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.white,
   },
   detailOfferDirectionsPressed: {
-    backgroundColor: "#EEF3FA",
-    borderColor: "#CBD6E6",
+    backgroundColor: "#F3EBD9",
+    borderColor: "#D9C9A7",
     opacity: 0.92,
   },
   detailOfferDirectionsText: {
@@ -26028,8 +25955,8 @@ const styles = StyleSheet.create({
   detailReviewCard: {
     borderWidth: 1,
     borderColor: COLORS.sand,
-    borderRadius: 14,
-    padding: 13,
+    borderRadius: 12,
+    padding: 12,
     backgroundColor: COLORS.mint,
   },
   detailReviewHeader: {
@@ -26076,7 +26003,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
     alignItems: "center",
     backgroundColor: "transparent",
-    borderRadius: 14,
+    borderRadius: RADII.sm,
     paddingVertical: IS_COMPACT ? 6 : 8,
     paddingHorizontal: Platform.select({
       ios: IS_COMPACT ? 10 : 14,
@@ -26101,7 +26028,6 @@ const styles = StyleSheet.create({
   },
   navPillActive: {
     backgroundColor: COLORS.pine,
-    ...ELEVATION.soft,
   },
   navPillText: {
     fontSize: Platform.select({
@@ -26109,7 +26035,7 @@ const styles = StyleSheet.create({
       android: IS_COMPACT ? 12 : 13,
       default: IS_COMPACT ? 13 : 14,
     }),
-    color: "#64748B",
+    color: "#636B76",
     fontFamily: FONT_MEDIUM,
     lineHeight: Platform.select({
       ios: IS_COMPACT ? 16 : 18,
@@ -26156,17 +26082,12 @@ const styles = StyleSheet.create({
   primaryButton: {
     backgroundColor: COLORS.pine,
     paddingHorizontal: 14,
-    minHeight: 46,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "rgba(11, 31, 58, 0.96)",
+    paddingVertical: 13,
+    borderRadius: RADII.sm,
     ...ELEVATION.soft,
   },
   primaryButtonDisabled: {
-    backgroundColor: "#A7B4C8",
-    borderColor: "#A7B4C8",
+    backgroundColor: "#BFAE83",
   },
   primaryButtonText: {
     color: COLORS.white,
@@ -26175,13 +26096,11 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.14)",
-    backgroundColor: COLORS.white,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.surfaceAlt,
     paddingHorizontal: 14,
-    minHeight: 46,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
+    paddingVertical: 13,
+    borderRadius: RADII.sm,
   },
   secondaryButtonDisabled: {
     opacity: 0.6,
@@ -26241,12 +26160,12 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(92, 107, 122, 0.92)",
   },
   limitOptionDay: {
-    borderColor: "rgba(37, 99, 235, 0.22)",
-    backgroundColor: "rgba(37, 99, 235, 0.08)",
+    borderColor: "rgba(16, 185, 129, 0.26)",
+    backgroundColor: "rgba(16, 185, 129, 0.10)",
   },
   limitOptionDayActive: {
-    borderColor: "#1D4ED8",
-    backgroundColor: "#1D4ED8",
+    borderColor: "#047857",
+    backgroundColor: "#047857",
   },
   limitOptionWeek: {
     borderColor: "rgba(245, 158, 11, 0.28)",
@@ -26277,7 +26196,7 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
   },
   limitOptionTextDay: {
-    color: "#1D4ED8",
+    color: "#047857",
   },
   limitOptionTextWeek: {
     color: "#B45309",
@@ -26311,14 +26230,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 10,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.white,
   },
   limitPeriodOptionActive: {
-    borderColor: "#B9CBEA",
-    backgroundColor: "#EDF3FF",
+    borderColor: "#A7E0C6",
+    backgroundColor: "#E6F5EE",
   },
   limitPeriodText: {
     fontSize: 13,
@@ -26332,7 +26251,7 @@ const styles = StyleSheet.create({
     width: "100%",
     aspectRatio: OFFER_IMAGE_ASPECT,
     borderRadius: 16,
-    backgroundColor: "#EDF2F8",
+    backgroundColor: "#F5EFE2",
     overflow: "hidden",
     justifyContent: "center",
     alignItems: "center",
@@ -26401,8 +26320,8 @@ const styles = StyleSheet.create({
   },
   sheetBackground: {
     backgroundColor: COLORS.white,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
     borderTopWidth: 1,
     borderColor: COLORS.sand,
     ...ELEVATION.modal,
@@ -26429,7 +26348,7 @@ const styles = StyleSheet.create({
     width: 54,
     height: 5,
     borderRadius: RADII.pill,
-    backgroundColor: "#C9D3E1",
+    backgroundColor: "#D7C9A8",
     marginBottom: 8,
   },
   sheetHint: {
@@ -26451,7 +26370,7 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.surfaceAlt,
     borderRadius: RADII.md,
     paddingHorizontal: 12,
     minHeight: IS_COMPACT ? 46 : 48,
@@ -26479,7 +26398,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   filterButton: {
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.surfaceAlt,
     paddingVertical: IS_COMPACT ? 8 : 10,
     paddingHorizontal: IS_COMPACT ? 12 : 14,
     borderRadius: RADII.sm,
@@ -26568,16 +26487,16 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   filterRadiusPill: {
-    backgroundColor: COLORS.white,
+    backgroundColor: "#F7F1E5",
     paddingVertical: 6,
     paddingHorizontal: 10,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: COLORS.sand,
+    borderColor: "#E3D7BE",
   },
   filterRadiusPillActive: {
-    backgroundColor: "#EAF0FA",
-    borderColor: "#BFD0E8",
+    backgroundColor: "#F3E6C8",
+    borderColor: "#D6C18E",
   },
   filterRadiusText: {
     fontSize: 12,
@@ -26591,8 +26510,8 @@ const styles = StyleSheet.create({
   discoverPlaidPrompt: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#D4DEEA",
-    backgroundColor: "#F7FAFF",
+    borderColor: "#CFE1F8",
+    backgroundColor: "#F4F9FF",
     paddingVertical: 9,
     paddingHorizontal: 10,
     marginBottom: 10,
@@ -26603,10 +26522,10 @@ const styles = StyleSheet.create({
   discoverPlaidPromptIconWrap: {
     width: 24,
     height: 24,
-    borderRadius: 14,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#EAF1FD",
+    backgroundColor: "#E4F0FF",
   },
   discoverPlaidPromptCopy: {
     flex: 1,
@@ -26728,8 +26647,8 @@ const styles = StyleSheet.create({
   },
   demoLayoutSegment: {
     marginTop: 11,
-    borderRadius: 14,
-    backgroundColor: "#F4F7FC",
+    borderRadius: 12,
+    backgroundColor: "#F7F1E5",
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.08)",
     padding: 4,
@@ -26786,7 +26705,7 @@ const styles = StyleSheet.create({
   demoEditorialSplitMedia: {
     width: "100%",
     height: 148,
-    backgroundColor: "#F3F6FC",
+    backgroundColor: "#F9F2E2",
   },
   demoEditorialSplitMediaImage: {
     width: "100%",
@@ -26829,8 +26748,8 @@ const styles = StyleSheet.create({
   demoEditorialSplitCashbackPill: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(22, 101, 52, 0.24)",
-    backgroundColor: "#EAF8EE",
+    borderColor: "rgba(6, 95, 70, 0.24)",
+    backgroundColor: "#EAF9EF",
     minHeight: 23,
     paddingHorizontal: 9,
     alignItems: "center",
@@ -26838,7 +26757,7 @@ const styles = StyleSheet.create({
   },
   demoEditorialSplitCashbackText: {
     fontSize: 11,
-    color: "#166534",
+    color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
   demoEditorialSplitBody: {
@@ -26863,7 +26782,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   demoEditorialSplitOpenTextOpen: {
-    color: "#1E3A8A",
+    color: "#166534",
   },
   demoEditorialSplitOpenTextClosed: {
     color: "#B42318",
@@ -26903,7 +26822,7 @@ const styles = StyleSheet.create({
   demoEditorialStackMedia: {
     width: "100%",
     height: 152,
-    backgroundColor: "#F3F6FC",
+    backgroundColor: "#F9F2E2",
   },
   demoEditorialStackMediaImage: {
     width: "100%",
@@ -26937,8 +26856,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoEditorialStackOpenPillOpen: {
-    backgroundColor: "#EEF3FF",
-    borderColor: "rgba(30, 58, 138, 0.22)",
+    backgroundColor: "#E8F7EE",
+    borderColor: "rgba(21, 128, 61, 0.24)",
   },
   demoEditorialStackOpenPillClosed: {
     backgroundColor: "#FFF1F0",
@@ -26949,7 +26868,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   demoEditorialStackOpenTextOpen: {
-    color: "#1E3A8A",
+    color: "#166534",
   },
   demoEditorialStackOpenTextClosed: {
     color: "#B42318",
@@ -27004,7 +26923,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "rgba(71, 85, 105, 0.2)",
-    backgroundColor: "#F6F8FC",
+    backgroundColor: "#FBF7EF",
     height: 22,
     paddingHorizontal: 8,
     alignItems: "center",
@@ -27018,8 +26937,8 @@ const styles = StyleSheet.create({
   demoEditorialStackCashbackPill: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(22, 101, 52, 0.24)",
-    backgroundColor: "#EAF8EE",
+    borderColor: "rgba(6, 95, 70, 0.24)",
+    backgroundColor: "#EAF9EF",
     height: 23,
     paddingHorizontal: 9,
     alignItems: "center",
@@ -27027,7 +26946,7 @@ const styles = StyleSheet.create({
   },
   demoEditorialStackCashbackText: {
     fontSize: 11,
-    color: "#166534",
+    color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
   demoSpotlightCard: {
@@ -27081,8 +27000,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoSpotlightOpenPillOpen: {
-    backgroundColor: "#EEF3FF",
-    borderColor: "rgba(30, 58, 138, 0.22)",
+    backgroundColor: "#E8F7EE",
+    borderColor: "rgba(21, 128, 61, 0.24)",
   },
   demoSpotlightOpenPillClosed: {
     backgroundColor: "#FFF1F0",
@@ -27093,7 +27012,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   demoSpotlightOpenPillTextOpen: {
-    color: "#1E3A8A",
+    color: "#166534",
   },
   demoSpotlightOpenPillTextClosed: {
     color: "#B42318",
@@ -27104,7 +27023,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "rgba(71, 85, 105, 0.18)",
-    backgroundColor: "#F6F8FC",
+    backgroundColor: "#FBF7EF",
     paddingHorizontal: 8,
     height: 22,
     alignItems: "center",
@@ -27141,14 +27060,14 @@ const styles = StyleSheet.create({
     gap: 5,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(22, 101, 52, 0.24)",
-    backgroundColor: "#EAF8EE",
+    borderColor: "rgba(6, 95, 70, 0.25)",
+    backgroundColor: "#EAF9EF",
     height: 25,
     paddingHorizontal: 10,
   },
   demoSpotlightCashbackText: {
     fontSize: 11,
-    color: "#166534",
+    color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
   demoPreviewOnlyText: {
@@ -27189,8 +27108,8 @@ const styles = StyleSheet.create({
     bottom: 10,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(22, 101, 52, 0.24)",
-    backgroundColor: "#EAF8EE",
+    borderColor: "rgba(6, 95, 70, 0.24)",
+    backgroundColor: "#EAF9EF",
     minHeight: 24,
     paddingHorizontal: 10,
     alignItems: "center",
@@ -27198,7 +27117,7 @@ const styles = StyleSheet.create({
   },
   demoShowcaseCashbackText: {
     fontSize: 11,
-    color: "#166534",
+    color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
   demoShowcaseBody: {
@@ -27221,7 +27140,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   demoShowcaseOpenTextOpen: {
-    color: "#1E3A8A",
+    color: "#166534",
   },
   demoShowcaseOpenTextClosed: {
     color: "#B42318",
@@ -27266,7 +27185,7 @@ const styles = StyleSheet.create({
   demoEditorialMedia: {
     width: "100%",
     height: 176,
-    backgroundColor: "#F3F6FC",
+    backgroundColor: "#F9F2E2",
   },
   demoEditorialMediaImage: {
     width: "100%",
@@ -27311,8 +27230,8 @@ const styles = StyleSheet.create({
   demoEditorialCashbackPill: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(22, 101, 52, 0.24)",
-    backgroundColor: "#EAF8EE",
+    borderColor: "rgba(6, 95, 70, 0.24)",
+    backgroundColor: "#EAF9EF",
     minHeight: 24,
     paddingHorizontal: 10,
     alignItems: "center",
@@ -27320,7 +27239,7 @@ const styles = StyleSheet.create({
   },
   demoEditorialCashbackText: {
     fontSize: 11,
-    color: "#166534",
+    color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
   demoEditorialName: {
@@ -27332,7 +27251,7 @@ const styles = StyleSheet.create({
   demoEditorialOffer: {
     marginTop: 3,
     fontSize: 13,
-    color: "#F6F8FC",
+    color: "#FBF7EF",
     fontFamily: FONT_MEDIUM,
   },
   demoEditorialDescription: {
@@ -27361,8 +27280,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   demoEditorialOpenPillOpen: {
-    backgroundColor: "#EEF3FF",
-    borderColor: "rgba(30, 58, 138, 0.22)",
+    backgroundColor: "#E8F7EE",
+    borderColor: "rgba(21, 128, 61, 0.24)",
   },
   demoEditorialOpenPillClosed: {
     backgroundColor: "#FFF1F0",
@@ -27373,7 +27292,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   demoEditorialOpenTextOpen: {
-    color: "#1E3A8A",
+    color: "#166534",
   },
   demoEditorialOpenTextClosed: {
     color: "#B42318",
@@ -27588,7 +27507,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     backgroundColor: COLORS.cream,
-    borderRadius: 14,
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
@@ -27651,7 +27570,7 @@ const styles = StyleSheet.create({
   liveEditorialStackMedia: {
     position: "relative",
     aspectRatio: OFFER_IMAGE_ASPECT,
-    backgroundColor: "#F5F8FC",
+    backgroundColor: "#F5EFE2",
     overflow: "hidden",
   },
   liveEditorialStackMediaImage: {
@@ -27830,7 +27749,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   liveEditorialStackRedeemButtonDisabled: {
-    backgroundColor: "#DDE5F1",
+    backgroundColor: "#EADFC9",
     borderWidth: 1,
     borderColor: COLORS.sand,
   },
@@ -27855,8 +27774,8 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   liveEditorialStackDirectionsButtonPressed: {
-    backgroundColor: "#EEF3FA",
-    borderColor: "#CBD6E6",
+    backgroundColor: "#F3EBD9",
+    borderColor: "#D9C9A7",
     opacity: 0.92,
   },
   liveEditorialStackDirectionsText: {
@@ -27869,8 +27788,8 @@ const styles = StyleSheet.create({
     marginHorizontal: -12,
     marginBottom: -8,
     borderTopWidth: 1,
-    borderTopColor: "rgba(22, 101, 52, 0.22)",
-    backgroundColor: "#ECF9F0",
+    borderTopColor: "rgba(6, 95, 70, 0.24)",
+    backgroundColor: "#EAF9EF",
     minHeight: 36,
     paddingHorizontal: 12,
     paddingVertical: 7,
@@ -27881,7 +27800,7 @@ const styles = StyleSheet.create({
   },
   liveEditorialStackCashbackText: {
     fontSize: 13,
-    color: "#166534",
+    color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
   card: {
@@ -27925,8 +27844,8 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   cardBadgeOpen: {
-    backgroundColor: "#EAF1FD",
-    borderColor: "#C7D7EF",
+    backgroundColor: "#E4F3E9",
+    borderColor: "#BFE1C9",
   },
   cardBadgeClosed: {
     backgroundColor: "#F7ECEC",
@@ -27945,15 +27864,15 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#BEE4C8",
-    backgroundColor: "#EAF8EE",
+    borderColor: "#86EFAC",
+    backgroundColor: "#DCFCE7",
   },
   cardCashbackIcon: {
     marginTop: 1,
   },
   cardCashbackText: {
     fontSize: 12,
-    color: "#166534",
+    color: "#065F46",
     fontFamily: FONT_MEDIUM,
   },
   cardCategory: {
@@ -27993,8 +27912,8 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(92, 107, 122, 0.10)",
   },
   cardLimitBadgeOnceDay: {
-    borderColor: "rgba(37, 99, 235, 0.24)",
-    backgroundColor: "rgba(37, 99, 235, 0.09)",
+    borderColor: "rgba(16, 185, 129, 0.28)",
+    backgroundColor: "rgba(16, 185, 129, 0.12)",
   },
   cardLimitBadgeMaxDay: {
     borderColor: "rgba(31, 78, 140, 0.22)",
@@ -28021,7 +27940,7 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
   },
   cardLimitTextOnceDay: {
-    color: "#1D4ED8",
+    color: "#047857",
   },
   cardLimitTextMaxDay: {
     color: COLORS.coral,
@@ -28049,7 +27968,7 @@ const styles = StyleSheet.create({
     // businesses see consistent framing from picker to final card.
     height: CARD_MEDIA_FULL_HEIGHT,
     alignSelf: "stretch",
-    backgroundColor: "#F5F8FC",
+    backgroundColor: "#F5EFE2",
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
@@ -28144,7 +28063,7 @@ const styles = StyleSheet.create({
   },
   tagOptionPill: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
+    borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderWidth: 1,
@@ -28189,11 +28108,10 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   sectionTitleAlt: {
-    fontSize: 22,
+    fontSize: 19,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
-    letterSpacing: -0.2,
-    marginBottom: 1,
+    marginBottom: 4,
   },
   cashoutTitleRow: {
     flexDirection: "row",
@@ -28205,12 +28123,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
-    borderRadius: 18,
-    backgroundColor: COLORS.white,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    ...ELEVATION.medium,
+    borderColor: "#E5D8BF",
+    borderRadius: 14,
+    backgroundColor: "#FCF9F1",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   sectionTitleIcon: {
     width: 30,
@@ -28301,12 +28218,12 @@ const styles = StyleSheet.create({
     position: "relative",
     overflow: "hidden",
     backgroundColor: COLORS.white,
-    borderRadius: 20,
+    borderRadius: RADII.md,
     padding: 16,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderColor: COLORS.sand,
     marginBottom: 12,
-    ...ELEVATION.medium,
+    ...ELEVATION.soft,
   },
   formCardDisabledOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -28326,7 +28243,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     marginBottom: 12,
     padding: 12,
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.mint,
@@ -28412,15 +28329,15 @@ const styles = StyleSheet.create({
     paddingRight: 10,
   },
   formHeaderTitle: {
-    fontSize: 17,
+    fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
   },
   formHeaderMeta: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    marginTop: 3,
+    marginTop: 2,
   },
   formRow: {
     flexDirection: "row",
@@ -28432,11 +28349,11 @@ const styles = StyleSheet.create({
     minWidth: 120,
   },
   pendingNotice: {
-    backgroundColor: "#F6F9FF",
-    borderRadius: 14,
+    backgroundColor: "#FFF7E6",
+    borderRadius: 12,
     padding: 12,
     borderWidth: 1,
-    borderColor: "#D7E3F5",
+    borderColor: "#F1D4A8",
     marginBottom: 12,
   },
   pendingNoticeTitle: {
@@ -28465,7 +28382,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderWidth: 1,
-    borderColor: "#D4DEEA",
+    borderColor: "#E5D1B2",
   },
   pendingPillText: {
     fontSize: 11,
@@ -28474,7 +28391,7 @@ const styles = StyleSheet.create({
   },
   dashboardReviewCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: COLORS.sand,
     paddingHorizontal: 14,
@@ -28512,31 +28429,31 @@ const styles = StyleSheet.create({
   },
   profileCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 22,
+    borderRadius: RADII.md,
     padding: 16,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderColor: COLORS.sand,
     marginBottom: 12,
-    ...ELEVATION.medium,
+    ...ELEVATION.soft,
   },
   profileHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
+    gap: 12,
   },
   profileAvatar: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: "#F4F7FD",
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: COLORS.mint,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderColor: COLORS.sand,
   },
   profileInitials: {
-    fontSize: 19,
+    fontSize: 17,
     color: COLORS.pine,
     fontFamily: FONT_DISPLAY,
   },
@@ -28544,30 +28461,28 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   profileName: {
-    fontSize: 23,
+    fontSize: 18,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
-    letterSpacing: -0.25,
   },
   profileEmail: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 2,
   },
   profileRolePill: {
-    backgroundColor: "#F3F6FC",
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    backgroundColor: COLORS.mint,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderColor: COLORS.sand,
   },
   profileRoleText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
-    letterSpacing: 0.2,
   },
   roleRow: {
     marginTop: 8,
@@ -28619,7 +28534,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     paddingHorizontal: 12,
@@ -28707,7 +28622,7 @@ const styles = StyleSheet.create({
   profileMetaCard: {
     flex: 1,
     backgroundColor: COLORS.mint,
-    borderRadius: 14,
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
@@ -28733,15 +28648,15 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   formInput: {
-    backgroundColor: COLORS.surfaceAlt,
-    borderRadius: 14,
+    backgroundColor: COLORS.mint,
+    borderRadius: RADII.sm,
     paddingHorizontal: 12,
-    paddingVertical: 12,
+    paddingVertical: 11,
     fontFamily: FONT_TEXT,
     fontSize: 15,
     color: COLORS.ink,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.14)",
+    borderColor: COLORS.sand,
     marginBottom: 12,
   },
   formTextarea: {
@@ -28753,7 +28668,7 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
   },
   formInputDisabled: {
-    backgroundColor: "#F4F7FC",
+    backgroundColor: "#F7F1E5",
     color: "#94A3B8",
   },
   editGate: {
@@ -28772,10 +28687,10 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   editGateActive: {
-    backgroundColor: "#EEF3FF",
+    backgroundColor: "#E8F3EC",
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#B5C5E6",
+    borderColor: "#9AC9AE",
     padding: 12,
     marginBottom: 14,
   },
@@ -28846,11 +28761,11 @@ const styles = StyleSheet.create({
     color: COLORS.white,
   },
   securityEditorCard: {
-    borderRadius: 16,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
-    padding: 12,
-    backgroundColor: "#F8FBFF",
+    borderColor: COLORS.sand,
+    padding: 10,
+    backgroundColor: COLORS.mint,
   },
   securityIdleText: {
     fontSize: 12,
@@ -28887,22 +28802,22 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
   },
   supportSignOutButton: {
-    marginTop: 12,
+    marginTop: 10,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.12)",
-    borderRadius: 16,
+    borderColor: COLORS.sand,
+    borderRadius: 12,
     backgroundColor: COLORS.white,
-    paddingVertical: 11,
+    paddingVertical: 10,
     paddingHorizontal: 12,
   },
   supportSignOutText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   legalChecklist: {
     marginBottom: 8,
@@ -28933,18 +28848,18 @@ const styles = StyleSheet.create({
   },
   notificationPanel: {
     backgroundColor: COLORS.white,
-    borderRadius: 22,
+    borderRadius: RADII.md,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
-    padding: 15,
-    gap: 9,
-    marginBottom: 12,
-    ...ELEVATION.medium,
+    borderColor: COLORS.sand,
+    padding: 14,
+    gap: 8,
+    marginBottom: 16,
+    ...ELEVATION.soft,
   },
   notificationPanelPro: {
     overflow: "hidden",
-    backgroundColor: COLORS.white,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    backgroundColor: "#FCF9F1",
+    borderColor: "#E8DBC3",
     gap: 10,
   },
   notificationGradientAccent: {
@@ -28952,8 +28867,7 @@ const styles = StyleSheet.create({
     left: 0,
     top: 0,
     right: 0,
-    height: 52,
-    opacity: 0.45,
+    height: 64,
   },
   notificationHeaderRow: {
     flexDirection: "row",
@@ -28969,44 +28883,44 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   notificationIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(11, 33, 71, 0.08)",
+    backgroundColor: "rgba(11, 33, 71, 0.10)",
     borderWidth: 1,
-    borderColor: "rgba(11, 33, 71, 0.14)",
+    borderColor: "rgba(11, 33, 71, 0.16)",
   },
   notificationHeaderCopy: {
     flex: 1,
     minWidth: 0,
   },
   notificationTitleText: {
-    fontSize: 15,
+    fontSize: 14,
     color: COLORS.ink,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   notificationSubtitleText: {
     marginTop: 1,
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
   notificationStatusPill: {
-    paddingHorizontal: 11,
-    paddingVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.14)",
-    backgroundColor: "#F3F7FD",
+    borderColor: "rgba(11, 33, 71, 0.18)",
+    backgroundColor: "rgba(11, 33, 71, 0.08)",
   },
   notificationStatusText: {
-    fontSize: 10,
-    color: COLORS.ink,
+    fontSize: 11,
+    color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
     textTransform: "uppercase",
-    letterSpacing: 0.7,
+    letterSpacing: 0.6,
   },
   notificationTagsRow: {
     flexDirection: "row",
@@ -29016,14 +28930,14 @@ const styles = StyleSheet.create({
   notificationTypePill: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
-    backgroundColor: "#F8FAFD",
-    paddingHorizontal: 11,
+    borderColor: "#E5D9C0",
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 10,
     paddingVertical: 5,
   },
   notificationTypePillActive: {
-    borderColor: "rgba(15, 23, 42, 0.20)",
-    backgroundColor: "#EAF0FA",
+    borderColor: "rgba(11, 33, 71, 0.24)",
+    backgroundColor: "rgba(11, 33, 71, 0.10)",
   },
   notificationTypeText: {
     fontSize: 11,
@@ -29039,8 +28953,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   notificationPanelMinimal: {
-    backgroundColor: "#F8FAFF",
-    borderColor: "#D4DEEA",
+    backgroundColor: "#FCF9F1",
+    borderColor: "#ECE0C8",
     borderRadius: 14,
     paddingVertical: 8,
     paddingHorizontal: 12,
@@ -29056,8 +28970,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 10,
     borderWidth: 1,
-    borderColor: COLORS.sand,
-    borderRadius: 14,
+    borderColor: "#E9DCC5",
+    borderRadius: 12,
     backgroundColor: COLORS.white,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -29068,18 +28982,18 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 10,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.12)",
-    borderRadius: 16,
-    backgroundColor: "#F8FAFD",
+    borderColor: "#E8DBC3",
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
     paddingHorizontal: 12,
-    paddingVertical: 12,
+    paddingVertical: 10,
   },
   notificationManageCopy: {
     flex: 1,
     minWidth: 0,
   },
   notificationManageTitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -29094,7 +29008,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    marginBottom: 4,
+    marginBottom: 2,
   },
   promoHeaderLeft: {
     flexDirection: "row",
@@ -29111,8 +29025,8 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(30, 58, 138, 0.22)",
-    backgroundColor: "rgba(30, 58, 138, 0.08)",
+    borderColor: "rgba(15, 118, 110, 0.22)",
+    backgroundColor: "rgba(15, 118, 110, 0.10)",
     maxWidth: 160,
   },
   promoActivePillText: {
@@ -29122,14 +29036,14 @@ const styles = StyleSheet.create({
   },
   promoRatePill: {
     paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingVertical: 7,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "rgba(31, 78, 140, 0.18)",
-    backgroundColor: "rgba(31, 78, 140, 0.07)",
+    backgroundColor: "rgba(31, 78, 140, 0.08)",
   },
   promoRateText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
@@ -29138,39 +29052,38 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
-    marginBottom: 4,
+    marginBottom: 6,
   },
   promoRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    marginTop: 2,
   },
   promoInput: {
     flex: 1,
-    backgroundColor: "#F7FAFF",
-    borderRadius: 16,
+    backgroundColor: COLORS.mint,
+    borderRadius: 12,
     paddingHorizontal: 14,
-    minHeight: 46,
+    paddingVertical: 10,
     fontFamily: FONT_TEXT,
     fontSize: 14,
     color: COLORS.ink,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.12)",
+    borderColor: COLORS.sand,
   },
   promoApplyButton: {
     backgroundColor: COLORS.pine,
-    borderRadius: 16,
-    minHeight: 46,
+    borderRadius: 12,
+    paddingVertical: 11,
     paddingHorizontal: 14,
     alignItems: "center",
     justifyContent: "center",
     minWidth: 84,
   },
   promoApplyText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.white,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   promoActions: {
     flexDirection: "row",
@@ -29192,15 +29105,15 @@ const styles = StyleSheet.create({
   },
   promoSuccess: {
     fontSize: 12,
-    color: "#1D4ED8",
+    color: "#047857",
     fontFamily: FONT_MEDIUM,
     marginTop: 8,
   },
   referralCodeCard: {
-    backgroundColor: "#F7FAFF",
-    borderRadius: 16,
+    backgroundColor: COLORS.mint,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderColor: COLORS.sand,
     paddingHorizontal: 12,
     paddingVertical: 10,
     gap: 4,
@@ -29218,9 +29131,9 @@ const styles = StyleSheet.create({
   },
   referralProgressCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 16,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderColor: COLORS.sand,
     paddingHorizontal: 12,
     paddingVertical: 10,
     gap: 8,
@@ -29275,8 +29188,8 @@ const styles = StyleSheet.create({
     borderColor: "#FCD34D",
   },
   referralClaimPillRewarded: {
-    backgroundColor: "#E1EAFE",
-    borderColor: "#BED0F0",
+    backgroundColor: "#D1FAE5",
+    borderColor: "#86EFAC",
   },
   referralClaimPillCapped: {
     backgroundColor: "#DBEAFE",
@@ -29291,7 +29204,7 @@ const styles = StyleSheet.create({
     color: "#92400E",
   },
   referralClaimPillTextRewarded: {
-    color: "#1E3A8A",
+    color: "#065F46",
   },
   referralClaimPillTextCapped: {
     color: "#1E3A8A",
@@ -29299,42 +29212,42 @@ const styles = StyleSheet.create({
   referralActionsRow: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 4,
+    marginTop: 2,
   },
   referralActionButton: {
     flex: 1,
     backgroundColor: COLORS.pine,
-    borderRadius: 16,
-    paddingVertical: 12,
+    borderRadius: 12,
+    paddingVertical: 11,
     paddingHorizontal: 12,
     alignItems: "center",
     justifyContent: "center",
   },
   referralActionText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.white,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   referralActionButtonSecondary: {
     flex: 1,
-    borderRadius: 16,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.12)",
+    borderColor: COLORS.sand,
     backgroundColor: COLORS.white,
-    paddingVertical: 12,
+    paddingVertical: 11,
     paddingHorizontal: 12,
     alignItems: "center",
     justifyContent: "center",
   },
   referralActionTextSecondary: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.muted,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   rewardsDivider: {
     height: 1,
     backgroundColor: COLORS.sand,
-    marginVertical: 6,
+    marginVertical: 4,
   },
   notificationToggleHitbox: {
     padding: 2,
@@ -29386,7 +29299,7 @@ const styles = StyleSheet.create({
     gap: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    borderRadius: 14,
+    borderRadius: 12,
     backgroundColor: COLORS.cream,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -29411,7 +29324,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 10,
     backgroundColor: COLORS.mint,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     paddingHorizontal: 12,
@@ -29436,7 +29349,7 @@ const styles = StyleSheet.create({
   },
   pushTokenCopyButton: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     paddingHorizontal: 12,
@@ -29458,7 +29371,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.white,
@@ -29472,7 +29385,7 @@ const styles = StyleSheet.create({
   },
   remoteNotice: {
     backgroundColor: COLORS.mint,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     paddingHorizontal: 12,
@@ -29500,7 +29413,7 @@ const styles = StyleSheet.create({
   },
   receiptOfferCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 18,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: COLORS.sand,
     padding: 12,
@@ -29542,7 +29455,7 @@ const styles = StyleSheet.create({
   receiptTile: {
     width: "48%",
     aspectRatio: 1,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.mint,
@@ -29696,7 +29609,7 @@ const styles = StyleSheet.create({
   offerCropPreviewContent: {
     alignSelf: "center",
     justifyContent: "center",
-    backgroundColor: "#F5F8FC",
+    backgroundColor: "#F5EFE2",
     overflow: "hidden",
   },
   offerCropPreviewImage: {
@@ -29714,7 +29627,7 @@ const styles = StyleSheet.create({
     height: "100%",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F5F8FC",
+    backgroundColor: "#F5EFE2",
   },
   offerCropFallbackText: {
     fontSize: 13,
@@ -29779,7 +29692,7 @@ const styles = StyleSheet.create({
   receiptPreviewImage: {
     width: "100%",
     height: "100%",
-    backgroundColor: "#F5F8FC",
+    backgroundColor: "#F5EFE2",
   },
   receiptZoomWrap: {
     flex: 1,
@@ -29799,15 +29712,15 @@ const styles = StyleSheet.create({
   receiptPreviewContent: {
     alignSelf: "center",
     justifyContent: "center",
-    backgroundColor: "#F5F8FC",
-    borderRadius: 14,
+    backgroundColor: "#F5EFE2",
+    borderRadius: 12,
     overflow: "hidden",
   },
   receiptPreviewPlaceholder: {
     width: "100%",
     height: RECEIPT_PREVIEW_HEIGHT,
     borderRadius: 14,
-    backgroundColor: "#F5F8FC",
+    backgroundColor: "#F5EFE2",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -29819,27 +29732,31 @@ const styles = StyleSheet.create({
   },
   receiptNoticeCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 18,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
-    padding: 15,
-    marginBottom: 12,
-    ...ELEVATION.medium,
+    borderColor: "rgba(15, 23, 42, 0.1)",
+    padding: 10,
+    marginBottom: 10,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 1,
   },
   receiptNoticeCardAttention: {
-    borderColor: "rgba(180, 35, 24, 0.20)",
-    backgroundColor: "#FFF8F8",
+    borderColor: "rgba(180, 35, 24, 0.24)",
+    backgroundColor: "#FFFBFA",
   },
   receiptNoticeCardReady: {
-    borderColor: "rgba(29, 78, 216, 0.16)",
-    backgroundColor: "#F8FBFF",
+    borderColor: "rgba(15, 23, 42, 0.1)",
+    backgroundColor: COLORS.white,
   },
   receiptNoticeHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
-    marginBottom: 8,
+    gap: 8,
+    marginBottom: 6,
   },
   receiptNoticeHeaderLeft: {
     flexDirection: "row",
@@ -29851,59 +29768,58 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   receiptNoticeIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "rgba(11, 33, 71, 0.14)",
-    backgroundColor: "#EFF4FF",
+    backgroundColor: "#FFF3D4",
     alignItems: "center",
     justifyContent: "center",
   },
   receiptNoticeTitle: {
-    fontSize: 16,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
   receiptNoticeStatusPill: {
     borderRadius: 999,
     borderWidth: 1,
-    paddingHorizontal: 9,
-    height: 26,
+    paddingHorizontal: 8,
+    height: 22,
     alignItems: "center",
     justifyContent: "center",
   },
   receiptNoticeStatusPillAttention: {
-    backgroundColor: "#FFF7ED",
-    borderColor: "rgba(180, 83, 9, 0.22)",
+    backgroundColor: "#FFF1F0",
+    borderColor: "rgba(180, 35, 24, 0.24)",
   },
   receiptNoticeStatusPillReady: {
-    backgroundColor: "#EEF3FF",
-    borderColor: "rgba(29, 78, 216, 0.22)",
+    backgroundColor: "#E8F7EE",
+    borderColor: "rgba(21, 128, 61, 0.24)",
   },
   receiptNoticeStatusPillText: {
-    fontSize: 11,
+    fontSize: 10,
     fontFamily: FONT_MEDIUM,
   },
   receiptNoticeStatusPillTextAttention: {
-    color: "#9A3412",
+    color: "#B42318",
   },
   receiptNoticeStatusPillAlert: {
-    backgroundColor: "#FFF1F2",
-    borderColor: "rgba(190, 24, 93, 0.24)",
+    backgroundColor: "#FEE4E2",
+    borderColor: "rgba(180, 35, 24, 0.28)",
   },
   receiptNoticeStatusPillTextAlert: {
-    color: "#BE185D",
+    color: "#B42318",
   },
   receiptNoticeStatusPillTextReady: {
-    color: "#1E3A8A",
+    color: "#166534",
   },
   receiptNoticeMeta: {
-    marginTop: 7,
-    fontSize: 13,
+    marginTop: 6,
+    fontSize: 11,
     color: "#4B5563",
-    fontFamily: FONT_TEXT,
-    lineHeight: 16,
+    fontFamily: FONT_MEDIUM,
   },
   receiptNoticeMetaError: {
     marginTop: 6,
@@ -29912,7 +29828,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   receiptNoticeActionsRow: {
-    marginBottom: 8,
+    marginBottom: 6,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
@@ -29920,8 +29836,8 @@ const styles = StyleSheet.create({
   receiptNoticePrimaryCta: {
     flexGrow: 1,
     flexBasis: 0,
-    minHeight: 40,
-    borderRadius: 14,
+    minHeight: 36,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: "#1A1F2E",
     backgroundColor: "#1A1F2E",
@@ -29930,8 +29846,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   receiptNoticeSecondaryCta: {
-    minHeight: 40,
-    borderRadius: 14,
+    minHeight: 36,
+    borderRadius: 10,
     borderWidth: 1,
     backgroundColor: COLORS.white,
     borderColor: "rgba(71, 85, 105, 0.24)",
@@ -29943,12 +29859,12 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   receiptNoticeActionPrimaryText: {
-    fontSize: 13,
+    fontSize: 11,
     color: COLORS.white,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   receiptNoticeActionSecondaryText: {
-    fontSize: 12,
+    fontSize: 11,
     color: "#4B5563",
     fontFamily: FONT_MEDIUM,
   },
@@ -29963,14 +29879,14 @@ const styles = StyleSheet.create({
     gap: 5,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(190, 24, 93, 0.20)",
-    backgroundColor: "#FFF6F8",
+    borderColor: "rgba(180, 35, 24, 0.22)",
+    backgroundColor: "#FFF1F0",
     paddingHorizontal: 9,
-    minHeight: 26,
+    height: 24,
   },
   receiptQueuePillText: {
     fontSize: 11,
-    color: "#9F1239",
+    color: "#B42318",
     fontFamily: FONT_MEDIUM,
   },
   receiptCollapsedRow: {
@@ -29993,7 +29909,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.12)",
     borderRadius: 999,
-    backgroundColor: "#F6F8FC",
+    backgroundColor: "#FBF7EF",
     height: 28,
     paddingHorizontal: 10,
   },
@@ -30014,19 +29930,18 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   historyVerifyNoticeCard: {
-    borderRadius: 18,
+    borderRadius: 12,
     borderWidth: 1,
-    padding: 15,
-    marginBottom: 14,
-    ...ELEVATION.soft,
+    padding: 12,
+    marginBottom: 12,
   },
   historyVerifyNoticeCardInfo: {
-    backgroundColor: "#F3F7FF",
-    borderColor: "rgba(29, 78, 216, 0.18)",
+    backgroundColor: "#EFF6FF",
+    borderColor: "rgba(29, 78, 216, 0.25)",
   },
   historyVerifyNoticeCardWarn: {
-    backgroundColor: "#FFF8EC",
-    borderColor: "rgba(180, 83, 9, 0.22)",
+    backgroundColor: "#FFF7E6",
+    borderColor: "rgba(180, 83, 9, 0.24)",
   },
   historyVerifyNoticeHeader: {
     flexDirection: "row",
@@ -30041,14 +29956,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   historyVerifyNoticeTitle: {
-    fontSize: 15,
+    fontSize: 13,
     color: COLORS.ink,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   historyVerifyNoticeBody: {
-    marginTop: 7,
+    marginTop: 8,
     fontSize: 12,
-    lineHeight: 18,
+    lineHeight: 16,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -30098,7 +30013,7 @@ const styles = StyleSheet.create({
   },
   appDialogButton: {
     minHeight: 44,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.white,
@@ -30113,7 +30028,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.pine,
   },
   appDialogButtonGhost: {
-    backgroundColor: "#F6F8FC",
+    backgroundColor: "#FBF7EF",
     borderColor: "#E2E8F0",
   },
   appDialogButtonText: {
@@ -30181,8 +30096,8 @@ const styles = StyleSheet.create({
   uploadIconWrap: {
     width: 38,
     height: 38,
-    borderRadius: 14,
-    backgroundColor: "#F4F7FC",
+    borderRadius: 12,
+    backgroundColor: "#F7F1E5",
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.08)",
     alignItems: "center",
@@ -30205,18 +30120,18 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   historyList: {
-    gap: 14,
-    marginBottom: 14,
+    gap: 12,
+    marginBottom: 12,
   },
   historyGroupCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 22,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderColor: COLORS.sand,
     overflow: "hidden",
     shadowColor: "#0F172A",
-    shadowOpacity: 0.07,
-    shadowRadius: 14,
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
     shadowOffset: { width: 0, height: 10 },
     elevation: 3,
   },
@@ -30232,8 +30147,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     gap: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
   },
   historyGroupHeaderPressed: {
     backgroundColor: "rgba(2, 6, 23, 0.03)",
@@ -30246,9 +30161,9 @@ const styles = StyleSheet.create({
     paddingLeft: 0,
   },
   historyGroupAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
+    width: 38,
+    height: 38,
+    borderRadius: 12,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
@@ -30263,7 +30178,7 @@ const styles = StyleSheet.create({
   },
   historyGroupTitle: {
     flex: 1,
-    fontSize: 17,
+    fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -30271,7 +30186,7 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   historyGroupSub: {
-    fontSize: 13,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -30282,14 +30197,14 @@ const styles = StyleSheet.create({
   },
   historyGroupEarnedBar: {
     borderTopWidth: 1,
-    borderTopColor: "#CFE7D4",
-    backgroundColor: "#F1FAF3",
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    borderTopColor: COLORS.sand,
+    backgroundColor: "#F6FBF8",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
   },
   historyGroupEarnedBarText: {
-    fontSize: 13,
-    color: "#166534",
+    fontSize: 12,
+    color: "#2F6F4F",
     fontFamily: FONT_MEDIUM,
   },
   historyGroupChevron: {
@@ -30298,23 +30213,23 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: "#F6F8FC",
+    backgroundColor: "#FBF7EF",
     alignItems: "center",
     justifyContent: "center",
   },
   historyPendingSummary: {
-    minHeight: 26,
-    borderRadius: 999,
+    height: 24,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(190, 24, 93, 0.20)",
-    backgroundColor: "#FFF6F8",
+    borderColor: "rgba(180, 35, 24, 0.22)",
+    backgroundColor: "#FFF1F0",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 10,
+    paddingHorizontal: 9,
   },
   historyPendingSummaryText: {
     fontSize: 11,
-    color: "#9F1239",
+    color: "#B42318",
     fontFamily: FONT_MEDIUM,
   },
   historyReviewLink: {
@@ -30337,10 +30252,10 @@ const styles = StyleSheet.create({
   historyEntries: {
     borderTopWidth: 1,
     borderTopColor: COLORS.sand,
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    paddingTop: 14,
-    gap: 12,
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    paddingTop: 12,
+    gap: 10,
   },
   historyEntriesAfterEarnedBar: {
     borderTopWidth: 0,
@@ -30394,7 +30309,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    backgroundColor: "#F3F7FF",
+    backgroundColor: "#FFF7E6",
   },
   historyReviewButtonPressed: {
     transform: [{ scale: 0.99 }],
@@ -30408,7 +30323,7 @@ const styles = StyleSheet.create({
   historyReviewIcon: {
     width: 34,
     height: 34,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
@@ -30433,39 +30348,43 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   cashoutHeroCard: {
-    backgroundColor: COLORS.white,
-    borderColor: "rgba(15, 23, 42, 0.10)",
-    borderWidth: 1,
-    borderRadius: 20,
-    paddingVertical: 15,
-    paddingHorizontal: 16,
-    ...ELEVATION.medium,
-  },
-  cashoutEarnedHistoryCard: {
-    borderRadius: 18,
-    borderWidth: 1,
+    backgroundColor: COLORS.surfaceAlt,
     borderColor: COLORS.sand,
-    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderLeftWidth: 1,
+    borderLeftColor: COLORS.sand,
+    borderRadius: RADII.md,
     paddingVertical: 14,
     paddingHorizontal: 14,
-    ...ELEVATION.soft,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
+  },
+  cashoutEarnedHistoryCard: {
+    borderRadius: RADII.md,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.surfaceAlt,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
   },
   cashoutActivitySection: {
     gap: 8,
   },
   cashoutActivitySectionTitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   cashoutActivitySummary: {
-    fontSize: 13,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
   cashoutActivityDivider: {
     height: 1,
-    backgroundColor: COLORS.sand,
+    backgroundColor: "#EADFC9",
     marginVertical: 10,
   },
   cashoutEarnedList: {
@@ -30476,11 +30395,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     borderWidth: 1,
-    borderColor: COLORS.sand,
-    borderRadius: 14,
-    backgroundColor: "#FAFCFF",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderColor: "#EADFC9",
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
     gap: 10,
   },
   cashoutEarnedRowMain: {
@@ -30488,17 +30407,17 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   cashoutEarnedOffer: {
-    fontSize: 14,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   cashoutEarnedTime: {
-    fontSize: 12,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
   cashoutEarnedAmount: {
-    fontSize: 14,
+    fontSize: 13,
     color: "#166534",
     fontFamily: FONT_BOLD,
   },
@@ -30510,11 +30429,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     borderWidth: 1,
-    borderColor: COLORS.sand,
-    borderRadius: 14,
-    backgroundColor: "#FAFCFF",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderColor: "#EADFC9",
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
     gap: 10,
   },
   cashoutWithdrawalMeta: {
@@ -30535,15 +30454,15 @@ const styles = StyleSheet.create({
     minHeight: 20,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#D4DEEA",
+    borderColor: "#E3D7BE",
     backgroundColor: "#EEF2F6",
     paddingHorizontal: 8,
     justifyContent: "center",
     alignItems: "center",
   },
   cashoutWithdrawalStatusPillPaid: {
-    backgroundColor: "#E7EEFF",
-    borderColor: "#BED0F0",
+    backgroundColor: "#DCFCE7",
+    borderColor: "#86EFAC",
   },
   cashoutWithdrawalStatusPillFailed: {
     backgroundColor: "#FEE2E2",
@@ -30555,7 +30474,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   cashoutWithdrawalStatusTextPaid: {
-    color: "#1E3A8A",
+    color: "#166534",
   },
   cashoutWithdrawalStatusTextFailed: {
     color: "#B91C1C",
@@ -30570,18 +30489,18 @@ const styles = StyleSheet.create({
     borderLeftWidth: 0,
     borderRightWidth: 0,
     borderWidth: 1,
-    borderColor: COLORS.sand,
-    borderBottomColor: COLORS.sand,
+    borderColor: "#EADFC9",
+    borderBottomColor: "#EADFC9",
   },
   cashoutBalanceValue: {
-    fontSize: 34,
-    lineHeight: 38,
+    fontSize: 31,
+    lineHeight: 34,
     letterSpacing: -0.3,
     color: COLORS.ink,
     fontFamily: FONT_BOLD,
   },
   cashoutSectionLead: {
-    marginTop: 8,
+    marginTop: 6,
     fontSize: 13,
     lineHeight: 18,
     color: COLORS.muted,
@@ -30602,11 +30521,11 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   cashoutBalanceBadgeReady: {
-    backgroundColor: "#F0F4FF",
-    borderColor: "#C7D4EE",
+    backgroundColor: "#ECFDF3",
+    borderColor: "#B7E4C7",
   },
   cashoutBalanceBadgeMuted: {
-    backgroundColor: "#F4F7FF",
+    backgroundColor: "#FFF7E8",
     borderColor: "#F4D6A5",
   },
   cashoutBalanceBadgeText: {
@@ -30614,7 +30533,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   cashoutBalanceBadgeTextReady: {
-    color: "#1E3A8A",
+    color: "#166534",
   },
   cashoutBalanceBadgeTextMuted: {
     color: "#92400E",
@@ -30646,14 +30565,10 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
   },
   cashoutAmountGroup: {
-    marginTop: 12,
-    paddingTop: 12,
-    paddingHorizontal: 12,
-    paddingBottom: 12,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(15, 23, 42, 0.08)",
-    borderRadius: 16,
-    backgroundColor: "#F8FBFF",
+    marginTop: 10,
+    paddingTop: 0,
+    borderTopWidth: 0,
+    borderTopColor: "transparent",
   },
   cashoutAmountHeader: {
     flexDirection: "row",
@@ -30662,14 +30577,14 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   cashoutAmountTitle: {
-    fontSize: 15,
+    fontSize: 13,
     color: COLORS.ink,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   cashoutAmountMeta: {
     fontSize: 12,
     color: COLORS.muted,
-    fontFamily: FONT_MEDIUM,
+    fontFamily: FONT_TEXT,
   },
   cashoutAmountRow: {
     flexDirection: "row",
@@ -30681,41 +30596,38 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    minHeight: 52,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.14)",
+    borderColor: COLORS.sand,
   },
   cashoutAmountPrefix: {
-    fontSize: 20,
+    fontSize: 14,
     color: COLORS.muted,
-    fontFamily: FONT_SEMIBOLD,
-    marginRight: 7,
+    fontFamily: FONT_MEDIUM,
+    marginRight: 8,
   },
   cashoutAmountInput: {
     flex: 1,
-    fontSize: 24,
+    fontSize: 14,
     color: COLORS.ink,
-    fontFamily: FONT_SEMIBOLD,
-    letterSpacing: -0.2,
+    fontFamily: FONT_TEXT,
     padding: 0,
   },
   cashoutAmountMaxButton: {
     marginLeft: 10,
-    paddingHorizontal: 16,
-    minHeight: 52,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.12)",
-    backgroundColor: "#F3F7FD",
-    alignItems: "center",
-    justifyContent: "center",
+    borderColor: COLORS.sand,
+    backgroundColor: "#FFFFFF",
   },
   cashoutAmountMaxText: {
     fontSize: 13,
     color: COLORS.ink,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   cashoutAmountHint: {
     marginTop: 8,
@@ -30724,32 +30636,30 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
   },
   cashoutPayoutButton: {
-    marginTop: 13,
-    borderRadius: 16,
+    marginTop: 12,
+    borderRadius: RADII.md,
     borderWidth: 1,
-    borderColor: "#15803D",
-    backgroundColor: "#16A34A",
-    paddingVertical: 14,
+    borderColor: COLORS.pine,
+    backgroundColor: COLORS.pine,
+    paddingVertical: 12,
     alignItems: "center",
     justifyContent: "center",
-    ...ELEVATION.medium,
+    ...ELEVATION.soft,
   },
   cashoutPayoutButtonDisabled: {
     opacity: 0.58,
   },
   cashoutPayoutButtonText: {
-    fontSize: 16,
+    fontSize: 14,
     color: COLORS.white,
     fontFamily: FONT_SEMIBOLD,
-    letterSpacing: 0.2,
   },
   cashoutBankPanel: {
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
-    borderRadius: 20,
-    padding: 16,
+    borderColor: COLORS.sand,
+    borderRadius: RADII.md,
+    padding: 12,
     backgroundColor: COLORS.white,
-    ...ELEVATION.soft,
   },
   cashoutStatusLine: {
     marginTop: 10,
@@ -30763,14 +30673,14 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   cashoutStatusDotReady: {
-    backgroundColor: "#1E3A8A",
+    backgroundColor: "#15803D",
   },
   cashoutStatusDotMuted: {
     backgroundColor: "#94A3B8",
   },
   cashoutStatusLineText: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 12,
     color: "#4B5563",
     fontFamily: FONT_MEDIUM,
   },
@@ -30796,13 +30706,13 @@ const styles = StyleSheet.create({
     gap: 10,
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.08)",
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    backgroundColor: "#F8FBFF",
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 11,
+    backgroundColor: "#FBF7EF",
   },
   cashoutSelectedAccountCardEmpty: {
-    backgroundColor: "#F8FAFC",
+    backgroundColor: "#FBF7EF",
     borderColor: "rgba(15, 23, 42, 0.08)",
   },
   cashoutSelectedAccountIcon: {
@@ -30811,13 +30721,13 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "#D5E6FF",
-    backgroundColor: "#EFF4FF",
+    backgroundColor: "#FFF3D4",
     alignItems: "center",
     justifyContent: "center",
   },
   cashoutSelectedAccountIconMuted: {
     borderColor: "#E2E8F0",
-    backgroundColor: "#F4F7FC",
+    backgroundColor: "#F7F1E5",
   },
   cashoutSelectedAccountTag: {
     fontSize: 11,
@@ -30850,7 +30760,7 @@ const styles = StyleSheet.create({
     gap: 10,
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.10)",
-    borderRadius: 14,
+    borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 11,
     backgroundColor: COLORS.white,
@@ -30862,13 +30772,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   cashoutLinkedAccountTitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
   cashoutLinkedAccountMeta: {
     marginTop: 2,
-    fontSize: 12,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -30935,21 +30845,21 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   cashoutButtonStack: {
-    marginTop: 12,
-    gap: 9,
+    marginTop: 14,
+    gap: 10,
   },
   cashoutActionCard: {
-    borderRadius: 16,
+    borderRadius: RADII.md,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.12)",
+    borderColor: "rgba(15, 23, 42, 0.10)",
     backgroundColor: COLORS.white,
-    paddingVertical: 12,
-    paddingHorizontal: 13,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    ...ELEVATION.medium,
+    ...ELEVATION.soft,
   },
   cashoutActionCardPrimary: {
     backgroundColor: COLORS.pine,
@@ -30976,21 +30886,21 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#EEF2F8",
     borderWidth: 1,
-    borderColor: "#D5E0EC",
+    borderColor: "#E4D8C0",
   },
   cashoutActionIconWrapPrimary: {
     backgroundColor: "rgba(255, 255, 255, 0.18)",
     borderColor: "rgba(255, 255, 255, 0.28)",
   },
   cashoutActionIconWrapSecondary: {
-    backgroundColor: "#E7EDF6",
-    borderColor: "#C8D3E3",
+    backgroundColor: "#F1E7D1",
+    borderColor: "#D8C8A6",
   },
   cashoutActionCopy: {
     flex: 1,
   },
   cashoutActionTitle: {
-    fontSize: 15,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -31002,10 +30912,10 @@ const styles = StyleSheet.create({
   },
   cashoutActionSubtitle: {
     marginTop: 2,
-    fontSize: 12,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    lineHeight: 16,
+    lineHeight: 14,
   },
   cashoutActionSubtitlePrimary: {
     color: "rgba(255, 255, 255, 0.86)",
@@ -31015,17 +30925,17 @@ const styles = StyleSheet.create({
   },
   historyEntry: {
     position: "relative",
-    paddingVertical: 13,
-    paddingHorizontal: 14,
-    borderRadius: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
-    backgroundColor: "#FBFDFF",
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
   },
   historyEntryHighlighted: {
     shadowColor: "#2563EB",
-    shadowOpacity: 0.11,
-    shadowRadius: 8,
+    shadowOpacity: 0.14,
+    shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 2,
   },
@@ -31042,11 +30952,11 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
     color: COLORS.ink,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   historyEntrySubtitle: {
     marginTop: 4,
-    fontSize: 13,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     lineHeight: 16,
@@ -31057,7 +30967,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   historyEntryTime: {
-    fontSize: 12,
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -31066,7 +30976,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   historyStatusRow: {
-    marginTop: 9,
+    marginTop: 8,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
@@ -31086,8 +30996,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingVertical: 7,
-    paddingHorizontal: 11,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: COLORS.sand,
@@ -31095,24 +31005,24 @@ const styles = StyleSheet.create({
     maxWidth: 240,
   },
   historyCashbackPillEarned: {
-    borderColor: "#BEE4C8",
-    backgroundColor: "#EAF8EE",
+    borderColor: "#A7F3D0",
+    backgroundColor: "#ECFDF5",
   },
   historyCashbackPillPending: {
     borderColor: COLORS.sand,
-    backgroundColor: "#F6F8FC",
+    backgroundColor: "#FBF7EF",
   },
   historyCashbackPillReversed: {
     borderColor: "#FECDCA",
     backgroundColor: "#FFFBFA",
   },
   historyCashbackPillText: {
-    fontSize: 13,
+    fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
   historyCashbackPillTextEarned: {
-    color: "#166534",
+    color: "#047857",
   },
   historyCashbackPillTextReversed: {
     color: "#B42318",
@@ -31146,7 +31056,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   historyFlagChipWarn: {
-    backgroundColor: "#F3F7FF",
+    backgroundColor: "#FFF7E6",
     borderColor: "rgba(146, 64, 14, 0.2)",
   },
   historyFlagChipInfo: {
@@ -31208,7 +31118,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   historyActionRow: {
-    marginTop: 12,
+    marginTop: 10,
     flexDirection: "row",
     gap: 10,
     alignItems: "center",
@@ -31218,9 +31128,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 7,
-    paddingVertical: 10,
-    paddingHorizontal: 13,
-    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
     backgroundColor: "#1A1F2E",
     minWidth: 150,
   },
@@ -31230,13 +31140,13 @@ const styles = StyleSheet.create({
   historyPrimaryActionText: {
     fontSize: 12,
     color: COLORS.white,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   historyInlineAction: {
     paddingVertical: 6,
   },
   historyInlineActionText: {
-    fontSize: 13,
+    fontSize: 12,
     color: "#1D4ED8",
     fontFamily: FONT_MEDIUM,
   },
@@ -31260,13 +31170,13 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "flex-start",
     gap: 12,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     padding: 12,
   },
   ownerOfferCard: {
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.white,
@@ -31289,7 +31199,7 @@ const styles = StyleSheet.create({
     width: "100%",
     height: 140,
     borderRadius: 10,
-    backgroundColor: "#F5F8FC",
+    backgroundColor: "#F5EFE2",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -31363,7 +31273,7 @@ const styles = StyleSheet.create({
   },
   suggestionList: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     marginBottom: 12,
@@ -31412,7 +31322,7 @@ const styles = StyleSheet.create({
   },
   selectMenu: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     marginTop: -6,
@@ -31441,13 +31351,13 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    borderRadius: 14,
+    borderRadius: 12,
     paddingVertical: 6,
     paddingHorizontal: 10,
   },
   categoryChipDisabled: {
-    backgroundColor: "#F4F7FC",
-    borderColor: "#D5E0EC",
+    backgroundColor: "#F7F1E5",
+    borderColor: "#E4D8C0",
   },
   categoryChipActive: {
     backgroundColor: COLORS.pine,
@@ -31483,8 +31393,8 @@ const styles = StyleSheet.create({
     borderColor: COLORS.pine,
   },
   planOptionDisabled: {
-    backgroundColor: "#F4F7FC",
-    borderColor: "#D5E0EC",
+    backgroundColor: "#F7F1E5",
+    borderColor: "#E4D8C0",
   },
   planOptionName: {
     fontSize: 13,
@@ -31530,13 +31440,13 @@ const styles = StyleSheet.create({
   },
   alertBox: {
     padding: 12,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     marginBottom: 12,
   },
   alertSuccess: {
-    backgroundColor: "#EEF3FF",
-    borderColor: "#B5C5E6",
+    backgroundColor: "#E8F3EC",
+    borderColor: "#9AC9AE",
   },
   alertError: {
     backgroundColor: "#F8E7E7",
@@ -31570,15 +31480,15 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   statusPill: {
-    borderRadius: 14,
+    borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
   statusPending: {
-    backgroundColor: "#E9EEF7",
+    backgroundColor: "#F2E8D5",
   },
   statusApproved: {
-    backgroundColor: "#E6ECF8",
+    backgroundColor: "#DDEBE2",
   },
   statusRejected: {
     backgroundColor: "#F5DDDD",
@@ -31691,7 +31601,7 @@ const styles = StyleSheet.create({
   adminDangerNotice: {
     borderWidth: 1,
     borderColor: "#F2D8B5",
-    backgroundColor: "#F5F8FF",
+    backgroundColor: "#FFF6EA",
     borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -31705,10 +31615,10 @@ const styles = StyleSheet.create({
   adminDangerIconWrap: {
     width: 24,
     height: 24,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#F2D8B5",
-    backgroundColor: "#EEF4FF",
+    backgroundColor: "#FFF1DC",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -31802,7 +31712,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
     borderWidth: 1,
     borderColor: COLORS.sand,
-    borderRadius: 14,
+    borderRadius: 12,
     backgroundColor: COLORS.mint,
     padding: 10,
   },
@@ -31854,7 +31764,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.mint,
-    borderRadius: 14,
+    borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 10,
   },
@@ -31967,7 +31877,7 @@ const styles = StyleSheet.create({
   adminOfferImage: {
     width: "100%",
     height: 160,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.mint,
@@ -31975,7 +31885,7 @@ const styles = StyleSheet.create({
   adminOfferImagePlaceholder: {
     width: "100%",
     height: 92,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     backgroundColor: COLORS.mint,
@@ -32037,7 +31947,7 @@ const styles = StyleSheet.create({
   },
   adminActionArmed: {
     borderColor: "#D9A44A",
-    backgroundColor: "#F4F8FF",
+    backgroundColor: "#FFF4E1",
   },
   adminActionArmedText: {
     color: "#7C4B00",
@@ -32045,7 +31955,7 @@ const styles = StyleSheet.create({
   adminDestructivePanel: {
     borderWidth: 1,
     borderColor: COLORS.sand,
-    borderRadius: 14,
+    borderRadius: 12,
     backgroundColor: "#FCFCFD",
     padding: 10,
   },
@@ -32115,7 +32025,7 @@ const styles = StyleSheet.create({
   qrFallback: {
     width: QR_SIZE,
     height: QR_SIZE,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     alignItems: "center",
@@ -32168,14 +32078,14 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.pine,
     paddingVertical: 10,
-    borderRadius: 14,
+    borderRadius: 12,
     alignItems: "center",
   },
   adminReject: {
     flex: 1,
     backgroundColor: COLORS.white,
     paddingVertical: 10,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.sand,
     alignItems: "center",
@@ -32184,7 +32094,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#FFECEC",
     paddingVertical: 10,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#F5B3B3",
     alignItems: "center",
@@ -32235,7 +32145,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.pine,
     paddingHorizontal: IS_COMPACT ? 12 : 14,
     paddingVertical: IS_COMPACT ? 8 : 10,
-    borderRadius: 14,
+    borderRadius: 12,
   },
   planButtonCompact: {
     alignSelf: "stretch",
