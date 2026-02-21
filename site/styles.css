@@ -2962,13 +2962,17 @@ body.home-v2 .v2-showcase-scroll {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: thin;
+  display: flex;
+  justify-content: center;
 }
 
 body.home-v2 .v2-showcase-track {
-  min-width: 960px;
+  width: max-content;
+  min-width: 0;
+  margin: 0 auto;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(3, minmax(140px, 210px));
+  gap: 10px;
 }
 
 body.home-v2 .v2-shot {
@@ -3456,7 +3460,8 @@ body.legal-v2 .legal-table th {
   }
 
   body.home-v2 .v2-showcase-track {
-    min-width: 840px;
+    grid-template-columns: repeat(3, minmax(130px, 180px));
+    gap: 8px;
   }
 
   body.home-v2 .v2-cta-row {
@@ -3492,6 +3497,11 @@ body.legal-v2 .legal-table th {
 
   body.home-v2 .v2-nav-links::-webkit-scrollbar {
     display: none;
+  }
+
+  body.home-v2 .v2-showcase-track {
+    grid-template-columns: repeat(3, minmax(110px, 140px));
+    gap: 6px;
   }
 
   body.home-v2 .v2-nav-links a,
