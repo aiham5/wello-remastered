@@ -2953,6 +2953,38 @@ body.home-v2 .v2-section {
   padding: 26px 0;
 }
 
+body.home-v2 .v2-showcase {
+  padding-top: 10px;
+}
+
+body.home-v2 .v2-showcase-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+body.home-v2 .v2-showcase-track {
+  min-width: 960px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+body.home-v2 .v2-shot {
+  margin: 0;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  box-shadow: var(--shadow-soft);
+}
+
+body.home-v2 .v2-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 body.home-v2 .v2-section-soft {
   background: rgba(255, 255, 255, 0.64);
   border-top: 1px solid var(--line);
@@ -3420,6 +3452,10 @@ body.legal-v2 .legal-table th {
   body.home-v2 .v2-grid-3,
   body.home-v2 .v2-trust {
     grid-template-columns: 1fr;
+  }
+
+  body.home-v2 .v2-showcase-track {
+    min-width: 840px;
   }
 
   body.home-v2 .v2-cta-row {

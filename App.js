@@ -1,4 +1,4 @@
-import React, {
+﻿import React, {
   useCallback,
   useEffect,
   useMemo,
@@ -1026,6 +1026,78 @@ const formatPurchaseVerificationReason = (reasonCode, reasonDetail) => {
 const formatBusinessHours = (startTime, startMeridiem, endTime, endMeridiem) =>
   `${startTime} ${startMeridiem} - ${endTime} ${endMeridiem}`;
 
+const parseOperatingDaysValue = (value) => {
+  const raw = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw) return OPERATING_DAY_OPTIONS.map((day) => day.key);
+
+  const cleaned = raw.toLowerCase();
+  if (cleaned === "daily" || cleaned === "every day" || cleaned === "mon-sun") {
+    return OPERATING_DAY_OPTIONS.map((day) => day.key);
+  }
+
+  const selected = new Set();
+  const normalized = raw.replace(/\s*-\s*/g, "-");
+  const tokens = normalized
+    .split(/[,/|]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+  const expandToken = (token) => {
+    const rangeParts = token.split("-");
+    if (rangeParts.length === 2) {
+      const startIdx = OPERATING_DAY_INDEX[String(rangeParts[0] || "").toLowerCase()];
+      const endIdx = OPERATING_DAY_INDEX[String(rangeParts[1] || "").toLowerCase()];
+      if (startIdx == null || endIdx == null) return;
+      if (startIdx <= endIdx) {
+        for (let i = startIdx; i <= endIdx; i += 1) {
+          selected.add(OPERATING_DAY_OPTIONS[i].key);
+        }
+      } else {
+        for (let i = startIdx; i < OPERATING_DAY_OPTIONS.length; i += 1) {
+          selected.add(OPERATING_DAY_OPTIONS[i].key);
+        }
+        for (let i = 0; i <= endIdx; i += 1) {
+          selected.add(OPERATING_DAY_OPTIONS[i].key);
+        }
+      }
+      return;
+    }
+    const exactIdx = OPERATING_DAY_INDEX[token.toLowerCase()];
+    if (exactIdx != null) {
+      selected.add(OPERATING_DAY_OPTIONS[exactIdx].key);
+    }
+  };
+
+  tokens.forEach(expandToken);
+  if (!selected.size) return OPERATING_DAY_OPTIONS.map((day) => day.key);
+
+  return OPERATING_DAY_OPTIONS.map((day) => day.key).filter((key) =>
+    selected.has(key),
+  );
+};
+
+const formatOperatingDaysValue = (value) => {
+  const ordered = parseOperatingDaysValue(value);
+  if (ordered.length === OPERATING_DAY_OPTIONS.length) return "Mon-Sun";
+  return ordered.join(", ");
+};
+
+const toggleOperatingDayValue = (value, dayKey) => {
+  const current = new Set(parseOperatingDaysValue(value));
+  if (current.has(dayKey)) {
+    if (current.size === 1) return formatOperatingDaysValue(value);
+    current.delete(dayKey);
+  } else {
+    current.add(dayKey);
+  }
+  const ordered = OPERATING_DAY_OPTIONS.map((day) => day.key).filter((key) =>
+    current.has(key),
+  );
+  return formatOperatingDaysValue(ordered.join(", "));
+};
+
 const formatBusinessSchedule = (
   operatingDays,
   startTime,
@@ -1039,10 +1111,8 @@ const formatBusinessSchedule = (
     endTime,
     endMeridiem,
   );
-  const days = String(operatingDays || "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return days ? `${days} · ${timeRange}` : timeRange;
+  const days = formatOperatingDaysValue(operatingDays);
+  return days ? `${days} | ${timeRange}` : timeRange;
 };
 
 const mergeVerificationCopy = (...parts) => {
@@ -1077,6 +1147,10 @@ const parseBusinessHours = (value) => {
     const [daysPart, ...timeParts] = normalized.split("·");
     days = String(daysPart || "").trim();
     timePart = String(timeParts.join("·") || "").trim();
+  } else if (normalized.includes("Â·")) {
+    const [daysPart, ...timeParts] = normalized.split("Â·");
+    days = String(daysPart || "").trim();
+    timePart = String(timeParts.join("Â·") || "").trim();
   } else if (normalized.includes("|")) {
     const [daysPart, ...timeParts] = normalized.split("|");
     days = String(daysPart || "").trim();
@@ -1108,7 +1182,7 @@ const parseBusinessHours = (value) => {
   const end = parsePart(parts[1]);
   if (!start || !end) return null;
   return {
-    days,
+    days: formatOperatingDaysValue(days),
     startTime: start.time,
     startMeridiem: start.meridiem,
     endTime: end.time,
@@ -19083,17 +19157,48 @@ export default function App() {
                             <Text style={styles.formLabel}>
                               Operating days
                             </Text>
-                            <AutoFocusInput
+                            <View
                               style={[
-                                styles.formInput,
-                                !canEditBusiness && styles.formInputDisabled,
+                                styles.operatingDaysRow,
+                                !canEditBusiness && styles.operatingDaysRowDisabled,
                               ]}
-                              placeholder="Mon-Sun"
-                              placeholderTextColor={COLORS.muted}
-                              value={editHoursDays}
-                              editable={canEditBusiness}
-                              onChangeText={(value) => setEditHoursDays(value)}
-                            />
+                            >
+                              {OPERATING_DAY_OPTIONS.map((day) => {
+                                const selected = parseOperatingDaysValue(
+                                  editHoursDays,
+                                ).includes(day.key);
+                                return (
+                                  <TouchableOpacity
+                                    key={`edit-day-${day.key}`}
+                                    style={[
+                                      styles.operatingDayChip,
+                                      selected && styles.operatingDayChipActive,
+                                      !canEditBusiness &&
+                                        styles.operatingDayChipDisabled,
+                                    ]}
+                                    disabled={!canEditBusiness}
+                                    onPress={() =>
+                                      setEditHoursDays((prev) =>
+                                        toggleOperatingDayValue(prev, day.key),
+                                      )
+                                    }
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.operatingDayChipText,
+                                        selected &&
+                                          styles.operatingDayChipTextActive,
+                                      ]}
+                                    >
+                                      {day.label}
+                                    </Text>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                            <Text style={styles.formHint}>
+                              Selected: {formatOperatingDaysValue(editHoursDays)}
+                            </Text>
 
                             <Text style={styles.formLabel}>
                               Operating hours
@@ -19290,7 +19395,7 @@ export default function App() {
                               })}
                             </View>
                             <View style={styles.tagActionsRow}>
-                              <Text style={styles.formHint}>
+                              <Text style={[styles.formHint, styles.tagActionsHint]}>
                                 Tags and descriptor aliases save instantly.
                               </Text>
                               <TouchableOpacity
@@ -19592,13 +19697,40 @@ export default function App() {
                             <Text style={styles.formLabel}>
                               Operating days
                             </Text>
-                            <AutoFocusInput
-                              style={styles.formInput}
-                              placeholder="Mon-Sun"
-                              placeholderTextColor={COLORS.muted}
-                              value={createHoursDays}
-                              onChangeText={setCreateHoursDays}
-                            />
+                            <View style={styles.operatingDaysRow}>
+                              {OPERATING_DAY_OPTIONS.map((day) => {
+                                const selected = parseOperatingDaysValue(
+                                  createHoursDays,
+                                ).includes(day.key);
+                                return (
+                                  <TouchableOpacity
+                                    key={`create-day-${day.key}`}
+                                    style={[
+                                      styles.operatingDayChip,
+                                      selected && styles.operatingDayChipActive,
+                                    ]}
+                                    onPress={() =>
+                                      setCreateHoursDays((prev) =>
+                                        toggleOperatingDayValue(prev, day.key),
+                                      )
+                                    }
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.operatingDayChipText,
+                                        selected &&
+                                          styles.operatingDayChipTextActive,
+                                      ]}
+                                    >
+                                      {day.label}
+                                    </Text>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                            <Text style={styles.formHint}>
+                              Selected: {formatOperatingDaysValue(createHoursDays)}
+                            </Text>
 
                             <Text style={styles.formLabel}>
                               Operating hours
@@ -21372,7 +21504,7 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>Â·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -21384,7 +21516,7 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>Â·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -21502,7 +21634,7 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>Â·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -21514,7 +21646,7 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>Â·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -21706,7 +21838,7 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>Â·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -21718,7 +21850,7 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>Â·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -22005,13 +22137,45 @@ export default function App() {
                                 <Text style={styles.formLabel}>
                                   Operating days
                                 </Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="Mon-Sun"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={businessHoursDays}
-                                  onChangeText={setBusinessHoursDays}
-                                />
+                                <View style={styles.operatingDaysRow}>
+                                  {OPERATING_DAY_OPTIONS.map((day) => {
+                                    const selected = parseOperatingDaysValue(
+                                      businessHoursDays,
+                                    ).includes(day.key);
+                                    return (
+                                      <TouchableOpacity
+                                        key={`signup-day-${day.key}`}
+                                        style={[
+                                          styles.operatingDayChip,
+                                          selected &&
+                                            styles.operatingDayChipActive,
+                                        ]}
+                                        onPress={() =>
+                                          setBusinessHoursDays((prev) =>
+                                            toggleOperatingDayValue(
+                                              prev,
+                                              day.key,
+                                            ),
+                                          )
+                                        }
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.operatingDayChipText,
+                                            selected &&
+                                              styles.operatingDayChipTextActive,
+                                          ]}
+                                        >
+                                          {day.label}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    );
+                                  })}
+                                </View>
+                                <Text style={styles.formHint}>
+                                  Selected:{" "}
+                                  {formatOperatingDaysValue(businessHoursDays)}
+                                </Text>
 
                                 <Text style={styles.formLabel}>
                                   Operating hours
@@ -22237,7 +22401,7 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>Â·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -22249,7 +22413,7 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>Â·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -28112,10 +28276,17 @@ const styles = StyleSheet.create({
   },
   tagActionsRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 10,
     marginTop: 6,
     marginBottom: 4,
+  },
+  tagActionsHint: {
+    flex: 1,
+    minWidth: 180,
+    marginBottom: 2,
   },
   tagSaveButton: {
     borderWidth: 1,
@@ -28124,6 +28295,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
+    alignSelf: "flex-start",
   },
   tagSaveButtonDisabled: {
     opacity: 0.6,
@@ -28156,6 +28328,38 @@ const styles = StyleSheet.create({
   },
   tagOptionPillDisabled: {
     opacity: 0.6,
+  },
+  operatingDaysRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 6,
+  },
+  operatingDaysRowDisabled: {
+    opacity: 0.6,
+  },
+  operatingDayChip: {
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  operatingDayChipActive: {
+    backgroundColor: COLORS.pine,
+    borderColor: COLORS.pine,
+  },
+  operatingDayChipDisabled: {
+    opacity: 0.7,
+  },
+  operatingDayChipText: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  operatingDayChipTextActive: {
+    color: COLORS.white,
   },
   tagOptionText: {
     fontSize: 13,
@@ -32295,6 +32499,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#2563EB",
   },
 });
+
 
 
 
