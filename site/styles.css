@@ -3038,12 +3038,15 @@ body.referral-v2 .v2-actions {
 
 body.home-v2 .v2-hero-media {
   width: 100%;
+  display: flex;
+  justify-content: flex-end;
 }
 
 body.home-v2 .v2-hero-media-track {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
+  width: min(100%, 440px);
 }
 
 body.home-v2 .v2-section {
@@ -3537,7 +3540,8 @@ body.legal-v2 .legal-table th {
   }
 
   body.home-v2 .v2-hero-media-track {
-    max-width: 560px;
+    width: min(100%, 420px);
+    margin: 0 auto;
   }
 
   body.home-v2 .v2-cta-row {
@@ -3577,6 +3581,7 @@ body.legal-v2 .legal-table th {
 
   body.home-v2 .v2-hero-media-track {
     gap: 0;
+    width: min(100%, 360px);
   }
 
   body.home-v2 .v2-nav-links a,
