@@ -21,8 +21,7 @@ const PENDING_COPY =
   "Cashback may appear as pending while verification completes.";
 const AUTO_COPY =
   "Cashback is automatically verified when purchases are visible through your linked bank.";
-const PLAID_ENV = (Deno.env.get("PLAID_ENV") ?? "sandbox").toLowerCase();
-const IDENTITY_ENFORCED = PLAID_ENV !== "sandbox";
+const IDENTITY_ENFORCED = true;
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 const stripe = STRIPE_SECRET_KEY
   ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" })
@@ -783,7 +782,6 @@ serve(async (req) => {
       });
     }
 
-    let identityCheckBypassedSandbox = false;
     const { data: profile } = await supabase
       .from("profiles")
       .select("full_name")
@@ -840,9 +838,6 @@ serve(async (req) => {
             fallbackRequired: true,
             fallbackMessage: FALLBACK_COPY,
           });
-        }
-        if (!hasNameOverlap && !IDENTITY_ENFORCED) {
-          identityCheckBypassedSandbox = true;
         }
       }
     }
@@ -999,9 +994,7 @@ serve(async (req) => {
       source: "plaid",
       status: "confirmed",
       reason_code: null,
-      reason_detail: identityCheckBypassedSandbox
-        ? "Matched posted transaction (sandbox identity mismatch bypassed)."
-        : "Matched posted transaction.",
+      reason_detail: "Matched posted transaction.",
       receipt_upload_id: receiptUpsert.id,
       expected_amount_cents: expectedAmountCents,
       matched_amount_cents: selected.amountCents,
@@ -1016,7 +1009,7 @@ serve(async (req) => {
     });
     await insertAttempt(
       "matched_posted",
-      identityCheckBypassedSandbox ? "identity_check_bypassed_sandbox" : null,
+      null,
       {
       verificationId: verification?.id || null,
       candidateCount: allCandidates.length,

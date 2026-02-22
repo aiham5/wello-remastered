@@ -75,6 +75,7 @@ import {
   supabase,
   refreshSupabaseClient,
   getAccessTokenWithFallback,
+  getStoredSession,
   refreshAccessTokenWithRefreshToken,
   clearSupabaseSession,
 } from "./lib/supabase";
@@ -681,7 +682,7 @@ const BUSINESS_ANALYTICS = {
 };
 const DEFAULT_ANALYTICS = { views: 0, saves: 0, redemptions: 0, reach: "0" };
 
-const USE_FAKE_LOCATION = true;
+const USE_FAKE_LOCATION = false;
 const DEFAULT_MAP_REGION = {
   latitude: 40.7128,
   longitude: -74.006,
@@ -5221,7 +5222,17 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
     const safetyTimer = setTimeout(() => {
-      if (isMounted) setSessionReady(true);
+      if (!isMounted) return;
+      getStoredSession()
+        .then((stored) => {
+          // Avoid flashing signed-out UI when a stored session exists but
+          // Supabase session hydration is still in flight.
+          if (!isMounted || stored?.session?.access_token) return;
+          setSessionReady(true);
+        })
+        .catch(() => {
+          if (isMounted) setSessionReady(true);
+        });
     }, 4000);
     const loadSession = async () => {
       try {
@@ -5234,11 +5245,27 @@ export default function App() {
           return;
         }
         const tokenResult = await getAccessTokenWithFallback(8000);
-        const session = tokenResult.session;
+        let session = tokenResult.session;
+        let sessionUser = session?.user || null;
+        if (!sessionUser?.id && tokenResult.accessToken) {
+          try {
+            const userResult = await withTimeout(
+              supabase.auth.getUser(tokenResult.accessToken),
+              6000,
+              "auth.getUser",
+            );
+            sessionUser = userResult?.data?.user || null;
+            if (sessionUser?.id) {
+              session = { ...(session || {}), user: sessionUser };
+            }
+          } catch {
+            // Keep fallback behavior below.
+          }
+        }
         if (!isMounted) return;
-        if (session?.user) {
-          const nextRole = await hydrateProfile(session.user);
-          const stillActive = await hasActiveSessionForUser(session.user.id);
+        if (sessionUser?.id) {
+          const nextRole = await hydrateProfile(sessionUser);
+          const stillActive = await hasActiveSessionForUser(sessionUser.id);
           if (!isMounted || !stillActive) return;
           setIsSignedIn(true);
           if (nextRole === "consumer") {

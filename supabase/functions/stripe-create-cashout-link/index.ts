@@ -16,13 +16,8 @@ const SUPABASE_ANON_KEY =
   Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
   "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
-const CONNECT_REFRESH_URL =
-  Deno.env.get("STRIPE_CONNECT_REFRESH_URL") ?? "";
-const CONNECT_RETURN_URL =
-  Deno.env.get("STRIPE_CONNECT_RETURN_URL") ?? "";
-const CONNECT_BUSINESS_PROFILE_URL =
-  Deno.env.get("STRIPE_CONNECT_BUSINESS_PROFILE_URL") ??
-  "https://www.wellopartners.com";
+const CONNECT_REFRESH_URL = Deno.env.get("STRIPE_CONNECT_REFRESH_URL") ?? "";
+const CONNECT_RETURN_URL = Deno.env.get("STRIPE_CONNECT_RETURN_URL") ?? "";
 const CONNECT_ALLOWED_REDIRECT_PREFIXES = [
   "https://www.wellopartners.com",
   "https://wellopartners.com",
@@ -69,39 +64,78 @@ const decodeJwtHeader = (token: string) => {
 };
 
 const normalizeSpace = (value: unknown) =>
-  String(value || "").trim().replace(/\s+/g, " ");
+  String(value || "")
+    .trim()
+    .replace(/\s+/g, " ");
 
-const buildIndividualPrefill = (fullName: unknown) => {
+const buildIndividualPrefill = (fullName: unknown, email?: unknown) => {
   const normalized = normalizeSpace(fullName);
-  if (!normalized) return null;
-  const parts = normalized.split(" ").filter(Boolean);
-  if (!parts.length) return null;
+  const emailValue = normalizeSpace(email);
+  const parts = normalized ? normalized.split(" ").filter(Boolean) : [];
   const firstName = parts[0] || "";
   const lastName = parts.slice(1).join(" ").trim();
-  const individual: { first_name?: string; last_name?: string } = {};
+  const individual: { first_name?: string; last_name?: string; email?: string } =
+    {};
   if (firstName) individual.first_name = firstName;
   if (lastName) individual.last_name = lastName;
+  if (emailValue) individual.email = emailValue;
   return Object.keys(individual).length ? individual : null;
 };
 
 const buildConnectPrefill = (profile: {
   full_name?: string | null;
   email?: string | null;
+  auth_full_name?: string | null;
+  auth_email?: string | null;
 }) => {
-  const email = normalizeSpace(profile?.email);
-  const individual = buildIndividualPrefill(profile?.full_name);
-  const businessProfileUrl = normalizeSpace(CONNECT_BUSINESS_PROFILE_URL);
+  const email = normalizeSpace(profile?.email || profile?.auth_email);
+  const fullName = normalizeSpace(profile?.full_name || profile?.auth_full_name);
+  const individual = buildIndividualPrefill(fullName, email);
   const prefill: {
     email?: string;
-    individual?: { first_name?: string; last_name?: string };
-    business_profile?: { url: string };
+    individual?: { first_name?: string; last_name?: string; email?: string };
   } = {};
   if (email) prefill.email = email;
   if (individual) prefill.individual = individual;
-  if (businessProfileUrl) {
-    prefill.business_profile = { url: businessProfileUrl };
-  }
   return prefill;
+};
+
+const requiresConsumerCashoutAccountReplacement = async (accountId: string) => {
+  try {
+    const account = await stripe.accounts.retrieve(accountId);
+    const cardPaymentsCapability = String(
+      account?.capabilities?.card_payments || "",
+    ).toLowerCase();
+    // If card_payments was requested/active on a consumer cashout account,
+    // Stripe may continue showing merchant-oriented onboarding prompts.
+    return cardPaymentsCapability === "active" || cardPaymentsCapability === "pending";
+  } catch {
+    // If retrieval fails, keep the existing account path to avoid hard failure.
+    return false;
+  }
+};
+
+const createConsumerCashoutAccount = async (
+  userId: string,
+  connectPrefill: ReturnType<typeof buildConnectPrefill>,
+) => {
+  return await stripe.accounts.create({
+    type: "express",
+    country: "US",
+    default_currency: "usd",
+    business_type: "individual",
+    ...(connectPrefill.email ? { email: connectPrefill.email } : {}),
+    ...(connectPrefill.individual
+      ? { individual: connectPrefill.individual }
+      : {}),
+    metadata: {
+      purpose: "consumer_cashout",
+      user_id: userId,
+    },
+    capabilities: {
+      transfers: { requested: true },
+    },
+  });
 };
 
 const normalizeConnectRedirectUrl = (value: unknown) => {
@@ -159,7 +193,9 @@ serve(async (req) => {
     }
 
     const authHeader =
-      req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
+      req.headers.get("Authorization") ??
+      req.headers.get("authorization") ??
+      "";
     const bodyAccessToken =
       typeof body?.accessToken === "string"
         ? body.accessToken
@@ -231,6 +267,14 @@ serve(async (req) => {
       );
     }
     const userId = authData.user.id;
+    const authEmail = normalizeSpace(authData.user.email);
+    const authMetadata = (authData.user.user_metadata || {}) as Record<
+      string,
+      unknown
+    >;
+    const authFullName = normalizeSpace(
+      authMetadata.full_name || authMetadata.name || "",
+    );
     if (!userId) {
       return new Response(
         JSON.stringify({
@@ -253,44 +297,44 @@ serve(async (req) => {
       });
     }
 
-    const connectPrefill = buildConnectPrefill(profile);
+    const connectPrefill = buildConnectPrefill({
+      full_name: profile.full_name,
+      email: profile.email,
+      auth_full_name: authFullName || null,
+      auth_email: authEmail || null,
+    });
     let accountId = profile.stripe_cashout_account_id;
     if (!accountId) {
-      const account = await stripe.accounts.create({
-        type: "express",
-        country: "US",
-        default_currency: "usd",
-        business_type: "individual",
-        ...(connectPrefill.email ? { email: connectPrefill.email } : {}),
-        ...(connectPrefill.individual
-          ? { individual: connectPrefill.individual }
-          : {}),
-        ...(connectPrefill.business_profile
-          ? { business_profile: connectPrefill.business_profile }
-          : {}),
-        metadata: {
-          purpose: "consumer_cashout",
-          user_id: userId,
-        },
-        capabilities: {
-          transfers: { requested: true },
-        },
-      });
+      const account = await createConsumerCashoutAccount(userId, connectPrefill);
       accountId = account.id;
       await supabase
         .from("profiles")
         .update({ stripe_cashout_account_id: accountId })
         .eq("id", userId);
     } else {
+      const shouldReplaceAccount = await requiresConsumerCashoutAccountReplacement(
+        accountId,
+      );
+      if (shouldReplaceAccount) {
+        const replacement = await createConsumerCashoutAccount(
+          userId,
+          connectPrefill,
+        );
+        accountId = replacement.id;
+        await supabase
+          .from("profiles")
+          .update({ stripe_cashout_account_id: accountId })
+          .eq("id", userId);
+      }
+
       const accountUpdates: Stripe.AccountUpdateParams = {};
+      accountUpdates.capabilities = {
+        card_payments: { requested: false },
+        transfers: { requested: true },
+      };
       if (connectPrefill.email) accountUpdates.email = connectPrefill.email;
       if (connectPrefill.individual) {
         accountUpdates.individual = connectPrefill.individual;
-      }
-      if (connectPrefill.business_profile?.url) {
-        accountUpdates.business_profile = {
-          url: connectPrefill.business_profile.url,
-        };
       }
       if (Object.keys(accountUpdates).length > 0) {
         try {

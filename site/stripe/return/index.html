@@ -46,7 +46,7 @@
         var deepLink = "wello://auth/callback?flow=stripe_return";
         var fallbackNote = document.getElementById("fallback-note");
         function openApp() {
-          window.location.href = deepLink;
+          window.location.replace(deepLink);
         }
         setTimeout(openApp, 120);
         setTimeout(function () {

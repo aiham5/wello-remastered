@@ -2,7 +2,7 @@ import { HttpError } from "./auth.ts";
 
 const PLAID_CLIENT_ID = Deno.env.get("PLAID_CLIENT_ID") ?? "";
 const PLAID_SECRET = Deno.env.get("PLAID_SECRET") ?? "";
-const PLAID_ENV = (Deno.env.get("PLAID_ENV") ?? "sandbox").toLowerCase();
+const PLAID_ENV = (Deno.env.get("PLAID_ENV") ?? "production").toLowerCase();
 const PLAID_CLIENT_NAME = Deno.env.get("PLAID_CLIENT_NAME") ?? "Wello";
 const PLAID_COUNTRY_CODES = Deno.env.get("PLAID_COUNTRY_CODES") ?? "US";
 const PLAID_WEBHOOK_URL = Deno.env.get("PLAID_WEBHOOK_URL") ?? "";
@@ -16,12 +16,11 @@ const PLAID_REQUEST_TIMEOUT_MS = Math.max(
 
 const PLAID_BASE_URL = (() => {
   switch (PLAID_ENV) {
-    case "production":
-      return "https://production.plaid.com";
     case "development":
       return "https://development.plaid.com";
+    case "production":
     default:
-      return "https://sandbox.plaid.com";
+      return "https://production.plaid.com";
   }
 })();
 

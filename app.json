@@ -6,13 +6,13 @@
                  "version":  "1.0.0",
                  "orientation":  "portrait",
                  "backgroundColor":  "#F6F2E9",
-                 "icon":  "./assets/logo/wello-logo.png",
+                 "icon":  "./assets/logo/logo.png",
                  "notification":  {
-                                      "icon":  "./assets/logo/notification-icon.png",
+                                      "icon":  "./assets/logo/logo.png",
                                       "color":  "#0B2147"
                                   },
                  "splash":  {
-                                "image":  "./assets/logo/wello-logo.png",
+                                "image":  "./assets/logo/logo.png",
                                 "resizeMode":  "contain",
                                 "backgroundColor":  "#F6F2E9"
                             },
@@ -21,7 +21,7 @@
                                          ],
                  "ios":  {
                              "bundleIdentifier":  "com.wellopartners.wello",
-                             "icon":  "./assets/logo/wello-logo.png",
+                             "icon":  "./assets/logo/logo.png",
                              "infoPlist":  {
                                                "ITSAppUsesNonExemptEncryption":  false,
                                                "NSLocationWhenInUseUsageDescription":  "Wello uses your location to show nearby businesses and offers.",
@@ -31,7 +31,7 @@
                              "buildNumber":  "3"
                          },
                  "android":  {
-                                 "icon":  "./assets/logo/wello-logo.png",
+                                 "icon":  "./assets/logo/logo.png",
                                  "permissions":  [
                                                      "android.permission.ACCESS_FINE_LOCATION",
                                                      "android.permission.ACCESS_COARSE_LOCATION",
@@ -41,7 +41,7 @@
                                                      "android.permission.RECORD_AUDIO"
                                                  ],
                                  "adaptiveIcon":  {
-                                                      "foregroundImage":  "./assets/logo/wello-logo.png",
+                                                      "foregroundImage":  "./assets/logo/logo.png",
                                                       "backgroundColor":  "#F6F2E9"
                                                   },
                                  "package":  "com.wellopartners.wello"
@@ -53,7 +53,7 @@
                                  [
                                      "expo-notifications",
                                      {
-                                         "icon":  "./assets/logo/notification-icon.png",
+                                         "icon":  "./assets/logo/logo.png",
                                          "color":  "#0B2147"
                                      }
                                  ]
