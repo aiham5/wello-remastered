@@ -3041,14 +3041,14 @@ body.home-v2 .v2-hero-media {
   width: 100%;
   display: flex;
   justify-content: flex-end;
-  margin-top: -80px;
+  margin-top: -100px;
 }
 
 body.home-v2 .v2-hero-media-track {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
-  width: min(100%, 340px);
+  width: min(100%, 374px);
 }
 
 body.home-v2 .v2-section {
@@ -3542,12 +3542,12 @@ body.legal-v2 .legal-table th {
   }
 
   body.home-v2 .v2-hero-media-track {
-    width: min(100%, 330px);
+    width: min(100%, 363px);
     margin: 0 auto;
   }
 
   body.home-v2 .v2-hero-media {
-    margin-top: -20px;
+    margin-top: -30px;
   }
 
   body.home-v2 .v2-cta-row {
