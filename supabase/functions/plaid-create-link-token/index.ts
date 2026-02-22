@@ -5,6 +5,7 @@ import {
   HttpError,
   json,
 } from "../_shared/auth.ts";
+import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import { plaidCreateLinkToken } from "../_shared/plaid.ts";
 
 export const config = { verify_jwt: false };
@@ -14,9 +15,14 @@ serve(async (req) => {
     return new Response("Method not allowed", { status: 405 });
   }
 
+  let userIdForLog: string | null = null;
+  let supabaseForLog: ReturnType<typeof createAdminSupabase> | null = null;
+
   try {
     const { userId, body } = await authenticateRequest(req);
+    userIdForLog = userId;
     const supabase = createAdminSupabase();
+    supabaseForLog = supabase;
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("full_name, email")
@@ -83,13 +89,31 @@ serve(async (req) => {
       accountSelectionEnabled,
     });
 
+    const mode = updateItem
+      ? accountSelectionEnabled ? "update_account_selection" : "update_repair"
+      : "link_new";
+
+    await logPlaidEvent(supabase, {
+      sourceFunction: "plaid-create-link-token",
+      eventName: "link_token_created",
+      severity: "info",
+      userId,
+      plaidItemId: String(updateItem?.plaid_item_id || "").trim() || null,
+      requestId: plaid.request_id || null,
+      reasonCode: updateModeReason || null,
+      metadata: {
+        mode,
+        accountSelectionEnabled,
+        updateModeRequired,
+        platform,
+      },
+    });
+
     return json({
       linkToken: plaid.link_token,
       expiration: plaid.expiration,
       requestId: plaid.request_id || null,
-      mode: updateItem
-        ? accountSelectionEnabled ? "update_account_selection" : "update_repair"
-        : "link_new",
+      mode,
       update: updateItem
         ? {
           required: updateModeRequired,
@@ -110,6 +134,22 @@ serve(async (req) => {
       },
     });
   } catch (error) {
+    if (supabaseForLog && userIdForLog) {
+      const reasonCode = error instanceof HttpError
+        ? String(error?.details?.reason || "").trim() || null
+        : null;
+      await logPlaidEvent(supabaseForLog, {
+        sourceFunction: "plaid-create-link-token",
+        eventName: "link_token_failed",
+        severity: "error",
+        userId: userIdForLog,
+        reasonCode,
+        metadata: {
+          status: error instanceof HttpError ? error.status : 500,
+          message: String(error?.message || "Server error"),
+        },
+      });
+    }
     if (error instanceof HttpError) {
       return json(
         {

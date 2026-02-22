@@ -5,6 +5,7 @@ import {
   HttpError,
   json,
 } from "../_shared/auth.ts";
+import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import {
   plaidExchangePublicToken,
   plaidGetAccounts,
@@ -19,8 +20,12 @@ serve(async (req) => {
     return new Response("Method not allowed", { status: 405 });
   }
 
+  let userIdForLog: string | null = null;
+  let supabaseForLog: ReturnType<typeof createAdminSupabase> | null = null;
+
   try {
     const { userId, body } = await authenticateRequest(req);
+    userIdForLog = userId;
     const publicToken = String(body?.publicToken || body?.public_token || "")
       .trim();
     if (!publicToken) {
@@ -47,6 +52,7 @@ serve(async (req) => {
     }
 
     const supabase = createAdminSupabase();
+    supabaseForLog = supabase;
     const { data: existingItem, error: existingItemError } = await supabase
       .from("plaid_linked_items")
       .select("user_id")
@@ -198,6 +204,20 @@ serve(async (req) => {
         .eq("stripe_cashout_plaid_item_id", exchange.item_id);
     }
 
+    await logPlaidEvent(supabase, {
+      sourceFunction: "plaid-exchange-public-token",
+      eventName: "public_token_exchanged",
+      severity: "info",
+      userId,
+      plaidItemId: exchange.item_id,
+      requestId: exchange.request_id || item.request_id || accounts.requestId || null,
+      metadata: {
+        linkedAccountCount: accountRows.length,
+        hasInstitutionId: Boolean(institutionId),
+        hasInstitutionName: Boolean(institutionName),
+      },
+    });
+
     return json({
       linked: true,
       itemId: exchange.item_id,
@@ -212,6 +232,22 @@ serve(async (req) => {
       },
     });
   } catch (error) {
+    if (supabaseForLog && userIdForLog) {
+      const reasonCode = error instanceof HttpError
+        ? String(error?.details?.reason || "").trim() || null
+        : null;
+      await logPlaidEvent(supabaseForLog, {
+        sourceFunction: "plaid-exchange-public-token",
+        eventName: "public_token_exchange_failed",
+        severity: "error",
+        userId: userIdForLog,
+        reasonCode,
+        metadata: {
+          status: error instanceof HttpError ? error.status : 500,
+          message: String(error?.message || "Server error"),
+        },
+      });
+    }
     if (error instanceof HttpError) {
       return json(
         {

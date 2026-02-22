@@ -102,13 +102,10 @@ const buildConnectPrefill = (profile: {
 
 const requiresConsumerCashoutAccountReplacement = async (accountId: string) => {
   try {
-    const account = await stripe.accounts.retrieve(accountId);
-    const cardPaymentsCapability = String(
-      account?.capabilities?.card_payments || "",
-    ).toLowerCase();
-    // If card_payments was requested/active on a consumer cashout account,
-    // Stripe may continue showing merchant-oriented onboarding prompts.
-    return cardPaymentsCapability === "active" || cardPaymentsCapability === "pending";
+    await stripe.accounts.retrieve(accountId);
+    // Temporary testing mode: keep existing account regardless of card_payments
+    // capability state.
+    return false;
   } catch {
     // If retrieval fails, keep the existing account path to avoid hard failure.
     return false;
@@ -133,6 +130,7 @@ const createConsumerCashoutAccount = async (
       user_id: userId,
     },
     capabilities: {
+      card_payments: { requested: true },
       transfers: { requested: true },
     },
   });
@@ -329,7 +327,7 @@ serve(async (req) => {
 
       const accountUpdates: Stripe.AccountUpdateParams = {};
       accountUpdates.capabilities = {
-        card_payments: { requested: false },
+        card_payments: { requested: true },
         transfers: { requested: true },
       };
       if (connectPrefill.email) accountUpdates.email = connectPrefill.email;

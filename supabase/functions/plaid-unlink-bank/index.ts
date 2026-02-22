@@ -5,6 +5,7 @@ import {
   createAdminSupabase,
   json,
 } from "../_shared/auth.ts";
+import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import { plaidRemoveItem } from "../_shared/plaid.ts";
 
 export const config = { verify_jwt: false };
@@ -14,10 +15,17 @@ serve(async (req) => {
     return new Response("Method not allowed", { status: 405 });
   }
 
+  let userIdForLog: string | null = null;
+  let supabaseForLog: ReturnType<typeof createAdminSupabase> | null = null;
+  let targetItemIdForLog: string | null = null;
+
   try {
     const { userId, body } = await authenticateRequest(req);
+    userIdForLog = userId;
     const targetItemId = String(body?.itemId || body?.item_id || "").trim();
+    targetItemIdForLog = targetItemId || null;
     const supabase = createAdminSupabase();
+    supabaseForLog = supabase;
 
     let query = supabase
       .from("plaid_linked_items")
@@ -93,6 +101,18 @@ serve(async (req) => {
       }
     }
 
+    await logPlaidEvent(supabase, {
+      sourceFunction: "plaid-unlink-bank",
+      eventName: "bank_unlinked",
+      severity: "info",
+      userId,
+      plaidItemId: targetItemId || targetItemIds[0] || null,
+      metadata: {
+        unlinkedCount,
+        targetedUnlink: Boolean(targetItemId),
+      },
+    });
+
     return json({
       unlinked: true,
       unlinkedCount,
@@ -103,6 +123,23 @@ serve(async (req) => {
       },
     });
   } catch (error) {
+    if (supabaseForLog && userIdForLog) {
+      const reasonCode = error instanceof HttpError
+        ? String(error?.details?.reason || "").trim() || null
+        : null;
+      await logPlaidEvent(supabaseForLog, {
+        sourceFunction: "plaid-unlink-bank",
+        eventName: "bank_unlink_failed",
+        severity: "error",
+        userId: userIdForLog,
+        plaidItemId: targetItemIdForLog,
+        reasonCode,
+        metadata: {
+          status: error instanceof HttpError ? error.status : 500,
+          message: String(error?.message || "Server error"),
+        },
+      });
+    }
     if (error instanceof HttpError) {
       return json(
         {

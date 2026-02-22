@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createAdminSupabase, HttpError, json } from "../_shared/auth.ts";
+import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import { ensurePlaidEnv, plaidGetAccounts } from "../_shared/plaid.ts";
 
 type PlaidWebhookPayload = {
@@ -312,6 +313,27 @@ serve(async (req) => {
       });
     }
 
+    const logWebhookEvent = async (
+      eventName: string,
+      severity: "info" | "warn" | "error" = "info",
+      metadata: Record<string, unknown> = {},
+    ) => {
+      await logPlaidEvent(supabase, {
+        sourceFunction: "plaid-webhook",
+        eventName,
+        severity,
+        plaidItemId,
+        webhookType,
+        webhookCode,
+        reasonCode: String(payload?.error?.error_code || "").trim() || null,
+        metadata,
+      });
+    };
+
+    await logWebhookEvent("webhook_received", "info", {
+      hasErrorPayload: Boolean(payload?.error),
+    });
+
     if (webhookType === "ITEM" && webhookCode === "NEW_ACCOUNTS_AVAILABLE") {
       await markNewAccountsAvailable(supabase, plaidItemId, webhookCode);
       const syncResult = await syncAccountsForItem(
@@ -319,6 +341,11 @@ serve(async (req) => {
         plaidItemId,
         "NEW_ACCOUNTS_AVAILABLE_SYNC",
       );
+      await logWebhookEvent("new_accounts_available_handled", "info", {
+        handled: true,
+        synced: Boolean(syncResult?.synced),
+        linkedAccountCount: Number(syncResult?.linkedAccountCount || 0),
+      });
       return json({
         received: true,
         handled: true,
@@ -339,6 +366,10 @@ serve(async (req) => {
         "pending_expiration",
         webhookCode,
       );
+      await logWebhookEvent("update_mode_marked_required", "warn", {
+        handled: true,
+        updateModeReason: "pending_expiration",
+      });
       return json({
         received: true,
         handled: true,
@@ -361,6 +392,10 @@ serve(async (req) => {
         "pending_disconnect",
         webhookCode,
       );
+      await logWebhookEvent("update_mode_marked_required", "warn", {
+        handled: true,
+        updateModeReason: "pending_disconnect",
+      });
       return json({
         received: true,
         handled: true,
@@ -381,6 +416,10 @@ serve(async (req) => {
         "pending_disconnect",
         webhookCode,
       );
+      await logWebhookEvent("update_mode_marked_required", "warn", {
+        handled: true,
+        updateModeReason: "pending_disconnect",
+      });
       return json({
         received: true,
         handled: true,
@@ -401,6 +440,11 @@ serve(async (req) => {
         plaidItemId,
         "LOGIN_REPAIRED_SYNC",
       );
+      await logWebhookEvent("login_repaired_handled", "info", {
+        handled: true,
+        synced: Boolean(syncResult?.synced),
+        linkedAccountCount: Number(syncResult?.linkedAccountCount || 0),
+      });
       return json({
         received: true,
         handled: true,
@@ -417,6 +461,9 @@ serve(async (req) => {
 
     if (webhookType === "ITEM" && webhookCode === "ISSUE_RESOLVED") {
       await clearUpdateModeState(supabase, plaidItemId, webhookCode);
+      await logWebhookEvent("issue_resolved_handled", "info", {
+        handled: true,
+      });
       return json({
         received: true,
         handled: true,
@@ -432,6 +479,9 @@ serve(async (req) => {
 
     if (webhookType === "ITEM" && webhookCode === "USER_PERMISSION_REVOKED") {
       await revokeItem(supabase, plaidItemId);
+      await logWebhookEvent("user_permission_revoked_handled", "warn", {
+        handled: true,
+      });
       return json({
         received: true,
         handled: true,
@@ -450,6 +500,11 @@ serve(async (req) => {
         plaidItemId,
         "USER_ACCOUNT_REVOKED_SYNC",
       );
+      await logWebhookEvent("user_account_revoked_handled", "warn", {
+        handled: true,
+        synced: Boolean(syncResult?.synced),
+        linkedAccountCount: Number(syncResult?.linkedAccountCount || 0),
+      });
       return json({
         received: true,
         handled: true,
@@ -472,6 +527,10 @@ serve(async (req) => {
           "item_login_required",
           webhookCode,
         );
+        await logWebhookEvent("item_login_required_handled", "warn", {
+          handled: true,
+          errorCode,
+        });
         return json({
           received: true,
           handled: true,
@@ -494,6 +553,10 @@ serve(async (req) => {
           last_webhook_code: webhookCode,
         })
         .eq("plaid_item_id", plaidItemId);
+      await logWebhookEvent("webhook_error_marked_item_errored", "error", {
+        handled: true,
+        errorCode: errorCode || null,
+      });
       return json({
         received: true,
         handled: true,
@@ -506,6 +569,9 @@ serve(async (req) => {
     }
 
     // Other webhooks are acknowledged for now.
+    await logWebhookEvent("webhook_acknowledged_unhandled", "info", {
+      handled: false,
+    });
     return json({
       received: true,
       handled: false,

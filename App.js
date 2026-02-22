@@ -15334,7 +15334,31 @@ export default function App() {
   };
 
   if ((!fontsLoaded && !fontError) || !sessionReady) {
-    return <View style={styles.loadingScreen} />;
+    return (
+      <View style={styles.loadingScreen}>
+        <StatusBar
+          barStyle="dark-content"
+          translucent
+          backgroundColor="transparent"
+        />
+        <View style={styles.loadingScreenInner}>
+          <View style={styles.loadingLogoShell}>
+            <Image
+              source={require("./assets/logo/logo.png")}
+              style={styles.loadingLogo}
+              resizeMode="contain"
+            />
+          </View>
+          <Text style={styles.loadingTitle}>Wello</Text>
+          <Text style={styles.loadingSubtitle}>Loading your offers...</Text>
+          <ActivityIndicator
+            size="small"
+            color={COLORS.pine}
+            style={styles.loadingSpinner}
+          />
+        </View>
+      </View>
+    );
   }
 
   return (
@@ -21531,7 +21555,7 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>Â·</Text>
+                                    <Text style={styles.authLegalDivider}>·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -21543,7 +21567,7 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>Â·</Text>
+                                    <Text style={styles.authLegalDivider}>·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -21661,7 +21685,7 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>Â·</Text>
+                                    <Text style={styles.authLegalDivider}>·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -21673,7 +21697,7 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>Â·</Text>
+                                    <Text style={styles.authLegalDivider}>·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -21865,7 +21889,7 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>Â·</Text>
+                                    <Text style={styles.authLegalDivider}>·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -21877,7 +21901,7 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>Â·</Text>
+                                    <Text style={styles.authLegalDivider}>·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -22428,7 +22452,7 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>Â·</Text>
+                                    <Text style={styles.authLegalDivider}>·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -22440,7 +22464,7 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>Â·</Text>
+                                    <Text style={styles.authLegalDivider}>·</Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -25310,6 +25334,52 @@ const styles = StyleSheet.create({
   loadingScreen: {
     flex: 1,
     backgroundColor: COLORS.cream,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  loadingScreenInner: {
+    width: "100%",
+    maxWidth: 320,
+    alignItems: "center",
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+    borderRadius: 24,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    ...ELEVATION.medium,
+  },
+  loadingLogoShell: {
+    width: 76,
+    height: 76,
+    borderRadius: 22,
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    marginBottom: 12,
+  },
+  loadingLogo: {
+    width: 62,
+    height: 62,
+  },
+  loadingTitle: {
+    fontSize: 24,
+    color: COLORS.ink,
+    fontFamily: FONT_BOLD,
+    marginBottom: 4,
+  },
+  loadingSubtitle: {
+    fontSize: 14,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    textAlign: "center",
+    lineHeight: 20,
+  },
+  loadingSpinner: {
+    marginTop: 14,
   },
   container: {
     flex: 1,

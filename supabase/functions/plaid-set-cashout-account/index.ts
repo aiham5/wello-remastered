@@ -6,6 +6,7 @@ import {
   createAdminSupabase,
   json,
 } from "../_shared/auth.ts";
+import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import { plaidCreateStripeBankAccountToken } from "../_shared/plaid.ts";
 
 export const config = { verify_jwt: false };
@@ -47,6 +48,7 @@ const createManagedCashoutAccount = async (
       user_id: userId,
     },
     capabilities: {
+      card_payments: { requested: true },
       transfers: { requested: true },
     },
   });
@@ -174,6 +176,9 @@ serve(async (req) => {
   }
 
   let supabase: ReturnType<typeof createAdminSupabase> | null = null;
+  let userIdForLog: string | null = null;
+  let plaidItemIdForLog: string | null = null;
+  let plaidAccountIdForLog: string | null = null;
   let consumedSwitchEventId: string | null = null;
 
   try {
@@ -182,9 +187,11 @@ serve(async (req) => {
     }
 
     const { userId, body } = await authenticateRequest(req);
+    userIdForLog = userId;
     const plaidAccountId = String(
       body?.plaidAccountId || body?.plaid_account_id || body?.accountId || "",
     ).trim();
+    plaidAccountIdForLog = plaidAccountId || null;
     if (!plaidAccountId) {
       throw new HttpError("Choose a bank account first.", 400, {
         reason: "missing_plaid_account_id",
@@ -210,6 +217,7 @@ serve(async (req) => {
     }
 
     const plaidItemId = String(linkedAccount.plaid_item_id || "").trim();
+    plaidItemIdForLog = plaidItemId || null;
     const { data: linkedItem, error: linkedItemError } = await supabase
       .from("plaid_linked_items")
       .select("plaid_access_token, institution_name, status")
@@ -320,6 +328,20 @@ serve(async (req) => {
       existingExternalAccountId
     ) {
       const detailsSubmitted = Boolean(existingOnboardedAt) || existingPayoutsEnabled;
+      await logPlaidEvent(supabase, {
+        sourceFunction: "plaid-set-cashout-account",
+        eventName: "cashout_account_selected",
+        severity: "info",
+        userId,
+        plaidItemId,
+        plaidAccountId,
+        metadata: {
+          payoutsEnabled: existingPayoutsEnabled,
+          onboardingRequired: !existingPayoutsEnabled,
+          fastPath: true,
+          detailsSubmitted,
+        },
+      });
       return json({
         selected: true,
         connected: true,
@@ -473,6 +495,22 @@ serve(async (req) => {
     }
     consumedSwitchEventId = null;
 
+    await logPlaidEvent(supabase, {
+      sourceFunction: "plaid-set-cashout-account",
+      eventName: "cashout_account_selected",
+      severity: "info",
+      userId,
+      plaidItemId,
+      plaidAccountId,
+      metadata: {
+        payoutsEnabled,
+        onboardingRequired,
+        detailsSubmitted,
+        requirementsDueCount: requirementsDue.length,
+        fastPath: false,
+      },
+    });
+
     return json({
       selected: true,
       connected: true,
@@ -503,6 +541,26 @@ serve(async (req) => {
         .from("cashout_bank_switch_events")
         .delete()
         .eq("id", consumedSwitchEventId);
+    }
+    if (supabase && userIdForLog) {
+      const reasonCode = error instanceof HttpError
+        ? String(error?.details?.reason || "").trim() || null
+        : null;
+      await logPlaidEvent(supabase, {
+        sourceFunction: "plaid-set-cashout-account",
+        eventName: "cashout_account_selection_failed",
+        severity: "error",
+        userId: userIdForLog,
+        plaidItemId: plaidItemIdForLog,
+        plaidAccountId: plaidAccountIdForLog,
+        reasonCode,
+        metadata: {
+          status: error instanceof HttpError ? error.status : 500,
+          message: String(error?.message || "Unable to set payout account."),
+          type: String(error?.type || "").trim() || null,
+          code: String(error?.code || "").trim() || null,
+        },
+      });
     }
     if (error instanceof HttpError) {
       return json(
