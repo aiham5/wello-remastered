@@ -3041,14 +3041,14 @@ body.home-v2 .v2-hero-media {
   width: 100%;
   display: flex;
   justify-content: flex-end;
-  margin-top: -64px;
+  margin-top: -80px;
 }
 
 body.home-v2 .v2-hero-media-track {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
-  width: min(100%, 320px);
+  width: min(100%, 340px);
 }
 
 body.home-v2 .v2-section {
@@ -3542,7 +3542,7 @@ body.legal-v2 .legal-table th {
   }
 
   body.home-v2 .v2-hero-media-track {
-    width: min(100%, 320px);
+    width: min(100%, 330px);
     margin: 0 auto;
   }
 
