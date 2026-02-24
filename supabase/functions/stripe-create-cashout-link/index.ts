@@ -103,8 +103,8 @@ const buildConnectPrefill = (profile: {
 const requiresConsumerCashoutAccountReplacement = async (accountId: string) => {
   try {
     await stripe.accounts.retrieve(accountId);
-    // Temporary testing mode: keep existing account regardless of card_payments
-    // capability state.
+    // Temporary testing mode: keep existing account regardless of capability
+    // state.
     return false;
   } catch {
     // If retrieval fails, keep the existing account path to avoid hard failure.
@@ -130,7 +130,6 @@ const createConsumerCashoutAccount = async (
       user_id: userId,
     },
     capabilities: {
-      card_payments: { requested: true },
       transfers: { requested: true },
     },
   });
@@ -327,7 +326,6 @@ serve(async (req) => {
 
       const accountUpdates: Stripe.AccountUpdateParams = {};
       accountUpdates.capabilities = {
-        card_payments: { requested: true },
         transfers: { requested: true },
       };
       if (connectPrefill.email) accountUpdates.email = connectPrefill.email;

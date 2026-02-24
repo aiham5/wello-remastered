@@ -64,6 +64,7 @@ import * as Location from "expo-location";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import * as WebBrowser from "expo-web-browser";
+import { WebView } from "react-native-webview";
 import {
   create as createPlaidLink,
   destroy as destroyPlaidLink,
@@ -110,6 +111,34 @@ const DEBUG_DISCOVER_SCROLL_VERBOSE =
 const DEBUG_RECEIPT_UPLOAD = false;
 const DEBUG_PLAID_LINK = false;
 const APP_DIALOG_ACTION_DELAY_MS = Platform.OS === "ios" ? 260 : 10;
+const TREMENDOUS_CLAIM_NOTRANSLATE_JS = `
+  (function () {
+    try {
+      var root = document.documentElement;
+      if (root) {
+        root.setAttribute("lang", "en");
+        root.setAttribute("translate", "no");
+        if (root.classList) root.classList.add("notranslate");
+      }
+      var body = document.body;
+      if (body) {
+        body.setAttribute("translate", "no");
+        if (body.classList) body.classList.add("notranslate");
+      }
+      var head = document.head || document.getElementsByTagName("head")[0];
+      if (head) {
+        var meta = document.querySelector('meta[name="google"]');
+        if (!meta) {
+          meta = document.createElement("meta");
+          meta.setAttribute("name", "google");
+          head.appendChild(meta);
+        }
+        meta.setAttribute("content", "notranslate");
+      }
+    } catch (_error) {}
+  })();
+  true;
+`;
 const logReceiptUploadDebug = (event, payload) => {
   if (!DEBUG_RECEIPT_UPLOAD) return;
   if (payload === undefined) {
@@ -213,6 +242,10 @@ const SUPPORT_EMAIL_ADDRESS = "support@wellopartners.com";
 const OFFER_HONOR_POLICY_VERSION = "2026-02-17";
 const REFERRAL_REWARD_CENTS = 500;
 const REFERRAL_MONTHLY_CAP_CENTS = 50000;
+const TREMENDOUS_DEMO_MIN_AMOUNT_CENTS = 1000;
+const TREMENDOUS_DEMO_DEFAULT_AMOUNT = "";
+const TREMENDOUS_DEMO_VIRTUAL_BALANCE_CENTS = 5000;
+const TREMENDOUS_DEMO_USE_VIRTUAL_BALANCE = true;
 const createInitialReferralState = () => ({
   loading: false,
   claiming: false,
@@ -230,6 +263,14 @@ const createInitialReferralState = () => ({
     cappedCount: 0,
   },
   yourClaimStatus: "none",
+});
+const createInitialTremendousDemoState = () => ({
+  loading: false,
+  error: null,
+  success: null,
+  orderId: null,
+  rewardId: null,
+  claimUrl: null,
 });
 const GOOGLE_AUTH_CALLBACK_PREFIXES = [
   `${APP_SCHEME}://${AUTH_CALLBACK_PATH}`.toLowerCase(),
@@ -1495,6 +1536,13 @@ const withTimeout = (promise, ms, label) =>
     ),
   ]);
 
+const createIdempotencyKey = () => {
+  if (globalThis?.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+};
+
 const formatPlaidFunctionError = (parsed, fallbackMessage) => {
   const code = String(
     parsed?.plaid_error_code || parsed?.code || "",
@@ -1563,10 +1611,37 @@ const toUserFacingError = (
   ) {
     return fallback;
   }
+  if (
+    lower.includes("payload") ||
+    lower.includes("request id") ||
+    lower.includes("api key") ||
+    lower.includes("provided was invalid") ||
+    lower.includes("validation failure") ||
+    lower.includes("sqlstate") ||
+    lower.includes("context:") ||
+    lower.includes("line ") ||
+    lower.includes("supabase is not configured")
+  ) {
+    return fallback;
+  }
+  if (
+    (raw.includes("{") && raw.includes("}")) ||
+    (raw.includes("[") && raw.includes("]")) ||
+    /\"errors?\"\s*:/i.test(raw)
+  ) {
+    return fallback;
+  }
+  if (/https?:\/\//i.test(raw) && raw.length > 80) {
+    return fallback;
+  }
 
-  return raw
+  const sanitized = raw
     .replace(/sk_(test|live)_[A-Za-z0-9]+/g, "sk_****")
     .replace(/acct_[A-Za-z0-9]+/g, "acct_****");
+  if (sanitized.length > 140) {
+    return fallback;
+  }
+  return sanitized;
 };
 
 const safeLocalSignOut = async () => {
@@ -3322,6 +3397,9 @@ export default function App() {
     Platform.OS === "ios"
       ? (Constants.statusBarHeight || 0) + (IS_COMPACT ? 8 : 12)
       : SAFE_TOP;
+  const modalTopInset = Platform.OS === "ios"
+    ? Math.max(Constants.statusBarHeight || 0, 20)
+    : 0;
   const [fontsLoaded, setFontsLoaded] = useState(false);
   const [fontError, setFontError] = useState(null);
   const mapRef = useRef(null);
@@ -3358,7 +3436,10 @@ export default function App() {
   const [demoQuery, setDemoQuery] = useState("");
   const [demoSearchFocused, setDemoSearchFocused] = useState(false);
   const [activeTab, setActiveTab] = useState("discover");
+  const [navRowWidth, setNavRowWidth] = useState(0);
   const activeTabRef = useRef("discover");
+  const tabIndicatorIndex = useRef(new Animated.Value(0)).current;
+  const tabFocusAnimRef = useRef({});
   const [discoverDemoLayout, setDiscoverDemoLayout] = useState("editorial_split");
   const [activeFilters, setActiveFilters] = useState([]);
   const [discoverRadiusKey, setDiscoverRadiusKey] = useState("20mi");
@@ -3509,6 +3590,17 @@ export default function App() {
     cashbackRateBps: DEFAULT_CASHBACK_RATE_BPS,
   });
   const [referralState, setReferralState] = useState(createInitialReferralState);
+  const [tremendousDemoAmountText, setTremendousDemoAmountText] = useState(
+    TREMENDOUS_DEMO_DEFAULT_AMOUNT,
+  );
+  const [tremendousDemoState, setTremendousDemoState] = useState(
+    createInitialTremendousDemoState,
+  );
+  const [tremendousClaimModalVisible, setTremendousClaimModalVisible] =
+    useState(false);
+  const [tremendousClaimUrl, setTremendousClaimUrl] = useState("");
+  const [tremendousClaimLoading, setTremendousClaimLoading] = useState(false);
+  const [tremendousClaimError, setTremendousClaimError] = useState(null);
   const [pendingReferralCode, setPendingReferralCode] = useState(null);
   const [accountRole, setAccountRole] = useState("consumer");
   const [authUserId, setAuthUserId] = useState(null);
@@ -3840,6 +3932,8 @@ export default function App() {
     error: null,
     success: null,
   });
+  const [cashoutClaimUrl, setCashoutClaimUrl] = useState(null);
+  const cashoutIdempotencyKeyRef = useRef(null);
   const [cashoutAmountText, setCashoutAmountText] = useState("");
   const [cashoutHistoryExpanded, setCashoutHistoryExpanded] = useState(false);
   const [cashoutPayoutHistory, setCashoutPayoutHistory] = useState([]);
@@ -3878,6 +3972,58 @@ export default function App() {
       label: `Cash out ${formatCurrencyFromCents(cents)}`,
     };
   }, [cashoutAmountText, cashbackBalance.availableCents]);
+  useEffect(() => {
+    cashoutIdempotencyKeyRef.current = null;
+  }, [cashoutAmountText]);
+  const tremendousDemoAvailableCents = useMemo(() => {
+    const realAvailableCents = Number(cashbackBalance.availableCents) || 0;
+    if (
+      TREMENDOUS_DEMO_USE_VIRTUAL_BALANCE &&
+      realAvailableCents <= 0
+    ) {
+      return TREMENDOUS_DEMO_VIRTUAL_BALANCE_CENTS;
+    }
+    return realAvailableCents;
+  }, [cashbackBalance.availableCents]);
+  const tremendousDemoUsingVirtualBalance =
+    TREMENDOUS_DEMO_USE_VIRTUAL_BALANCE &&
+    (Number(cashbackBalance.availableCents) || 0) <= 0 &&
+    tremendousDemoAvailableCents > 0;
+  const tremendousDemoPreview = useMemo(() => {
+    const availableCents = tremendousDemoAvailableCents;
+    const inputCents = parseCashoutAmountToCents(tremendousDemoAmountText);
+    if (inputCents === null) {
+      return {
+        mode: availableCents > 0 && availableCents < MIN_CASHOUT_CENTS
+          ? "below_min"
+          : "max",
+        amountCents: availableCents,
+        label:
+          availableCents > 0
+            ? `Cash out ${formatCurrencyFromCents(availableCents)}`
+            : "Cash out now",
+      };
+    }
+    if (!Number.isFinite(inputCents) || inputCents <= 0) {
+      return { mode: "invalid", amountCents: 0, label: "Cash out now" };
+    }
+    const cents = Math.round(inputCents);
+    if (cents <= 0 || cents > availableCents) {
+      return { mode: "invalid", amountCents: 0, label: "Cash out now" };
+    }
+    if (cents < MIN_CASHOUT_CENTS) {
+      return {
+        mode: "below_min",
+        amountCents: cents,
+        label: `Cash out ${formatCurrencyFromCents(cents)}`,
+      };
+    }
+    return {
+      mode: "custom",
+      amountCents: cents,
+      label: `Cash out ${formatCurrencyFromCents(cents)}`,
+    };
+  }, [tremendousDemoAmountText, tremendousDemoAvailableCents]);
   const [receiptUploadStatus, setReceiptUploadStatus] = useState({
     uploading: false,
     error: null,
@@ -4364,8 +4510,8 @@ export default function App() {
         ? "Swipe up for admin review tools"
         : activeTab === "profile"
           ? "Swipe up to manage your profile"
-          : activeTab === "history"
-            ? "Swipe up to review your history"
+        : activeTab === "history"
+          ? "Swipe up to review your history"
             : activeTab === "cashout"
               ? "Swipe up to manage cashout"
               : "Swipe up to explore offers";
@@ -4728,11 +4874,21 @@ export default function App() {
   const callAuthedEdgeFunction = useCallback(
     async (functionName, payload, options = {}) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-        return { data: null, error: "Supabase is not configured.", status: null };
+        return {
+          data: null,
+          error: "Supabase is not configured.",
+          status: null,
+          details: null,
+        };
       }
       const refreshResult = refreshSupabaseClient();
       if (!refreshResult.ok) {
-        return { data: null, error: refreshResult.error, status: null };
+        return {
+          data: null,
+          error: refreshResult.error,
+          status: null,
+          details: null,
+        };
       }
 
       const timeoutMs = Number(options?.timeoutMs) || 12000;
@@ -4745,7 +4901,12 @@ export default function App() {
         accessToken = refreshed?.accessToken || "";
       }
       if (!accessToken) {
-        return { data: null, error: "Sign in again to continue.", status: null };
+        return {
+          data: null,
+          error: "Sign in again to continue.",
+          status: null,
+          details: null,
+        };
       }
 
       try {
@@ -4767,7 +4928,7 @@ export default function App() {
               parsedData = response?.data ?? null;
             }
           }
-          return { data: parsedData, error: null, status: 200 };
+          return { data: parsedData, error: null, status: 200, details: null };
         }
 
         const err = response.error;
@@ -4799,6 +4960,7 @@ export default function App() {
             "Unable to complete this request right now.",
           ),
           status,
+          details: parsed,
         };
       } catch (error) {
         return {
@@ -4808,11 +4970,129 @@ export default function App() {
             "Unable to complete this request right now.",
           ),
           status: null,
+          details: null,
         };
       }
     },
     [],
   );
+
+  const handleTremendousDemoCashout = useCallback(async () => {
+    if (!isSignedIn) {
+      setTremendousDemoState((prev) => ({
+        ...prev,
+        loading: false,
+        error: "Sign in to run Tremendous demo tests.",
+        success: null,
+      }));
+      return;
+    }
+    const availableCents = tremendousDemoAvailableCents;
+    if (availableCents <= 0) {
+      setTremendousDemoState((prev) => ({
+        ...prev,
+        loading: false,
+        error: "No cashback balance available.",
+        success: null,
+      }));
+      return;
+    }
+    const requestedAmountCents = parseCashoutAmountToCents(tremendousDemoAmountText);
+    const amountCents = requestedAmountCents == null
+      ? availableCents
+      : Math.round(requestedAmountCents);
+    if (!Number.isFinite(amountCents) || amountCents <= 0) {
+      setTremendousDemoState((prev) => ({
+        ...prev,
+        loading: false,
+        error: "Enter a valid cashout amount.",
+        success: null,
+      }));
+      return;
+    }
+    if (amountCents > availableCents) {
+      setTremendousDemoState((prev) => ({
+        ...prev,
+        loading: false,
+        error: `Max cashout is ${formatCurrencyFromCents(availableCents)}.`,
+        success: null,
+      }));
+      return;
+    }
+    if (amountCents < TREMENDOUS_DEMO_MIN_AMOUNT_CENTS) {
+      setTremendousDemoState((prev) => ({
+        ...prev,
+        loading: false,
+        error: `Minimum cashout is ${formatCurrencyFromCents(TREMENDOUS_DEMO_MIN_AMOUNT_CENTS)}.`,
+        success: null,
+      }));
+      return;
+    }
+
+    setTremendousDemoState((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+      success: null,
+    }));
+    const { data, error } = await callAuthedEdgeFunction(
+      "tremendous-demo-create-reward",
+      {
+        amountCents,
+        useVirtualBalance: tremendousDemoUsingVirtualBalance,
+      },
+      { timeoutMs: 20000 },
+    );
+
+    if (error) {
+      setTremendousDemoState((prev) => ({
+        ...prev,
+        loading: false,
+        error,
+        success: null,
+      }));
+      return;
+    }
+
+    const claimUrl = String(data?.claimUrl || "").trim() || null;
+    setTremendousDemoState({
+      loading: false,
+      error: null,
+      success: "Tremendous cashout created.",
+      orderId: String(data?.orderId || "").trim() || null,
+      rewardId: String(data?.rewardId || "").trim() || null,
+      claimUrl,
+    });
+    setTremendousDemoAmountText("");
+    loadCashbackBalance({ silent: true }).catch(() => null);
+    if (claimUrl) {
+      setTremendousClaimUrl(claimUrl);
+      setTremendousClaimError(null);
+      setTremendousClaimLoading(true);
+      setTremendousClaimModalVisible(true);
+    }
+  }, [
+    callAuthedEdgeFunction,
+    isSignedIn,
+    loadCashbackBalance,
+    tremendousDemoAvailableCents,
+    tremendousDemoAmountText,
+    tremendousDemoUsingVirtualBalance,
+  ]);
+
+  const closeTremendousClaimModal = useCallback(() => {
+    setTremendousClaimModalVisible(false);
+    setTremendousClaimLoading(false);
+  }, []);
+
+  const handleOpenTremendousDemoClaimUrl = useCallback(() => {
+    const url = String(tremendousDemoState.claimUrl || "").trim();
+    if (!url) return;
+    setTremendousClaimUrl(url);
+    setTremendousClaimError(null);
+    setTremendousClaimLoading(true);
+    setTremendousClaimModalVisible(true);
+  }, [tremendousDemoState.claimUrl]);
 
   useEffect(() => {
     loadGlobalCashbackRate({ silent: true }).catch(() => {});
@@ -5834,7 +6114,9 @@ export default function App() {
           .eq("user_id", authUserId),
         supabase
           .from("cashout_payouts")
-          .select("id, amount_cents, status, created_at, processed_at")
+          .select(
+            "id, amount_cents, status, created_at, processed_at, provider_claim_url",
+          )
           .eq("user_id", authUserId)
           .order("created_at", { ascending: false })
           .limit(25),
@@ -5842,7 +6124,10 @@ export default function App() {
       if (eventsResult.error) {
         setCashbackBalanceState({
           loading: false,
-          error: eventsResult.error.message || "Unable to load cashback.",
+          error: toUserFacingError(
+            eventsResult.error.message,
+            "Unable to load cashback right now.",
+          ),
         });
         return;
       }
@@ -5869,9 +6154,11 @@ export default function App() {
       });
       if (payoutsResult.error) {
         setCashoutPayoutHistory([]);
+        setCashoutClaimUrl(null);
       } else {
+        const payoutRows = Array.isArray(payoutsResult.data) ? payoutsResult.data : [];
         setCashoutPayoutHistory(
-          (Array.isArray(payoutsResult.data) ? payoutsResult.data : []).map((row) => ({
+          payoutRows.map((row) => ({
             id: String(row.id),
             amountCents: Math.max(0, Number(row.amount_cents) || 0),
             status: String(row.status || "pending").toLowerCase(),
@@ -5879,8 +6166,20 @@ export default function App() {
             processedAt: row.processed_at
               ? new Date(row.processed_at).getTime()
               : null,
+            claimUrl: String(row?.provider_claim_url || "").trim() || null,
           })),
         );
+        const latestClaimUrl = String(
+          payoutRows.find(
+            (row) =>
+              String(row?.status || "").toLowerCase() === "pending" &&
+              String(row?.provider_claim_url || "").trim(),
+          )?.provider_claim_url ||
+            payoutRows.find((row) => String(row?.provider_claim_url || "").trim())
+              ?.provider_claim_url ||
+            "",
+        ).trim();
+        setCashoutClaimUrl(latestClaimUrl || null);
       }
       if (!silent) {
         setCashbackBalanceState({ loading: false, error: null });
@@ -6030,19 +6329,7 @@ export default function App() {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setCashoutActionStatus({
         loading: false,
-        error: "Supabase is not configured for payouts.",
-        success: null,
-      });
-      return;
-    }
-    if (
-      !cashoutStatus.connected ||
-      !cashoutStatus.bankSelected ||
-      !cashoutStatus.payoutsEnabled
-    ) {
-      setCashoutActionStatus({
-        loading: false,
-        error: "Complete Stripe payout setup before cashing out.",
+        error: "Cashout is temporarily unavailable right now.",
         success: null,
       });
       return;
@@ -6113,10 +6400,18 @@ export default function App() {
       return;
     }
 
+    const idempotencyKey =
+      cashoutIdempotencyKeyRef.current || createIdempotencyKey();
+    cashoutIdempotencyKeyRef.current = idempotencyKey;
+
     setCashoutActionStatus({ loading: true, error: null, success: null });
-    const { data, error, status, details } = await callStripeFunction(
-      "stripe-create-cashout-payout",
-      { amountCents: amountCentsToCashout },
+    const { data, error, status, details } = await callAuthedEdgeFunction(
+      "tremendous-create-cashout",
+      {
+        amountCents: amountCentsToCashout,
+        idempotencyKey,
+      },
+      { timeoutMs: 20000 },
     );
     if (error || !data?.success) {
       if (status === 429) {
@@ -6150,65 +6445,48 @@ export default function App() {
           error: null,
           success: null,
         });
+        cashoutIdempotencyKeyRef.current = null;
         return;
+      }
+      const rawError =
+        typeof error === "string"
+          ? error
+          : error?.message || "Unable to cash out right now.";
+      const normalized = String(rawError || "").toLowerCase();
+      const shouldRetainIdempotencyKey =
+        status == null ||
+        normalized.includes("timeout") ||
+        normalized.includes("network");
+      if (!shouldRetainIdempotencyKey) {
+        cashoutIdempotencyKeyRef.current = null;
       }
       setCashoutActionStatus({
         loading: false,
-        error: (() => {
-          const rawError =
-            typeof error === "string"
-              ? error
-              : error?.message || "Unable to cash out right now.";
-          const normalized = String(rawError || "").toLowerCase();
-          const isInsufficientBalanceError =
-            normalized.includes("insufficient") &&
-            (normalized.includes("balance") || normalized.includes("fund"));
-          return isInsufficientBalanceError
-            ? "Unable to cash out right now."
-            : rawError;
-        })(),
+        error: toUserFacingError(rawError, "Unable to process cashout right now."),
         success: null,
       });
       return;
     }
 
     await loadCashbackBalance({ silent: true });
+    cashoutIdempotencyKeyRef.current = null;
+    const claimUrl = String(data?.claimUrl || "").trim() || null;
+    setCashoutClaimUrl(claimUrl);
     setCashoutActionStatus({
       loading: false,
       error: null,
-      success: null,
+      success: "Cashout request submitted.",
     });
-    const payoutsRemainingInWindow = Number(data?.payoutsRemainingInWindow);
-    const weeklyLimit = Math.max(Number(data?.weeklyLimit) || 2, 1);
-    if (
-      Number.isFinite(payoutsRemainingInWindow) &&
-      payoutsRemainingInWindow <= 0
-    ) {
-      const nextEligibleLabel = data?.nextEligibleAt
-        ? new Date(data.nextEligibleAt).toLocaleString([], {
-            year: "numeric",
-            month: "numeric",
-            day: "numeric",
-            hour: "numeric",
-            minute: "2-digit",
-          })
-        : "later this week";
-      const cadenceLabel =
-        weeklyLimit === 1
-          ? "once per week"
-          : `${weeklyLimit} times per week`;
-      showAppDialog({
-        title: "Weekly cashout limit reached",
-        message: `You have reached your cashout limit (${cadenceLabel}). Your next cashout is available on ${nextEligibleLabel}.`,
-        options: [{ label: "OK", variant: "primary" }],
-      });
+    if (claimUrl) {
+      setTremendousClaimUrl(claimUrl);
+      setTremendousClaimError(null);
+      setTremendousClaimLoading(true);
+      setTremendousClaimModalVisible(true);
     }
-    triggerCashoutCelebration(Number(data.amountCents) || 0);
+    triggerCashoutCelebration(Number(data?.amountCents) || amountCentsToCashout);
     setCashoutAmountText("");
   }, [
-    cashoutStatus.connected,
-    cashoutStatus.bankSelected,
-    cashoutStatus.payoutsEnabled,
+    callAuthedEdgeFunction,
     cashbackBalance.availableCents,
     cashoutAmountText,
     loadCashbackBalance,
@@ -7420,6 +7698,7 @@ export default function App() {
   const isStaff = isAdmin || isSupervisor;
   const showHistoryTab = !isOwner && !isStaff;
   const showCashoutTab = showHistoryTab;
+  const showLegacyStripeCashoutUi = false;
   const shouldResolveOwnerBusinessStatus =
     isOwner && isSignedIn && Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
   const ownerBusinessStatusLoading =
@@ -7486,12 +7765,48 @@ export default function App() {
   const visibleTabs = useMemo(
     () =>
       [
-        { key: "discover", label: "Discover", show: true },
-        { key: "history", label: "History", show: showHistoryTab },
-        { key: "cashout", label: "Cash out", show: showCashoutTab },
-        { key: "business", label: "Dashboard", show: isOwner },
-        { key: "admin", label: "Admin", show: isStaff },
-        { key: "profile", label: "Profile", show: true },
+        {
+          key: "discover",
+          label: "Discover",
+          icon: "compass-outline",
+          iconActive: "compass",
+          show: true,
+        },
+        {
+          key: "history",
+          label: "History",
+          icon: "time-outline",
+          iconActive: "time",
+          show: showHistoryTab,
+        },
+        {
+          key: "cashout",
+          label: "Cash out",
+          icon: "wallet-outline",
+          iconActive: "wallet",
+          show: showCashoutTab,
+        },
+        {
+          key: "business",
+          label: "Dashboard",
+          icon: "briefcase-outline",
+          iconActive: "briefcase",
+          show: isOwner,
+        },
+        {
+          key: "admin",
+          label: "Admin",
+          icon: "shield-checkmark-outline",
+          iconActive: "shield-checkmark",
+          show: isStaff,
+        },
+        {
+          key: "profile",
+          label: "Profile",
+          icon: "person-outline",
+          iconActive: "person",
+          show: true,
+        },
       ].filter((tab) => tab.show),
     [isOwner, isStaff, showHistoryTab, showCashoutTab],
   );
@@ -7523,6 +7838,59 @@ export default function App() {
     const estimatedRequired = maxLabelLength * (IS_COMPACT ? 6.2 : 6.6);
     return textBudget < estimatedRequired;
   }, [visibleTabs, navContainerWidth]);
+  const getTabFocusAnim = useCallback(
+    (tabKey) => {
+      const existing = tabFocusAnimRef.current[tabKey];
+      if (existing) return existing;
+      const initialValue = activeTabRef.current === tabKey ? 1 : 0;
+      const next = new Animated.Value(initialValue);
+      tabFocusAnimRef.current[tabKey] = next;
+      return next;
+    },
+    [activeTabRef],
+  );
+  const handleNavRowLayout = useCallback((event) => {
+    const width = Number(event?.nativeEvent?.layout?.width || 0);
+    setNavRowWidth((prev) => (Math.abs(prev - width) < 0.5 ? prev : width));
+  }, []);
+  const navSlotWidth = useMemo(() => {
+    const count = visibleTabs.length || 1;
+    return navRowWidth > 0 ? navRowWidth / count : 0;
+  }, [navRowWidth, visibleTabs.length]);
+  const navIndicatorWidth = useMemo(() => {
+    if (navSlotWidth <= 0) return 0;
+    const maxWidth = IS_COMPACT ? 36 : 42;
+    return Math.max(18, Math.min(navSlotWidth * 0.52, maxWidth));
+  }, [navSlotWidth]);
+  const navIndicatorTranslateX = useMemo(() => {
+    if (navSlotWidth <= 0) return 0;
+    const centeredOffset = (navSlotWidth - navIndicatorWidth) / 2;
+    return Animated.add(
+      Animated.multiply(tabIndicatorIndex, navSlotWidth),
+      centeredOffset,
+    );
+  }, [navIndicatorWidth, navSlotWidth, tabIndicatorIndex]);
+  useEffect(() => {
+    if (!visibleTabs.length) return;
+    const nextIndex = visibleTabs.findIndex((tab) => tab.key === activeTab);
+    if (nextIndex < 0) return;
+    Animated.timing(tabIndicatorIndex, {
+      toValue: nextIndex,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [activeTab, tabIndicatorIndex, visibleTabs]);
+  useEffect(() => {
+    if (!visibleTabs.length) return;
+    const animations = visibleTabs.map((tab) =>
+      Animated.timing(getTabFocusAnim(tab.key), {
+        toValue: tab.key === activeTab ? 1 : 0,
+        duration: 160,
+        useNativeDriver: true,
+      }),
+    );
+    Animated.parallel(animations).start();
+  }, [activeTab, getTabFocusAnim, visibleTabs]);
 
   const profileInitials = useMemo(() => {
     const base = (profileName || profileEmail || "W").trim();
@@ -7869,6 +8237,30 @@ export default function App() {
       }, 0),
     [cashoutWithdrawalEntries],
   );
+  const resumeCashoutClaimUrl = useMemo(() => {
+    const pendingClaimUrl = String(
+      cashoutWithdrawalEntries.find(
+        (entry) =>
+          String(entry?.status || "").toLowerCase() === "pending" &&
+          String(entry?.claimUrl || "").trim(),
+      )?.claimUrl || "",
+    ).trim();
+    if (pendingClaimUrl) return pendingClaimUrl;
+    const cachedClaimUrl = String(cashoutClaimUrl || "").trim();
+    if (cachedClaimUrl) return cachedClaimUrl;
+    return String(
+      cashoutWithdrawalEntries.find((entry) => String(entry?.claimUrl || "").trim())
+        ?.claimUrl || "",
+    ).trim();
+  }, [cashoutClaimUrl, cashoutWithdrawalEntries]);
+  const resumeCashoutClaimLabel = useMemo(() => {
+    const hasPending = cashoutWithdrawalEntries.some(
+      (entry) =>
+        String(entry?.status || "").toLowerCase() === "pending" &&
+        String(entry?.claimUrl || "").trim(),
+    );
+    return hasPending ? "Resume payout options" : "Open payout options";
+  }, [cashoutWithdrawalEntries]);
   useEffect(() => {
     if (!businesses.length) return;
     if (authUserId) {
@@ -7936,13 +8328,11 @@ export default function App() {
   useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
     if (activeTab === "cashout" && isSignedIn) {
-      loadCashoutStatus({});
       loadCashbackBalance({});
     }
   }, [
     activeTab,
     isSignedIn,
-    loadCashoutStatus,
     loadCashbackBalance,
     SUPABASE_URL,
     SUPABASE_ANON_KEY,
@@ -7964,6 +8354,8 @@ export default function App() {
     });
     setCashoutStatusState({ loading: false, error: null });
     setCashoutActionStatus({ loading: false, error: null, success: null });
+    setCashoutClaimUrl(null);
+    cashoutIdempotencyKeyRef.current = null;
     setCashoutAmountText("");
     setCashbackBalance({
       availableCents: 0,
@@ -7974,6 +8366,12 @@ export default function App() {
     setCashoutPayoutHistory([]);
     setCashbackBalanceState({ loading: false, error: null });
     setPlaidLinkState(createInitialPlaidLinkState());
+    setTremendousDemoAmountText(TREMENDOUS_DEMO_DEFAULT_AMOUNT);
+    setTremendousDemoState(createInitialTremendousDemoState());
+    setTremendousClaimModalVisible(false);
+    setTremendousClaimUrl("");
+    setTremendousClaimLoading(false);
+    setTremendousClaimError(null);
   }, [authUserId, isSignedIn]);
 
   useEffect(() => {
@@ -7986,10 +8384,10 @@ export default function App() {
     if (activeTab === "history" && (isOwner || isStaff)) {
       setActiveTab("discover");
     }
-    if (activeTab === "demo") {
+    if (activeTab === "cashout" && (isOwner || isStaff)) {
       setActiveTab("discover");
     }
-    if (activeTab === "cashout" && (isOwner || isStaff)) {
+    if (activeTab === "demo") {
       setActiveTab("discover");
     }
   }, [activeTab, isOwner, isStaff]);
@@ -15374,6 +15772,7 @@ export default function App() {
             <MapView
               ref={mapRef}
               style={styles.map}
+              userInterfaceStyle="light"
               initialRegion={MAP_REGION}
               onMapReady={handleMapReady}
               onPress={handleMapPress}
@@ -15491,9 +15890,33 @@ export default function App() {
                   { width: navContainerWidth },
                 ]}
               >
-                <View style={[styles.navRow, navNeedsTightFit && styles.navRowTight]}>
+                <View
+                  style={[styles.navRow, navNeedsTightFit && styles.navRowTight]}
+                  onLayout={handleNavRowLayout}
+                >
+                  {navRowWidth > 0 && navIndicatorWidth > 0 ? (
+                    <Animated.View
+                      pointerEvents="none"
+                      style={[
+                        styles.navIndicator,
+                        {
+                          width: navIndicatorWidth,
+                          transform: [{ translateX: navIndicatorTranslateX }],
+                        },
+                      ]}
+                    />
+                  ) : null}
                   {visibleTabs.map((tab, index) => {
                     const isActive = activeTab === tab.key;
+                    const iconName = isActive ? tab.iconActive || tab.icon : tab.icon;
+                    const focusAnim = getTabFocusAnim(tab.key);
+                    const iconSize = navNeedsTightFit
+                      ? IS_COMPACT
+                        ? 14
+                        : 15
+                      : IS_COMPACT
+                        ? 15
+                        : 16;
                     return (
                       <TouchableOpacity
                         key={tab.key}
@@ -15504,24 +15927,59 @@ export default function App() {
                             (navNeedsTightFit
                               ? styles.navPillSpacedTight
                               : styles.navPillSpaced),
-                          isActive && styles.navPillActive,
                         ]}
                         onPress={() => openSheet(tab.key)}
+                        activeOpacity={0.86}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: isActive }}
+                        accessibilityLabel={`${tab.label} tab`}
+                        accessibilityHint={
+                          isActive ? "Current tab" : `Open ${tab.label}`
+                        }
                       >
-                        <Text
+                        <Animated.View
                           style={[
-                            styles.navPillText,
-                            navNeedsTightFit && styles.navPillTextTight,
-                            isActive && styles.navPillTextActive,
+                            styles.navPillContent,
+                            {
+                              opacity: focusAnim.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [0.86, 1],
+                              }),
+                              transform: [
+                                {
+                                  scale: focusAnim.interpolate({
+                                    inputRange: [0, 1],
+                                    outputRange: [1, 1.06],
+                                  }),
+                                },
+                              ],
+                            },
                           ]}
-                          numberOfLines={1}
-                          adjustsFontSizeToFit={Platform.OS === "android"}
-                          minimumFontScale={Platform.OS === "android" ? 0.85 : 1}
-                          maxFontSizeMultiplier={1}
-                          allowFontScaling={false}
                         >
-                          {tab.label}
-                        </Text>
+                          <Ionicons
+                            name={iconName}
+                            size={iconSize}
+                            style={[
+                              styles.navPillIcon,
+                              isActive && styles.navPillIconActive,
+                            ]}
+                          />
+                          <Text
+                            style={[
+                              styles.navPillText,
+                              styles.navPillLabel,
+                              navNeedsTightFit && styles.navPillTextTight,
+                              isActive && styles.navPillTextActive,
+                            ]}
+                            numberOfLines={1}
+                            adjustsFontSizeToFit={Platform.OS === "android"}
+                            minimumFontScale={Platform.OS === "android" ? 0.85 : 1}
+                            maxFontSizeMultiplier={1}
+                            allowFontScaling={false}
+                          >
+                            {tab.label}
+                          </Text>
+                        </Animated.View>
                         {tab.key === "history" && pendingHistoryCount > 0 && (
                           <View style={styles.navPillBadge}>
                             <Text style={styles.navPillBadgeText}>
@@ -17473,6 +17931,100 @@ export default function App() {
             </Modal>
 
             <Modal
+              visible={tremendousClaimModalVisible}
+              animationType="slide"
+              presentationStyle="fullScreen"
+              statusBarTranslucent={Platform.OS === "android"}
+              onRequestClose={closeTremendousClaimModal}
+            >
+              <SafeAreaView style={styles.tremendousClaimModalScreen}>
+                <View
+                  style={[
+                    styles.tremendousClaimModalHeader,
+                    modalTopInset > 0 && {
+                      paddingTop: modalTopInset,
+                      minHeight: 56 + modalTopInset,
+                    },
+                  ]}
+                >
+                  <Text style={styles.tremendousClaimModalTitle}>Payout options</Text>
+                  <TouchableOpacity
+                    style={styles.tremendousClaimModalCloseButton}
+                    onPress={closeTremendousClaimModal}
+                  >
+                    <Ionicons name="close" size={18} color={COLORS.ink} />
+                  </TouchableOpacity>
+                </View>
+                {tremendousClaimError ? (
+                  <Text style={styles.tremendousClaimModalError}>
+                    {tremendousClaimError}
+                  </Text>
+                ) : null}
+                <View style={styles.tremendousClaimWebViewCard}>
+                  {tremendousClaimUrl ? (
+                    <WebView
+                      source={{
+                        uri: tremendousClaimUrl,
+                        headers: {
+                          "Accept-Language": "en-US,en;q=0.9",
+                        },
+                      }}
+                      originWhitelist={["https://*"]}
+                      injectedJavaScriptBeforeContentLoaded={
+                        TREMENDOUS_CLAIM_NOTRANSLATE_JS
+                      }
+                      injectedJavaScript={TREMENDOUS_CLAIM_NOTRANSLATE_JS}
+                      startInLoadingState
+                      onLoadStart={() => {
+                        setTremendousClaimLoading(true);
+                        setTremendousClaimError(null);
+                      }}
+                      onLoadEnd={() => {
+                        setTremendousClaimLoading(false);
+                      }}
+                      onError={(event) => {
+                        const description = String(
+                          event?.nativeEvent?.description || "",
+                        ).trim();
+                        setTremendousClaimLoading(false);
+                        setTremendousClaimError(
+                          toUserFacingError(
+                            description,
+                            "Unable to load payout options right now.",
+                          ),
+                        );
+                      }}
+                      onHttpError={(event) => {
+                        const statusCode = Number(event?.nativeEvent?.statusCode) || 0;
+                        setTremendousClaimLoading(false);
+                        setTremendousClaimError(
+                          statusCode === 401 || statusCode === 403
+                            ? "Payout options expired. Please request cashout again."
+                            : "Unable to load payout options right now.",
+                        );
+                      }}
+                      onShouldStartLoadWithRequest={(request) => {
+                        const targetUrl = String(request?.url || "").trim();
+                        return /^https:\/\//i.test(targetUrl);
+                      }}
+                    />
+                  ) : (
+                    <View style={styles.tremendousClaimEmptyState}>
+                      <Text style={styles.tremendousClaimEmptyText}>
+                        Payout options link is not available yet.
+                      </Text>
+                    </View>
+                  )}
+                  {tremendousClaimLoading ? (
+                    <View style={styles.tremendousClaimLoadingOverlay}>
+                      <ActivityIndicator size="small" color={COLORS.pine} />
+                    </View>
+                  ) : null}
+                </View>
+              </SafeAreaView>
+            </Modal>
+
+            <Modal
               transparent
               visible={notificationSettingsOpen}
               animationType="fade"
@@ -18067,6 +18619,140 @@ export default function App() {
                     styles.sheetContentInsets,
                   ]}
                 >
+                  <View style={styles.tremendousDemoCard}>
+                    <View style={styles.tremendousDemoHeader}>
+                      <Text style={styles.tremendousDemoTitle}>Tremendous Cashout Demo</Text>
+                      <View style={styles.tremendousDemoBadge}>
+                        <Text style={styles.tremendousDemoBadgeText}>Sandbox</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.tremendousDemoSubtitle}>
+                      Cash out available Wello balance through Tremendous, then continue in
+                      their hosted redemption flow to pick payout options.
+                    </Text>
+                    <View style={styles.tremendousDemoRow}>
+                      <View style={styles.tremendousDemoAmountWrap}>
+                        <Text style={styles.tremendousDemoLabel}>Cashout amount</Text>
+                        <TextInput
+                          style={styles.tremendousDemoInput}
+                          value={tremendousDemoAmountText}
+                          onChangeText={(value) =>
+                            setTremendousDemoAmountText(
+                              formatCashoutAmountInput(value),
+                            )
+                          }
+                          keyboardType={Platform.OS === "ios" ? "decimal-pad" : "numeric"}
+                          autoCorrect={false}
+                          placeholder="0.00"
+                          placeholderTextColor={COLORS.muted}
+                        />
+                      </View>
+                      <TouchableOpacity
+                        style={styles.tremendousDemoMaxButton}
+                        onPress={() =>
+                          setTremendousDemoAmountText(
+                            formatCashoutAmountInput(tremendousDemoAvailableCents),
+                          )
+                        }
+                        disabled={tremendousDemoState.loading}
+                      >
+                        <Text style={styles.tremendousDemoMaxButtonText}>Max</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.tremendousDemoMetaText}>
+                      Available: {formatCurrencyFromCents(tremendousDemoAvailableCents)}
+                    </Text>
+                    {tremendousDemoUsingVirtualBalance && (
+                      <Text style={styles.tremendousDemoMetaHint}>
+                        Demo test balance is active.
+                      </Text>
+                    )}
+                    {String(tremendousDemoAmountText || "").trim() &&
+                      (tremendousDemoPreview.mode === "invalid" ||
+                        tremendousDemoPreview.mode === "below_min") && (
+                      <Text style={styles.tremendousDemoErrorText}>
+                        {tremendousDemoPreview.mode === "below_min"
+                          ? `Minimum cashout is ${formatCurrencyFromCents(TREMENDOUS_DEMO_MIN_AMOUNT_CENTS)}.`
+                          : `Max cashout is ${formatCurrencyFromCents(tremendousDemoAvailableCents)}.`}
+                      </Text>
+                    )}
+                    {tremendousDemoState.error ? (
+                      <Text style={styles.tremendousDemoErrorText}>
+                        {tremendousDemoState.error}
+                      </Text>
+                    ) : null}
+                    {tremendousDemoState.success ? (
+                      <Text style={styles.tremendousDemoSuccessText}>
+                        {tremendousDemoState.success}
+                      </Text>
+                    ) : null}
+                    {(tremendousDemoState.orderId || tremendousDemoState.rewardId) && (
+                      <View style={styles.tremendousDemoMetaRow}>
+                        <Text style={styles.tremendousDemoMetaText}>
+                          Order: {tremendousDemoState.orderId || "--"}
+                        </Text>
+                        <Text style={styles.tremendousDemoMetaText}>
+                          Reward: {tremendousDemoState.rewardId || "--"}
+                        </Text>
+                      </View>
+                    )}
+                    {cashoutPayoutHistory.length > 0 && (
+                      <View style={styles.tremendousDemoHistoryWrap}>
+                        <Text style={styles.tremendousDemoLabel}>Recent cashouts</Text>
+                        {cashoutPayoutHistory.slice(0, 3).map((entry) => (
+                          <View key={`trm-demo-history-${entry.id}`} style={styles.tremendousDemoHistoryRow}>
+                            <Text style={styles.tremendousDemoHistoryAmount}>
+                              {formatCurrencyFromCents(entry.amountCents)}
+                            </Text>
+                            <Text style={styles.tremendousDemoHistoryMeta}>
+                              {String(entry.status || "pending").toUpperCase()}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                    <View style={styles.tremendousDemoActionsRow}>
+                      <TouchableOpacity
+                        style={[
+                          styles.tremendousDemoPrimaryButton,
+                          tremendousDemoState.loading &&
+                            styles.tremendousDemoPrimaryButtonDisabled,
+                          (tremendousDemoPreview.mode === "invalid" ||
+                            tremendousDemoPreview.mode === "below_min" ||
+                            tremendousDemoPreview.amountCents <= 0 ||
+                            tremendousDemoAvailableCents <= 0) &&
+                            styles.tremendousDemoPrimaryButtonDisabled,
+                        ]}
+                        onPress={handleTremendousDemoCashout}
+                        disabled={
+                          tremendousDemoState.loading ||
+                          tremendousDemoPreview.mode === "invalid" ||
+                          tremendousDemoPreview.mode === "below_min" ||
+                          tremendousDemoPreview.amountCents <= 0 ||
+                          tremendousDemoAvailableCents <= 0
+                        }
+                      >
+                        {tremendousDemoState.loading ? (
+                          <ActivityIndicator size="small" color={COLORS.white} />
+                        ) : (
+                          <Text style={styles.tremendousDemoPrimaryButtonText}>
+                            {tremendousDemoPreview.label}
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                      {tremendousDemoState.claimUrl ? (
+                        <TouchableOpacity
+                          style={styles.tremendousDemoSecondaryButton}
+                          onPress={handleOpenTremendousDemoClaimUrl}
+                        >
+                          <Text style={styles.tremendousDemoSecondaryButtonText}>
+                            Open payout options
+                          </Text>
+                        </TouchableOpacity>
+                      ) : null}
+                    </View>
+                  </View>
+
                   <View style={styles.demoIntroCard}>
                     <View style={styles.demoIntroHeader}>
                       <Text style={styles.demoIntroTitle}>Discover Layout Lab</Text>
@@ -20856,35 +21542,62 @@ export default function App() {
                                     </Text>
                                   )}
                               </View>
-                              <TouchableOpacity
-                                style={[
-                                  styles.cashoutPayoutButton,
-                                  (!cashoutStatus.connected ||
-                                    !cashoutStatus.bankSelected ||
-                                    !cashoutStatus.payoutsEnabled ||
+                              <View style={styles.cashoutPrimaryActions}>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.cashoutPayoutButton,
+                                    (cashoutPreview.mode === "invalid" ||
+                                      cashoutPreview.mode === "below_min" ||
+                                      (Number(cashbackBalance.availableCents) ||
+                                        0) <= 0 ||
+                                      cashoutActionStatus.loading) &&
+                                      styles.cashoutPayoutButtonDisabled,
+                                  ]}
+                                  onPress={handleCashoutPayout}
+                                  disabled={
                                     cashoutPreview.mode === "invalid" ||
                                     cashoutPreview.mode === "below_min" ||
                                     (Number(cashbackBalance.availableCents) ||
                                       0) <= 0 ||
-                                    cashoutActionStatus.loading) &&
-                                    styles.cashoutPayoutButtonDisabled,
-                                ]}
-                                onPress={handleCashoutPayout}
-                                disabled={
-                                  !cashoutStatus.connected ||
-                                  !cashoutStatus.bankSelected ||
-                                  !cashoutStatus.payoutsEnabled ||
-                                  cashoutPreview.mode === "invalid" ||
-                                  cashoutPreview.mode === "below_min" ||
-                                  (Number(cashbackBalance.availableCents) ||
-                                    0) <= 0 ||
-                                  cashoutActionStatus.loading
-                                }
-                              >
-                                <Text style={styles.cashoutPayoutButtonText}>
-                                  {cashoutPreview.label}
+                                    cashoutActionStatus.loading
+                                  }
+                                >
+                                  <Text style={styles.cashoutPayoutButtonText}>
+                                    {cashoutPreview.label}
+                                  </Text>
+                                </TouchableOpacity>
+                                {resumeCashoutClaimUrl ? (
+                                  <TouchableOpacity
+                                    style={styles.cashoutOpenPayoutButton}
+                                    onPress={() => {
+                                      setTremendousClaimUrl(resumeCashoutClaimUrl);
+                                      setTremendousClaimError(null);
+                                      setTremendousClaimLoading(true);
+                                      setTremendousClaimModalVisible(true);
+                                    }}
+                                    disabled={cashoutActionStatus.loading}
+                                  >
+                                    <Text style={styles.cashoutOpenPayoutButtonText}>
+                                      {resumeCashoutClaimLabel}
+                                    </Text>
+                                  </TouchableOpacity>
+                                ) : null}
+                              </View>
+                              {resumeCashoutClaimUrl ? (
+                                <Text style={styles.cashoutResumeHint}>
+                                  Closed payout options by mistake? Tap above to reopen.
                                 </Text>
-                              </TouchableOpacity>
+                              ) : null}
+                              {cashoutActionStatus.error && (
+                                <Text style={styles.formError}>
+                                  {cashoutActionStatus.error}
+                                </Text>
+                              )}
+                              {cashoutActionStatus.success && (
+                                <Text style={styles.formSuccess}>
+                                  {cashoutActionStatus.success}
+                                </Text>
+                              )}
                               {cashbackBalanceState.loading && (
                                 <Text style={styles.formHint}>
                                   Updating cashback...
@@ -21078,7 +21791,8 @@ export default function App() {
                                 </View>
                               </View>
                             ) : null}
-                            <View style={[styles.sectionBlock, styles.cashoutBankPanel]}>
+                            {showLegacyStripeCashoutUi ? (
+                              <View style={[styles.sectionBlock, styles.cashoutBankPanel]}>
                               <View style={styles.cashoutTitleRow}>
                                 <View style={styles.sectionTitleIcon}>
                                   <Ionicons
@@ -21280,7 +21994,8 @@ export default function App() {
                                   </TouchableOpacity>
                                 )}
                               </View>
-                            </View>
+                              </View>
+                            ) : null}
                           </>
                         )}
                       </>
@@ -25785,29 +26500,30 @@ const styles = StyleSheet.create({
   },
   navContainer: {
     alignSelf: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.97)",
+    backgroundColor: COLORS.white,
     borderRadius: 24,
     paddingHorizontal: NAV_PADDING - 2,
     paddingBottom: NAV_PADDING - 2,
-    paddingTop: NAV_PADDING,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    ...ELEVATION.medium,
+    paddingTop: NAV_PADDING - 2,
+    borderWidth: 0,
   },
   navContainerTight: {
     paddingHorizontal: IS_COMPACT ? 4 : 6,
-    paddingBottom: IS_COMPACT ? 6 : 8,
-    paddingTop: IS_COMPACT ? 8 : 9,
+    paddingBottom: IS_COMPACT ? 5 : 6,
+    paddingTop: IS_COMPACT ? 5 : 6,
   },
   navRow: {
     flexDirection: "row",
-    paddingHorizontal: 4,
-    paddingVertical: 4,
-    borderRadius: 16,
-    backgroundColor: "#EDF2F8",
+    paddingHorizontal: 2,
+    paddingTop: 0,
+    paddingBottom: 8,
+    borderRadius: 0,
+    backgroundColor: "transparent",
+    borderWidth: 0,
+    position: "relative",
   },
   navRowTight: {
-    paddingHorizontal: 1,
+    paddingHorizontal: 0,
   },
   locateRow: {
     alignItems: "flex-end",
@@ -26337,8 +27053,8 @@ const styles = StyleSheet.create({
     minWidth: 0,
     alignItems: "center",
     backgroundColor: "transparent",
-    borderRadius: 14,
-    paddingVertical: IS_COMPACT ? 6 : 8,
+    borderRadius: 0,
+    paddingVertical: IS_COMPACT ? 4 : 5,
     paddingHorizontal: Platform.select({
       ios: IS_COMPACT ? 10 : 14,
       android: IS_COMPACT ? 10 : 12,
@@ -26360,9 +27076,16 @@ const styles = StyleSheet.create({
   navPillSpacedTight: {
     marginLeft: IS_COMPACT ? 4 : 6,
   },
-  navPillActive: {
-    backgroundColor: COLORS.pine,
-    ...ELEVATION.soft,
+  navPillContent: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: IS_COMPACT ? 34 : 36,
+  },
+  navPillIcon: {
+    color: "#64748B",
+  },
+  navPillIconActive: {
+    color: COLORS.pine,
   },
   navPillText: {
     fontSize: Platform.select({
@@ -26382,6 +27105,9 @@ const styles = StyleSheet.create({
       android: { includeFontPadding: false },
     }),
   },
+  navPillLabel: {
+    marginTop: 1,
+  },
   navPillTextTight: {
     ...Platform.select({
       android: {
@@ -26393,12 +27119,19 @@ const styles = StyleSheet.create({
     }),
   },
   navPillTextActive: {
-    color: COLORS.white,
+    color: COLORS.pine,
+  },
+  navIndicator: {
+    position: "absolute",
+    bottom: 0,
+    height: 3,
+    borderRadius: 999,
+    backgroundColor: COLORS.pine,
   },
   navPillBadge: {
     position: "absolute",
     top: -2,
-    right: -2,
+    right: IS_COMPACT ? 8 : 10,
     minWidth: 18,
     height: 18,
     borderRadius: 9,
@@ -26927,6 +27660,260 @@ const styles = StyleSheet.create({
   sectionMeta: {
     fontSize: 13,
     color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  tremendousDemoCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(20, 40, 85, 0.12)",
+    backgroundColor: COLORS.white,
+    padding: 14,
+    marginBottom: 14,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  tremendousDemoHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  tremendousDemoTitle: {
+    flex: 1,
+    fontSize: 17,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  tremendousDemoBadge: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(22, 101, 52, 0.24)",
+    backgroundColor: "#EAF8EE",
+    minHeight: 24,
+    paddingHorizontal: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tremendousDemoBadgeText: {
+    fontSize: 11,
+    color: "#166534",
+    fontFamily: FONT_MEDIUM,
+  },
+  tremendousDemoSubtitle: {
+    marginTop: 7,
+    fontSize: 13,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 18,
+  },
+  tremendousDemoLabel: {
+    marginTop: 10,
+    marginBottom: 5,
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  tremendousDemoInput: {
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.12)",
+    backgroundColor: "#F8FAFD",
+    minHeight: 42,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+  },
+  tremendousDemoTextarea: {
+    minHeight: 74,
+    textAlignVertical: "top",
+  },
+  tremendousDemoRow: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  tremendousDemoAmountWrap: {
+    flex: 1,
+  },
+  tremendousDemoMaxButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(11, 33, 71, 0.16)",
+    backgroundColor: "#F4F7FC",
+    minHeight: 40,
+    minWidth: 68,
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 18,
+  },
+  tremendousDemoMaxButtonText: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  tremendousDemoRangeText: {
+    marginBottom: 11,
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  tremendousDemoErrorText: {
+    marginTop: 10,
+    fontSize: 12,
+    color: "#B42318",
+    fontFamily: FONT_MEDIUM,
+  },
+  tremendousDemoSuccessText: {
+    marginTop: 10,
+    fontSize: 12,
+    color: "#166534",
+    fontFamily: FONT_MEDIUM,
+  },
+  tremendousDemoMetaRow: {
+    marginTop: 8,
+    gap: 3,
+  },
+  tremendousDemoMetaText: {
+    fontSize: 11,
+    color: "#475569",
+    fontFamily: FONT_TEXT,
+  },
+  tremendousDemoMetaHint: {
+    marginTop: 2,
+    fontSize: 11,
+    color: "#166534",
+    fontFamily: FONT_MEDIUM,
+  },
+  tremendousDemoHistoryWrap: {
+    marginTop: 4,
+    gap: 6,
+  },
+  tremendousDemoHistoryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: "#F8FAFD",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  tremendousDemoHistoryAmount: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  tremendousDemoHistoryMeta: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  tremendousDemoActionsRow: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  tremendousDemoPrimaryButton: {
+    minHeight: 40,
+    borderRadius: 11,
+    backgroundColor: COLORS.pine,
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tremendousDemoPrimaryButtonDisabled: {
+    opacity: 0.6,
+  },
+  tremendousDemoPrimaryButtonText: {
+    fontSize: 13,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  tremendousDemoSecondaryButton: {
+    minHeight: 40,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: "rgba(11, 33, 71, 0.2)",
+    backgroundColor: "#F8F9FD",
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tremendousDemoSecondaryButtonText: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  tremendousClaimModalScreen: {
+    flex: 1,
+    backgroundColor: "#F3F6FC",
+  },
+  tremendousClaimModalHeader: {
+    minHeight: 56,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+  },
+  tremendousClaimModalTitle: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  tremendousClaimModalCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.mint,
+  },
+  tremendousClaimModalError: {
+    marginHorizontal: 14,
+    marginTop: 10,
+    fontSize: 12,
+    color: "#B42318",
+    fontFamily: FONT_MEDIUM,
+  },
+  tremendousClaimWebViewCard: {
+    flex: 1,
+    margin: 14,
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+  },
+  tremendousClaimLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.55)",
+  },
+  tremendousClaimEmptyState: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 20,
+  },
+  tremendousClaimEmptyText: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: COLORS.muted,
+    textAlign: "center",
     fontFamily: FONT_TEXT,
   },
   demoIntroCard: {
@@ -31024,8 +32011,11 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
+  cashoutPrimaryActions: {
+    marginTop: 14,
+    gap: 10,
+  },
   cashoutPayoutButton: {
-    marginTop: 13,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "#15803D",
@@ -31043,6 +32033,26 @@ const styles = StyleSheet.create({
     color: COLORS.white,
     fontFamily: FONT_SEMIBOLD,
     letterSpacing: 0.2,
+  },
+  cashoutOpenPayoutButton: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(11, 33, 71, 0.2)",
+    backgroundColor: "#F8F9FD",
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cashoutOpenPayoutButtonText: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutResumeHint: {
+    marginTop: 6,
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
   },
   cashoutBankPanel: {
     borderWidth: 1,

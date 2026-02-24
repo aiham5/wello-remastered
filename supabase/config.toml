@@ -74,3 +74,12 @@ verify_jwt = false
 
 [functions.stripe-webhook]
 verify_jwt = false
+
+[functions.tremendous-demo-create-reward]
+verify_jwt = false
+
+[functions.tremendous-create-cashout]
+verify_jwt = false
+
+[functions.tremendous-webhook]
+verify_jwt = false
