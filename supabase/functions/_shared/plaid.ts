@@ -14,6 +14,19 @@ const PLAID_REQUEST_TIMEOUT_MS = Math.max(
   5000,
 );
 
+const sanitizeWebhookUrl = (value: string) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    // Never put shared secrets in URL query params. They leak into logs.
+    parsed.searchParams.delete("secret");
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
+};
+
 const PLAID_BASE_URL = (() => {
   switch (PLAID_ENV) {
     case "development":
@@ -170,7 +183,9 @@ export const plaidCreateLinkToken = (payload: {
     payload.androidPackageName || PLAID_ANDROID_PACKAGE_NAME || "",
   ).trim();
 
-  if (!accessToken && PLAID_WEBHOOK_URL) request.webhook = PLAID_WEBHOOK_URL;
+  if (!accessToken && PLAID_WEBHOOK_URL) {
+    request.webhook = sanitizeWebhookUrl(PLAID_WEBHOOK_URL);
+  }
   // For OAuth support:
   // - Android link tokens require `android_package_name` and NO `redirect_uri`.
   // - iOS link tokens use `redirect_uri` and should not include `android_package_name`.
@@ -317,4 +332,22 @@ export const plaidCreateStripeBankAccountToken = (
   }>("/processor/stripe/bank_account_token/create", {
     access_token: accessToken,
     account_id: accountId,
+  });
+
+export const plaidGetWebhookVerificationKey = (keyId: string) =>
+  plaidRequest<{
+    key?: {
+      alg?: string;
+      crv?: string;
+      kid?: string;
+      kty?: string;
+      use?: string;
+      x?: string;
+      y?: string;
+      created_at?: number | string | null;
+      expired_at?: number | string | null;
+    } | null;
+    request_id?: string;
+  }>("/webhook_verification_key/get", {
+    key_id: keyId,
   });
