@@ -213,6 +213,9 @@ const formatPercentLabel = (value) => {
 const DEFAULT_CASHBACK_RATE_BPS = 750;
 const CASHBACK_SETTING_KEY = "consumer_cashback_rate_bps";
 const MIN_CASHOUT_CENTS = 1000;
+const CONSUMER_CASHOUT_ENABLED = false;
+const CONSUMER_CASHOUT_DISABLED_COPY =
+  "Cashout is temporarily unavailable while we finalize a new payout provider.";
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
 const GOOGLE_PLACES_KEY = getEnv("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY");
@@ -303,6 +306,9 @@ const OFFERS_REFRESH_INTERVAL_MS = 1000 * 60 * 2;
 const REFRESH_MIN_INTERVAL_MS = 1000 * 15;
 const LIVE_POLL_MS = 1000 * 30;
 const LIVE_DEBOUNCE_MS = 1200;
+const INITIAL_SESSION_FALLBACK_MS = 1500;
+const SESSION_TOKEN_TIMEOUT_MS = 4500;
+const SESSION_USER_TIMEOUT_MS = 3500;
 const RECEIPT_PREVIEW_HEIGHT = Math.min(SCREEN_HEIGHT * 0.78, 760);
 const RECEIPT_PREVIEW_WIDTH = Math.min(SCREEN_WIDTH - 24, 720);
 const RECEIPT_PREVIEW_MAX_ZOOM = 6;
@@ -387,6 +393,14 @@ const CONFETTI_COLORS = [
   "#E2E8F0",
   "#A5B4FC",
   "#FBCFE8",
+];
+const RECEIPT_REPORT_REASONS = [
+  { value: "wrong_receipt", label: "Wrong receipt" },
+  { value: "duplicate_receipt", label: "Duplicate receipt" },
+  { value: "incorrect_total", label: "Incorrect total" },
+  { value: "suspicious_activity", label: "Suspicious activity" },
+  { value: "illegible_receipt", label: "Illegible receipt" },
+  { value: "other", label: "Other issue" },
 ];
 
 const FONT_REGULAR = "Rubik-Regular";
@@ -3401,8 +3415,6 @@ export default function App() {
   const modalTopInset = Platform.OS === "ios"
     ? Math.max(Constants.statusBarHeight || 0, 20)
     : 0;
-  const [fontsLoaded, setFontsLoaded] = useState(false);
-  const [fontError, setFontError] = useState(null);
   const mapRef = useRef(null);
   const mapReadyRef = useRef(false);
   const pendingMapRegionRef = useRef(null);
@@ -3713,6 +3725,12 @@ export default function App() {
   const [expandedOwnerOffers, setExpandedOwnerOffers] = useState({});
   const [ownerOffersModalOpen, setOwnerOffersModalOpen] = useState(false);
   const [receiptPreview, setReceiptPreview] = useState(null);
+  const [receiptReportStatus, setReceiptReportStatus] = useState({
+    loading: false,
+    targetId: null,
+    error: null,
+    success: null,
+  });
   const [receiptNoticeOpen, setReceiptNoticeOpen] = useState(false);
   const receiptNoticeShownRef = useRef(false);
   const [expandedAdminEdits, setExpandedAdminEdits] = useState({});
@@ -3940,6 +3958,13 @@ export default function App() {
   const [cashoutHistoryExpanded, setCashoutHistoryExpanded] = useState(false);
   const [cashoutPayoutHistory, setCashoutPayoutHistory] = useState([]);
   const cashoutPreview = useMemo(() => {
+    if (!CONSUMER_CASHOUT_ENABLED) {
+      return {
+        mode: "disabled",
+        amountCents: 0,
+        label: "Cashout unavailable",
+      };
+    }
     const availableCents = Number(cashbackBalance.availableCents) || 0;
     const inputCents = parseCashoutAmountToCents(cashoutAmountText);
     if (inputCents === null) {
@@ -4516,9 +4541,9 @@ export default function App() {
           ? "Swipe up to manage your profile"
         : activeTab === "history"
           ? "Swipe up to review your history"
-            : activeTab === "cashout"
-              ? "Swipe up to manage cashout"
-              : "Swipe up to explore offers";
+          : activeTab === "cashout"
+            ? "Swipe up to view cashback activity"
+            : "Swipe up to explore offers";
     return (
       <View style={styles.sheetHandle}>
         <View style={styles.handleBar} />
@@ -5412,27 +5437,12 @@ export default function App() {
   }, [callAuthedEdgeFunction, globalCashbackRateBps]);
 
   useEffect(() => {
-    let isMounted = true;
     Font.loadAsync({
       "Rubik-Regular": require("./assets/rubik/static/Rubik-Regular.ttf"),
       "Rubik-Medium": require("./assets/rubik/static/Rubik-Medium.ttf"),
       "Rubik-SemiBold": require("./assets/rubik/static/Rubik-SemiBold.ttf"),
       "Rubik-Bold": require("./assets/rubik/static/Rubik-Bold.ttf"),
-    })
-      .then(() => {
-        if (isMounted) {
-          setFontsLoaded(true);
-        }
-      })
-      .catch((error) => {
-        if (isMounted) {
-          setFontError(error);
-          setFontsLoaded(true);
-        }
-      });
-    return () => {
-      isMounted = false;
-    };
+    }).catch(() => {});
   }, []);
 
   const resetAuthState = useCallback(() => {
@@ -5535,7 +5545,7 @@ export default function App() {
         .catch(() => {
           if (isMounted) setSessionReady(true);
         });
-    }, 4000);
+    }, INITIAL_SESSION_FALLBACK_MS);
     const loadSession = async () => {
       try {
         const refreshResult = refreshSupabaseClient();
@@ -5546,14 +5556,16 @@ export default function App() {
           }
           return;
         }
-        const tokenResult = await getAccessTokenWithFallback(8000);
+        const tokenResult = await getAccessTokenWithFallback(
+          SESSION_TOKEN_TIMEOUT_MS,
+        );
         let session = tokenResult.session;
         let sessionUser = session?.user || null;
         if (!sessionUser?.id && tokenResult.accessToken) {
           try {
             const userResult = await withTimeout(
               supabase.auth.getUser(tokenResult.accessToken),
-              6000,
+              SESSION_USER_TIMEOUT_MS,
               "auth.getUser",
             );
             sessionUser = userResult?.data?.user || null;
@@ -5670,11 +5682,21 @@ export default function App() {
           animateMapToRegion(DEMO_MAP_REGION, 700);
           return;
         }
-        const { status } = await Location.requestForegroundPermissionsAsync();
+        // Do not prompt for permission during startup; only use location if already granted.
+        const { status } = await Location.getForegroundPermissionsAsync();
         if (status !== "granted") return;
-        const position = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
+        let position = await Location.getLastKnownPositionAsync({
+          maxAge: 1000 * 60 * 10,
+          requiredAccuracy: 250,
         });
+        if (!position?.coords) {
+          position = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+            maximumAge: 1000 * 60 * 2,
+            timeout: 3500,
+          });
+        }
+        if (!position?.coords) return;
         if (!isMounted) return;
         const nextRegion = {
           latitude: position.coords.latitude,
@@ -6342,6 +6364,14 @@ export default function App() {
   }, []);
 
   const handleCashoutPayout = useCallback(async () => {
+    if (!CONSUMER_CASHOUT_ENABLED) {
+      setCashoutActionStatus({
+        loading: false,
+        error: CONSUMER_CASHOUT_DISABLED_COPY,
+        success: null,
+      });
+      return;
+    }
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setCashoutActionStatus({
         loading: false,
@@ -6970,13 +7000,29 @@ export default function App() {
 
   useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
-    loadRemoteBusinesses();
-    loadBusinessRatings({ silent: true });
+    let cancelled = false;
+    const task = InteractionManager.runAfterInteractions(() => {
+      if (cancelled) return;
+      loadRemoteBusinesses();
+      loadBusinessRatings({ silent: true });
+    });
+    return () => {
+      cancelled = true;
+      if (typeof task?.cancel === "function") task.cancel();
+    };
   }, [loadRemoteBusinesses, loadBusinessRatings]);
 
   useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
-    loadRemoteOffers();
+    let cancelled = false;
+    const task = InteractionManager.runAfterInteractions(() => {
+      if (cancelled) return;
+      loadRemoteOffers();
+    });
+    return () => {
+      cancelled = true;
+      if (typeof task?.cancel === "function") task.cancel();
+    };
   }, [loadRemoteOffers]);
 
   useEffect(() => {
@@ -8254,6 +8300,7 @@ export default function App() {
     [cashoutWithdrawalEntries],
   );
   const resumeCashoutClaimUrl = useMemo(() => {
+    if (!CONSUMER_CASHOUT_ENABLED) return "";
     const pendingClaimUrl = String(
       cashoutWithdrawalEntries.find(
         (entry) =>
@@ -8730,20 +8777,9 @@ export default function App() {
                 ? "Stripe setup was interrupted. Continue in Payments to finish setup."
                 : "Returned from Stripe. Updating payment status...",
           }));
-          setCashoutActionStatus((prev) => ({
-            ...prev,
-            loading: false,
-            error: null,
-            success:
-              callbackFlow === "stripe_refresh"
-                ? "Stripe setup interrupted. Continue payout setup to enable cashout."
-                : "Returned from Stripe. Updating payout status...",
-          }));
           resolveStripeBusiness({ forceRefresh: true }).catch(() => null);
-          loadCashoutStatus().catch(() => null);
           setTimeout(() => {
             resolveStripeBusiness({ forceRefresh: true }).catch(() => null);
-            loadCashoutStatus({ silent: true }).catch(() => null);
           }, 1400);
         }
         setAuthBusy(false);
@@ -13196,9 +13232,8 @@ export default function App() {
         "Linked bank removed. Receipt upload is available for verification.",
     });
     await loadPlaidLinkState({ silent: true });
-    await loadCashoutStatus({ silent: true });
     setPlaidLinkAction("idle");
-  }, [isSignedIn, loadPlaidLinkState, loadCashoutStatus]);
+  }, [isSignedIn, loadPlaidLinkState]);
 
   const handleAutoVerifyPurchase = useCallback(
     async (entry, options = {}) => {
@@ -13901,8 +13936,113 @@ export default function App() {
     }
   };
 
+  const submitReceiptReport = useCallback(
+    async (receipt, reasonValue, reasonLabel) => {
+      const receiptId = receipt?.receiptId || receipt?.id || null;
+      const businessId = receipt?.businessId || null;
+      if (!receiptId || !businessId) return;
+      if (!isSignedIn || !authUserId) {
+        setReceiptReportStatus({
+          loading: false,
+          targetId: receiptId,
+          error: "Sign in to report a receipt.",
+          success: null,
+        });
+        return;
+      }
+      setReceiptReportStatus({
+        loading: true,
+        targetId: receiptId,
+        error: null,
+        success: null,
+      });
+      const { data, error } = await supabase
+        .from("receipt_reports")
+        .insert({
+          receipt_upload_id: receiptId,
+          business_id: businessId,
+          reporter_id: authUserId,
+          reason: reasonValue,
+          details: `Reported from owner receipts screen (${reasonLabel}).`,
+          metadata: {
+            source: "owner_receipts_modal",
+            review_status: String(receipt?.reviewStatus || "").toLowerCase() || null,
+          },
+        })
+        .select("id")
+        .maybeSingle();
+      if (error || !data) {
+        const normalizedError = String(error?.message || "").toLowerCase();
+        const duplicate =
+          String(error?.code || "") === "23505" ||
+          normalizedError.includes("duplicate");
+        const message = duplicate
+          ? "This receipt is already reported and under review."
+          : toUserFacingError(
+              error?.message,
+              "Unable to submit this report right now.",
+            );
+        setReceiptReportStatus({
+          loading: false,
+          targetId: receiptId,
+          error: message,
+          success: null,
+        });
+        showAppDialog({
+          title: "Unable to report receipt",
+          message,
+          options: [{ label: "OK", variant: "primary" }],
+        });
+        return;
+      }
+      setReceiptReportStatus({
+        loading: false,
+        targetId: receiptId,
+        error: null,
+        success: "Receipt reported. Our team will review it.",
+      });
+      showAppDialog({
+        title: "Report sent",
+        message: "Thanks. Our team will review this receipt.",
+        options: [{ label: "Done", variant: "primary" }],
+      });
+    },
+    [authUserId, isSignedIn, showAppDialog],
+  );
+
+  const promptReportReceipt = useCallback(
+    (receipt) => {
+      if (!receipt) return;
+      showAppDialog({
+        title: "Report receipt",
+        message:
+          "Select a reason. This receipt will be flagged for admin review.",
+        options: [
+          ...RECEIPT_REPORT_REASONS.map((item) => ({
+            label: item.label,
+            icon: "flag-outline",
+            variant: "secondary",
+            onPress: () => submitReceiptReport(receipt, item.value, item.label),
+          })),
+          {
+            label: "Cancel",
+            icon: "close-outline",
+            variant: "ghost",
+          },
+        ],
+      });
+    },
+    [showAppDialog, submitReceiptReport],
+  );
+
   const handleOpenReceiptPreview = async (receipt, offerTitle) => {
     if (!receipt) return;
+    setReceiptReportStatus({
+      loading: false,
+      targetId: null,
+      error: null,
+      success: null,
+    });
     receiptBaseScale.setValue(1);
     receiptPinchScale.setValue(1);
     receiptBaseX.setValue(0);
@@ -13918,6 +14058,9 @@ export default function App() {
     setReceiptImageSize(receiptImageSizeRef.current);
     const title = offerTitle || receipt.offerTitle || "Receipt";
     setReceiptPreview({
+      receiptId: receipt.id,
+      businessId: receipt.businessId,
+      reviewStatus: receipt.reviewStatus || null,
       uri: "",
       title,
       timestamp: receipt.uploadedAt,
@@ -13937,6 +14080,9 @@ export default function App() {
         const ok = await Image.prefetch(finalUrl);
         if (!ok) {
           setReceiptPreview({
+            receiptId: receipt.id,
+            businessId: receipt.businessId,
+            reviewStatus: receipt.reviewStatus || null,
             uri: "",
             title,
             timestamp: receipt.uploadedAt,
@@ -13947,6 +14093,9 @@ export default function App() {
         }
       } catch (_error) {
         setReceiptPreview({
+          receiptId: receipt.id,
+          businessId: receipt.businessId,
+          reviewStatus: receipt.reviewStatus || null,
           uri: "",
           title,
           timestamp: receipt.uploadedAt,
@@ -13957,6 +14106,9 @@ export default function App() {
       }
     }
     setReceiptPreview({
+      receiptId: receipt.id,
+      businessId: receipt.businessId,
+      reviewStatus: receipt.reviewStatus || null,
       uri: finalUrl,
       title,
       timestamp: receipt.uploadedAt,
@@ -15855,7 +16007,7 @@ export default function App() {
     });
   };
 
-  if ((!fontsLoaded && !fontError) || !sessionReady) {
+  if (!sessionReady) {
     return (
       <View style={styles.loadingScreen}>
         <StatusBar
@@ -16812,6 +16964,12 @@ export default function App() {
                       onPress={() => {
                         setReceiptsModalOpen(false);
                         setReceiptPreview(null);
+                        setReceiptReportStatus({
+                          loading: false,
+                          targetId: null,
+                          error: null,
+                          success: null,
+                        });
                       }}
                       hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                     >
@@ -16919,6 +17077,33 @@ export default function App() {
                                               Receipt total
                                             </Text>
                                           </View>
+                                          <TouchableOpacity
+                                            style={styles.receiptTileReportAction}
+                                            onPress={(event) => {
+                                              event?.stopPropagation?.();
+                                              promptReportReceipt(receipt);
+                                            }}
+                                            accessibilityRole="button"
+                                            accessibilityLabel="Report receipt"
+                                            accessibilityHint="Flags this receipt for admin review."
+                                            hitSlop={{
+                                              top: 8,
+                                              bottom: 8,
+                                              left: 8,
+                                              right: 8,
+                                            }}
+                                          >
+                                            <Ionicons
+                                              name="flag-outline"
+                                              size={13}
+                                              color={COLORS.warning}
+                                            />
+                                            <Text
+                                              style={styles.receiptTileReportActionText}
+                                            >
+                                              Report
+                                            </Text>
+                                          </TouchableOpacity>
                                           <Text style={styles.receiptTileDate}>
                                             {formatOfferDate(
                                               receipt.uploadedAt,
@@ -17010,6 +17195,33 @@ export default function App() {
                                               Receipt total
                                             </Text>
                                           </View>
+                                          <TouchableOpacity
+                                            style={styles.receiptTileReportAction}
+                                            onPress={(event) => {
+                                              event?.stopPropagation?.();
+                                              promptReportReceipt(receipt);
+                                            }}
+                                            accessibilityRole="button"
+                                            accessibilityLabel="Report receipt"
+                                            accessibilityHint="Flags this receipt for admin review."
+                                            hitSlop={{
+                                              top: 8,
+                                              bottom: 8,
+                                              left: 8,
+                                              right: 8,
+                                            }}
+                                          >
+                                            <Ionicons
+                                              name="flag-outline"
+                                              size={13}
+                                              color={COLORS.warning}
+                                            />
+                                            <Text
+                                              style={styles.receiptTileReportActionText}
+                                            >
+                                              Report
+                                            </Text>
+                                          </TouchableOpacity>
                                           <View style={styles.receiptTileOpenHint}>
                                             <Ionicons
                                               name="chevron-forward"
@@ -17139,6 +17351,30 @@ export default function App() {
                           </View>
                           <View style={styles.receiptPreviewHeaderActions}>
                             <TouchableOpacity
+                              style={styles.receiptPreviewReport}
+                              onPress={() => promptReportReceipt(receiptPreview)}
+                              disabled={
+                                receiptReportStatus.loading &&
+                                receiptReportStatus.targetId ===
+                                  receiptPreview?.receiptId
+                              }
+                              accessibilityRole="button"
+                              accessibilityLabel="Report receipt"
+                              accessibilityHint="Flags this receipt for admin review."
+                              hitSlop={{
+                                top: 10,
+                                bottom: 10,
+                                left: 10,
+                                right: 10,
+                              }}
+                            >
+                              <Ionicons
+                                name="flag-outline"
+                                size={17}
+                                color={COLORS.warning}
+                              />
+                            </TouchableOpacity>
+                            <TouchableOpacity
                               style={styles.receiptPreviewReset}
                               onPress={resetReceiptZoom}
                               hitSlop={{
@@ -17158,6 +17394,12 @@ export default function App() {
                               style={styles.receiptsClose}
                               onPress={() => {
                                 setReceiptPreview(null);
+                                setReceiptReportStatus({
+                                  loading: false,
+                                  targetId: null,
+                                  error: null,
+                                  success: null,
+                                });
                                 resetReceiptZoom();
                               }}
                               hitSlop={{
@@ -17175,6 +17417,18 @@ export default function App() {
                             </TouchableOpacity>
                           </View>
                         </View>
+                        {receiptReportStatus.targetId ===
+                        receiptPreview?.receiptId ? (
+                          receiptReportStatus.error ? (
+                            <Text style={styles.formError}>
+                              {receiptReportStatus.error}
+                            </Text>
+                          ) : receiptReportStatus.success ? (
+                            <Text style={styles.formSuccess}>
+                              {receiptReportStatus.success}
+                            </Text>
+                          ) : null
+                        ) : null}
                         {receiptPreview?.loading ? (
                           <View style={styles.receiptPreviewPlaceholder}>
                             <Ionicons
@@ -18715,7 +18969,7 @@ export default function App() {
                     </View>
                   )}
                 </BottomSheetScrollView>
-              ) : activeTab === "demo" ? (
+              ) : activeTab === "__demo_disabled__" ? (
                 <BottomSheetScrollView
                   style={styles.sheetScroll}
                   showsVerticalScrollIndicator={false}
@@ -21517,7 +21771,7 @@ export default function App() {
                           <View style={styles.authCard}>
                             <Text style={styles.authTitle}>Cash out</Text>
                             <Text style={styles.authSubtitle}>
-                              Sign in to set up payouts and withdraw cashback.
+                              Sign in to view cashback activity.
                             </Text>
                             <TouchableOpacity
                               style={styles.authPrimaryButton}
@@ -21575,116 +21829,129 @@ export default function App() {
                                   )}
                                 </Text>
                               </View>
-                              <View style={styles.cashoutAmountGroup}>
-                                <View style={styles.cashoutAmountHeader}>
-                                  <Text style={styles.cashoutAmountTitle}>
-                                    Amount
-                                  </Text>
-                                  <Text style={styles.cashoutAmountMeta}>
-                                    Available:{" "}
-                                    {formatCurrencyFromCents(
-                                      cashbackBalance.availableCents,
-                                    )}
-                                  </Text>
-                                </View>
-                                <Text style={styles.cashoutAmountHint}>
-                                  Minimum:{" "}
-                                  {formatCurrencyFromCents(MIN_CASHOUT_CENTS)}
-                                </Text>
-                                <View style={styles.cashoutAmountRow}>
-                                  <View style={styles.cashoutAmountField}>
-                                    <Text style={styles.cashoutAmountPrefix}>
-                                      $
-                                    </Text>
-                                    <AutoFocusInput
-                                      style={styles.cashoutAmountInput}
-                                      value={cashoutAmountText}
-                                      onChangeText={(value) =>
-                                        setCashoutAmountText(
-                                          formatCashoutAmountInput(value),
+                              {CONSUMER_CASHOUT_ENABLED ? (
+                                <>
+                                  <View style={styles.cashoutAmountGroup}>
+                                    <View style={styles.cashoutAmountHeader}>
+                                      <Text style={styles.cashoutAmountTitle}>
+                                        Amount
+                                      </Text>
+                                      <Text style={styles.cashoutAmountMeta}>
+                                        Available:{" "}
+                                        {formatCurrencyFromCents(
+                                          cashbackBalance.availableCents,
                                         )}
-                                      placeholder="0.00"
-                                      placeholderTextColor={COLORS.muted}
-                                      keyboardType="number-pad"
-                                      returnKeyType="done"
-                                    />
+                                      </Text>
+                                    </View>
+                                    <Text style={styles.cashoutAmountHint}>
+                                      Minimum:{" "}
+                                      {formatCurrencyFromCents(MIN_CASHOUT_CENTS)}
+                                    </Text>
+                                    <View style={styles.cashoutAmountRow}>
+                                      <View style={styles.cashoutAmountField}>
+                                        <Text style={styles.cashoutAmountPrefix}>
+                                          $
+                                        </Text>
+                                        <AutoFocusInput
+                                          style={styles.cashoutAmountInput}
+                                          value={cashoutAmountText}
+                                          onChangeText={(value) =>
+                                            setCashoutAmountText(
+                                              formatCashoutAmountInput(value),
+                                            )}
+                                          placeholder="0.00"
+                                          placeholderTextColor={COLORS.muted}
+                                          keyboardType="number-pad"
+                                          returnKeyType="done"
+                                        />
+                                      </View>
+                                      <TouchableOpacity
+                                        style={styles.cashoutAmountMaxButton}
+                                        onPress={() =>
+                                          setCashoutAmountText(
+                                            (
+                                              (Number(
+                                                cashbackBalance.availableCents,
+                                              ) || 0) / 100
+                                            ).toFixed(2),
+                                          )
+                                        }
+                                        disabled={cashoutActionStatus.loading}
+                                      >
+                                        <Text style={styles.cashoutAmountMaxText}>
+                                          Max
+                                        </Text>
+                                      </TouchableOpacity>
+                                    </View>
+                                    {String(cashoutAmountText || "").trim() &&
+                                      (cashoutPreview.mode === "invalid" ||
+                                        cashoutPreview.mode === "below_min") && (
+                                        <Text style={styles.formError}>
+                                          {cashoutPreview.mode === "below_min"
+                                            ? `Minimum cashout is ${formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.`
+                                            : `Enter an amount up to ${formatCurrencyFromCents(
+                                                cashbackBalance.availableCents,
+                                              )}.`}
+                                        </Text>
+                                      )}
                                   </View>
-                                  <TouchableOpacity
-                                    style={styles.cashoutAmountMaxButton}
-                                    onPress={() =>
-                                      setCashoutAmountText(
-                                        (
-                                          (Number(
-                                            cashbackBalance.availableCents,
-                                          ) || 0) / 100
-                                        ).toFixed(2),
-                                      )
-                                    }
-                                    disabled={cashoutActionStatus.loading}
-                                  >
-                                    <Text style={styles.cashoutAmountMaxText}>
-                                      Max
+                                  <View style={styles.cashoutPrimaryActions}>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.cashoutPayoutButton,
+                                        (cashoutPreview.mode === "invalid" ||
+                                          cashoutPreview.mode === "below_min" ||
+                                          (Number(cashbackBalance.availableCents) ||
+                                            0) <= 0 ||
+                                          cashoutActionStatus.loading) &&
+                                          styles.cashoutPayoutButtonDisabled,
+                                      ]}
+                                      onPress={handleCashoutPayout}
+                                      disabled={
+                                        cashoutPreview.mode === "invalid" ||
+                                        cashoutPreview.mode === "below_min" ||
+                                        (Number(cashbackBalance.availableCents) ||
+                                          0) <= 0 ||
+                                        cashoutActionStatus.loading
+                                      }
+                                    >
+                                      <Text style={styles.cashoutPayoutButtonText}>
+                                        {cashoutPreview.label}
+                                      </Text>
+                                    </TouchableOpacity>
+                                    {resumeCashoutClaimUrl ? (
+                                      <TouchableOpacity
+                                        style={styles.cashoutOpenPayoutButton}
+                                        onPress={() => {
+                                          setTremendousClaimUrl(
+                                            resumeCashoutClaimUrl,
+                                          );
+                                          setTremendousClaimError(null);
+                                          setTremendousClaimLoading(true);
+                                          setTremendousClaimModalVisible(true);
+                                        }}
+                                        disabled={cashoutActionStatus.loading}
+                                      >
+                                        <Text
+                                          style={styles.cashoutOpenPayoutButtonText}
+                                        >
+                                          {resumeCashoutClaimLabel}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    ) : null}
+                                  </View>
+                                  {resumeCashoutClaimUrl ? (
+                                    <Text style={styles.cashoutResumeHint}>
+                                      Closed payout options by mistake? Tap above
+                                      to reopen.
                                     </Text>
-                                  </TouchableOpacity>
-                                </View>
-                                {String(cashoutAmountText || "").trim() &&
-                                  (cashoutPreview.mode === "invalid" ||
-                                    cashoutPreview.mode === "below_min") && (
-                                    <Text style={styles.formError}>
-                                      {cashoutPreview.mode === "below_min"
-                                        ? `Minimum cashout is ${formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.`
-                                        : `Enter an amount up to ${formatCurrencyFromCents(
-                                            cashbackBalance.availableCents,
-                                          )}.`}
-                                    </Text>
-                                  )}
-                              </View>
-                              <View style={styles.cashoutPrimaryActions}>
-                                <TouchableOpacity
-                                  style={[
-                                    styles.cashoutPayoutButton,
-                                    (cashoutPreview.mode === "invalid" ||
-                                      cashoutPreview.mode === "below_min" ||
-                                      (Number(cashbackBalance.availableCents) ||
-                                        0) <= 0 ||
-                                      cashoutActionStatus.loading) &&
-                                      styles.cashoutPayoutButtonDisabled,
-                                  ]}
-                                  onPress={handleCashoutPayout}
-                                  disabled={
-                                    cashoutPreview.mode === "invalid" ||
-                                    cashoutPreview.mode === "below_min" ||
-                                    (Number(cashbackBalance.availableCents) ||
-                                      0) <= 0 ||
-                                    cashoutActionStatus.loading
-                                  }
-                                >
-                                  <Text style={styles.cashoutPayoutButtonText}>
-                                    {cashoutPreview.label}
-                                  </Text>
-                                </TouchableOpacity>
-                                {resumeCashoutClaimUrl ? (
-                                  <TouchableOpacity
-                                    style={styles.cashoutOpenPayoutButton}
-                                    onPress={() => {
-                                      setTremendousClaimUrl(resumeCashoutClaimUrl);
-                                      setTremendousClaimError(null);
-                                      setTremendousClaimLoading(true);
-                                      setTremendousClaimModalVisible(true);
-                                    }}
-                                    disabled={cashoutActionStatus.loading}
-                                  >
-                                    <Text style={styles.cashoutOpenPayoutButtonText}>
-                                      {resumeCashoutClaimLabel}
-                                    </Text>
-                                  </TouchableOpacity>
-                                ) : null}
-                              </View>
-                              {resumeCashoutClaimUrl ? (
-                                <Text style={styles.cashoutResumeHint}>
-                                  Closed payout options by mistake? Tap above to reopen.
+                                  ) : null}
+                                </>
+                              ) : (
+                                <Text style={styles.formHint}>
+                                  {CONSUMER_CASHOUT_DISABLED_COPY}
                                 </Text>
-                              ) : null}
+                              )}
                               {cashoutActionStatus.error && (
                                 <Text style={styles.formError}>
                                   {cashoutActionStatus.error}
@@ -30981,6 +31248,26 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
   },
+  receiptTileReportAction: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    minHeight: 20,
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#FFF7ED",
+    borderWidth: 1,
+    borderColor: "rgba(180, 83, 9, 0.28)",
+  },
+  receiptTileReportActionText: {
+    fontSize: 10,
+    color: COLORS.warning,
+    fontFamily: FONT_MEDIUM,
+  },
   receiptTileDate: {
     fontSize: 12,
     color: COLORS.ink,
@@ -31109,6 +31396,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+  },
+  receiptPreviewReport: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#FFF7ED",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(180, 83, 9, 0.28)",
   },
   receiptPreviewReset: {
     width: 34,

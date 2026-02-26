@@ -9,9 +9,10 @@
   - `/stripe/success`
   - `/stripe/cancel`
 
-## Plaid Verification (Stripe payouts unchanged)
-- Stripe remains the payout and money movement rail.
-- Plaid is used only for purchase verification signals.
+## Plaid Verification (business billing only)
+- Stripe is used for business billing/payment method operations.
+- Consumer cashback withdrawal is currently disabled while payout provider work is in progress.
+- Plaid is used for purchase verification signals.
 - If no confident Plaid match is found, users can upload receipts for review.
 
 ### Required Supabase Edge Function env vars
