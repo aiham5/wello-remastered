@@ -246,6 +246,7 @@ const TREMENDOUS_DEMO_MIN_AMOUNT_CENTS = 1000;
 const TREMENDOUS_DEMO_DEFAULT_AMOUNT = "";
 const TREMENDOUS_DEMO_VIRTUAL_BALANCE_CENTS = 5000;
 const TREMENDOUS_DEMO_USE_VIRTUAL_BALANCE = true;
+const LOADING_BRAND_YELLOW = "#FFF03B";
 const createInitialReferralState = () => ({
   loading: false,
   claiming: false,
@@ -2378,7 +2379,7 @@ const parseAddressComponents = (components = []) => {
 const MAP_STYLE = [
   {
     featureType: "all",
-    elementType: "labels",
+    elementType: "labels.icon",
     stylers: [{ visibility: "off" }],
   },
   {
@@ -3648,6 +3649,7 @@ export default function App() {
   const [passwordResetError, setPasswordResetError] = useState(null);
   const [passwordResetSuccess, setPasswordResetSuccess] = useState(null);
   const [passwordRecoveryMode, setPasswordRecoveryMode] = useState(false);
+  const passwordRecoveryModeRef = useRef(false);
   const [expoPushToken, setExpoPushToken] = useState(null);
   const [tokenError, setTokenError] = useState(null);
   const geocodeCacheRef = useRef(new Map());
@@ -4139,6 +4141,8 @@ export default function App() {
     message: "",
     primaryLabel: "Upload receipt",
     secondaryLabel: "Later",
+    primaryAction: "upload",
+    secondaryAction: "dismiss",
     entry: null,
   });
   const [postRedeemBankPromptOpen, setPostRedeemBankPromptOpen] =
@@ -5466,6 +5470,7 @@ export default function App() {
     setPasswordResetBusy(false);
     setPasswordResetError(null);
     setPasswordResetSuccess(null);
+    passwordRecoveryModeRef.current = false;
     setPasswordRecoveryMode(false);
     setAuthBusinessDraft(null);
     setOwnerBusinessId(null);
@@ -5498,6 +5503,23 @@ export default function App() {
     },
     [resetAuthState],
   );
+
+  const enterPasswordRecoveryMode = useCallback(() => {
+    passwordRecoveryModeRef.current = true;
+    setPasswordRecoveryMode(true);
+    setPasswordResetDraft("");
+    setPasswordResetConfirm("");
+    setShowPasswordResetDraft(false);
+    setShowPasswordResetConfirm(false);
+    setPasswordResetError(null);
+    setPasswordResetSuccess(null);
+    setPasswordResetModalOpen(true);
+    setIsSignedIn(false);
+    setAuthView("signin");
+    setActiveTab("profile");
+    setSignInError(null);
+    setSignInNotice("Set your new password to finish resetting your account.");
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -5581,21 +5603,10 @@ export default function App() {
           if (!isMounted) return;
           if (session?.user) {
             if (event === "PASSWORD_RECOVERY") {
-              setPasswordRecoveryMode(true);
-              setPasswordResetDraft("");
-              setPasswordResetConfirm("");
-              setShowPasswordResetDraft(false);
-              setShowPasswordResetConfirm(false);
-              setPasswordResetError(null);
-              setPasswordResetSuccess(null);
-              setPasswordResetModalOpen(true);
-              setIsSignedIn(false);
-              setAuthView("signin");
-              setActiveTab("profile");
-              setSignInNotice("Set your new password to finish resetting your account.");
+              enterPasswordRecoveryMode();
               return;
             }
-            if (passwordRecoveryMode) {
+            if (passwordRecoveryModeRef.current) {
               setIsSignedIn(false);
               setAuthView("signin");
               return;
@@ -5619,6 +5630,11 @@ export default function App() {
               setReferralState(createInitialReferralState());
             }
           } else {
+            if (passwordRecoveryModeRef.current) {
+              setIsSignedIn(false);
+              setAuthView("signin");
+              return;
+            }
             resetAuthState();
           }
         })
@@ -5629,9 +5645,9 @@ export default function App() {
       authListener?.data?.subscription?.unsubscribe();
     };
   }, [
+    enterPasswordRecoveryMode,
     hydrateProfile,
     resetAuthState,
-    passwordRecoveryMode,
     loadPromoStatus,
     loadReferralStatus,
     hasActiveSessionForUser,
@@ -7821,7 +7837,6 @@ export default function App() {
     return maxWidth;
   }, [visibleTabs.length]);
   const navNeedsTightFit = useMemo(() => {
-    if (Platform.OS !== "android") return false;
     const count = visibleTabs.length || 1;
     if (count < 4) return false;
     const maxLabelLength = visibleTabs.reduce(
@@ -8043,17 +8058,25 @@ export default function App() {
     return ids;
   }, [userReviews]);
 
-  const latestRedemptionByBusiness = useMemo(() => {
+  const isReviewEligibleEntry = useCallback((entry) => {
+    const cents = Number(entry?.receipt?.cashbackCents) || 0;
+    if (cents <= 0) return false;
+    const status = String(entry?.receipt?.cashbackStatus || "").toLowerCase();
+    return status !== "reversed" && status !== "failed";
+  }, []);
+
+  const latestReviewEligibleRedemptionByBusiness = useMemo(() => {
     const map = new Map();
     redemptionHistory.forEach((entry) => {
       if (!entry.businessId) return;
+      if (!isReviewEligibleEntry(entry)) return;
       const existing = map.get(entry.businessId);
       if (!existing || (entry.createdAt || 0) > (existing.createdAt || 0)) {
         map.set(entry.businessId, entry);
       }
     });
     return map;
-  }, [redemptionHistory]);
+  }, [redemptionHistory, isReviewEligibleEntry]);
 
   const isReceiptWindowOpen = (entry) => {
     if (!entry?.createdAt) return false;
@@ -8084,16 +8107,14 @@ export default function App() {
     const list = Array.from(grouped.values());
     list.forEach((group) => {
       group.entries.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      group.totalCashbackEarnedCents = group.entries.reduce((total, entry) => {
-        const cents = Number(entry?.receipt?.cashbackCents) || 0;
-        if (cents <= 0) return total;
-        const status = String(entry?.receipt?.cashbackStatus || "").toLowerCase();
-        if (status === "reversed" || status === "failed") return total;
-        return total + cents;
-      }, 0);
+      const reviewEligibleEntries = group.entries.filter(isReviewEligibleEntry);
+      group.totalCashbackEarnedCents = reviewEligibleEntries.reduce(
+        (total, entry) => total + (Number(entry?.receipt?.cashbackCents) || 0),
+        0,
+      );
       const businessKey = group.businessId || group.key;
       const hasReview = reviewedBusinessIds.has(String(businessKey));
-      group.pendingEntries = hasReview ? [] : group.entries.slice(0, 1);
+      group.pendingEntries = hasReview ? [] : reviewEligibleEntries.slice(0, 1);
       group.pendingCount = hasReview ? 0 : group.pendingEntries.length;
       group.receiptPendingCount = group.entries.reduce((total, entry) => {
         const hasReceipt = Boolean(entry.receipt?.id);
@@ -8107,7 +8128,7 @@ export default function App() {
       }, 0);
     });
     return list.sort((a, b) => (b.lastRedeemed || 0) - (a.lastRedeemed || 0));
-  }, [redemptionHistory, reviewedBusinessIds]);
+  }, [redemptionHistory, reviewedBusinessIds, isReviewEligibleEntry]);
 
   const receiptOfferGroups = useMemo(() => {
     const groupByOffer = (items, keyPrefix) => {
@@ -8206,14 +8227,9 @@ export default function App() {
   const pendingHistoryCount = pendingReviewCount + pendingReceiptCount;
   const cashoutEarnedHistoryEntries = useMemo(() => {
     return [...redemptionHistory]
-      .filter((entry) => {
-        const cents = Number(entry?.receipt?.cashbackCents) || 0;
-        if (cents <= 0) return false;
-        const status = String(entry?.receipt?.cashbackStatus || "").toLowerCase();
-        return status !== "reversed" && status !== "failed";
-      })
+      .filter((entry) => isReviewEligibleEntry(entry))
       .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  }, [redemptionHistory]);
+  }, [redemptionHistory, isReviewEligibleEntry]);
   const cashoutEarnedTotalCents = useMemo(
     () =>
       cashoutEarnedHistoryEntries.reduce(
@@ -8643,7 +8659,10 @@ export default function App() {
         if (callbackFlow === "recovery" && tokenHash) {
           try {
             setAuthBusy(true);
+            passwordRecoveryModeRef.current = true;
             if (typeof supabase.auth.verifyOtp !== "function") {
+              passwordRecoveryModeRef.current = false;
+              setPasswordRecoveryMode(false);
               setSignInError("Password reset is unavailable in this app version.");
               setAuthView("forgot");
               return;
@@ -8653,25 +8672,18 @@ export default function App() {
               token_hash: tokenHash,
             });
             if (verifyError) {
+              passwordRecoveryModeRef.current = false;
+              setPasswordRecoveryMode(false);
               setSignInError(
                 verifyError.message || "This reset link is invalid or expired.",
               );
               setAuthView("forgot");
               return;
             }
-            setPasswordResetDraft("");
-            setPasswordResetConfirm("");
-            setShowPasswordResetDraft(false);
-            setShowPasswordResetConfirm(false);
-            setPasswordResetError(null);
-            setPasswordResetSuccess(null);
-            setPasswordRecoveryMode(true);
-            setPasswordResetModalOpen(true);
-            setIsSignedIn(false);
-            setAuthView("signin");
-            setActiveTab("profile");
-            setSignInNotice("Set your new password to finish resetting your account.");
+            enterPasswordRecoveryMode();
           } catch (verifyError) {
+            passwordRecoveryModeRef.current = false;
+            setPasswordRecoveryMode(false);
             setSignInError(
               String(verifyError?.message || "") ||
                 "This reset link is invalid or expired.",
@@ -8748,6 +8760,9 @@ export default function App() {
 
       try {
         setAuthBusy(true);
+        if (callbackFlow === "recovery") {
+          passwordRecoveryModeRef.current = true;
+        }
         let authError = null;
         let sessionUser = null;
         if (accessToken && refreshToken) {
@@ -8772,6 +8787,10 @@ export default function App() {
         }
 
         if (authError) {
+          if (callbackFlow === "recovery") {
+            passwordRecoveryModeRef.current = false;
+            setPasswordRecoveryMode(false);
+          }
           setSignInError(authError.message || "Unable to sign in with Google.");
           setAuthView("signin");
           return;
@@ -8782,6 +8801,10 @@ export default function App() {
           sessionUser = userResult?.data?.user || null;
         }
         if (!sessionUser?.id) {
+          if (callbackFlow === "recovery") {
+            passwordRecoveryModeRef.current = false;
+            setPasswordRecoveryMode(false);
+          }
           setSignInError("Unable to finish Google sign-in.");
           setGoogleAuthState("idle");
           setAuthView("signin");
@@ -8796,18 +8819,7 @@ export default function App() {
           setProfileName(formatDisplayName(sessionEmail));
         }
         if (callbackFlow === "recovery") {
-          setPasswordRecoveryMode(true);
-          setPasswordResetDraft("");
-          setPasswordResetConfirm("");
-          setShowPasswordResetDraft(false);
-          setShowPasswordResetConfirm(false);
-          setPasswordResetError(null);
-          setPasswordResetSuccess(null);
-          setPasswordResetModalOpen(true);
-          setIsSignedIn(false);
-          setAuthView("signin");
-          setActiveTab("profile");
-          setSignInNotice("Set your new password to finish resetting your account.");
+          enterPasswordRecoveryMode();
           return;
         }
 
@@ -8832,6 +8844,10 @@ export default function App() {
           setReferralState(createInitialReferralState());
         }
       } catch (callbackError) {
+        if (callbackFlow === "recovery") {
+          passwordRecoveryModeRef.current = false;
+          setPasswordRecoveryMode(false);
+        }
         setSignInError(
           callbackError?.message || "Unable to finish Google sign-in.",
         );
@@ -8846,6 +8862,7 @@ export default function App() {
       authUserId,
       claimReferralCode,
       ensureSupabaseReady,
+      enterPasswordRecoveryMode,
       hydrateProfile,
       isSignedIn,
       loadPromoStatus,
@@ -9654,6 +9671,64 @@ export default function App() {
     }
   };
 
+  const checkBusinessEmailAvailability = useCallback(async (email) => {
+    try {
+      const response = await withTimeout(
+        supabase.functions.invoke("auth-email-availability", {
+          body: { email },
+        }),
+        8000,
+        "auth_email_availability",
+      );
+
+      if (response?.error) {
+        const context = response.error?.context;
+        let rawText = "";
+        if (context?.text) {
+          try {
+            rawText = await context.text();
+          } catch {
+            rawText = "";
+          }
+        }
+        let parsed = null;
+        try {
+          parsed = rawText ? JSON.parse(rawText) : null;
+        } catch {
+          parsed = null;
+        }
+        return {
+          ok: false,
+          error:
+            String(parsed?.error || "").trim() ||
+            response.error?.message ||
+            "Unable to verify email availability right now.",
+        };
+      }
+
+      const payload = response?.data || {};
+      if (payload?.available === false) {
+        return {
+          ok: false,
+          error: "This email is already registered. Sign in or use a different email.",
+        };
+      }
+      if (payload?.available === true) {
+        return { ok: true, error: null };
+      }
+
+      return {
+        ok: false,
+        error: "Unable to verify email availability right now.",
+      };
+    } catch {
+      return {
+        ok: false,
+        error: "Unable to verify email availability right now.",
+      };
+    }
+  }, []);
+
   const handleBusinessSignUp = async () => {
     if (!businessEmail.trim()) {
       setBusinessSignUpError("Email is required.");
@@ -9705,6 +9780,11 @@ export default function App() {
     setBusinessSignUpNotice(null);
     try {
       const email = businessEmail.trim().toLowerCase();
+      const emailAvailability = await checkBusinessEmailAvailability(email);
+      if (!emailAvailability.ok) {
+        setBusinessSignUpError(emailAvailability.error);
+        return;
+      }
       const hoursValue = formatBusinessSchedule(
         businessHoursDays,
         businessHoursStart,
@@ -10413,7 +10493,7 @@ export default function App() {
     if (!group) return;
     const targetEntry =
       group.pendingEntries?.[0] ||
-      group.entries?.find((entry) => entry && entry.id) ||
+      group.entries?.find((entry) => entry && entry.id && isReviewEligibleEntry(entry)) ||
       null;
     if (!targetEntry) return;
     openReviewForEntry(targetEntry, group.businessName);
@@ -10445,6 +10525,10 @@ export default function App() {
 
   const handleSubmitReview = async () => {
     if (!reviewTarget?.entry) return;
+    if (!isReviewEligibleEntry(reviewTarget.entry)) {
+      setReviewError("You can leave a review after cashback is earned.");
+      return;
+    }
     if (!reviewRating) {
       setReviewError("Select a star rating to submit your review.");
       return;
@@ -13679,6 +13763,32 @@ export default function App() {
     });
   };
 
+  const closeVerificationPrompt = () => {
+    setVerificationPrompt({
+      visible: false,
+      title: "",
+      message: "",
+      primaryLabel: "Upload receipt",
+      secondaryLabel: "Later",
+      primaryAction: "upload",
+      secondaryAction: "dismiss",
+      entry: null,
+    });
+  };
+
+  const runVerificationPromptAction = (action, entry) => {
+    const normalized = String(action || "dismiss").toLowerCase();
+    closeVerificationPrompt();
+    if (!entry) return;
+    if (normalized === "upload") {
+      promptReceiptUpload(entry);
+      return;
+    }
+    if (normalized === "auto_verify") {
+      void handleAutoVerifyPurchase(entry);
+    }
+  };
+
   const handleOpenOfferEdit = (offer) => {
     if (!offer) return;
     const offerTypeDraft = getOfferTypeDraftFromValue(
@@ -14546,12 +14656,26 @@ export default function App() {
 
   const handleToggleOffer = async (offer) => {
     if (!offer?.id) return;
+    const nextActive = !offer.active;
+    if (nextActive) {
+      const isBusinessStripeReadyForOffers = Boolean(
+        (resolvedOwnerBusiness?.stripeAccountId || ownerBusiness?.stripeAccountId) &&
+          (resolvedOwnerBusiness?.stripePaymentMethodId ||
+            ownerBusiness?.stripePaymentMethodId),
+      );
+      if (!isBusinessStripeReadyForOffers) {
+        setOfferError(
+          "Add a payment method in Dashboard > Payments before re-activating offers.",
+        );
+        return;
+      }
+    }
     if (!ensureSupabaseReady(setOfferError)) return;
     setOfferBusy(true);
     setOfferError(null);
     const { data, error } = await supabase
       .from("offers")
-      .update({ active: !offer.active })
+      .update({ active: nextActive })
       .eq("id", offer.id)
       .select(
         [
@@ -15740,19 +15864,10 @@ export default function App() {
           backgroundColor="transparent"
         />
         <View style={styles.loadingScreenInner}>
-          <View style={styles.loadingLogoShell}>
-            <Image
-              source={require("./assets/logo/logo.png")}
-              style={styles.loadingLogo}
-              resizeMode="contain"
-            />
-          </View>
-          <Text style={styles.loadingTitle}>Wello</Text>
-          <Text style={styles.loadingSubtitle}>Loading your offers...</Text>
-          <ActivityIndicator
-            size="small"
-            color={COLORS.pine}
-            style={styles.loadingSpinner}
+          <Image
+            source={require("./assets/logo/logo.png")}
+            style={styles.loadingLogo}
+            resizeMode="contain"
           />
         </View>
       </View>
@@ -15972,8 +16087,8 @@ export default function App() {
                               isActive && styles.navPillTextActive,
                             ]}
                             numberOfLines={1}
-                            adjustsFontSizeToFit={Platform.OS === "android"}
-                            minimumFontScale={Platform.OS === "android" ? 0.85 : 1}
+                            adjustsFontSizeToFit
+                            minimumFontScale={0.78}
                             maxFontSizeMultiplier={1}
                             allowFontScaling={false}
                           >
@@ -16458,14 +16573,17 @@ export default function App() {
 
                     {isSignedIn &&
                       businessDetail?.id &&
-                      latestRedemptionByBusiness.has(businessDetail.id) &&
+                      latestReviewEligibleRedemptionByBusiness.has(
+                        businessDetail.id,
+                      ) &&
                       !reviewedBusinessIds.has(String(businessDetail.id)) && (
                         <TouchableOpacity
                           style={styles.detailReviewButton}
                           onPress={() => {
-                            const entry = latestRedemptionByBusiness.get(
-                              businessDetail.id,
-                            );
+                            const entry =
+                              latestReviewEligibleRedemptionByBusiness.get(
+                                businessDetail.id,
+                              );
                             openReviewForEntry(entry, businessDetail.name);
                           }}
                         >
@@ -16624,7 +16742,7 @@ export default function App() {
                         <View style={styles.emptyState}>
                           <Text style={styles.emptyTitle}>No reviews yet.</Text>
                           <Text style={styles.emptyCopy}>
-                            Redeem an offer to leave the first review.
+                            Earn cashback here to leave the first review.
                           </Text>
                         </View>
                       ) : (
@@ -17769,13 +17887,7 @@ export default function App() {
               animationType="fade"
               presentationStyle="overFullScreen"
               statusBarTranslucent
-              onRequestClose={() =>
-                setVerificationPrompt((prev) => ({
-                  ...prev,
-                  visible: false,
-                  entry: null,
-                }))
-              }
+              onRequestClose={closeVerificationPrompt}
             >
               <View style={styles.noticeOverlay}>
                 <View style={styles.noticeCard}>
@@ -17790,14 +17902,10 @@ export default function App() {
                       style={styles.primaryButton}
                       onPress={() => {
                         const target = verificationPrompt.entry;
-                        setVerificationPrompt((prev) => ({
-                          ...prev,
-                          visible: false,
-                          entry: null,
-                        }));
-                        if (target) {
-                          promptReceiptUpload(target);
-                        }
+                        runVerificationPromptAction(
+                          verificationPrompt.primaryAction || "upload",
+                          target,
+                        );
                       }}
                     >
                       <Text style={styles.primaryButtonText}>
@@ -17807,11 +17915,10 @@ export default function App() {
                     <TouchableOpacity
                       style={styles.secondaryButton}
                       onPress={() =>
-                        setVerificationPrompt((prev) => ({
-                          ...prev,
-                          visible: false,
-                          entry: null,
-                        }))
+                        runVerificationPromptAction(
+                          verificationPrompt.secondaryAction || "dismiss",
+                          verificationPrompt.entry,
+                        )
                       }
                     >
                       <Text style={styles.secondaryButtonText}>
@@ -20863,39 +20970,6 @@ export default function App() {
                                     </Text>
                                   </View>
                                 </View>
-                                <View
-                                  style={[
-                                    styles.receiptNoticeStatusPill,
-                                    pendingReceiptCount > 0
-                                      ? styles.receiptNoticeStatusPillAlert
-                                      : plaidNeedsAttention
-                                        ? styles.receiptNoticeStatusPillAttention
-                                      : hasLinkedPlaidBank
-                                        ? styles.receiptNoticeStatusPillReady
-                                        : styles.receiptNoticeStatusPillAttention,
-                                  ]}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.receiptNoticeStatusPillText,
-                                      pendingReceiptCount > 0
-                                        ? styles.receiptNoticeStatusPillTextAlert
-                                        : plaidNeedsAttention
-                                          ? styles.receiptNoticeStatusPillTextAttention
-                                        : hasLinkedPlaidBank
-                                          ? styles.receiptNoticeStatusPillTextReady
-                                          : styles.receiptNoticeStatusPillTextAttention,
-                                    ]}
-                                  >
-                                    {pendingReceiptCount > 0
-                                      ? "Upload needed"
-                                      : plaidNeedsAttention
-                                      ? "Reconnect needed"
-                                      : hasLinkedPlaidBank
-                                      ? "Bank linked"
-                                      : "Not linked"}
-                                  </Text>
-                                </View>
                               </View>
                               {hasLinkedPlaidBank &&
                               !plaidNeedsAttention &&
@@ -20998,20 +21072,6 @@ export default function App() {
                                       {plaidLinkState.error}
                                     </Text>
                                   )}
-                                  {pendingReceiptCount > 0 && (
-                                    <View style={styles.receiptCompactMetaRow}>
-                                      <View style={styles.receiptQueuePill}>
-                                        <Ionicons
-                                          name="document-text-outline"
-                                          size={12}
-                                          color="#B42318"
-                                        />
-                                        <Text style={styles.receiptQueuePillText}>
-                                          Upload receipts: {pendingReceiptCount}
-                                        </Text>
-                                      </View>
-                                    </View>
-                                  )}
                                   {hasLinkedPlaidBank && (
                                     <TouchableOpacity
                                       style={styles.receiptCollapseButton}
@@ -21049,12 +21109,13 @@ export default function App() {
                                   const isExpanded = Boolean(
                                     expandedHistoryGroups[group.key],
                                   );
-                                  const accentColor = "#64748B";
+                                  const needsReceiptUpload =
+                                    Number(group.receiptPendingCount || 0) > 0;
+                                  const accentColor = needsReceiptUpload
+                                    ? "#B45309"
+                                    : "#64748B";
                                   const earnedTotalCents =
                                     Number(group.totalCashbackEarnedCents) || 0;
-                                  const pendingTotal =
-                                    Number(group.pendingCount || 0) +
-                                    Number(group.receiptPendingCount || 0);
                                   const initials = getInitials(
                                     group.businessName,
                                   );
@@ -21094,6 +21155,17 @@ export default function App() {
                                       (receiptWindowOpen ||
                                         verificationStatus === "pending" ||
                                         verificationStatus === "rejected");
+                                    const canRetryAutoVerify =
+                                      hasLinkedPlaidBank &&
+                                      needsReceipt &&
+                                      verificationStatus === "rejected";
+                                    const isReceiptActionable =
+                                      needsReceipt &&
+                                      canUploadReceipt &&
+                                      !isUploadingReceipt &&
+                                      !isAutoVerifying;
+                                    const hideStatusForUploadAction =
+                                      isReceiptActionable;
                                     const cashbackStatus =
                                       entry.receipt?.cashbackStatus || null;
                                     const cashbackCents = Number(
@@ -21161,15 +21233,33 @@ export default function App() {
                                         tone: "neutral",
                                       };
                                     })();
-                                    return (
-                                      <View
-                                        key={entry.id}
-                                        style={[
-                                          styles.historyEntry,
-                                          entry.id === highlightedHistoryEntryId &&
-                                            styles.historyEntryHighlighted,
-                                        ]}
-                                      >
+                                    const entryCardStyle = [
+                                      styles.historyEntry,
+                                      entry.id === highlightedHistoryEntryId &&
+                                        styles.historyEntryHighlighted,
+                                      isReceiptActionable &&
+                                        styles.historyEntryActionable,
+                                    ];
+                                    const handleHistoryEntryPress = () => {
+                                      if (!isReceiptActionable) return;
+                                      if (canRetryAutoVerify) {
+                                        setVerificationPrompt({
+                                          visible: true,
+                                          title: "Verify purchase",
+                                          message:
+                                            "Automatic verification wasn't confirmed. Try bank verification again or upload your receipt.",
+                                          primaryLabel: "Try auto verify",
+                                          secondaryLabel: "Upload receipt",
+                                          primaryAction: "auto_verify",
+                                          secondaryAction: "upload",
+                                          entry,
+                                        });
+                                        return;
+                                      }
+                                      promptReceiptUpload(entry);
+                                    };
+                                    const entryContent = (
+                                      <>
                                         <View style={styles.historyEntryRow}>
                                           <View style={styles.historyEntryMain}>
                                             <Text
@@ -21199,85 +21289,101 @@ export default function App() {
                                             </View>
                                           </View>
                                         </View>
-                                        <View style={styles.historyStatusRow}>
-                                          <Ionicons
-                                            name={statusCopy.icon}
-                                            size={14}
-                                            color={
-                                              statusCopy.tone === "success"
-                                                ? "#166534"
-                                                : statusCopy.tone === "pending"
-                                                  ? "#92400E"
-                                                  : COLORS.muted
-                                            }
-                                          />
-                                          <Text
-                                            style={[
-                                              styles.historyStatusText,
-                                              statusCopy.tone === "success" &&
-                                                styles.historyStatusTextSuccess,
-                                              statusCopy.tone === "pending" &&
-                                                styles.historyStatusTextPending,
-                                            ]}
-                                          >
-                                            {statusCopy.text}
-                                          </Text>
-                                        </View>
-                                        {needsReceipt && canUploadReceipt && (
-                                          <View style={styles.historyActionRow}>
-                                            <TouchableOpacity
-                                              style={[
-                                                styles.historyPrimaryAction,
-                                                (isAutoVerifying ||
-                                                  isUploadingReceipt) &&
-                                                  styles.historyPrimaryActionDisabled,
-                                              ]}
-                                              onPress={() => promptReceiptUpload(entry)}
-                                              disabled={
-                                                isAutoVerifying || isUploadingReceipt
+                                        {!hideStatusForUploadAction && (
+                                          <View style={styles.historyStatusRow}>
+                                            <Ionicons
+                                              name={statusCopy.icon}
+                                              size={14}
+                                              color={
+                                                statusCopy.tone === "success"
+                                                  ? "#166534"
+                                                  : statusCopy.tone === "pending"
+                                                    ? "#92400E"
+                                                    : COLORS.muted
                                               }
+                                            />
+                                            <Text
+                                              style={[
+                                                styles.historyStatusText,
+                                                statusCopy.tone === "success" &&
+                                                  styles.historyStatusTextSuccess,
+                                                statusCopy.tone === "pending" &&
+                                                  styles.historyStatusTextPending,
+                                              ]}
                                             >
-                                              <Ionicons
-                                                name="document-text-outline"
-                                                size={15}
-                                                color={COLORS.white}
-                                              />
-                                              <Text
-                                                style={styles.historyPrimaryActionText}
-                                              >
-                                                {isUploadingReceipt
-                                                  ? "Uploading..."
-                                                  : "Upload receipt"}
-                                              </Text>
-                                            </TouchableOpacity>
-                                            {hasLinkedPlaidBank && (
-                                              <TouchableOpacity
-                                                style={styles.historyInlineAction}
-                                                onPress={() =>
-                                                  handleAutoVerifyPurchase(entry)
-                                                }
-                                                disabled={
-                                                  isAutoVerifying || isUploadingReceipt
-                                                }
-                                              >
-                                                <Text
-                                                  style={styles.historyInlineActionText}
-                                                >
-                                                  {isAutoVerifying
-                                                    ? "Checking bank..."
-                                                    : "Try auto verify"}
-                                                </Text>
-                                              </TouchableOpacity>
-                                            )}
+                                              {statusCopy.text}
+                                            </Text>
                                           </View>
                                         )}
+                                        {isReceiptActionable && (
+                                          <View style={styles.historyEntryTapHint}>
+                                            <Text
+                                              style={
+                                                styles.historyEntryTapHintText
+                                              }
+                                            >
+                                              {canRetryAutoVerify
+                                                ? "Tap to verify or upload receipt"
+                                                : "Tap to upload receipt"}
+                                            </Text>
+                                            <Ionicons
+                                              name="chevron-forward"
+                                              size={14}
+                                              color={COLORS.pine}
+                                            />
+                                          </View>
+                                        )}
+                                      </>
+                                    );
+                                    if (isReceiptActionable) {
+                                      return (
+                                        <Pressable
+                                          key={entry.id}
+                                          style={({ pressed }) => [
+                                            ...entryCardStyle,
+                                            pressed &&
+                                              styles.historyEntryActionablePressed,
+                                          ]}
+                                          onPress={handleHistoryEntryPress}
+                                          android_ripple={{
+                                            color: "rgba(29, 78, 216, 0.10)",
+                                            borderless: false,
+                                          }}
+                                          accessibilityRole="button"
+                                          accessibilityLabel={`${
+                                            canRetryAutoVerify
+                                              ? "Verify purchase"
+                                              : "Upload receipt"
+                                          } for ${offerTitle}`}
+                                          accessibilityHint={
+                                            canRetryAutoVerify
+                                              ? "Opens verification options."
+                                              : "Opens receipt upload options."
+                                          }
+                                        >
+                                          {entryContent}
+                                        </Pressable>
+                                      );
+                                    }
+                                    return (
+                                      <View
+                                        key={entry.id}
+                                        style={[
+                                          ...entryCardStyle.filter(Boolean),
+                                        ]}
+                                      >
+                                        {entryContent}
                                       </View>
                                     );
                                   };
                                   return (
                                     <View
                                       key={group.key}
-                                      style={styles.historyGroupCard}
+                                      style={[
+                                        styles.historyGroupCard,
+                                        needsReceiptUpload &&
+                                          styles.historyGroupCardNeedsReceipt,
+                                      ]}
                                     >
                                       <Pressable
                                         style={({ pressed }) => [
@@ -21339,15 +21445,6 @@ export default function App() {
                                         </View>
 
                                         <View style={styles.historyGroupActions}>
-                                          {pendingTotal > 0 && (
-                                            <View style={styles.historyPendingSummary}>
-                                              <Text
-                                                style={styles.historyPendingSummaryText}
-                                              >
-                                                {pendingTotal} Pending
-                                              </Text>
-                                            </View>
-                                          )}
                                           <View style={styles.historyGroupChevron}>
                                             <Ionicons
                                               name={
@@ -26048,53 +26145,18 @@ const styles = StyleSheet.create({
   },
   loadingScreen: {
     flex: 1,
-    backgroundColor: COLORS.cream,
+    backgroundColor: LOADING_BRAND_YELLOW,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 24,
   },
   loadingScreenInner: {
-    width: "100%",
-    maxWidth: 320,
-    alignItems: "center",
-    paddingVertical: 24,
-    paddingHorizontal: 20,
-    borderRadius: 24,
-    backgroundColor: COLORS.white,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    ...ELEVATION.medium,
-  },
-  loadingLogoShell: {
-    width: 76,
-    height: 76,
-    borderRadius: 22,
-    backgroundColor: COLORS.white,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    marginBottom: 12,
+    paddingHorizontal: 20,
   },
   loadingLogo: {
-    width: 62,
-    height: 62,
-  },
-  loadingTitle: {
-    fontSize: 24,
-    color: COLORS.ink,
-    fontFamily: FONT_BOLD,
-    marginBottom: 4,
-  },
-  loadingSubtitle: {
-    fontSize: 14,
-    color: COLORS.muted,
-    fontFamily: FONT_TEXT,
-    textAlign: "center",
-    lineHeight: 20,
-  },
-  loadingSpinner: {
-    marginTop: 14,
+    width: 220,
+    height: 220,
   },
   container: {
     flex: 1,
@@ -27065,7 +27127,7 @@ const styles = StyleSheet.create({
   },
   navPillTight: {
     paddingHorizontal: Platform.select({
-      ios: IS_COMPACT ? 10 : 14,
+      ios: IS_COMPACT ? 8 : 10,
       android: IS_COMPACT ? 7 : 9,
       default: IS_COMPACT ? 12 : 16,
     }),
@@ -27110,6 +27172,11 @@ const styles = StyleSheet.create({
   },
   navPillTextTight: {
     ...Platform.select({
+      ios: {
+        fontSize: IS_COMPACT ? 11 : 12,
+        lineHeight: IS_COMPACT ? 14 : 16,
+        letterSpacing: -0.1,
+      },
       android: {
         fontSize: IS_COMPACT ? 12 : 13,
         lineHeight: IS_COMPACT ? 15 : 17,
@@ -31106,21 +31173,21 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
   },
   receiptNoticeCard: {
-    backgroundColor: COLORS.white,
+    backgroundColor: "#F7FAFF",
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderColor: "#D4DEEA",
     padding: 15,
     marginBottom: 12,
     ...ELEVATION.medium,
   },
   receiptNoticeCardAttention: {
-    borderColor: "rgba(180, 35, 24, 0.20)",
-    backgroundColor: "#FFF8F8",
+    borderColor: "#D4DEEA",
+    backgroundColor: "#F7FAFF",
   },
   receiptNoticeCardReady: {
-    borderColor: "rgba(29, 78, 216, 0.16)",
-    backgroundColor: "#F8FBFF",
+    borderColor: "#D4DEEA",
+    backgroundColor: "#F7FAFF",
   },
   receiptNoticeHeader: {
     flexDirection: "row",
@@ -31508,6 +31575,10 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 10 },
     elevation: 3,
   },
+  historyGroupCardNeedsReceipt: {
+    borderColor: "rgba(194, 65, 12, 0.34)",
+    backgroundColor: "#FFF3ED",
+  },
   historyGroupAccent: {
     position: "absolute",
     left: 0,
@@ -31589,21 +31660,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#F6F8FC",
     alignItems: "center",
     justifyContent: "center",
-  },
-  historyPendingSummary: {
-    minHeight: 26,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(190, 24, 93, 0.20)",
-    backgroundColor: "#FFF6F8",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 10,
-  },
-  historyPendingSummaryText: {
-    fontSize: 11,
-    color: "#9F1239",
-    fontFamily: FONT_MEDIUM,
   },
   historyReviewLink: {
     flexDirection: "row",
@@ -32330,15 +32386,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
-    backgroundColor: "#FBFDFF",
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
   },
   historyEntryHighlighted: {
-    shadowColor: "#2563EB",
-    shadowOpacity: 0.11,
+    shadowColor: COLORS.pine,
+    shadowOpacity: 0.1,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
     elevation: 2,
+  },
+  historyEntryActionable: {
+    borderColor: "rgba(16, 42, 76, 0.24)",
+    backgroundColor: COLORS.mint,
+  },
+  historyEntryActionablePressed: {
+    opacity: 0.92,
   },
   historyEntryRow: {
     flexDirection: "row",
@@ -32392,6 +32455,21 @@ const styles = StyleSheet.create({
   },
   historyStatusTextPending: {
     color: "#92400E",
+  },
+  historyEntryTapHint: {
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(211, 221, 234, 0.9)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  historyEntryTapHintText: {
+    fontSize: 12,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
   },
   historyCashbackPill: {
     flexDirection: "row",
@@ -32517,39 +32595,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-  },
-  historyActionRow: {
-    marginTop: 12,
-    flexDirection: "row",
-    gap: 10,
-    alignItems: "center",
-  },
-  historyPrimaryAction: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-    paddingVertical: 10,
-    paddingHorizontal: 13,
-    borderRadius: 12,
-    backgroundColor: "#1A1F2E",
-    minWidth: 150,
-  },
-  historyPrimaryActionDisabled: {
-    opacity: 0.6,
-  },
-  historyPrimaryActionText: {
-    fontSize: 12,
-    color: COLORS.white,
-    fontFamily: FONT_SEMIBOLD,
-  },
-  historyInlineAction: {
-    paddingVertical: 6,
-  },
-  historyInlineActionText: {
-    fontSize: 13,
-    color: "#1D4ED8",
-    fontFamily: FONT_MEDIUM,
   },
   historyVerifyButton: {
     flexDirection: "row",

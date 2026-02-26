@@ -19,6 +19,11 @@ const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
 
+const asNonEmptyString = (value: unknown): string | null => {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized.length > 0 ? normalized : null;
+};
+
 const getExternalBankSnapshot = (account: Stripe.Account) => {
   const accountWithExternals = account as Stripe.Account & {
     default_external_account?: string | null;
@@ -45,6 +50,117 @@ const getExternalBankSnapshot = (account: Stripe.Account) => {
     ? `${bankName}${last4 ? ` ••••${last4}` : ""}`
     : null;
   return { externalAccountId, label };
+};
+
+const getPaymentMethodSnapshot = async (
+  customerId: string,
+): Promise<{
+  paymentMethodId: string | null;
+  brand: string | null;
+  last4: string | null;
+}> => {
+  const customer = await stripe.customers.retrieve(customerId, {
+    expand: ["invoice_settings.default_payment_method"],
+  });
+  if (!customer || "deleted" in customer) {
+    return {
+      paymentMethodId: null,
+      brand: null,
+      last4: null,
+    };
+  }
+
+  const defaultPaymentMethod = customer.invoice_settings?.default_payment_method;
+  if (!defaultPaymentMethod) {
+    return {
+      paymentMethodId: null,
+      brand: null,
+      last4: null,
+    };
+  }
+
+  if (typeof defaultPaymentMethod === "string") {
+    const paymentMethod = await stripe.paymentMethods.retrieve(defaultPaymentMethod);
+    return {
+      paymentMethodId: asNonEmptyString(paymentMethod.id),
+      brand: paymentMethod.card?.brand ?? null,
+      last4: paymentMethod.card?.last4 ?? null,
+    };
+  }
+
+  return {
+    paymentMethodId: asNonEmptyString(defaultPaymentMethod.id),
+    brand: defaultPaymentMethod.card?.brand ?? null,
+    last4: defaultPaymentMethod.card?.last4 ?? null,
+  };
+};
+
+const pauseActiveOffersForBusinesses = async (
+  supabase: any,
+  businessIds: string[],
+) => {
+  if (businessIds.length === 0) return;
+  const { error } = await supabase
+    .from("offers")
+    .update({ active: false })
+    .in("business_id", businessIds)
+    .eq("active", true);
+  if (error) {
+    throw new Error(error.message || "Failed to pause offers after payment update.");
+  }
+};
+
+const syncBusinessPaymentMethodFromCustomer = async (
+  supabase: any,
+  customerId: string,
+) => {
+  const snapshot = await getPaymentMethodSnapshot(customerId);
+  const { data, error } = await supabase
+    .from("businesses")
+    .update({
+      stripe_payment_method_id: snapshot.paymentMethodId,
+      stripe_payment_method_brand: snapshot.brand,
+      stripe_payment_method_last4: snapshot.last4,
+    })
+    .eq("stripe_customer_id", customerId)
+    .select("id");
+  if (error) {
+    throw new Error(error.message || "Failed to sync business payment method.");
+  }
+
+  if (!snapshot.paymentMethodId) {
+    const businessIds = Array.isArray(data)
+      ? data
+        .map((row) => asNonEmptyString((row as { id?: string | null }).id))
+        .filter((value): value is string => Boolean(value))
+      : [];
+    await pauseActiveOffersForBusinesses(supabase, businessIds);
+  }
+};
+
+const clearBusinessPaymentMethodFromCustomer = async (
+  supabase: any,
+  customerId: string,
+) => {
+  const { data, error } = await supabase
+    .from("businesses")
+    .update({
+      stripe_payment_method_id: null,
+      stripe_payment_method_brand: null,
+      stripe_payment_method_last4: null,
+    })
+    .eq("stripe_customer_id", customerId)
+    .select("id");
+  if (error) {
+    throw new Error(error.message || "Failed to clear business payment method.");
+  }
+
+  const businessIds = Array.isArray(data)
+    ? data
+      .map((row) => asNonEmptyString((row as { id?: string | null }).id))
+      .filter((value): value is string => Boolean(value))
+    : [];
+  await pauseActiveOffersForBusinesses(supabase, businessIds);
 };
 
 serve(async (req) => {
@@ -120,29 +236,56 @@ serve(async (req) => {
         const setupIntent = await stripe.setupIntents.retrieve(setupIntentId);
         const paymentMethodId = setupIntent.payment_method as string | null;
         if (paymentMethodId) {
-          await stripe.paymentMethods.attach(paymentMethodId, {
-            customer: customerId,
-          });
-          await stripe.customers.update(customerId, {
-            invoice_settings: { default_payment_method: paymentMethodId },
-          });
           const paymentMethod = await stripe.paymentMethods.retrieve(
             paymentMethodId,
           );
-          const brand =
-            paymentMethod.card?.brand ?? null;
-          const last4 =
-            paymentMethod.card?.last4 ?? null;
-          await supabase
-            .from("businesses")
-            .update({
-              stripe_payment_method_id: paymentMethodId,
-              stripe_payment_method_brand: brand,
-              stripe_payment_method_last4: last4,
-            })
-            .eq("stripe_customer_id", customerId);
+          const attachedCustomerId = typeof paymentMethod.customer === "string"
+            ? paymentMethod.customer
+            : asNonEmptyString(paymentMethod.customer?.id);
+          if (attachedCustomerId && attachedCustomerId !== customerId) {
+            throw new Error(
+              "Setup payment method is attached to a different Stripe customer.",
+            );
+          }
+          if (!attachedCustomerId) {
+            await stripe.paymentMethods.attach(paymentMethodId, {
+              customer: customerId,
+            });
+          }
+          await stripe.customers.update(customerId, {
+            invoice_settings: { default_payment_method: paymentMethodId },
+          });
+          await syncBusinessPaymentMethodFromCustomer(supabase, customerId);
         }
       }
+    }
+  }
+
+  if (
+    event.type === "customer.updated" ||
+    event.type === "payment_method.attached" ||
+    event.type === "payment_method.detached"
+  ) {
+    let customerId: string | null = null;
+    if (event.type === "customer.updated") {
+      const customer = event.data.object as Stripe.Customer;
+      customerId = asNonEmptyString(customer.id);
+    } else {
+      const paymentMethod = event.data.object as Stripe.PaymentMethod;
+      customerId = typeof paymentMethod.customer === "string"
+        ? asNonEmptyString(paymentMethod.customer)
+        : asNonEmptyString(paymentMethod.customer?.id);
+    }
+    if (customerId) {
+      await syncBusinessPaymentMethodFromCustomer(supabase, customerId);
+    }
+  }
+
+  if (event.type === "customer.deleted") {
+    const customer = event.data.object as Stripe.DeletedCustomer;
+    const customerId = asNonEmptyString(customer.id);
+    if (customerId) {
+      await clearBusinessPaymentMethodFromCustomer(supabase, customerId);
     }
   }
 

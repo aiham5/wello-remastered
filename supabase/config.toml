@@ -12,6 +12,9 @@ verify_jwt = false
 [functions.admin-send-promo-push]
 verify_jwt = false
 
+[functions.auth-email-availability]
+verify_jwt = false
+
 [functions.plaid-create-link-token]
 verify_jwt = false
 

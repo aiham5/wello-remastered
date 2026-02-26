@@ -5,7 +5,7 @@
                  "scheme":  "wello",
                  "version":  "1.0.0",
                  "orientation":  "portrait",
-                 "backgroundColor":  "#F6F2E9",
+                 "backgroundColor":  "#FFF03B",
                  "icon":  "./assets/logo/logo.png",
                  "notification":  {
                                       "icon":  "./assets/logo/logo.png",
@@ -14,7 +14,7 @@
                  "splash":  {
                                 "image":  "./assets/logo/logo.png",
                                 "resizeMode":  "contain",
-                                "backgroundColor":  "#F6F2E9"
+                                "backgroundColor":  "#FFF03B"
                             },
                  "assetBundlePatterns":  [
                                              "**/*"
@@ -42,7 +42,7 @@
                                                  ],
                                  "adaptiveIcon":  {
                                                       "foregroundImage":  "./assets/logo/logo.png",
-                                                      "backgroundColor":  "#F6F2E9"
+                                                      "backgroundColor":  "#FFF03B"
                                                   },
                                  "package":  "com.wellopartners.wello"
                              },
