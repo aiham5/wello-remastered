@@ -44,6 +44,7 @@ let toast = null;
 let confirmModal = null;
 let drawer = null;
 let activeModuleKey = null;
+let authSyncInFlight = null;
 
 const setTheme = (theme) => {
   const normalized = theme === "dark" ? "dark" : "light";
@@ -76,6 +77,23 @@ const setAuthError = (message = "") => {
 const setAuthVisible = (isVisible) => {
   ui.authPanel?.classList.toggle("is-hidden", !isVisible);
   ui.appShell?.classList.toggle("is-hidden", isVisible);
+};
+
+const resetIdentityUi = () => {
+  if (ui.currentUser) ui.currentUser.textContent = "Not signed in";
+  if (ui.currentRole) ui.currentRole.textContent = "--";
+  activeModuleKey = null;
+};
+
+const isTransientIdentityError = (error) => {
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    message.includes("network") ||
+    message.includes("timeout") ||
+    message.includes("abort") ||
+    message.includes("failed to fetch") ||
+    message.includes("enetunreach")
+  );
 };
 
 const selectModuleInNav = (key) => {
@@ -118,22 +136,53 @@ const buildNav = () => {
   });
 };
 
-const hydrateIdentity = async () => {
-  const { user, profile } = await runtime.ensureStaffProfile();
-  store.setState({ session: { user }, profile });
-  if (ui.currentUser) ui.currentUser.textContent = profile.full_name || profile.email || user.email || "Staff";
-  if (ui.currentRole) ui.currentRole.textContent = String(profile.role || "staff");
-  setAuthVisible(false);
-  setAuthError("");
+const hydrateIdentity = async (sessionHint = null, options = {}) => {
+  const allowCachedProfile = options.allowCachedProfile === true;
+  try {
+    const { user, profile } = await runtime.ensureStaffProfile({ session: sessionHint });
+    store.setState({ session: { user }, profile });
+    if (ui.currentUser) ui.currentUser.textContent = profile.full_name || profile.email || user.email || "Staff";
+    if (ui.currentRole) ui.currentRole.textContent = String(profile.role || "staff");
+    setAuthVisible(false);
+    setAuthError("");
+    return { user, profile, fromCache: false };
+  } catch (error) {
+    const cached = store.getState().profile;
+    const fallbackUser = sessionHint?.user || store.getState().session?.user || null;
+    const userId = fallbackUser?.id || null;
+    if (allowCachedProfile && cached?.id && cached.id === userId && isTransientIdentityError(error)) {
+      store.setState({ session: { user: fallbackUser }, profile: cached });
+      if (ui.currentUser) ui.currentUser.textContent = cached.full_name || cached.email || "Staff";
+      if (ui.currentRole) ui.currentRole.textContent = String(cached.role || "staff");
+      setAuthVisible(false);
+      setAuthError("");
+      return { user: fallbackUser, profile: cached, fromCache: true };
+    }
+    throw error;
+  }
+};
+
+const syncIdentity = async (sessionHint = null, options = {}) => {
+  if (authSyncInFlight) return authSyncInFlight;
+  authSyncInFlight = (async () => {
+    try {
+      return await hydrateIdentity(sessionHint, options);
+    } finally {
+      authSyncInFlight = null;
+    }
+  })();
+  return authSyncInFlight;
 };
 
 const handleSessionRefresh = async () => {
   try {
-    await hydrateIdentity();
+    const session = await runtime.getSession();
+    await syncIdentity(session, { allowCachedProfile: true });
     await mountModule(store.getState().activeModule || "overview");
     toast.success("Session refreshed.");
   } catch (error) {
     setAuthVisible(true);
+    resetIdentityUi();
     setAuthError(runtime.normalizeSupabaseError(error, "Session expired. Please sign in again."));
   }
 };
@@ -150,7 +199,8 @@ const handleSignIn = async () => {
   setAuthError("");
   try {
     await runtime.signIn({ email, password });
-    await hydrateIdentity();
+    const session = await runtime.getSession();
+    await syncIdentity(session, { allowCachedProfile: false });
     router.navigate("overview");
   } catch (error) {
     setAuthError(error?.message || runtime.normalizeSupabaseError(error, "Unable to sign in."));
@@ -192,8 +242,7 @@ const init = async () => {
       confirmModal.close();
       setAuthVisible(true);
       setAuthError("");
-      if (ui.currentUser) ui.currentUser.textContent = "Not signed in";
-      if (ui.currentRole) ui.currentRole.textContent = "--";
+      resetIdentityUi();
     });
 
     ui.refreshSession?.addEventListener("click", handleSessionRefresh);
@@ -202,31 +251,54 @@ const init = async () => {
       setTheme(dark ? "light" : "dark");
     });
 
-    runtime.client.auth.onAuthStateChange(async (_event, session) => {
-      if (!session?.user) {
+    runtime.client.auth.onAuthStateChange(async (event, session) => {
+      if (event === "SIGNED_OUT") {
         store.setState({ session: null, profile: null });
+        drawer.close();
+        confirmModal.close();
+        resetIdentityUi();
         setAuthVisible(true);
+        setAuthError("");
         return;
       }
+      if (!session?.user) return;
+
+      const isBackgroundEvent = event === "TOKEN_REFRESHED" || event === "USER_UPDATED";
       try {
-        await hydrateIdentity();
+        await syncIdentity(session, { allowCachedProfile: isBackgroundEvent });
         if (!activeModuleKey) router.start();
       } catch (error) {
+        const normalized = runtime.normalizeSupabaseError(error, "Session refresh failed.");
+        const isFatal =
+          normalized.includes("Access denied") ||
+          normalized.includes("Session expired") ||
+          event === "INITIAL_SESSION" ||
+          event === "SIGNED_IN";
+
+        if (!isFatal && isBackgroundEvent) {
+          toast?.warning("Session refresh delayed. Your current session is still active.");
+          return;
+        }
+
+        store.setState({ session: null, profile: null });
+        resetIdentityUi();
         setAuthVisible(true);
-        setAuthError(runtime.normalizeSupabaseError(error, "Session expired. Please sign in again."));
+        setAuthError(normalized);
       }
     });
 
     const session = await runtime.getSession();
     if (!session?.user) {
       setAuthVisible(true);
+      resetIdentityUi();
       return;
     }
 
-    await hydrateIdentity();
+    await syncIdentity(session, { allowCachedProfile: false });
     router.start();
   } catch (error) {
     setAuthVisible(true);
+    resetIdentityUi();
     setAuthError(error?.message || "Unable to initialize admin panel.");
   }
 };

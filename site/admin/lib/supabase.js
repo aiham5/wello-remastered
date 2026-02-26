@@ -28,10 +28,28 @@ const normalizeSupabaseError = (error, fallback = "Request failed.") => {
   const message = String(error?.message || "").trim();
   if (!message) return fallback;
   const lower = message.toLowerCase();
-  if (lower.includes("jwt") || lower.includes("session") || lower.includes("token")) return "Session expired. Please sign in again.";
+  if (
+    lower.includes("network") ||
+    lower.includes("failed to fetch") ||
+    lower.includes("enetunreach") ||
+    lower.includes("econnreset") ||
+    lower.includes("abort") ||
+    lower.includes("timeout")
+  ) {
+    return "Network issue while contacting Supabase. Please retry.";
+  }
+  if (
+    lower.includes("jwt expired") ||
+    lower.includes("invalid jwt") ||
+    lower.includes("refresh token not found") ||
+    lower.includes("session missing") ||
+    lower.includes("invalid refresh token")
+  ) {
+    return "Session expired. Please sign in again.";
+  }
   if (lower.includes("permission") || lower.includes("forbidden")) return "You do not have permission for this action.";
   if (lower.includes("23505") || lower.includes("duplicate")) return "Duplicate request. Refresh and retry.";
-  if (lower.includes("timeout") || lower.includes("abort")) return "Request timed out. Please retry.";
+  if (lower.includes("session") && lower.includes("expired")) return "Session expired. Please sign in again.";
   return fallback;
 };
 
@@ -76,14 +94,20 @@ export const createSupabaseRuntime = ({ supabaseUrl, supabaseAnonKey }) => {
     return data || null;
   };
 
-  const ensureStaffProfile = async () => {
-    const user = await getUser();
+  const ensureStaffProfile = async ({ session: sessionHint = null } = {}) => {
+    let session = sessionHint;
+    let user = session?.user || null;
+
+    if (!user?.id) {
+      session = await getSession();
+      user = session?.user || null;
+    }
     if (!user?.id) throw new Error("Session expired. Please sign in again.");
     const profile = await getProfile(user.id);
     if (!profile || !STAFF_ROLES.has(String(profile.role || ""))) {
       throw new Error("Access denied. Admin or supervisor role required.");
     }
-    return { user, profile };
+    return { user, profile, session };
   };
 
   const invokeFunction = async (name, body = {}) => {
