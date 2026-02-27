@@ -243,6 +243,9 @@ export const createAdminApiRuntime = () => {
   };
 
   const runtime = {
+    apiRequest(path, options = {}) {
+      return request(path, options);
+    },
     client: {
       from(table) {
         return createQueryBuilder(request, table);

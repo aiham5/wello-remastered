@@ -47,23 +47,17 @@ export const cashoutOpsModule = {
 
     const load = async () => {
       try {
-        let query = runtime.client
-          .from("cashout_payouts")
-          .select("id,user_id,amount_cents,status,provider,provider_status,provider_order_id,provider_reward_id,provider_claim_url,stripe_transfer_id,stripe_payout_id,created_at,updated_at")
-          .order("created_at", { ascending: false })
-          .range(state.page * PAGE_SIZE, state.page * PAGE_SIZE + PAGE_SIZE - 1);
+        const params = new URLSearchParams({
+          page: String(state.page),
+          limit: String(PAGE_SIZE),
+        });
+        if (state.filters.status !== "all") params.set("status", state.filters.status);
+        if (state.filters.provider !== "all") params.set("provider", state.filters.provider);
+        if (state.filters.search) params.set("search", state.filters.search);
 
-        if (state.filters.status !== "all") query = query.eq("status", state.filters.status);
-        if (state.filters.provider !== "all") query = query.eq("provider", state.filters.provider);
-        const text = String(state.filters.search || "").trim();
-        if (text) {
-          const safe = text.replace(/,/g, " ");
-          query = query.or(`id.ilike.%${safe}%,user_id.ilike.%${safe}%,provider_order_id.ilike.%${safe}%,provider_reward_id.ilike.%${safe}%`);
-        }
-
-        const { data, error } = await query;
-        if (error) throw error;
-        state.rows = data || [];
+        const response = await runtime.apiRequest(`/api/admin/cashouts?${params.toString()}`);
+        if (response.error) throw response.error;
+        state.rows = Array.isArray(response.data) ? response.data : [];
 
         const stuckCount = state.rows.filter((row) => isStuck(row)).length;
         meta.textContent = `${state.rows.length} payout${state.rows.length === 1 ? "" : "s"} loaded${stuckCount ? ` · ${stuckCount} stuck > ${STUCK_HOURS}h` : ""}`;
@@ -100,14 +94,13 @@ export const cashoutOpsModule = {
           <div class="detail-line"><span>Status</span><strong>${escapeHtml(row.status || "--")}</strong></div>
           <div class="detail-line"><span>Provider</span><strong>${escapeHtml(row.provider || "--")}</strong></div>
           <div class="detail-line"><span>Provider status</span><strong>${escapeHtml(row.provider_status || "--")}</strong></div>
-          <div class="detail-line"><span>Provider ID</span><strong>${escapeHtml(row.provider_order_id || "--")}</strong></div>
-          <div class="detail-line"><span>Transfer / Reference ID</span><strong>${escapeHtml(row.provider_reward_id || "--")}</strong></div>
-          <div class="detail-line"><span>Stripe transfer</span><strong>${escapeHtml(row.stripe_transfer_id || "--")}</strong></div>
-          <div class="detail-line"><span>Stripe payout</span><strong>${escapeHtml(row.stripe_payout_id || "--")}</strong></div>
+          <div class="detail-line"><span>Provider order ID</span><strong>${escapeHtml(row.provider_order_id || "--")}</strong></div>
+          <div class="detail-line"><span>Provider transfer/reference ID</span><strong>${escapeHtml(row.provider_reward_id || "--")}</strong></div>
+          <div class="detail-line"><span>Legacy Stripe transfer ID</span><strong>${escapeHtml(row.stripe_transfer_id || "--")}</strong></div>
         </div>
         <div class="cta-row">
-          <button class="button secondary" id="co-copy-order">Copy provider ID</button>
-          <button class="button secondary" id="co-copy-reward">Copy transfer ID</button>
+          <button class="button secondary" id="co-copy-order">Copy provider order ID</button>
+          <button class="button secondary" id="co-copy-reward">Copy transfer/reference ID</button>
           <button class="button primary" id="co-open-claim" ${row.provider_claim_url ? "" : "disabled"}>Open claim link</button>
         </div>
       `;
@@ -116,14 +109,14 @@ export const cashoutOpsModule = {
         const text = String(row.provider_order_id || "");
         if (!text) return;
         await navigator.clipboard.writeText(text);
-        toast.success("Provider ID copied.");
+        toast.success("Provider order ID copied.");
       });
 
       node.querySelector("#co-copy-reward")?.addEventListener("click", async () => {
         const text = String(row.provider_reward_id || "");
         if (!text) return;
         await navigator.clipboard.writeText(text);
-        toast.success("Transfer ID copied.");
+        toast.success("Transfer/reference ID copied.");
       });
 
       node.querySelector("#co-open-claim")?.addEventListener("click", () => {

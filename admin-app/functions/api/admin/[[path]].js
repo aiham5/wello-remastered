@@ -33,6 +33,8 @@ const ALLOWED_MUTATION_TABLES = new Set([
 
 const ALLOWED_RPCS = new Set([
   "admin_review_receipt",
+  "admin_preview_receipt_outcome",
+  "admin_update_receipt_decision",
   "admin_update_receipt_report",
   "admin_review_business",
   "admin_review_offer",
@@ -339,7 +341,16 @@ const handleQuery = async (ctx, spec) => {
     data = rows[0];
   }
 
-  return json({ ok: true, data: data ?? (Array.isArray(data) ? data : []), count: parseCount(response) }, 200);
+  const normalizedData =
+    spec.single === "single" || spec.single === "maybe"
+      ? data ?? null
+      : Array.isArray(data)
+        ? data
+        : data == null
+          ? []
+          : [data];
+
+  return json({ ok: true, data: normalizedData, count: parseCount(response) }, 200);
 };
 
 const handleRpc = async (ctx, body) => {
@@ -348,6 +359,100 @@ const handleRpc = async (ctx, body) => {
   if (!ALLOWED_RPCS.has(name)) {
     return json({ ok: false, error: { code: "rpc_not_allowed", message: "RPC is not allowed." } }, 403);
   }
+
+  const toIsoOrNull = (value) => {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toISOString();
+  };
+
+  const normalizeStatus = (value) => String(value || "").trim().toLowerCase();
+
+  const selectRows = async ({ table, select = "*", filters = [], limit = 100 }) => {
+    const url = new URL(`/rest/v1/${table}`, "https://supabase.local");
+    url.searchParams.set("select", select);
+    if (Number.isFinite(Number(limit)) && Number(limit) > 0) {
+      url.searchParams.set("limit", String(Math.trunc(Number(limit))));
+    }
+
+    for (const filter of filters) {
+      const item = ctx.toPostgrestFilter(filter.column, filter.op, filter.value);
+      if (!item) continue;
+      const [key, value] = item;
+      if (key === "or") url.searchParams.set("or", String(value));
+      else url.searchParams.append(key, String(value));
+    }
+
+    const response = await ctx.supabaseRequest(`${url.pathname}${url.search}`);
+    const parsed = await parseResponseBody(response);
+    if (!response.ok) {
+      return {
+        rows: [],
+        error: {
+          status: response.status,
+          message: String(parsed?.message || "Select failed."),
+        },
+      };
+    }
+
+    return {
+      rows: Array.isArray(parsed) ? parsed : [],
+      error: null,
+    };
+  };
+
+  const selectOne = async (spec) => {
+    const result = await selectRows({ ...spec, limit: 1 });
+    return {
+      row: result.rows[0] || null,
+      error: result.error,
+    };
+  };
+
+  const insertOne = async ({ table, payload, select = "id" }) => {
+    const url = new URL(`/rest/v1/${table}`, "https://supabase.local");
+    url.searchParams.set("select", select);
+    const response = await ctx.supabaseRequest(`${url.pathname}${url.search}`, {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(payload),
+    });
+    const parsed = await parseResponseBody(response);
+    if (!response.ok) {
+      return {
+        row: null,
+        error: {
+          status: response.status,
+          message: String(parsed?.message || "Insert failed."),
+        },
+      };
+    }
+    return {
+      row: Array.isArray(parsed) ? parsed[0] || null : null,
+      error: null,
+    };
+  };
+
+  const logAction = async ({ action, entity, entityId, status = "success", before = null, after = null, meta = {} }) => {
+    const payload = {
+      actor_id: String(ctx.profile?.id || ""),
+      actor_role: String(ctx.profile?.role || ""),
+      action: String(action || "unknown"),
+      entity: String(entity || "unknown"),
+      entity_id: entityId || null,
+      status: status === "failed" ? "failed" : "success",
+      before_state: before,
+      after_state: after,
+      meta: meta && typeof meta === "object" ? meta : {},
+    };
+    await insertOne({
+      table: "admin_action_logs",
+      payload,
+      select: "id",
+    });
+  };
+
   const updateOne = async ({ table, updates, filters, select = "*" }) => {
     const url = new URL(`/rest/v1/${table}`, "https://supabase.local");
     url.searchParams.set("select", select);
@@ -381,6 +486,268 @@ const handleRpc = async (ctx, body) => {
     const row = Array.isArray(parsed) ? parsed[0] || null : null;
     return { row, error: null };
   };
+
+  if (name === "admin_preview_receipt_outcome") {
+    const receiptId = String(args.p_receipt_id || "").trim();
+    const totalCents = Number(args.p_receipt_total_cents || 0);
+    if (!receiptId) {
+      return json({ ok: false, error: { code: "invalid_receipt_id", message: "Receipt id is required." } }, 400);
+    }
+    if (!Number.isFinite(totalCents) || totalCents <= 0) {
+      return json({ ok: false, error: { code: "invalid_receipt_total", message: "Receipt total must be greater than 0." } }, 400);
+    }
+
+    const receiptRes = await selectOne({
+      table: "receipt_uploads",
+      select: "id,business_id,promo_code_id",
+      filters: [{ column: "id", op: "eq", value: receiptId }],
+    });
+    if (receiptRes.error) {
+      return json({ ok: false, error: { code: "rpc_failed", message: receiptRes.error.message, status: receiptRes.error.status } }, receiptRes.error.status);
+    }
+    if (!receiptRes.row?.id) {
+      return json({ ok: false, error: { code: "receipt_not_found", message: "Receipt not found." } }, 404);
+    }
+
+    let commissionRateCents = 150;
+    const businessId = String(receiptRes.row.business_id || "").trim();
+    if (businessId) {
+      const businessRes = await selectOne({
+        table: "businesses",
+        select: "id,commission_rate_cents",
+        filters: [{ column: "id", op: "eq", value: businessId }],
+      });
+      if (!businessRes.error && businessRes.row?.id) {
+        const candidate = Number(businessRes.row.commission_rate_cents || 0);
+        if ([100, 150].includes(candidate)) commissionRateCents = candidate;
+      }
+    }
+    const commissionRateBps = commissionRateCents * 10;
+
+    let defaultCashbackRateBps = 750;
+    const settingsRes = await selectOne({
+      table: "app_settings",
+      select: "key,value_json",
+      filters: [{ column: "key", op: "eq", value: "consumer_cashback_rate_bps" }],
+    });
+    if (!settingsRes.error && settingsRes.row?.value_json) {
+      const parsedBps = Number(settingsRes.row.value_json?.bps || 0);
+      if (Number.isFinite(parsedBps) && parsedBps > 0) defaultCashbackRateBps = parsedBps;
+    }
+
+    const commissionCents = Math.floor((totalCents * commissionRateBps) / 10000);
+
+    const promoCodeId = receiptRes.row.promo_code_id || null;
+    let appliedPromoRateBps = null;
+    let appliedPromoCode = null;
+    if (promoCodeId) {
+      const promoRes = await selectOne({
+        table: "promo_codes",
+        select: "id,code,cashback_rate_bps",
+        filters: [{ column: "id", op: "eq", value: promoCodeId }],
+      });
+      if (!promoRes.error && promoRes.row?.id) {
+        const rate = Number(promoRes.row.cashback_rate_bps || 0);
+        if (rate > 0) {
+          appliedPromoRateBps = rate;
+          appliedPromoCode = String(promoRes.row.code || "").trim() || null;
+        }
+      }
+    }
+
+    const effectiveCashbackRateBps = appliedPromoRateBps || defaultCashbackRateBps;
+    const cashbackCents = Math.floor((totalCents * effectiveCashbackRateBps) / 10000);
+    const platformSubsidyCents = Math.max(cashbackCents - commissionCents, 0);
+
+    return json({
+      ok: true,
+      data: {
+        receipt_id: receiptRes.row.id,
+        commission_rate_cents: commissionRateCents,
+        commission_rate_bps: commissionRateBps,
+        commission_cents: commissionCents,
+        default_cashback_rate_bps: defaultCashbackRateBps,
+        applied_promo_code_id: appliedPromoRateBps ? promoCodeId : null,
+        applied_promo_code: appliedPromoCode,
+        applied_promo_rate_bps: appliedPromoRateBps,
+        effective_cashback_rate_bps: effectiveCashbackRateBps,
+        cashback_basis: "receipt_total",
+        cashback_cents: cashbackCents,
+        platform_subsidy_cents: platformSubsidyCents,
+      },
+    });
+  }
+
+  if (name === "admin_update_receipt_decision") {
+    const receiptId = String(args.p_receipt_id || "").trim();
+    const action = normalizeStatus(args.p_action);
+    const expectedStatus = normalizeStatus(args.p_expected_status);
+    const expectedReviewedAtIso = toIsoOrNull(args.p_expected_reviewed_at);
+    const totalCentsRaw = args.p_receipt_total_cents;
+    const totalCents = totalCentsRaw == null ? null : Number(totalCentsRaw);
+    const notes = args.p_review_notes == null ? null : String(args.p_review_notes);
+
+    if (!receiptId) {
+      return json({ ok: false, error: { code: "invalid_receipt_id", message: "Receipt id is required." } }, 400);
+    }
+    if (!["verify", "reject", "undo", "edit"].includes(action)) {
+      return json({ ok: false, error: { code: "invalid_action", message: "Invalid receipt action." } }, 400);
+    }
+    if (!["pending", "verified", "rejected"].includes(expectedStatus)) {
+      return json({ ok: false, error: { code: "missing_expected_status", message: "Expected status is required." } }, 400);
+    }
+    if (["verify", "edit"].includes(action) && (!Number.isFinite(totalCents) || totalCents <= 0)) {
+      return json({ ok: false, error: { code: "invalid_receipt_total", message: "Receipt total must be greater than 0." } }, 400);
+    }
+
+    const currentRes = await selectOne({
+      table: "receipt_uploads",
+      select: "id,review_status,review_notes,reviewed_by,reviewed_at,receipt_total_cents,redemption_id",
+      filters: [{ column: "id", op: "eq", value: receiptId }],
+    });
+    if (currentRes.error) {
+      return json({ ok: false, error: { code: "rpc_failed", message: currentRes.error.message, status: currentRes.error.status } }, currentRes.error.status);
+    }
+    const current = currentRes.row;
+    if (!current?.id) {
+      return json({ ok: false, error: { code: "receipt_not_found", message: "Receipt not found." } }, 404);
+    }
+
+    const currentStatus = normalizeStatus(current.review_status);
+    const currentReviewedAtIso = toIsoOrNull(current.reviewed_at);
+    if (currentStatus !== expectedStatus) {
+      return json({ ok: false, error: { code: "concurrency_conflict", reason: "status_mismatch", message: "Receipt changed. Refresh and retry." } }, 409);
+    }
+    if ((currentReviewedAtIso || null) !== (expectedReviewedAtIso || null)) {
+      return json({ ok: false, error: { code: "concurrency_conflict", reason: "reviewed_at_mismatch", message: "Receipt changed. Refresh and retry." } }, 409);
+    }
+
+    if ((action === "verify" || action === "reject") && currentStatus !== "pending") {
+      return json({ ok: false, error: { code: "invalid_transition", message: "Only pending receipts can be reviewed." } }, 409);
+    }
+    if (action === "undo" && !["verified", "rejected"].includes(currentStatus)) {
+      return json({ ok: false, error: { code: "invalid_transition", message: "Only verified/rejected receipts can be undone." } }, 409);
+    }
+    if (action === "edit" && currentStatus !== "verified") {
+      return json({ ok: false, error: { code: "invalid_transition", message: "Only verified receipts can be edited." } }, 409);
+    }
+
+    if (action === "undo" || action === "edit") {
+      const [commissionLockRes, cashbackLockRes] = await Promise.all([
+        selectOne({
+          table: "commission_events",
+          select: "id,status",
+          filters: [
+            { column: "redemption_id", op: "eq", value: current.redemption_id },
+            { column: "status", op: "in", value: "(invoiced,paid)" },
+          ],
+        }),
+        selectOne({
+          table: "cashback_events",
+          select: "id,status",
+          filters: [
+            { column: "receipt_upload_id", op: "eq", value: current.id },
+            { column: "status", op: "eq", value: "paid" },
+          ],
+        }),
+      ]);
+
+      if (commissionLockRes.error) {
+        return json({ ok: false, error: { code: "rpc_failed", message: commissionLockRes.error.message, status: commissionLockRes.error.status } }, commissionLockRes.error.status);
+      }
+      if (cashbackLockRes.error) {
+        return json({ ok: false, error: { code: "rpc_failed", message: cashbackLockRes.error.message, status: cashbackLockRes.error.status } }, cashbackLockRes.error.status);
+      }
+      if (commissionLockRes.row?.id || cashbackLockRes.row?.id) {
+        return json({
+          ok: false,
+          error: {
+            code: "receipt_locked",
+            reason: "accounting_progressed",
+            message: "This receipt is locked because invoicing/payout has already progressed.",
+          },
+        }, 409);
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const updates = {};
+    if (action === "verify") {
+      updates.review_status = "verified";
+      updates.receipt_total_cents = Math.trunc(totalCents);
+      updates.review_notes = notes;
+      updates.reviewed_by = ctx.profile.id;
+      updates.reviewed_at = nowIso;
+    } else if (action === "reject") {
+      updates.review_status = "rejected";
+      updates.review_notes = notes;
+      updates.reviewed_by = ctx.profile.id;
+      updates.reviewed_at = nowIso;
+    } else if (action === "undo") {
+      updates.review_status = "pending";
+      updates.review_notes = notes;
+      updates.reviewed_by = null;
+      updates.reviewed_at = null;
+    } else {
+      updates.receipt_total_cents = Math.trunc(totalCents);
+      updates.review_notes = notes;
+      updates.reviewed_by = ctx.profile.id;
+      updates.reviewed_at = nowIso;
+    }
+
+    const filters = [
+      { column: "id", op: "eq", value: receiptId },
+      { column: "review_status", op: "eq", value: expectedStatus },
+    ];
+    if (expectedReviewedAtIso) {
+      filters.push({ column: "reviewed_at", op: "eq", value: expectedReviewedAtIso });
+    } else {
+      filters.push({ column: "reviewed_at", op: "is", value: null });
+    }
+
+    const result = await updateOne({
+      table: "receipt_uploads",
+      updates,
+      filters,
+      select: "id,review_status,review_notes,reviewed_by,reviewed_at,receipt_total_cents,business_id,redemption_id,user_id,uploaded_at,storage_path,promo_code_id",
+    });
+    if (result.error) {
+      return json({ ok: false, error: { code: "rpc_failed", message: result.error.message, status: result.error.status } }, result.error.status);
+    }
+    if (!result.row?.id) {
+      return json({ ok: false, error: { code: "concurrency_conflict", reason: "stale_update", message: "Receipt changed. Refresh and retry." } }, 409);
+    }
+
+    await logAction({
+      action:
+        action === "verify"
+          ? "receipt_verified"
+          : action === "reject"
+            ? "receipt_rejected"
+            : action === "undo"
+              ? "receipt_undone"
+              : "receipt_edited",
+      entity: "receipt_uploads",
+      entityId: receiptId,
+      before: {
+        review_status: current.review_status,
+        receipt_total_cents: current.receipt_total_cents,
+        review_notes: current.review_notes,
+        reviewed_by: current.reviewed_by,
+        reviewed_at: current.reviewed_at,
+      },
+      after: {
+        review_status: result.row.review_status,
+        receipt_total_cents: result.row.receipt_total_cents,
+        review_notes: result.row.review_notes,
+        reviewed_by: result.row.reviewed_by,
+        reviewed_at: result.row.reviewed_at,
+      },
+      meta: { action },
+    });
+
+    return json({ ok: true, data: result.row }, 200);
+  }
 
   if (name === "admin_review_receipt") {
     const receiptId = String(args.p_receipt_id || "").trim();
@@ -730,15 +1097,81 @@ const routeExplicit = async (ctx, request, segments) => {
   }
 
   if (segments.length === 1 && segments[0] === "receipts" && method === "GET") {
+    const searchParams = new URL(request.url).searchParams;
+    const status = String(searchParams.get("status") || "pending").trim().toLowerCase();
+    const businessId = String(searchParams.get("businessId") || "all").trim();
+    const search = String(searchParams.get("search") || "").trim();
+    const startDate = String(searchParams.get("startDate") || "").trim();
+    const endDate = String(searchParams.get("endDate") || "").trim();
+    const page = Math.max(0, Number(searchParams.get("page") || 0) || 0);
+    const pageSize = Math.max(1, Math.min(100, Number(searchParams.get("pageSize") || 30) || 30));
+    const filters = [];
+
+    if (["pending", "verified", "rejected"].includes(status)) {
+      filters.push({ column: "review_status", op: "eq", value: status });
+    }
+    if (businessId && businessId !== "all") {
+      filters.push({ column: "business_id", op: "eq", value: businessId });
+    }
+    if (startDate) {
+      filters.push({ column: "uploaded_at", op: "gte", value: `${startDate}T00:00:00.000Z` });
+    }
+    if (endDate) {
+      filters.push({ column: "uploaded_at", op: "lte", value: `${endDate}T23:59:59.999Z` });
+    }
+    if (search) {
+      const safe = search.replace(/,/g, " ");
+      filters.push({ column: "or", op: "or", value: `id.ilike.%${safe}%,review_notes.ilike.%${safe}%` });
+    }
+
     return handleQuery(ctx, {
       table: "receipt_uploads",
       action: "select",
       select:
-        "id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,business:businesses(id,name),redemption:redemptions(id,offer:offers(id,title)),cashback_events(amount_cents,status)",
+        "id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,promo_code_id,business:businesses(id,name,commission_rate_cents),redemption:redemptions(id,offer:offers(id,title))",
       order: [{ column: "uploaded_at", ascending: false }],
-      limit: Number(new URL(request.url).searchParams.get("limit") || 30),
+      limit: pageSize,
+      range: {
+        from: page * pageSize,
+        to: page * pageSize + pageSize - 1,
+      },
       single: "none",
-      filters: [],
+      filters,
+    });
+  }
+
+  if (segments.length === 3 && segments[0] === "receipts" && segments[2] === "detail" && method === "GET") {
+    return handleQuery(ctx, {
+      table: "receipt_uploads",
+      action: "select",
+      select:
+        "id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,promo_code_id,business:businesses(id,name,commission_rate_cents),redemption:redemptions(id,offer:offers(id,title),commission_events(id,amount_cents,status)),promo_code:promo_codes(id,code,cashback_rate_bps),cashback_events(id,amount_cents,status,cashback_rate_bps,cashback_basis,platform_subsidy_cents,promo_code_id,promo_code:promo_codes(code,cashback_rate_bps))",
+      filters: [{ column: "id", op: "eq", value: segments[1] }],
+      single: "maybe",
+    });
+  }
+
+  if (segments.length === 3 && segments[0] === "receipts" && segments[2] === "preview" && method === "POST") {
+    return handleRpc(ctx, {
+      name: "admin_preview_receipt_outcome",
+      args: {
+        p_receipt_id: segments[1],
+        p_receipt_total_cents: body?.receiptTotalCents,
+      },
+    });
+  }
+
+  if (segments.length === 3 && segments[0] === "receipts" && segments[2] === "decision" && method === "POST") {
+    return handleRpc(ctx, {
+      name: "admin_update_receipt_decision",
+      args: {
+        p_receipt_id: segments[1],
+        p_action: body?.action,
+        p_receipt_total_cents: body?.receiptTotalCents,
+        p_review_notes: body?.reviewNotes ?? null,
+        p_expected_status: body?.expectedStatus,
+        p_expected_reviewed_at: body?.expectedReviewedAt ?? null,
+      },
     });
   }
 
@@ -837,14 +1270,36 @@ const routeExplicit = async (ctx, request, segments) => {
   }
 
   if (segments.length === 1 && segments[0] === "cashouts" && method === "GET") {
+    const searchParams = new URL(request.url).searchParams;
+    const status = String(searchParams.get("status") || "all").trim().toLowerCase();
+    const provider = String(searchParams.get("provider") || "all").trim().toLowerCase();
+    const search = String(searchParams.get("search") || "").trim();
+    const page = Math.max(0, Number(searchParams.get("page") || 0) || 0);
+    const limit = Math.max(1, Math.min(100, Number(searchParams.get("limit") || 30) || 30));
+    const filters = [];
+    if (status !== "all") filters.push({ column: "status", op: "eq", value: status });
+    if (provider !== "all") filters.push({ column: "provider", op: "eq", value: provider });
+    if (search) {
+      const safe = search.replace(/,/g, " ");
+      filters.push({
+        column: "or",
+        op: "or",
+        value: `id.ilike.%${safe}%,user_id.ilike.%${safe}%,provider_order_id.ilike.%${safe}%,provider_reward_id.ilike.%${safe}%`,
+      });
+    }
+
     return handleQuery(ctx, {
       table: "cashout_payouts",
       action: "select",
       select:
-        "id,user_id,amount_cents,status,provider,provider_status,provider_order_id,provider_reward_id,provider_claim_url,stripe_transfer_id,stripe_payout_id,created_at,updated_at",
+        "id,user_id,amount_cents,status,provider,provider_status,provider_order_id,provider_reward_id,provider_claim_url,stripe_transfer_id,created_at,updated_at",
       order: [{ column: "created_at", ascending: false }],
-      limit: Number(new URL(request.url).searchParams.get("limit") || 30),
-      filters: [],
+      limit,
+      range: {
+        from: page * limit,
+        to: page * limit + limit - 1,
+      },
+      filters,
     });
   }
 

@@ -26,6 +26,33 @@
   color: var(--admin-text);
 }
 
+body.admin {
+  margin: 0;
+  background: #eef2f6;
+  color: #0f172a;
+}
+
+html[data-theme="dark"] body.admin {
+  background: #0c111b;
+  color: #e5edf8;
+}
+
+.admin-root * {
+  box-sizing: border-box;
+}
+
+.admin-root h1,
+.admin-root h2,
+.admin-root h3,
+.admin-root h4,
+.admin-root p {
+  margin: 0;
+}
+
+.admin-root a {
+  color: inherit;
+}
+
 html[data-theme="dark"] .admin-root {
   --admin-bg: #0c111b;
   --admin-text: #e5edf8;
@@ -114,9 +141,21 @@ html[data-theme="dark"] .admin-root {
 
 .admin-root .button,
 .admin-root .theme-toggle {
+  appearance: none;
+  border: 1px solid var(--admin-border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
   border-radius: 10px;
   min-height: 38px;
+  font-size: 13px;
   font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease, transform 140ms ease;
 }
 
 .admin-root .button.primary {
@@ -128,6 +167,18 @@ html[data-theme="dark"] .admin-root {
 .admin-root .button.secondary {
   background: var(--admin-input-bg);
   border: 1px solid var(--admin-border);
+}
+
+.admin-root .button.danger-outline {
+  color: #991b1b;
+  border: 1px solid rgba(153, 27, 27, 0.35);
+  background: rgba(153, 27, 27, 0.08);
+}
+
+.admin-root .button:hover,
+.admin-root .theme-toggle:hover {
+  transform: translateY(-1px);
+  border-color: var(--admin-border-strong);
 }
 
 .admin-root .button:disabled {
@@ -148,6 +199,28 @@ html[data-theme="dark"] .admin-root .button.primary {
   max-width: 640px;
   margin: 26px auto 0;
   text-align: left;
+}
+
+.card-simple {
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: var(--admin-shadow);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--admin-border);
+  background: var(--admin-surface-soft);
+  color: var(--admin-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  padding: 5px 10px;
 }
 
 .admin-auth h2 {
@@ -604,6 +677,42 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
   gap: 10px;
 }
 
+.receipt-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.receipt-preview-card {
+  border: 1px solid var(--admin-border);
+  border-radius: 10px;
+  background: var(--admin-input-bg);
+  padding: 10px;
+}
+
+.receipt-preview-card span {
+  display: block;
+  font-size: 11px;
+  color: var(--admin-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.receipt-preview-card strong {
+  display: block;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+
+.receipt-preview-card small {
+  display: block;
+  margin-top: 4px;
+  color: var(--admin-muted);
+  font-size: 11px;
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -650,6 +759,10 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
   background: var(--admin-surface-soft);
 }
 
+.drawer-image-wrap.is-expanded img {
+  max-height: calc(100vh - 280px);
+}
+
 .receipt-image-meta {
   display: flex;
   align-items: center;
@@ -657,6 +770,35 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
   gap: 10px;
   padding: 10px;
   border-top: 1px solid var(--admin-border);
+}
+
+.receipt-full-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--admin-border);
+  background: var(--admin-surface-soft);
+}
+
+.receipt-full-controls span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--admin-muted);
+}
+
+.receipt-image-stage {
+  overflow: auto;
+  background: var(--admin-surface-soft);
+  border-top: 1px solid var(--admin-border);
+}
+
+.receipt-image-stage img {
+  transform-origin: top left;
 }
 
 .receipt-image-meta span {
@@ -742,6 +884,7 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
   width: min(620px, 100%);
   height: 100%;
   background: var(--admin-surface-soft);
+  opacity: 1;
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--admin-border);
@@ -763,6 +906,31 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
 .drawer-content {
   padding: 14px;
   overflow: auto;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.58);
+  backdrop-filter: blur(2px);
+}
+
+.modal-card {
+  width: min(460px, calc(100vw - 24px));
+  border-radius: 12px;
+  border: 1px solid var(--admin-border);
+  background: var(--admin-surface);
+  color: var(--admin-text);
+  opacity: 1;
+  box-shadow: var(--admin-shadow);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
 }
 
 .modal-small {
@@ -787,16 +955,25 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
 }
 
 .admin-toast {
-  min-width: 220px;
-  max-width: 360px;
+  min-width: 260px;
+  max-width: 420px;
   background: var(--admin-toast-bg);
   color: #ffffff;
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   transform: translateY(8px);
   opacity: 0;
   transition: 180ms ease;
+}
+
+.admin-toast-text {
+  flex: 1;
+  min-width: 0;
 }
 
 .admin-toast.is-visible {
@@ -814,6 +991,19 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
 
 .admin-toast.warning {
   background: #92400e;
+}
+
+.admin-toast-action {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-radius: 999px;
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .is-hidden {
