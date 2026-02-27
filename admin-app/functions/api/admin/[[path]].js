@@ -453,7 +453,24 @@ const handleInvokeFunction = async (ctx, fnName, body) => {
   }
 
   const supabaseUrl = String(ctx.env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
-  const key = String(ctx.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+  const key = String(
+    ctx.env.ADMIN_SUPABASE_SECRET_KEY ||
+      ctx.env.SUPABASE_SECRET_KEY ||
+      ctx.env.SUPABASE_SERVICE_ROLE_KEY ||
+      "",
+  ).trim();
+  if (!key) {
+    return json(
+      {
+        ok: false,
+        error: {
+          code: "missing_server_secret",
+          message: "Server secret is not configured.",
+        },
+      },
+      500,
+    );
+  }
   const response = await fetch(`${supabaseUrl}/functions/v1/${encodeURIComponent(fnName)}`, {
     method: "POST",
     headers: {

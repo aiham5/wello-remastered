@@ -151,9 +151,14 @@ const toPostgrestFilter = (column, op, value) => {
 
 const supabaseRequest = async (env, path, init = {}) => {
   const baseUrl = String(env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
-  const serviceKey = String(env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+  const serviceKey = String(
+    env.ADMIN_SUPABASE_SECRET_KEY ||
+      env.SUPABASE_SECRET_KEY ||
+      env.SUPABASE_SERVICE_ROLE_KEY ||
+      "",
+  ).trim();
   if (!baseUrl || !serviceKey) {
-    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.");
+    throw new Error("Missing SUPABASE_URL or ADMIN_SUPABASE_SECRET_KEY.");
   }
 
   const response = await fetch(`${baseUrl}${path}`, {

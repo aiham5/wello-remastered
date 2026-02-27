@@ -1,2 +1,1 @@
-SUPABASE_SERVICE_ROLE_KEY=replace-with-service-role-key
-
+ADMIN_SUPABASE_SECRET_KEY=replace-with-supabase-secret-key

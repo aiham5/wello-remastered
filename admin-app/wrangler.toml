@@ -11,4 +11,5 @@ ADMIN_ALLOWED_EMAILS = "support@wellopartners.com"
 # Optional, defaults to "*"
 ADMIN_CORS_ORIGIN = ""
 SUPABASE_URL = "https://qrohvdlntdowewhkwfub.supabase.co"
-
+# Set secret in Cloudflare Pages/Workers secrets:
+# ADMIN_SUPABASE_SECRET_KEY=...

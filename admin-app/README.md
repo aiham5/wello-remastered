@@ -20,11 +20,15 @@ This app is the dedicated admin surface, separated from the main website.
 ## Required Env/Secrets
 Set on the admin Pages project:
 - `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY` (secret)
+- `ADMIN_SUPABASE_SECRET_KEY` (secret, server-only)
 - `CF_ACCESS_TEAM_DOMAIN`
 - `CF_ACCESS_AUD`
 - `ADMIN_ALLOWED_EMAILS` (optional)
 - `ADMIN_CORS_ORIGIN` (optional)
+
+Backward compatibility:
+- `SUPABASE_SECRET_KEY` is accepted as a fallback.
+- `SUPABASE_SERVICE_ROLE_KEY` is still accepted as a fallback.
 
 ## Deploy
 From `admin-app/`:
@@ -47,4 +51,3 @@ Apply:
 - `supabase/migrations/20260227041001_admin_auth_events.sql`
 
 This adds auth diagnostic logging table used by the admin API (`admin_auth_events`).
-
