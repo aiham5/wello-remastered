@@ -2863,7 +2863,10 @@ body.referral-v2 .v2-nav-wrap {
   position: sticky;
   top: 0;
   z-index: 20;
-  padding-top: 18px;
+  padding-top: 0;
+  border-bottom: 1px solid rgba(16, 18, 21, 0.08);
+  background: rgba(250, 249, 243, 0.94);
+  backdrop-filter: blur(8px);
 }
 
 body.home-v2 .v2-nav,
@@ -2873,12 +2876,12 @@ body.legal-v2 .legal-nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 12px 18px;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.95);
-  box-shadow: 0 10px 28px rgba(16, 18, 21, 0.05);
+  gap: 18px;
+  padding: 14px 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 body.home-v2 .v2-brand,
@@ -2887,18 +2890,20 @@ body.contact-v2 .contact-brand,
 body.legal-v2 .legal-brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   text-decoration: none;
   color: var(--text);
   font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.01em;
 }
 
 body.home-v2 .v2-brand img,
 body.referral-v2 .v2-brand img,
 body.contact-v2 .contact-brand img,
 body.legal-v2 .legal-brand img {
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
   border-radius: 8px;
   object-fit: cover;
 }
@@ -2906,7 +2911,7 @@ body.legal-v2 .legal-brand img {
 body.home-v2 .v2-nav-links {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
 }
 
 body.home-v2 .v2-nav-links a,
@@ -2917,6 +2922,11 @@ body.legal-v2 .legal-nav-link {
   color: #2c3138;
   font-size: 14px;
   font-weight: 600;
+}
+
+body.home-v2 .v2-nav-links .v2-nav-cta,
+body.referral-v2 .v2-nav-cta {
+  color: var(--brand);
 }
 
 body.home-v2 .v2-nav-cta,
@@ -2937,8 +2947,8 @@ body.contact-v2 .contact-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 46px;
-  padding: 0 18px;
+  min-height: 42px;
+  padding: 0 16px;
   border-radius: var(--radius-pill);
   text-decoration: none;
   font-size: 14px;
@@ -2957,9 +2967,9 @@ body.home-v2 .v2-nav-links a:not(.v2-nav-cta) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 36px;
-  padding: 0 10px;
-  border-radius: 8px;
+  min-height: 34px;
+  padding: 0 6px;
+  border-radius: 0;
   border: none;
   background: transparent;
 }
