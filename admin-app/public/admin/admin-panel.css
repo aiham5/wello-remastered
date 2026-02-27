@@ -334,6 +334,31 @@ html[data-theme="dark"] .admin-nav-btn.is-active .admin-nav-copy small {
   gap: 12px;
 }
 
+.receipt-review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.receipt-review-table-panel {
+  min-width: 0;
+}
+
+.receipt-review-detail-panel {
+  position: sticky;
+  top: 72px;
+  max-height: calc(100vh - 94px);
+  overflow: auto;
+}
+
+.receipt-review-empty {
+  min-height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .module-header {
   display: flex;
   align-items: flex-start;
@@ -510,6 +535,16 @@ html[data-theme="dark"] .admin-nav-btn.is-active .admin-nav-copy small {
 
 .admin-table tbody tr:hover {
   background: var(--admin-hover);
+}
+
+.admin-table tbody tr.is-selected,
+.admin-table tbody tr.is-selected:hover {
+  background: rgba(241, 230, 47, 0.28);
+}
+
+html[data-theme="dark"] .admin-table tbody tr.is-selected,
+html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
+  background: rgba(241, 230, 47, 0.2);
 }
 
 .status-pill {
@@ -806,6 +841,15 @@ body.drawer-open {
 
   .sticky-filters {
     top: 72px;
+  }
+
+  .receipt-review-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .receipt-review-detail-panel {
+    position: static;
+    max-height: none;
   }
 }
 

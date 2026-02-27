@@ -1,11 +1,17 @@
-﻿import { createSectionHeader, mapStatusBadge } from "./helpers.js";
-import { formatCurrencyFromCents, formatDateTime, dollarsFromCents, centsFromDollars, escapeHtml } from "../lib/format.js";
-import { renderTable } from "../components/table.js";
+import { createSectionHeader, mapStatusBadge } from "./helpers.js";
+import {
+  formatCurrencyFromCents,
+  formatDateTime,
+  dollarsFromCents,
+  centsFromDollars,
+  escapeHtml,
+} from "../lib/format.js";
 import { renderPagination } from "../components/pagination.js";
 import { debounce } from "../lib/http.js";
 
 const PAGE_SIZE = 30;
 const RECEIPT_BUCKET_CANDIDATES = ["receipt-images", "receipt_uploads", "receipts"];
+
 const safeDecode = (value) => {
   try {
     return decodeURIComponent(value);
@@ -17,6 +23,7 @@ const safeDecode = (value) => {
 const splitStoragePath = (storagePath) => {
   const raw = String(storagePath || "").trim();
   if (!raw) return null;
+
   if (/^https?:\/\//i.test(raw)) {
     const fromStorageApi = raw.match(/\/storage\/v1\/object\/(?:public|sign)\/([^/]+)\/([^?]+)/i);
     if (fromStorageApi) {
@@ -54,6 +61,7 @@ const splitStoragePath = (storagePath) => {
 const buildStorageTargets = (parsed) => {
   const targets = [];
   const seen = new Set();
+
   const add = (bucket, objectPath) => {
     const cleanBucket = String(bucket || "").trim();
     const cleanPath = String(objectPath || "").trim().replace(/^\/+/, "");
@@ -77,6 +85,21 @@ const buildStorageTargets = (parsed) => {
 };
 
 const resolveReceiptImage = async (runtime, storagePath) => {
+  const normalizedRawPath = String(storagePath || "").trim().replace(/^\/+/, "");
+  if (normalizedRawPath.startsWith("receipts/")) {
+    const r2Result = await runtime.client.storage
+      .from("__r2__")
+      .createSignedUrl(normalizedRawPath, 60 * 30);
+    if (!r2Result?.error && r2Result?.data?.signedUrl) {
+      return {
+        signedUrl: r2Result.data.signedUrl,
+        resolvedPath: normalizedRawPath,
+        resolvedBucket: "r2",
+        errorReason: "",
+      };
+    }
+  }
+
   const parsed = splitStoragePath(storagePath);
   if (!parsed) {
     return {
@@ -117,20 +140,74 @@ const resolveReceiptImage = async (runtime, storagePath) => {
     signedUrl: "",
     resolvedPath: parsed.objectPath || "",
     resolvedBucket: parsed.bucket || "",
-    errorReason: lastError || "No readable image in configured receipt buckets.",
+    errorReason: lastError || "No readable image in configured receipt stores.",
   };
+};
+
+const renderDetailPlaceholder = (container, message) => {
+  if (!container) return;
+  container.innerHTML = `<div class="admin-empty receipt-review-empty">${escapeHtml(message)}</div>`;
+};
+
+const renderReceiptsTable = ({ container, rows, selectedId, onRowSelect }) => {
+  if (!container) return;
+
+  if (!rows.length) {
+    container.innerHTML = "<div class='admin-empty'>No receipts match current filters.</div>";
+    return;
+  }
+
+  container.innerHTML = `
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>Business</th>
+          <th>Offer</th>
+          <th>Uploaded</th>
+          <th>Total</th>
+          <th>Commission</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows
+          .map(
+            (row) => `
+          <tr data-row-id="${escapeHtml(row.id)}" class="${row.id === selectedId ? "is-selected" : ""}">
+            <td>${escapeHtml(row.business?.name || "--")}</td>
+            <td>${escapeHtml(row.redemption?.offer?.title || "--")}</td>
+            <td>${escapeHtml(formatDateTime(row.uploaded_at))}</td>
+            <td>${escapeHtml(formatCurrencyFromCents(row.receipt_total_cents || 0))}</td>
+            <td>${escapeHtml(formatCurrencyFromCents(row.commission_due_cents || 0))}</td>
+            <td>${mapStatusBadge(row.review_status)}</td>
+          </tr>
+        `,
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+
+  container.querySelectorAll("tr[data-row-id]").forEach((rowEl) => {
+    rowEl.addEventListener("click", () => {
+      const id = rowEl.getAttribute("data-row-id");
+      if (id) onRowSelect(id);
+    });
+  });
 };
 
 export const receiptReviewModule = {
   key: "receipt-review",
   label: "Receipt Review",
   async mount(ctx) {
-    const { content, runtime, toast, drawer, confirmModal } = ctx;
+    const { content, runtime, toast, confirmModal } = ctx;
     const state = {
       page: 0,
       rows: [],
-      filters: { search: "", status: "pending", businessId: "all", startDate: "", endDate: "" },
+      selectedId: null,
       businesses: [],
+      detailRequestId: 0,
+      filters: { search: "", status: "pending", businessId: "all", startDate: "", endDate: "" },
     };
 
     content.innerHTML = `
@@ -148,81 +225,25 @@ export const receiptReviewModule = {
           <label class="field"><span>To</span><input id="rr-end" type="date" /></label>
         </div>
       </section>
-      <section class="panel-card">
-        <div class="panel-card-header"><h3>Queue</h3><p class="notice" id="rr-meta"></p></div>
-        <div id="rr-table"></div>
-        <div id="rr-pagination"></div>
+      <section class="receipt-review-layout">
+        <section class="panel-card receipt-review-table-panel">
+          <div class="panel-card-header"><h3>Queue</h3><p class="notice" id="rr-meta"></p></div>
+          <div id="rr-table"></div>
+          <div id="rr-pagination"></div>
+        </section>
+        <aside class="panel-card receipt-review-detail-panel">
+          <div class="panel-card-header"><h3>Receipt details</h3></div>
+          <div id="rr-detail"></div>
+        </aside>
       </section>
     `;
 
     const tableContainer = content.querySelector("#rr-table");
     const paginationContainer = content.querySelector("#rr-pagination");
     const meta = content.querySelector("#rr-meta");
+    const detailContainer = content.querySelector("#rr-detail");
 
-    const loadBusinesses = async () => {
-      const { data, error } = await runtime.client.from("businesses").select("id,name").order("name", { ascending: true }).limit(300);
-      if (error) throw error;
-      state.businesses = data || [];
-      const select = content.querySelector("#rr-business");
-      select.innerHTML = '<option value="all">All businesses</option>';
-      state.businesses.forEach((row) => {
-        const option = document.createElement("option");
-        option.value = row.id;
-        option.textContent = row.name;
-        select.appendChild(option);
-      });
-    };
-
-    const load = async () => {
-      try {
-        let query = runtime.client
-          .from("receipt_uploads")
-          .select("id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,business:businesses(id,name),redemption:redemptions(id,offer:offers(id,title)),cashback_events(amount_cents,status)")
-          .order("uploaded_at", { ascending: false })
-          .range(state.page * PAGE_SIZE, state.page * PAGE_SIZE + PAGE_SIZE - 1);
-
-        if (state.filters.status !== "all") query = query.eq("review_status", state.filters.status);
-        if (state.filters.businessId !== "all") query = query.eq("business_id", state.filters.businessId);
-        if (state.filters.startDate) query = query.gte("uploaded_at", `${state.filters.startDate}T00:00:00.000Z`);
-        if (state.filters.endDate) query = query.lte("uploaded_at", `${state.filters.endDate}T23:59:59.999Z`);
-        const text = String(state.filters.search || "").trim();
-        if (text) {
-          const safe = text.replace(/,/g, " ");
-          query = query.or(`id.ilike.%${safe}%,review_notes.ilike.%${safe}%`);
-        }
-
-        const { data, error } = await query;
-        if (error) throw error;
-        state.rows = data || [];
-        meta.textContent = `${state.rows.length} receipt${state.rows.length === 1 ? "" : "s"} loaded`;
-
-        renderTable({
-          container: tableContainer,
-          columns: [
-            { label: "Business", render: (row) => escapeHtml(row.business?.name || "--") },
-            { label: "Offer", render: (row) => escapeHtml(row.redemption?.offer?.title || "--") },
-            { label: "Uploaded", render: (row) => escapeHtml(formatDateTime(row.uploaded_at)) },
-            { label: "Total", render: (row) => escapeHtml(formatCurrencyFromCents(row.receipt_total_cents || 0)) },
-            { label: "Commission", render: (row) => escapeHtml(formatCurrencyFromCents(row.commission_due_cents || 0)) },
-            { label: "Status", render: (row) => mapStatusBadge(row.review_status) },
-          ],
-          rows: state.rows,
-          rowKey: (row) => row.id,
-          onRowClick: (row) => openReceipt(row),
-          emptyText: "No receipts match current filters.",
-        });
-
-        renderPagination({
-          container: paginationContainer,
-          page: state.page,
-          pageSize: PAGE_SIZE,
-          rowCount: state.rows.length,
-          onPageChange: async (nextPage) => { state.page = nextPage; await load(); },
-        });
-      } catch (error) {
-        toast.error(runtime.normalizeSupabaseError(error, "Unable to load receipts."));
-      }
-    };
+    const getSelectedRow = () => state.rows.find((row) => row.id === state.selectedId) || null;
 
     const verifyOrReject = async ({ row, nextStatus, totalCents, notes }) => {
       try {
@@ -259,8 +280,9 @@ export const receiptReviewModule = {
           changed = fallback.data;
         }
 
-        if (!changed) toast.warning("No changes applied. Receipt is no longer pending.");
-        else {
+        if (!changed) {
+          toast.warning("No changes applied. Receipt is no longer pending.");
+        } else {
           toast.success(`Receipt ${nextStatus}.`);
           await runtime.logAction({
             action: `receipt_${nextStatus}`,
@@ -270,60 +292,61 @@ export const receiptReviewModule = {
             after: { review_status: nextStatus, receipt_total_cents: totalCents },
           });
         }
-        drawer.close();
+
         await load();
       } catch (error) {
         toast.error(runtime.normalizeSupabaseError(error, `Unable to ${nextStatus} receipt.`));
       }
     };
 
-    const openReceipt = async (row) => {
-      const image = await resolveReceiptImage(runtime, row.storage_path);
-      const signedUrl = image.signedUrl;
+    const renderDetail = async (row) => {
+      if (!row) {
+        renderDetailPlaceholder(detailContainer, "Select a receipt from the queue to review.");
+        return;
+      }
 
-      const node = document.createElement("div");
-      node.className = "detail-form-wrapper";
-      node.innerHTML = `
-        <div class="detail-grid">
-          <div class="detail-line"><span>Status</span><strong>${escapeHtml(row.review_status || "pending")}</strong></div>
-          <div class="detail-line"><span>Uploaded</span><strong>${escapeHtml(formatDateTime(row.uploaded_at))}</strong></div>
-          <div class="detail-line"><span>Business</span><strong>${escapeHtml(row.business?.name || "--")}</strong></div>
-          <div class="detail-line"><span>Offer</span><strong>${escapeHtml(row.redemption?.offer?.title || "--")}</strong></div>
-        </div>
-        <label class="field"><span>Receipt total ($)</span><input id="rr-total" type="number" min="0" step="0.01" value="${escapeHtml(dollarsFromCents(row.receipt_total_cents || 0))}" /></label>
-        <label class="field"><span>Review notes</span><textarea id="rr-notes" rows="4">${escapeHtml(row.review_notes || "")}</textarea></label>
-        <div class="drawer-image-wrap">
-          ${signedUrl ? `<img src="${signedUrl}" alt="Receipt image" />` : "<div class='admin-empty'>Unable to load receipt image.</div>"}
-          <div class="receipt-image-meta">
-            <span title="${escapeHtml(row.storage_path || "")}">
-              ${signedUrl
-                ? escapeHtml(`Source: ${image.resolvedBucket}/${image.resolvedPath}`)
-                : escapeHtml(`Image unavailable: ${image.errorReason}`)}
-            </span>
-            ${
-              signedUrl
-                ? '<button class="button secondary" id="rr-open-image" type="button">Open full image</button>'
-                : ""
-            }
+      const requestId = ++state.detailRequestId;
+      detailContainer.innerHTML = "<div class='admin-loading'>Loading receipt details...</div>";
+      const image = await resolveReceiptImage(runtime, row.storage_path);
+
+      if (requestId !== state.detailRequestId) return;
+
+      const isPending = String(row.review_status || "").toLowerCase() === "pending";
+      detailContainer.innerHTML = `
+        <div class="detail-form-wrapper">
+          <div class="detail-grid">
+            <div class="detail-line"><span>Status</span><strong>${escapeHtml(row.review_status || "pending")}</strong></div>
+            <div class="detail-line"><span>Uploaded</span><strong>${escapeHtml(formatDateTime(row.uploaded_at))}</strong></div>
+            <div class="detail-line"><span>Business</span><strong>${escapeHtml(row.business?.name || "--")}</strong></div>
+            <div class="detail-line"><span>Offer</span><strong>${escapeHtml(row.redemption?.offer?.title || "--")}</strong></div>
           </div>
-        </div>
-        <div class="cta-row">
-          <button class="button primary" id="rr-verify">Verify receipt</button>
-          <button class="button danger-outline" id="rr-reject">Reject receipt</button>
+          <label class="field"><span>Receipt total ($)</span><input id="rr-total" type="number" min="0" step="0.01" value="${escapeHtml(dollarsFromCents(row.receipt_total_cents || 0))}" ${isPending ? "" : "disabled"} /></label>
+          <label class="field"><span>Review notes</span><textarea id="rr-notes" rows="4" ${isPending ? "" : "disabled"}>${escapeHtml(row.review_notes || "")}</textarea></label>
+          <div class="drawer-image-wrap">
+            ${image.signedUrl ? `<img src="${image.signedUrl}" alt="Receipt image" />` : "<div class='admin-empty'>Unable to load receipt image.</div>"}
+            <div class="receipt-image-meta">
+              <span title="${escapeHtml(row.storage_path || "")}">${image.signedUrl ? escapeHtml(`Source: ${image.resolvedBucket}/${image.resolvedPath}`) : escapeHtml(`Image unavailable: ${image.errorReason}`)}</span>
+              ${image.signedUrl ? '<button class="button secondary" id="rr-open-image" type="button">Open full image</button>' : ""}
+            </div>
+          </div>
+          <div class="cta-row">
+            <button class="button primary" id="rr-verify" ${isPending ? "" : "disabled"}>Verify receipt</button>
+            <button class="button danger-outline" id="rr-reject" ${isPending ? "" : "disabled"}>Reject receipt</button>
+          </div>
         </div>
       `;
 
-      node.querySelector("#rr-open-image")?.addEventListener("click", () => {
-        window.open(signedUrl, "_blank", "noopener,noreferrer");
+      detailContainer.querySelector("#rr-open-image")?.addEventListener("click", () => {
+        window.open(image.signedUrl, "_blank", "noopener,noreferrer");
       });
 
-      node.querySelector("#rr-verify")?.addEventListener("click", () => {
-        const totalCents = centsFromDollars(node.querySelector("#rr-total")?.value);
+      detailContainer.querySelector("#rr-verify")?.addEventListener("click", () => {
+        const totalCents = centsFromDollars(detailContainer.querySelector("#rr-total")?.value);
         if (!Number.isFinite(totalCents) || totalCents <= 0) {
           toast.error("Enter a valid receipt total.");
           return;
         }
-        const notes = node.querySelector("#rr-notes")?.value || null;
+        const notes = detailContainer.querySelector("#rr-notes")?.value || null;
         confirmModal.open({
           title: "Verify receipt",
           body: `Mark this receipt as verified with total ${formatCurrencyFromCents(totalCents)}?`,
@@ -332,8 +355,8 @@ export const receiptReviewModule = {
         });
       });
 
-      node.querySelector("#rr-reject")?.addEventListener("click", () => {
-        const notes = node.querySelector("#rr-notes")?.value || null;
+      detailContainer.querySelector("#rr-reject")?.addEventListener("click", () => {
+        const notes = detailContainer.querySelector("#rr-notes")?.value || null;
         confirmModal.open({
           title: "Reject receipt",
           body: "Mark this receipt as rejected?",
@@ -341,8 +364,86 @@ export const receiptReviewModule = {
           onConfirm: async () => verifyOrReject({ row, nextStatus: "rejected", totalCents: row.receipt_total_cents || 0, notes }),
         });
       });
+    };
 
-      drawer.open({ title: `Receipt ${row.id.slice(0, 8)}`, content: node });
+    const handleRowSelect = (id) => {
+      state.selectedId = id;
+      renderReceiptsTable({
+        container: tableContainer,
+        rows: state.rows,
+        selectedId: state.selectedId,
+        onRowSelect: handleRowSelect,
+      });
+      renderDetail(getSelectedRow());
+    };
+
+    const loadBusinesses = async () => {
+      const { data, error } = await runtime.client.from("businesses").select("id,name").order("name", { ascending: true }).limit(300);
+      if (error) throw error;
+      state.businesses = data || [];
+      const select = content.querySelector("#rr-business");
+      select.innerHTML = '<option value="all">All businesses</option>';
+      state.businesses.forEach((row) => {
+        const option = document.createElement("option");
+        option.value = row.id;
+        option.textContent = row.name;
+        select.appendChild(option);
+      });
+    };
+
+    const load = async () => {
+      try {
+        let query = runtime.client
+          .from("receipt_uploads")
+          .select("id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,business:businesses(id,name),redemption:redemptions(id,offer:offers(id,title)),cashback_events(amount_cents,status)")
+          .order("uploaded_at", { ascending: false })
+          .range(state.page * PAGE_SIZE, state.page * PAGE_SIZE + PAGE_SIZE - 1);
+
+        if (state.filters.status !== "all") query = query.eq("review_status", state.filters.status);
+        if (state.filters.businessId !== "all") query = query.eq("business_id", state.filters.businessId);
+        if (state.filters.startDate) query = query.gte("uploaded_at", `${state.filters.startDate}T00:00:00.000Z`);
+        if (state.filters.endDate) query = query.lte("uploaded_at", `${state.filters.endDate}T23:59:59.999Z`);
+
+        const text = String(state.filters.search || "").trim();
+        if (text) {
+          const safe = text.replace(/,/g, " ");
+          query = query.or(`id.ilike.%${safe}%,review_notes.ilike.%${safe}%`);
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+
+        state.rows = data || [];
+        meta.textContent = `${state.rows.length} receipt${state.rows.length === 1 ? "" : "s"} loaded`;
+
+        if (!state.rows.length) {
+          state.selectedId = null;
+        } else if (!state.rows.some((row) => row.id === state.selectedId)) {
+          state.selectedId = state.rows[0].id;
+        }
+
+        renderReceiptsTable({
+          container: tableContainer,
+          rows: state.rows,
+          selectedId: state.selectedId,
+          onRowSelect: handleRowSelect,
+        });
+
+        renderPagination({
+          container: paginationContainer,
+          page: state.page,
+          pageSize: PAGE_SIZE,
+          rowCount: state.rows.length,
+          onPageChange: async (nextPage) => {
+            state.page = nextPage;
+            await load();
+          },
+        });
+
+        await renderDetail(getSelectedRow());
+      } catch (error) {
+        toast.error(runtime.normalizeSupabaseError(error, "Unable to load receipts."));
+      }
     };
 
     const applyFilters = debounce(async () => {

@@ -70,6 +70,129 @@ const parseResponseBody = async (response) => {
   }
 };
 
+const r2EncodeRfc3986 = (value) =>
+  encodeURIComponent(value).replace(/[!'()*]/g, (char) =>
+    `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+
+const r2EncodePath = (path) =>
+  String(path || "")
+    .split("/")
+    .map((segment) => r2EncodeRfc3986(segment))
+    .join("/");
+
+const toHex = (buffer) => {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+};
+
+const hmacRaw = async (key, value) => {
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    key,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    cryptoKey,
+    new TextEncoder().encode(value),
+  );
+  return new Uint8Array(signature);
+};
+
+const getSigningKey = async (secret, dateStamp, region, service) => {
+  const encoder = new TextEncoder();
+  const kDate = await hmacRaw(encoder.encode(`AWS4${secret}`), dateStamp);
+  const kRegion = await hmacRaw(kDate, region);
+  const kService = await hmacRaw(kRegion, service);
+  return hmacRaw(kService, "aws4_request");
+};
+
+const sha256Hex = async (value) =>
+  toHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+
+const buildQueryString = (params) => {
+  const keys = Object.keys(params).sort();
+  return keys
+    .map((key) => `${r2EncodeRfc3986(key)}=${r2EncodeRfc3986(params[key])}`)
+    .join("&");
+};
+
+const createR2PresignedUrl = async ({ endpoint, bucket, accessKeyId, secretAccessKey, key, expiresIn }) => {
+  const cleanEndpoint = String(endpoint || "").replace(/\/+$/, "");
+  const url = new URL(cleanEndpoint);
+  const host = url.host;
+  const basePath =
+    url.pathname && url.pathname !== "/" ? url.pathname.replace(/\/+$/, "") : "";
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = amzDate.slice(0, 8);
+  const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
+  const credential = `${accessKeyId}/${credentialScope}`;
+  const canonicalUri = basePath
+    ? `${basePath}/${r2EncodePath(key)}`
+    : `/${r2EncodePath(`${bucket}/${key}`)}`;
+  const payloadHash = "UNSIGNED-PAYLOAD";
+
+  const queryParams = {
+    "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+    "X-Amz-Credential": credential,
+    "X-Amz-Date": amzDate,
+    "X-Amz-Expires": String(expiresIn),
+    "X-Amz-SignedHeaders": "host",
+  };
+
+  const canonicalQueryString = buildQueryString(queryParams);
+  const canonicalHeaders = `host:${host}\n`;
+  const canonicalRequest = [
+    "GET",
+    canonicalUri,
+    canonicalQueryString,
+    canonicalHeaders,
+    "host",
+    payloadHash,
+  ].join("\n");
+
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    credentialScope,
+    await sha256Hex(canonicalRequest),
+  ].join("\n");
+
+  const signingKey = await getSigningKey(secretAccessKey, dateStamp, "auto", "s3");
+  const signature = toHex(await hmacRaw(signingKey, stringToSign));
+  const finalQuery = `${canonicalQueryString}&X-Amz-Signature=${signature}`;
+
+  return `${cleanEndpoint}${canonicalUri}?${finalQuery}`;
+};
+
+const signR2DownloadUrl = async (env, key, expiresIn) => {
+  const endpoint = String(env.R2_ENDPOINT || env.ADMIN_R2_ENDPOINT || "").trim();
+  const bucket = String(env.R2_BUCKET || env.ADMIN_R2_BUCKET || "").trim();
+  const accessKeyId = String(env.R2_ACCESS_KEY_ID || env.ADMIN_R2_ACCESS_KEY_ID || "").trim();
+  const secretAccessKey = String(
+    env.R2_SECRET_ACCESS_KEY || env.ADMIN_R2_SECRET_ACCESS_KEY || "",
+  ).trim();
+
+  if (!endpoint || !bucket || !accessKeyId || !secretAccessKey) {
+    throw new Error("R2 is not configured on admin runtime.");
+  }
+
+  return createR2PresignedUrl({
+    endpoint,
+    bucket,
+    accessKeyId,
+    secretAccessKey,
+    key,
+    expiresIn,
+  });
+};
+
 const applyQuerySpec = ({ url, spec, toPostgrestFilter }) => {
   if (spec.select) url.searchParams.set("select", String(spec.select));
 
@@ -420,6 +543,36 @@ const handleStorageSign = async (ctx, body) => {
 
   if (!bucket || !path) {
     return json({ ok: false, error: { code: "invalid_storage_input", message: "Bucket and path are required." } }, 400);
+  }
+
+  if (bucket === "__r2__" || path.startsWith("receipts/")) {
+    if (!path.startsWith("receipts/")) {
+      return json(
+        {
+          ok: false,
+          error: {
+            code: "invalid_r2_key",
+            message: "R2 receipt keys must start with 'receipts/'.",
+          },
+        },
+        400,
+      );
+    }
+    try {
+      const signedUrl = await signR2DownloadUrl(ctx.env, path, expiresIn);
+      return json({ ok: true, data: { signedUrl, signedURL: signedUrl, provider: "r2" } }, 200);
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error: {
+            code: "r2_sign_failed",
+            message: String(error?.message || "Unable to sign R2 URL."),
+          },
+        },
+        500,
+      );
+    }
   }
 
   const encodedPath = path

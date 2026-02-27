@@ -25,6 +25,10 @@ Set on the admin Pages project:
 - `CF_ACCESS_AUD`
 - `ADMIN_ALLOWED_EMAILS` (optional)
 - `ADMIN_CORS_ORIGIN` (optional)
+- `R2_ENDPOINT` (required if receipt `storage_path` uses `receipts/...`)
+- `R2_BUCKET` (required if receipt `storage_path` uses `receipts/...`)
+- `R2_ACCESS_KEY_ID` (secret, required for R2-signed receipt URLs)
+- `R2_SECRET_ACCESS_KEY` (secret, required for R2-signed receipt URLs)
 
 Backward compatibility:
 - `SUPABASE_SECRET_KEY` is accepted as a fallback.

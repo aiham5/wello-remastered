@@ -11,5 +11,11 @@ ADMIN_ALLOWED_EMAILS = "support@wellopartners.com"
 # Optional, defaults to "*"
 ADMIN_CORS_ORIGIN = ""
 SUPABASE_URL = "https://qrohvdlntdowewhkwfub.supabase.co"
+# If receipt storage_path values are R2 keys (receipts/...),
+# set these for admin receipt image signing:
+R2_ENDPOINT = ""
+R2_BUCKET = ""
 # Set secret in Cloudflare Pages/Workers secrets:
 # ADMIN_SUPABASE_SECRET_KEY=...
+# R2_ACCESS_KEY_ID=...
+# R2_SECRET_ACCESS_KEY=...
