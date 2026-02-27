@@ -2814,36 +2814,25 @@ body.home-v2,
 body.contact-v2,
 body.referral-v2,
 body.legal-v2 {
-  --bg: #fffdf7;
+  --bg: #f7f8fa;
   --surface: #ffffff;
-  --text: #141414;
-  --muted: #5b6572;
+  --text: #142033;
+  --muted: #5d6a79;
   --brand: #f4c542;
   --brand-strong: #e2b22f;
-  --line: rgba(20, 20, 20, 0.12);
-  --radius-card: 16px;
-  --radius-pill: 999px;
-  --shadow-soft: 0 10px 30px rgba(0, 0, 0, 0.06);
+  --line: rgba(20, 32, 51, 0.1);
+  --radius-card: 14px;
+  --radius-pill: 12px;
+  --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.05);
   margin: 0;
   min-height: 100vh;
   color: var(--text);
   font-family:
-    "Rubik",
-    system-ui,
     -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
     sans-serif;
-  background:
-    radial-gradient(
-      42rem 32rem at 0% -12%,
-      rgba(244, 197, 66, 0.24),
-      transparent 58%
-    ),
-    radial-gradient(
-      34rem 24rem at 100% -14%,
-      rgba(244, 197, 66, 0.14),
-      transparent 62%
-    ),
-    linear-gradient(180deg, #fffef9 0%, #fff9eb 52%, #fffdf7 100%);
+  background: linear-gradient(180deg, #fbfcfd 0%, #f7f8fa 100%);
 }
 
 body.home-v2 .v2-shell,
@@ -2880,8 +2869,8 @@ body.legal-v2 .legal-nav {
   padding: 10px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
-  background: rgba(255, 255, 255, 0.88);
-  backdrop-filter: blur(8px);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
 }
 
 body.home-v2 .v2-brand,
@@ -2927,10 +2916,10 @@ body.home-v2 .v2-nav-cta,
 body.home-v2 .v2-btn-primary,
 body.referral-v2 .v2-btn-primary,
 body.contact-v2 .contact-btn {
-  background: linear-gradient(135deg, var(--brand), var(--brand-strong));
+  background: linear-gradient(180deg, var(--brand), var(--brand-strong));
   color: #111111;
   border: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow: var(--shadow-soft);
+  box-shadow: 0 6px 18px rgba(226, 178, 47, 0.16);
 }
 
 body.home-v2 .v2-nav-cta,
@@ -2941,30 +2930,30 @@ body.contact-v2 .contact-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 40px;
-  padding: 0 14px;
+  min-height: 42px;
+  padding: 0 16px;
   border-radius: var(--radius-pill);
   text-decoration: none;
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 body.home-v2 .v2-btn-secondary,
 body.referral-v2 .v2-btn-secondary {
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.9);
-  color: #2f3d4d;
+  background: #ffffff;
+  color: #304050;
 }
 
 body.home-v2 .v2-nav-links a:not(.v2-nav-cta) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 36px;
-  padding: 0 12px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.86);
+  min-height: 34px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
 }
 
 body.home-v2 .v2-nav-links a:hover,
@@ -2975,14 +2964,14 @@ body.legal-v2 .legal-nav-link:hover {
 }
 
 body.home-v2 .v2-hero {
-  padding: 52px 0 20px;
+  padding: 42px 0 22px;
 }
 
 body.home-v2 .v2-hero-grid {
   display: grid;
   grid-template-columns: 1.1fr 0.9fr;
-  gap: 16px;
-  align-items: start;
+  gap: 28px;
+  align-items: center;
 }
 
 body.home-v2 .v2-kicker,
@@ -3005,19 +2994,19 @@ body.legal-v2 .legal-prose h1,
 body.legal-v2 .legal-prose h2 {
   margin: 0;
   font-family:
-    "Rubik",
-    system-ui,
     -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
     sans-serif;
-  letter-spacing: -0.015em;
-  font-weight: 700;
-  color: #111111;
+  letter-spacing: -0.02em;
+  font-weight: 650;
+  color: #172536;
 }
 
 body.home-v2 h1 {
-  font-size: clamp(34px, 6vw, 58px);
-  line-height: 1.03;
-  max-width: 12ch;
+  font-size: clamp(34px, 5.5vw, 56px);
+  line-height: 1.02;
+  max-width: 13ch;
 }
 
 body.home-v2 .v2-subtitle {
@@ -3025,7 +3014,7 @@ body.home-v2 .v2-subtitle {
   max-width: 45ch;
   color: var(--muted);
   font-size: 17px;
-  line-height: 1.56;
+  line-height: 1.6;
 }
 
 body.home-v2 .v2-actions,
@@ -3041,37 +3030,39 @@ body.home-v2 .v2-hero-media {
   width: 100%;
   display: flex;
   justify-content: flex-end;
-  margin-top: -135px;
+  margin-top: 0;
 }
 
 body.home-v2 .v2-hero-media-track {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
-  width: min(100%, 374px);
+  width: min(100%, 360px);
 }
 
 body.home-v2 .v2-section {
-  padding: 26px 0;
+  padding: 30px 0;
 }
 
 body.home-v2 .v2-shot {
   margin: 0;
-  border-radius: 0;
-  overflow: visible;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  box-shadow: var(--shadow-soft);
+  padding: 10px;
 }
 
 body.home-v2 .v2-shot img {
   display: block;
   width: 100%;
   height: auto;
+  border-radius: 12px;
 }
 
 body.home-v2 .v2-section-soft {
-  background: rgba(255, 255, 255, 0.64);
+  background: rgba(255, 255, 255, 0.62);
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
 }
@@ -3100,13 +3091,13 @@ body.referral-v2 .v2-referral-card,
 body.legal-v2 .legal-card {
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
-  background: rgba(255, 255, 255, 0.9);
+  background: #ffffff;
   box-shadow: var(--shadow-soft);
 }
 
 body.home-v2 .v2-card,
 body.home-v2 .v2-chip-card {
-  padding: 16px;
+  padding: 18px;
 }
 
 body.home-v2 .v2-card span {
@@ -3125,7 +3116,7 @@ body.home-v2 .v2-card span {
 body.home-v2 .v2-card h3,
 body.home-v2 .v2-chip-card h3 {
   margin: 12px 0 0;
-  font-size: 19px;
+  font-size: 18px;
 }
 
 body.home-v2 .v2-card p,
@@ -3133,7 +3124,7 @@ body.home-v2 .v2-chip-card p,
 body.home-v2 .v2-faq p {
   margin: 8px 0 0;
   color: var(--muted);
-  line-height: 1.5;
+  line-height: 1.6;
   font-size: 15px;
 }
 
@@ -3151,8 +3142,8 @@ body.home-v2 .v2-faq summary {
   list-style: none;
   position: relative;
   padding: 14px 16px;
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 650;
   color: #202a37;
 }
 
@@ -3204,9 +3195,9 @@ body.home-v2 .v2-cta {
 body.home-v2 .v2-cta-row {
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
-  background: rgba(255, 255, 255, 0.9);
+  background: #ffffff;
   box-shadow: var(--shadow-soft);
-  padding: 20px;
+  padding: 22px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3224,7 +3215,7 @@ body.contact-v2 .contact-legal-footer,
 body.legal-v2 .legal-footer {
   padding: 16px 0 24px;
   border-top: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.56);
+  background: transparent;
 }
 
 body.home-v2 .v2-footer-row,
@@ -3268,7 +3259,7 @@ body.contact-v2 .contact-header {
 }
 
 body.contact-v2 .contact-main {
-  padding: 32px 0 42px;
+  padding: 34px 0 44px;
 }
 
 body.contact-v2 .contact-hero {
@@ -3291,11 +3282,11 @@ body.contact-v2 .contact-status {
 }
 
 body.contact-v2 .contact-card {
-  padding: 18px;
+  padding: 22px;
 }
 
 body.contact-v2 .contact-card h2 {
-  font-size: 28px;
+  font-size: 26px;
 }
 
 body.contact-v2 .contact-form {
@@ -3334,9 +3325,9 @@ body.contact-v2 .contact-field textarea {
   font-size: 15px;
   color: var(--text);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 10px;
   background: #fff;
-  padding: 10px 12px;
+  padding: 11px 13px;
   box-sizing: border-box;
 }
 
@@ -3380,11 +3371,11 @@ body.contact-v2 .contact-status.is-error {
 body.referral-v2 .v2-referral-main {
   width: min(920px, 92%);
   margin: 0 auto;
-  padding: 56px 0 42px;
+  padding: 48px 0 42px;
 }
 
 body.referral-v2 .v2-referral-card {
-  padding: 24px;
+  padding: 28px;
   text-align: center;
 }
 
@@ -3419,7 +3410,7 @@ body.legal-v2 .legal-nav-actions {
 }
 
 body.legal-v2 .legal-main {
-  padding: 28px 0 38px;
+  padding: 30px 0 40px;
 }
 
 body.legal-v2 .legal-container {
@@ -3427,17 +3418,17 @@ body.legal-v2 .legal-container {
 }
 
 body.legal-v2 .legal-card {
-  padding: 22px;
+  padding: 28px;
 }
 
 body.legal-v2 .legal-prose {
   font-size: 16px;
-  line-height: 1.55;
+  line-height: 1.65;
 }
 
 body.legal-v2 .legal-prose h1 {
-  font-size: clamp(36px, 5vw, 52px);
-  line-height: 1.04;
+  font-size: clamp(34px, 4.8vw, 48px);
+  line-height: 1.06;
 }
 
 body.legal-v2 .legal-meta {
@@ -3448,19 +3439,19 @@ body.legal-v2 .legal-meta {
 body.legal-v2 .legal-note {
   margin: 16px 0;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(244, 197, 66, 0.1);
-  padding: 12px;
+  border-radius: 10px;
+  background: #faf7ef;
+  padding: 14px;
 }
 
 body.legal-v2 .legal-prose h2 {
   margin-top: 22px;
-  font-size: 24px;
+  font-size: 23px;
 }
 
 body.legal-v2 .legal-prose p,
 body.legal-v2 .legal-prose li {
-  color: #384758;
+  color: #425161;
 }
 
 body.legal-v2 .legal-prose ul {
@@ -3472,7 +3463,8 @@ body.legal-v2 .legal-table-wrap {
   margin-top: 14px;
   overflow-x: auto;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 10px;
+  background: #ffffff;
 }
 
 body.legal-v2 .legal-table {
@@ -3490,8 +3482,8 @@ body.legal-v2 .legal-table td {
 }
 
 body.legal-v2 .legal-table th {
-  color: #333;
-  background: rgba(244, 197, 66, 0.12);
+  color: #384758;
+  background: #f5f7fa;
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -3502,8 +3494,9 @@ body.legal-v2 .legal-table th {
   body.contact-v2 .contact-btn,
   body.referral-v2 .v2-btn {
     transition:
-      transform 0.2s ease,
-      box-shadow 0.2s ease;
+      border-color 0.18s ease,
+      box-shadow 0.18s ease,
+      background-color 0.18s ease;
   }
 
   body.home-v2 .v2-card:hover,
@@ -3512,25 +3505,7 @@ body.legal-v2 .legal-table th {
   body.home-v2 .v2-btn:hover,
   body.contact-v2 .contact-btn:hover,
   body.referral-v2 .v2-btn:hover {
-    transform: translateY(-1px);
-  }
-
-  body.home-v2 .v2-section,
-  body.contact-v2 .contact-hero,
-  body.referral-v2 .v2-referral-card,
-  body.legal-v2 .legal-card {
-    animation: v2-fade-up 0.45s ease both;
-  }
-
-  @keyframes v2-fade-up {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
   }
 }
 
