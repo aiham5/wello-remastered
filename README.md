@@ -9,6 +9,14 @@
   - `/stripe/success`
   - `/stripe/cancel`
 
+## Admin Panel (isolated app)
+- Dedicated Cloudflare admin app is in `admin-app/`.
+- Admin authentication is handled by Cloudflare Zero Trust Access (OTP allowlist).
+- Admin data access is server-side only through `admin-app/functions/api/admin/[[path]].js`.
+- Browser admin UI no longer relies on Supabase auth session refresh.
+- Main site `/admin` route now redirects via `site/admin/index.html`.
+  - Set `window.__WELLO_ADMIN_HOST__` in `site/admin-redirect-config.js` to your real admin domain before deploy.
+
 ## Plaid Verification (business billing only)
 - Stripe is used for business billing/payment method operations.
 - Consumer cashback withdrawal is currently disabled while payout provider work is in progress.

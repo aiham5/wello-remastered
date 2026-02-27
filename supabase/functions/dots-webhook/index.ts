@@ -5,7 +5,6 @@ export const config = { verify_jwt: false };
 
 serve(
   createDotsWebhookHandler({
-    endpointName: "tremendous-webhook",
-    enableDeprecationLog: true,
+    endpointName: "dots-webhook",
   }),
 );

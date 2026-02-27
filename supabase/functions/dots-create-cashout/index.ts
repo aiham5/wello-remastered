@@ -5,8 +5,7 @@ export const config = { verify_jwt: false };
 
 serve(
   createDotsCashoutHandler({
-    endpointName: "tremendous-create-cashout",
+    endpointName: "dots-create-cashout",
     requireIdempotencyKey: true,
-    enableDeprecationLog: true,
   }),
 );

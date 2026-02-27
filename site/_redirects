@@ -11,6 +11,6 @@
 /third-party-notices/*  /third-party-notices/index.html    200
 /referral       /referral/index.html        200
 /referral/*     /referral/index.html        200
-/admin           /admin/index.html           200
-/admin.html      /admin/                     301
-/admin/*         /admin/index.html           200
+/admin           https://wello.company/         302
+/admin.html      https://wello.company/         302
+/admin/*         https://wello.company/:splat   302

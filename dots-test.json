@@ -1,0 +1,17 @@
+{
+  "amount": 1000,
+  "payee": {
+    "first_name": "Test",
+    "last_name": "User",
+    "email": "test@example.com"
+  },
+  "delivery": {
+    "method": "link",
+    "email": "test@example.com"
+  },
+  "idempotency_key": "test-manual-1",
+  "source_name": "Wello",
+  "memo": "Wello cashback payout",
+  "payout_fee_party": "platform",
+  "force_collect_compliance_information": true
+}

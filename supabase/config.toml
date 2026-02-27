@@ -81,6 +81,12 @@ verify_jwt = false
 [functions.tremendous-demo-create-reward]
 verify_jwt = false
 
+[functions.dots-create-cashout]
+verify_jwt = false
+
+[functions.dots-webhook]
+verify_jwt = false
+
 [functions.tremendous-create-cashout]
 verify_jwt = false
 

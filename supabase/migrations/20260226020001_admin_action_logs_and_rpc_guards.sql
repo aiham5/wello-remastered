@@ -1,4 +1,4 @@
-﻿-- Admin panel action audit and guarded moderation RPC helpers.
+-- Admin panel action audit and guarded moderation RPC helpers.
 
 create table if not exists public.admin_action_logs (
   id uuid primary key default gen_random_uuid(),

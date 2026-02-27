@@ -37,9 +37,7 @@ import {
   PinchGestureHandler,
   State as GestureState,
 } from "react-native-gesture-handler";
-import BottomSheet, {
-  BottomSheetScrollView,
-} from "@gorhom/bottom-sheet";
+import BottomSheet, { BottomSheetScrollView } from "@gorhom/bottom-sheet";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   configureReanimatedLogger,
@@ -48,10 +46,7 @@ import {
 import MapView, { Marker } from "react-native-maps";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Font from "expo-font";
-import {
-  SafeAreaProvider,
-  SafeAreaView,
-} from "react-native-safe-area-context";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
 import * as ImagePicker from "expo-image-picker";
@@ -173,8 +168,7 @@ const SCANNER_CARD_HEIGHT = SCANNER_FRAME + (IS_COMPACT ? 160 : 180);
 const REDEEM_BLOCKED_MESSAGE = "Unable to redeem right now. Try again.";
 const PLAID_AUTO_VERIFY_COPY =
   "Bank linked. Purchases verify automatically when detected.";
-const PLAID_FALLBACK_COPY =
-  "Can't find a transaction yet? Upload a receipt.";
+const PLAID_FALLBACK_COPY = "Can't find a transaction yet? Upload a receipt.";
 const PLAID_PENDING_COPY =
   "Verification is in progress. Cashback may appear as pending.";
 const PLAID_LINK_UNAVAILABLE_COPY =
@@ -213,7 +207,7 @@ const formatPercentLabel = (value) => {
 const DEFAULT_CASHBACK_RATE_BPS = 750;
 const CASHBACK_SETTING_KEY = "consumer_cashback_rate_bps";
 const MIN_CASHOUT_CENTS = 1000;
-const CONSUMER_CASHOUT_ENABLED = false;
+const CONSUMER_CASHOUT_ENABLED = true;
 const CONSUMER_CASHOUT_DISABLED_COPY =
   "Cashout is temporarily unavailable while we finalize a new payout provider.";
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
@@ -231,8 +225,10 @@ const GOOGLE_AUTH_REDIRECT_URL = `${APP_SCHEME}://${AUTH_CALLBACK_PATH}`;
 const STRIPE_CONNECT_RETURN_URL = "https://www.wellopartners.com/stripe/return";
 const STRIPE_CONNECT_REFRESH_URL =
   "https://www.wellopartners.com/stripe/refresh";
-const STRIPE_CHECKOUT_SUCCESS_URL = "https://www.wellopartners.com/stripe/success";
-const STRIPE_CHECKOUT_CANCEL_URL = "https://www.wellopartners.com/stripe/cancel";
+const STRIPE_CHECKOUT_SUCCESS_URL =
+  "https://www.wellopartners.com/stripe/success";
+const STRIPE_CHECKOUT_CANCEL_URL =
+  "https://www.wellopartners.com/stripe/cancel";
 const PRIVACY_POLICY_URL = "https://www.wellopartners.com/privacy";
 const TERMS_URL = "https://www.wellopartners.com/terms";
 const THIRD_PARTY_NOTICES_URL =
@@ -946,7 +942,9 @@ const isValidBusinessPhoneNumber = (value) => {
 };
 
 const splitFullName = (value) => {
-  const normalized = String(value || "").trim().replace(/\s+/g, " ");
+  const normalized = String(value || "")
+    .trim()
+    .replace(/\s+/g, " ");
   if (!normalized) {
     return { firstName: "", lastName: "" };
   }
@@ -974,7 +972,9 @@ const formatHistoryTimestamp = (value) => {
 };
 
 const hexToRgba = (hex, alpha) => {
-  const raw = String(hex || "").replace("#", "").trim();
+  const raw = String(hex || "")
+    .replace("#", "")
+    .trim();
   const normalized =
     raw.length === 3
       ? raw
@@ -1008,7 +1008,9 @@ const formatOfferDate = (value) => {
 };
 
 const formatOfferRedemptionLimit = (period, count) => {
-  const normalizedPeriod = String(period || "").trim().toLowerCase();
+  const normalizedPeriod = String(period || "")
+    .trim()
+    .toLowerCase();
   const normalizedCount = Math.floor(Number(count));
   const hasLimit =
     Number.isFinite(normalizedCount) &&
@@ -1104,8 +1106,10 @@ const parseOperatingDaysValue = (value) => {
   const expandToken = (token) => {
     const rangeParts = token.split("-");
     if (rangeParts.length === 2) {
-      const startIdx = OPERATING_DAY_INDEX[String(rangeParts[0] || "").toLowerCase()];
-      const endIdx = OPERATING_DAY_INDEX[String(rangeParts[1] || "").toLowerCase()];
+      const startIdx =
+        OPERATING_DAY_INDEX[String(rangeParts[0] || "").toLowerCase()];
+      const endIdx =
+        OPERATING_DAY_INDEX[String(rangeParts[1] || "").toLowerCase()];
       if (startIdx == null || endIdx == null) return;
       if (startIdx <= endIdx) {
         for (let i = startIdx; i <= endIdx; i += 1) {
@@ -1413,7 +1417,9 @@ const normalizeReferralCode = (value) =>
     .toUpperCase();
 
 const getReferralClaimMessage = (status) => {
-  const normalized = String(status || "").trim().toLowerCase();
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "pending") {
     return "Referral claimed. Your $5 will unlock after your first verified purchase.";
   }
@@ -1430,7 +1436,9 @@ const getReferralClaimMessage = (status) => {
 };
 
 const getReferralClaimStatusMeta = (status) => {
-  const normalized = String(status || "").trim().toLowerCase();
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase();
   if (!normalized || normalized === "none") return null;
   if (normalized === "pending" || normalized === "already_pending") {
     return {
@@ -1484,7 +1492,10 @@ const parseAuthCallbackParams = (url) => {
     tokenHash: params.get("token_hash") || null,
     ref: params.get("ref") || null,
     error:
-      params.get("error_description") || params.get("error") || params.get("message") || null,
+      params.get("error_description") ||
+      params.get("error") ||
+      params.get("message") ||
+      null,
   };
 };
 
@@ -1590,7 +1601,9 @@ const toUserFacingError = (
   message,
   fallback = "Something went wrong. Please try again.",
 ) => {
-  const raw = String(message || "").replace(/\s+/g, " ").trim();
+  const raw = String(message || "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!raw) return fallback;
   const lower = raw.toLowerCase();
 
@@ -2463,7 +2476,9 @@ const CATEGORY_OPTIONS_WITH_OTHER = [
   ...CATEGORY_OPTIONS,
   { key: CATEGORY_OTHER_KEY, label: "Other" },
 ];
-const KNOWN_CATEGORY_KEY_SET = new Set(CATEGORY_OPTIONS.map((item) => item.key));
+const KNOWN_CATEGORY_KEY_SET = new Set(
+  CATEGORY_OPTIONS.map((item) => item.key),
+);
 
 const CATEGORY_CONFIG = {
   cafe: {
@@ -3068,7 +3083,9 @@ function formatCashbackRateLabel(percentValue) {
   const value = Number(percentValue);
   if (!Number.isFinite(value) || value <= 0) return null;
   const rounded = Math.round(value * 10) / 10;
-  const label = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  const label = Number.isInteger(rounded)
+    ? String(rounded)
+    : rounded.toFixed(1);
   return `${label}% Cashback`;
 }
 
@@ -3076,7 +3093,9 @@ function formatPercentOnlyLabel(percentValue) {
   const value = Number(percentValue);
   if (!Number.isFinite(value) || value <= 0) return null;
   const rounded = Math.round(value * 10) / 10;
-  const label = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  const label = Number.isInteger(rounded)
+    ? String(rounded)
+    : rounded.toFixed(1);
   return `${label}%`;
 }
 
@@ -3110,7 +3129,9 @@ function getDiscoverScrollDebugPayload(event) {
     native?.layoutMeasurement?.height ?? Number.NaN,
   );
   const contentHeightValue = Number(native?.contentSize?.height ?? Number.NaN);
-  const layoutWidthValue = Number(native?.layoutMeasurement?.width ?? Number.NaN);
+  const layoutWidthValue = Number(
+    native?.layoutMeasurement?.width ?? Number.NaN,
+  );
   const contentWidthValue = Number(native?.contentSize?.width ?? Number.NaN);
   const layoutHeight = Number.isFinite(layoutHeightValue)
     ? Math.round(layoutHeightValue)
@@ -3149,7 +3170,9 @@ function getOfferCardSelectionKey(card) {
 }
 
 function parseDistanceLabelMiles(value) {
-  const raw = String(value || "").trim().toLowerCase();
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
   if (!raw || raw === "--") return null;
   const numeric = Number.parseFloat(raw.replace(/[^0-9.]/g, ""));
   if (!Number.isFinite(numeric)) return null;
@@ -3243,7 +3266,9 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
       ? (item.isOpen ?? item.business?.isOpen ?? true)
       : openFromHours;
   const operatingHoursLabel = useMemo(() => {
-    const raw = String(hoursValue || "").replace(/\s+/g, " ").trim();
+    const raw = String(hoursValue || "")
+      .replace(/\s+/g, " ")
+      .trim();
     if (!raw) return null;
     if (raw.toLowerCase() === "hours available upon request") return null;
     return raw;
@@ -3280,7 +3305,9 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
           ) : (
             <View style={styles.liveEditorialStackMediaFallback}>
               <Ionicons name="image-outline" size={20} color={COLORS.muted} />
-              <Text style={styles.liveEditorialStackMediaLabel}>Offer image</Text>
+              <Text style={styles.liveEditorialStackMediaLabel}>
+                Offer image
+              </Text>
             </View>
           )}
           <LinearGradient
@@ -3324,29 +3351,33 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
               ))}
               {extraTagCount > 0 && (
                 <View style={styles.liveEditorialStackTagPill}>
-                  <Text style={styles.liveEditorialStackTagText}>+{extraTagCount}</Text>
+                  <Text style={styles.liveEditorialStackTagText}>
+                    +{extraTagCount}
+                  </Text>
                 </View>
               )}
             </View>
           )}
         </View>
-          <View style={styles.liveEditorialStackPanel}>
-            <View style={styles.liveEditorialStackMetaTopRow}>
-              <View style={styles.liveEditorialStackMetaRow}>
-                <Text style={styles.liveEditorialStackMeta}>{limitMeta.label}</Text>
-                {operatingHoursLabel ? (
-                  <View style={styles.liveEditorialStackHoursPill}>
-                    <Ionicons name="time-outline" size={11} color="#475569" />
-                    <Text
-                      style={styles.liveEditorialStackHoursText}
-                      numberOfLines={1}
-                    >
-                      {operatingHoursLabel}
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
-              <View style={styles.liveEditorialStackRatingPill}>
+        <View style={styles.liveEditorialStackPanel}>
+          <View style={styles.liveEditorialStackMetaTopRow}>
+            <View style={styles.liveEditorialStackMetaRow}>
+              <Text style={styles.liveEditorialStackMeta}>
+                {limitMeta.label}
+              </Text>
+              {operatingHoursLabel ? (
+                <View style={styles.liveEditorialStackHoursPill}>
+                  <Ionicons name="time-outline" size={11} color="#475569" />
+                  <Text
+                    style={styles.liveEditorialStackHoursText}
+                    numberOfLines={1}
+                  >
+                    {operatingHoursLabel}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+            <View style={styles.liveEditorialStackRatingPill}>
               <Ionicons name="star" size={11} color="#A16207" />
               <Text style={styles.liveEditorialStackRatingText}>
                 {ratingLabel || "New"}
@@ -3381,11 +3412,13 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
                 onPress={() => openMapsForBusiness(item.business || item)}
               >
                 <Ionicons name="navigate" size={14} color={COLORS.pine} />
-                <Text style={styles.liveEditorialStackDirectionsText}>Directions</Text>
+                <Text style={styles.liveEditorialStackDirectionsText}>
+                  Directions
+                </Text>
               </Pressable>
             </View>
           ) : null}
-        {cashbackLabel ? (
+          {cashbackLabel ? (
             <View style={styles.liveEditorialStackCashbackPill}>
               <Ionicons name="cash-outline" size={14} color="#166534" />
               <Text style={styles.liveEditorialStackCashbackText}>
@@ -3395,10 +3428,15 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
           ) : null}
         </View>
         {!isOpen ? (
-          <View pointerEvents="none" style={styles.liveEditorialStackClosedOverlay}>
+          <View
+            pointerEvents="none"
+            style={styles.liveEditorialStackClosedOverlay}
+          >
             <View style={styles.liveEditorialStackClosedPill}>
               <Ionicons name="time-outline" size={13} color="#4B5563" />
-              <Text style={styles.liveEditorialStackClosedText}>Closed now</Text>
+              <Text style={styles.liveEditorialStackClosedText}>
+                Closed now
+              </Text>
             </View>
           </View>
         ) : null}
@@ -3412,9 +3450,8 @@ export default function App() {
     Platform.OS === "ios"
       ? (Constants.statusBarHeight || 0) + (IS_COMPACT ? 8 : 12)
       : SAFE_TOP;
-  const modalTopInset = Platform.OS === "ios"
-    ? Math.max(Constants.statusBarHeight || 0, 20)
-    : 0;
+  const modalTopInset =
+    Platform.OS === "ios" ? Math.max(Constants.statusBarHeight || 0, 20) : 0;
   const mapRef = useRef(null);
   const mapReadyRef = useRef(false);
   const pendingMapRegionRef = useRef(null);
@@ -3453,7 +3490,8 @@ export default function App() {
   const activeTabRef = useRef("discover");
   const tabIndicatorIndex = useRef(new Animated.Value(0)).current;
   const tabFocusAnimRef = useRef({});
-  const [discoverDemoLayout, setDiscoverDemoLayout] = useState("editorial_split");
+  const [discoverDemoLayout, setDiscoverDemoLayout] =
+    useState("editorial_split");
   const [activeFilters, setActiveFilters] = useState([]);
   const [discoverRadiusKey, setDiscoverRadiusKey] = useState("20mi");
   const [showFilters, setShowFilters] = useState(false);
@@ -3495,8 +3533,10 @@ export default function App() {
     useState("");
   const [showBusinessVerifyPassword, setShowBusinessVerifyPassword] =
     useState(false);
-  const [showBusinessVerifyPasswordConfirm, setShowBusinessVerifyPasswordConfirm] =
-    useState(false);
+  const [
+    showBusinessVerifyPasswordConfirm,
+    setShowBusinessVerifyPasswordConfirm,
+  ] = useState(false);
   const [businessOwnerName, setBusinessOwnerName] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [businessCategoryKey, setBusinessCategoryKey] = useState("restaurant");
@@ -3602,7 +3642,9 @@ export default function App() {
     code: null,
     cashbackRateBps: DEFAULT_CASHBACK_RATE_BPS,
   });
-  const [referralState, setReferralState] = useState(createInitialReferralState);
+  const [referralState, setReferralState] = useState(
+    createInitialReferralState,
+  );
   const [tremendousDemoAmountText, setTremendousDemoAmountText] = useState(
     TREMENDOUS_DEMO_DEFAULT_AMOUNT,
   );
@@ -3614,6 +3656,7 @@ export default function App() {
   const [tremendousClaimUrl, setTremendousClaimUrl] = useState("");
   const [tremendousClaimLoading, setTremendousClaimLoading] = useState(false);
   const [tremendousClaimError, setTremendousClaimError] = useState(null);
+  const tremendousClaimLoadingTimeoutRef = useRef(null);
   const [pendingReferralCode, setPendingReferralCode] = useState(null);
   const [accountRole, setAccountRole] = useState("consumer");
   const [authUserId, setAuthUserId] = useState(null);
@@ -3650,7 +3693,8 @@ export default function App() {
   });
   const [notificationPermissionStatus, setNotificationPermissionStatus] =
     useState("undetermined");
-  const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
+  const [notificationSettingsOpen, setNotificationSettingsOpen] =
+    useState(false);
   const [passwordResetModalOpen, setPasswordResetModalOpen] = useState(false);
   const [passwordResetDraft, setPasswordResetDraft] = useState("");
   const [passwordResetConfirm, setPasswordResetConfirm] = useState("");
@@ -3825,10 +3869,14 @@ export default function App() {
   const [createBusinessError, setCreateBusinessError] = useState(null);
   const [createBusinessAuthorizedChecked, setCreateBusinessAuthorizedChecked] =
     useState(false);
-  const [createBusinessHonorOffersChecked, setCreateBusinessHonorOffersChecked] =
-    useState(false);
+  const [
+    createBusinessHonorOffersChecked,
+    setCreateBusinessHonorOffersChecked,
+  ] = useState(false);
   const [createHoursStart, setCreateHoursStart] = useState("");
-  const [createHoursDays, setCreateHoursDays] = useState(DEFAULT_OPERATING_DAYS);
+  const [createHoursDays, setCreateHoursDays] = useState(
+    DEFAULT_OPERATING_DAYS,
+  );
   const [createHoursStartMeridiem, setCreateHoursStartMeridiem] =
     useState("AM");
   const [createHoursEnd, setCreateHoursEnd] = useState("");
@@ -3852,8 +3900,7 @@ export default function App() {
     redemptionLimitCount: "1",
     redemptionLimitPeriod: "day", // day | week (custom only)
   });
-  const [createOfferTypeMenuOpen, setCreateOfferTypeMenuOpen] =
-    useState(false);
+  const [createOfferTypeMenuOpen, setCreateOfferTypeMenuOpen] = useState(false);
   const [offerImage, setOfferImage] = useState(null);
   const [offerCreateHonorChecked, setOfferCreateHonorChecked] = useState(false);
   const [offerCropModal, setOfferCropModal] = useState({
@@ -3969,9 +4016,10 @@ export default function App() {
     const inputCents = parseCashoutAmountToCents(cashoutAmountText);
     if (inputCents === null) {
       return {
-        mode: availableCents > 0 && availableCents < MIN_CASHOUT_CENTS
-          ? "below_min"
-          : "max",
+        mode:
+          availableCents > 0 && availableCents < MIN_CASHOUT_CENTS
+            ? "below_min"
+            : "max",
         amountCents: availableCents,
         label:
           availableCents > 0
@@ -4004,10 +4052,7 @@ export default function App() {
   }, [cashoutAmountText]);
   const tremendousDemoAvailableCents = useMemo(() => {
     const realAvailableCents = Number(cashbackBalance.availableCents) || 0;
-    if (
-      TREMENDOUS_DEMO_USE_VIRTUAL_BALANCE &&
-      realAvailableCents <= 0
-    ) {
+    if (TREMENDOUS_DEMO_USE_VIRTUAL_BALANCE && realAvailableCents <= 0) {
       return TREMENDOUS_DEMO_VIRTUAL_BALANCE_CENTS;
     }
     return realAvailableCents;
@@ -4021,9 +4066,10 @@ export default function App() {
     const inputCents = parseCashoutAmountToCents(tremendousDemoAmountText);
     if (inputCents === null) {
       return {
-        mode: availableCents > 0 && availableCents < MIN_CASHOUT_CENTS
-          ? "below_min"
-          : "max",
+        mode:
+          availableCents > 0 && availableCents < MIN_CASHOUT_CENTS
+            ? "below_min"
+            : "max",
         amountCents: availableCents,
         label:
           availableCents > 0
@@ -4063,8 +4109,11 @@ export default function App() {
     success: null,
   });
   const [historyVerifyNotice, setHistoryVerifyNotice] = useState(null);
-  const [highlightedHistoryEntryId, setHighlightedHistoryEntryId] = useState(null);
-  const [plaidLinkState, setPlaidLinkState] = useState(createInitialPlaidLinkState);
+  const [highlightedHistoryEntryId, setHighlightedHistoryEntryId] =
+    useState(null);
+  const [plaidLinkState, setPlaidLinkState] = useState(
+    createInitialPlaidLinkState,
+  );
   const [plaidLinkAction, setPlaidLinkAction] = useState("idle");
   const [plaidConsentModalVisible, setPlaidConsentModalVisible] =
     useState(false);
@@ -4077,9 +4126,11 @@ export default function App() {
   const hasLinkedPlaidBank = useMemo(() => {
     if (plaidLinkState.linked) return true;
     if ((Number(plaidLinkState.linkedCount) || 0) > 0) return true;
-    return (Array.isArray(plaidLinkState.linkedAccounts)
-      ? plaidLinkState.linkedAccounts.length
-      : 0) > 0;
+    return (
+      (Array.isArray(plaidLinkState.linkedAccounts)
+        ? plaidLinkState.linkedAccounts.length
+        : 0) > 0
+    );
   }, [
     plaidLinkState.linked,
     plaidLinkState.linkedCount,
@@ -4090,7 +4141,9 @@ export default function App() {
     [plaidLinkState.updateMode],
   );
   const plaidPromptCopy = useMemo(() => {
-    const reasonLabel = String(plaidLinkState.updateMode?.reasonLabel || "").trim();
+    const reasonLabel = String(
+      plaidLinkState.updateMode?.reasonLabel || "",
+    ).trim();
     if (plaidLinkState.updateMode?.required) {
       return {
         title: "Reconnect bank",
@@ -4138,7 +4191,9 @@ export default function App() {
     return "Stripe setup needed";
   }, [cashoutStatus.bankSelected, cashoutStatus.payoutsEnabled]);
   const selectedPayoutAccountDetails = useMemo(() => {
-    const selectedLabel = String(cashoutStatus.selectedPayoutLabel || "").trim();
+    const selectedLabel = String(
+      cashoutStatus.selectedPayoutLabel || "",
+    ).trim();
     const hasAccount = Boolean(selectedLabel || cashoutStatus.bankSelected);
     if (hasAccount) {
       return {
@@ -4480,14 +4535,17 @@ export default function App() {
     },
     [logDiscoverGestureDebug],
   );
-  const handleSheetChange = useCallback((index) => {
-    const nextIndex = Number.isFinite(index) ? index : 0;
-    sheetIndexRef.current = nextIndex;
-    logDiscoverGestureDebug("sheetChange", {
-      index: nextIndex,
-      activeTouchSeq: discoverScrollDebugRef.current.activeTouchSeq ?? null,
-    });
-  }, [logDiscoverGestureDebug]);
+  const handleSheetChange = useCallback(
+    (index) => {
+      const nextIndex = Number.isFinite(index) ? index : 0;
+      sheetIndexRef.current = nextIndex;
+      logDiscoverGestureDebug("sheetChange", {
+        index: nextIndex,
+        activeTouchSeq: discoverScrollDebugRef.current.activeTouchSeq ?? null,
+      });
+    },
+    [logDiscoverGestureDebug],
+  );
   const handleSheetAnimate = useCallback(
     (fromIndex, toIndex) => {
       if (!DEBUG_DISCOVER_SCROLL) return;
@@ -4539,11 +4597,11 @@ export default function App() {
         ? "Swipe up for admin review tools"
         : activeTab === "profile"
           ? "Swipe up to manage your profile"
-        : activeTab === "history"
-          ? "Swipe up to review your history"
-          : activeTab === "cashout"
-            ? "Swipe up to view cashback activity"
-            : "Swipe up to explore offers";
+          : activeTab === "history"
+            ? "Swipe up to review your history"
+            : activeTab === "cashout"
+              ? "Swipe up to manage your cashout"
+              : "Swipe up to explore offers";
     return (
       <View style={styles.sheetHandle}>
         <View style={styles.handleBar} />
@@ -4590,7 +4648,8 @@ export default function App() {
   const offerCropPanYValue = useRef(0);
   const offerCropViewportSizeRef = useRef({
     width: Math.max(240, Math.min(SCREEN_WIDTH - 32, 360)),
-    height: Math.max(240, Math.min(SCREEN_WIDTH - 32, 360)) / OFFER_IMAGE_ASPECT,
+    height:
+      Math.max(240, Math.min(SCREEN_WIDTH - 32, 360)) / OFFER_IMAGE_ASPECT,
   });
   const offerCropImageSizeRef = useRef({ width: 0, height: 0 });
   const [offerCropViewportSize, setOfferCropViewportSize] = useState(
@@ -4662,95 +4721,98 @@ export default function App() {
     return retry.error || null;
   }, []);
 
-  const hydrateProfile = useCallback(async (user, roleOverride = null) => {
-    if (!user) return "consumer";
-    const sessionIsActive = await hasActiveSessionForUser(user.id);
-    if (!sessionIsActive) {
-      return "consumer";
-    }
-    const email = user.email || "";
-    if (email) {
-      setAuthEmail(email);
-    }
-    setAuthUserId(user.id);
-    const fallbackName = formatDisplayName(email);
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("full_name, email, role, phone, company")
-      .eq("id", user.id)
-      .maybeSingle();
-    if (error) {
-      console.warn("Wello profile fetch failed:", error.message);
-    }
-    const metadata = user.user_metadata || {};
-    const metadataRole = metadata.role;
-    const metadataName = metadata.full_name || metadata.name || "";
-    const metadataPhone = metadata.phone || "";
-    const metadataCompany = metadata.company || "";
-    const metadataDraft = metadata.business_draft || null;
-    let nextRole = roleOverride || data?.role || metadataRole || "consumer";
-    const validRoles = ["consumer", "business_owner", "admin", "supervisor"];
-    if (!validRoles.includes(nextRole)) {
-      nextRole = "consumer";
-    }
-    const fullName = data?.full_name || metadataName || fallbackName;
-    const profileEmailValue = email || data?.email || "";
-    const profilePhoneValue = data?.phone || metadataPhone || "";
-    const profileCompanyValue = data?.company || metadataCompany || "";
+  const hydrateProfile = useCallback(
+    async (user, roleOverride = null) => {
+      if (!user) return "consumer";
+      const sessionIsActive = await hasActiveSessionForUser(user.id);
+      if (!sessionIsActive) {
+        return "consumer";
+      }
+      const email = user.email || "";
+      if (email) {
+        setAuthEmail(email);
+      }
+      setAuthUserId(user.id);
+      const fallbackName = formatDisplayName(email);
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("full_name, email, role, phone, company")
+        .eq("id", user.id)
+        .maybeSingle();
+      if (error) {
+        console.warn("Wello profile fetch failed:", error.message);
+      }
+      const metadata = user.user_metadata || {};
+      const metadataRole = metadata.role;
+      const metadataName = metadata.full_name || metadata.name || "";
+      const metadataPhone = metadata.phone || "";
+      const metadataCompany = metadata.company || "";
+      const metadataDraft = metadata.business_draft || null;
+      let nextRole = roleOverride || data?.role || metadataRole || "consumer";
+      const validRoles = ["consumer", "business_owner", "admin", "supervisor"];
+      if (!validRoles.includes(nextRole)) {
+        nextRole = "consumer";
+      }
+      const fullName = data?.full_name || metadataName || fallbackName;
+      const profileEmailValue = email || data?.email || "";
+      const profilePhoneValue = data?.phone || metadataPhone || "";
+      const profileCompanyValue = data?.company || metadataCompany || "";
 
-    const profileEmailNormalized = String(data?.email || "")
-      .trim()
-      .toLowerCase();
-    const authEmailNormalized = String(email || "")
-      .trim()
-      .toLowerCase();
-    const shouldSyncProfile =
-      !data ||
-      roleOverride ||
-      (authEmailNormalized && authEmailNormalized !== profileEmailNormalized);
+      const profileEmailNormalized = String(data?.email || "")
+        .trim()
+        .toLowerCase();
+      const authEmailNormalized = String(email || "")
+        .trim()
+        .toLowerCase();
+      const shouldSyncProfile =
+        !data ||
+        roleOverride ||
+        (authEmailNormalized && authEmailNormalized !== profileEmailNormalized);
 
-    if (shouldSyncProfile) {
-      const canWriteProfile = await hasActiveSessionForUser(user.id);
-      if (!canWriteProfile) {
+      if (shouldSyncProfile) {
+        const canWriteProfile = await hasActiveSessionForUser(user.id);
+        if (!canWriteProfile) {
+          return nextRole;
+        }
+        const upsertError = await upsertProfileWithRetry({
+          id: user.id,
+          email: profileEmailValue,
+          full_name: fullName,
+          role: nextRole,
+          phone: profilePhoneValue || null,
+          company: profileCompanyValue || null,
+        });
+        if (upsertError) {
+          const stillSignedIn = await hasActiveSessionForUser(user.id);
+          if (stillSignedIn) {
+            console.warn("Wello profile upsert failed:", upsertError.message);
+          }
+          if (!data) {
+            nextRole = roleOverride || "consumer";
+          }
+        }
+      }
+
+      const canCommitProfile = await hasActiveSessionForUser(user.id);
+      if (!canCommitProfile) {
         return nextRole;
       }
-      const upsertError = await upsertProfileWithRetry({
-        id: user.id,
-        email: profileEmailValue,
-        full_name: fullName,
-        role: nextRole,
-        phone: profilePhoneValue || null,
-        company: profileCompanyValue || null,
-      });
-      if (upsertError) {
-        const stillSignedIn = await hasActiveSessionForUser(user.id);
-        if (stillSignedIn) {
-          console.warn("Wello profile upsert failed:", upsertError.message);
-        }
-        if (!data) {
-          nextRole = roleOverride || "consumer";
-        }
-      }
-    }
-
-    const canCommitProfile = await hasActiveSessionForUser(user.id);
-    if (!canCommitProfile) {
+      setProfileName(fullName);
+      setProfileEmail(profileEmailValue);
+      setProfilePhone(profilePhoneValue);
+      setProfileCompany(profileCompanyValue);
+      setSecurityEmailDraft(profileEmailValue || email || "");
+      setSecurityPhoneDraft(profilePhoneValue || "");
+      setSecurityCurrentPassword("");
+      setSecurityActivePanel(null);
+      setPendingEmailChange("");
+      setSecurityStatus({ loading: false, type: null, message: null });
+      setAuthBusinessDraft(metadataDraft);
+      setAccountRole(nextRole);
       return nextRole;
-    }
-    setProfileName(fullName);
-    setProfileEmail(profileEmailValue);
-    setProfilePhone(profilePhoneValue);
-    setProfileCompany(profileCompanyValue);
-    setSecurityEmailDraft(profileEmailValue || email || "");
-    setSecurityPhoneDraft(profilePhoneValue || "");
-    setSecurityCurrentPassword("");
-    setSecurityActivePanel(null);
-    setPendingEmailChange("");
-    setSecurityStatus({ loading: false, type: null, message: null });
-    setAuthBusinessDraft(metadataDraft);
-    setAccountRole(nextRole);
-    return nextRole;
-  }, [upsertProfileWithRetry, hasActiveSessionForUser]);
+    },
+    [upsertProfileWithRetry, hasActiveSessionForUser],
+  );
 
   const loadGlobalCashbackRate = useCallback(
     async ({ silent = false } = {}) => {
@@ -4785,9 +4847,10 @@ export default function App() {
         Number(data?.value_json?.bps) ||
         Number(data?.value_json?.cashback_rate_bps) ||
         DEFAULT_CASHBACK_RATE_BPS;
-      const nextBps = Number.isFinite(rawBps) && rawBps > 0
-        ? Math.round(rawBps)
-        : DEFAULT_CASHBACK_RATE_BPS;
+      const nextBps =
+        Number.isFinite(rawBps) && rawBps > 0
+          ? Math.round(rawBps)
+          : DEFAULT_CASHBACK_RATE_BPS;
       setGlobalCashbackRateBps(nextBps);
       setGlobalCashbackRateInput((nextBps / 100).toFixed(2));
       setPromoState((prev) =>
@@ -4808,14 +4871,16 @@ export default function App() {
 
   const handleSaveGlobalCashbackRate = useCallback(async () => {
     if (!isAdmin) return;
-    if (!ensureSupabaseReady((message) =>
-      setGlobalCashbackConfig((prev) => ({
-        ...prev,
-        saving: false,
-        error: message,
-        success: null,
-      }))
-    )) {
+    if (
+      !ensureSupabaseReady((message) =>
+        setGlobalCashbackConfig((prev) => ({
+          ...prev,
+          saving: false,
+          error: message,
+          success: null,
+        })),
+      )
+    ) {
       return;
     }
     const normalized = Number(String(globalCashbackRateInput || "").trim());
@@ -4941,7 +5006,10 @@ export default function App() {
       try {
         const response = await withTimeout(
           supabase.functions.invoke(functionName, {
-            body: { ...(payload || {}) },
+            body: {
+              ...(payload || {}),
+              accessToken,
+            },
             headers: { Authorization: `Bearer ${accessToken}` },
           }),
           timeoutMs,
@@ -5026,10 +5094,13 @@ export default function App() {
       }));
       return;
     }
-    const requestedAmountCents = parseCashoutAmountToCents(tremendousDemoAmountText);
-    const amountCents = requestedAmountCents == null
-      ? availableCents
-      : Math.round(requestedAmountCents);
+    const requestedAmountCents = parseCashoutAmountToCents(
+      tremendousDemoAmountText,
+    );
+    const amountCents =
+      requestedAmountCents == null
+        ? availableCents
+        : Math.round(requestedAmountCents);
     if (!Number.isFinite(amountCents) || amountCents <= 0) {
       setTremendousDemoState((prev) => ({
         ...prev,
@@ -5097,10 +5168,11 @@ export default function App() {
     if (claimUrl) {
       setTremendousClaimUrl(claimUrl);
       setTremendousClaimError(null);
-      setTremendousClaimLoading(true);
+      armTremendousClaimLoading();
       setTremendousClaimModalVisible(true);
     }
   }, [
+    armTremendousClaimLoading,
     callAuthedEdgeFunction,
     isSignedIn,
     loadCashbackBalance,
@@ -5110,7 +5182,30 @@ export default function App() {
   ]);
 
   const closeTremendousClaimModal = useCallback(() => {
+    if (tremendousClaimLoadingTimeoutRef.current) {
+      clearTimeout(tremendousClaimLoadingTimeoutRef.current);
+      tremendousClaimLoadingTimeoutRef.current = null;
+    }
     setTremendousClaimModalVisible(false);
+    setTremendousClaimLoading(false);
+  }, []);
+
+  const armTremendousClaimLoading = useCallback(() => {
+    if (tremendousClaimLoadingTimeoutRef.current) {
+      clearTimeout(tremendousClaimLoadingTimeoutRef.current);
+    }
+    setTremendousClaimLoading(true);
+    tremendousClaimLoadingTimeoutRef.current = setTimeout(() => {
+      setTremendousClaimLoading(false);
+      tremendousClaimLoadingTimeoutRef.current = null;
+    }, 6000);
+  }, []);
+
+  const finishTremendousClaimLoading = useCallback(() => {
+    if (tremendousClaimLoadingTimeoutRef.current) {
+      clearTimeout(tremendousClaimLoadingTimeoutRef.current);
+      tremendousClaimLoadingTimeoutRef.current = null;
+    }
     setTremendousClaimLoading(false);
   }, []);
 
@@ -5119,9 +5214,17 @@ export default function App() {
     if (!url) return;
     setTremendousClaimUrl(url);
     setTremendousClaimError(null);
-    setTremendousClaimLoading(true);
+    armTremendousClaimLoading();
     setTremendousClaimModalVisible(true);
-  }, [tremendousDemoState.claimUrl]);
+  }, [armTremendousClaimLoading, tremendousDemoState.claimUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (tremendousClaimLoadingTimeoutRef.current) {
+        clearTimeout(tremendousClaimLoadingTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     loadGlobalCashbackRate({ silent: true }).catch(() => {});
@@ -5293,9 +5396,7 @@ export default function App() {
     const code = referralState.code ? String(referralState.code) : "";
     const link =
       referralState.link ||
-      (code
-        ? `${REFERRAL_LANDING_URL}?ref=${encodeURIComponent(code)}`
-        : "");
+      (code ? `${REFERRAL_LANDING_URL}?ref=${encodeURIComponent(code)}` : "");
     if (!link) {
       setReferralState((prev) => ({
         ...prev,
@@ -5319,9 +5420,7 @@ export default function App() {
     const code = referralState.code ? String(referralState.code) : "";
     const link =
       referralState.link ||
-      (code
-        ? `${REFERRAL_LANDING_URL}?ref=${encodeURIComponent(code)}`
-        : "");
+      (code ? `${REFERRAL_LANDING_URL}?ref=${encodeURIComponent(code)}` : "");
     if (!link) {
       setReferralState((prev) => ({
         ...prev,
@@ -5841,7 +5940,8 @@ export default function App() {
     );
   }, [ownerBusiness, authUserId, ownerBusinessId, businesses]);
   const ownerCommissionRatePercent = useMemo(
-    () => commissionRateCentsToPercent(resolvedOwnerBusiness?.commissionRateCents),
+    () =>
+      commissionRateCentsToPercent(resolvedOwnerBusiness?.commissionRateCents),
     [resolvedOwnerBusiness?.commissionRateCents],
   );
   const ownerDefaultCashbackPercent = useMemo(
@@ -5849,65 +5949,69 @@ export default function App() {
     [globalCashbackRateBps],
   );
 
-  const resolveStripeBusiness = useCallback(async (options = {}) => {
-    const forceRefresh = Boolean(options?.forceRefresh);
-    if (!forceRefresh && resolvedOwnerBusiness?.id) return resolvedOwnerBusiness;
-    if (!authUserId || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
-    const { data, error } = await supabase
-      .from("businesses")
-      .select(
-        [
-          "id",
-          "owner_id",
-          "name",
-          "address",
-          "city",
-          "state",
-          "postal_code",
-          "phone",
-          "category_key",
-          "category_label",
-          "offer_highlight",
-          "hours",
-          "tags",
-          "merchant_descriptor_aliases",
-          "latitude",
-          "longitude",
-          "qr_code",
-          "is_open",
-          "approval_status",
-          "status",
-          "stripe_account_id",
-          "stripe_customer_id",
-          "stripe_payment_method_id",
-          "stripe_payment_method_brand",
-          "stripe_payment_method_last4",
-          "stripe_charges_enabled",
-          "stripe_payouts_enabled",
-          "stripe_onboarded_at",
-          "commission_rate_cents",
-          "commission_enabled",
-          "created_at",
-        ].join(","),
-      )
-      .eq("owner_id", authUserId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+  const resolveStripeBusiness = useCallback(
+    async (options = {}) => {
+      const forceRefresh = Boolean(options?.forceRefresh);
+      if (!forceRefresh && resolvedOwnerBusiness?.id)
+        return resolvedOwnerBusiness;
+      if (!authUserId || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+      const { data, error } = await supabase
+        .from("businesses")
+        .select(
+          [
+            "id",
+            "owner_id",
+            "name",
+            "address",
+            "city",
+            "state",
+            "postal_code",
+            "phone",
+            "category_key",
+            "category_label",
+            "offer_highlight",
+            "hours",
+            "tags",
+            "merchant_descriptor_aliases",
+            "latitude",
+            "longitude",
+            "qr_code",
+            "is_open",
+            "approval_status",
+            "status",
+            "stripe_account_id",
+            "stripe_customer_id",
+            "stripe_payment_method_id",
+            "stripe_payment_method_brand",
+            "stripe_payment_method_last4",
+            "stripe_charges_enabled",
+            "stripe_payouts_enabled",
+            "stripe_onboarded_at",
+            "commission_rate_cents",
+            "commission_enabled",
+            "created_at",
+          ].join(","),
+        )
+        .eq("owner_id", authUserId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (error || !data) {
-      return null;
-    }
+      if (error || !data) {
+        return null;
+      }
 
-    const mapped = mapSupabaseBusiness(data, 0);
-    setBusinesses((prev) => {
-      const next = prev.filter((business) => business.id !== mapped.id);
-      next.unshift(mapped);
-      return next.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    });
-    setOwnerBusinessId(mapped.id);
-    return mapped;
-  }, [resolvedOwnerBusiness, authUserId]);
+      const mapped = mapSupabaseBusiness(data, 0);
+      setBusinesses((prev) => {
+        const next = prev.filter((business) => business.id !== mapped.id);
+        next.unshift(mapped);
+        return next.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      });
+      setOwnerBusinessId(mapped.id);
+      return mapped;
+    },
+    [resolvedOwnerBusiness, authUserId],
+  );
 
   const handleStripeConnect = useCallback(async () => {
     const targetBusiness = await resolveStripeBusiness();
@@ -6172,18 +6276,20 @@ export default function App() {
       let availableCents = 0;
       let paidCents = 0;
       let totalCents = 0;
-      (Array.isArray(eventsResult.data) ? eventsResult.data : []).forEach((row) => {
-        const amount = Number(row?.amount_cents) || 0;
-        if (!amount) return;
-        totalCents += amount;
-        if (row?.status === "paid") {
-          paidCents += amount;
-          return;
-        }
-        if (row?.status === "available") {
-          availableCents += amount;
-        }
-      });
+      (Array.isArray(eventsResult.data) ? eventsResult.data : []).forEach(
+        (row) => {
+          const amount = Number(row?.amount_cents) || 0;
+          if (!amount) return;
+          totalCents += amount;
+          if (row?.status === "paid") {
+            paidCents += amount;
+            return;
+          }
+          if (row?.status === "available") {
+            availableCents += amount;
+          }
+        },
+      );
       setCashbackBalance({
         availableCents,
         paidCents,
@@ -6194,13 +6300,17 @@ export default function App() {
         setCashoutPayoutHistory([]);
         setCashoutClaimUrl(null);
       } else {
-        const payoutRows = Array.isArray(payoutsResult.data) ? payoutsResult.data : [];
+        const payoutRows = Array.isArray(payoutsResult.data)
+          ? payoutsResult.data
+          : [];
         setCashoutPayoutHistory(
           payoutRows.map((row) => ({
             id: String(row.id),
             amountCents: Math.max(0, Number(row.amount_cents) || 0),
             status: String(row.status || "pending").toLowerCase(),
-            createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+            createdAt: row.created_at
+              ? new Date(row.created_at).getTime()
+              : Date.now(),
             processedAt: row.processed_at
               ? new Date(row.processed_at).getTime()
               : null,
@@ -6213,8 +6323,9 @@ export default function App() {
               String(row?.status || "").toLowerCase() === "pending" &&
               String(row?.provider_claim_url || "").trim(),
           )?.provider_claim_url ||
-            payoutRows.find((row) => String(row?.provider_claim_url || "").trim())
-              ?.provider_claim_url ||
+            payoutRows.find((row) =>
+              String(row?.provider_claim_url || "").trim(),
+            )?.provider_claim_url ||
             "",
         ).trim();
         setCashoutClaimUrl(latestClaimUrl || null);
@@ -6452,7 +6563,7 @@ export default function App() {
 
     setCashoutActionStatus({ loading: true, error: null, success: null });
     const { data, error, status, details } = await callAuthedEdgeFunction(
-      "tremendous-create-cashout",
+      "dots-create-cashout",
       {
         amountCents: amountCentsToCashout,
         idempotencyKey,
@@ -6477,9 +6588,7 @@ export default function App() {
           1,
         );
         const cadenceLabel =
-          limitLabel === 1
-            ? "once per week"
-            : `${limitLabel} times per week`;
+          limitLabel === 1 ? "once per week" : `${limitLabel} times per week`;
         const message = `You can cash out ${cadenceLabel}. Your next cashout is available on ${nextLabel}.`;
         showAppDialog({
           title: "Cashout limit reached",
@@ -6508,7 +6617,10 @@ export default function App() {
       }
       setCashoutActionStatus({
         loading: false,
-        error: toUserFacingError(rawError, "Unable to process cashout right now."),
+        error: toUserFacingError(
+          rawError,
+          "Unable to process cashout right now.",
+        ),
         success: null,
       });
       return;
@@ -6526,12 +6638,15 @@ export default function App() {
     if (claimUrl) {
       setTremendousClaimUrl(claimUrl);
       setTremendousClaimError(null);
-      setTremendousClaimLoading(true);
+      armTremendousClaimLoading();
       setTremendousClaimModalVisible(true);
     }
-    triggerCashoutCelebration(Number(data?.amountCents) || amountCentsToCashout);
+    triggerCashoutCelebration(
+      Number(data?.amountCents) || amountCentsToCashout,
+    );
     setCashoutAmountText("");
   }, [
+    armTremendousClaimLoading,
     callAuthedEdgeFunction,
     cashbackBalance.availableCents,
     cashoutAmountText,
@@ -7572,7 +7687,9 @@ export default function App() {
   }, [offerCards, activeFilters, query, discoverRadiusKey]);
 
   const discoverSheetOfferCards = useMemo(() => {
-    const list = Array.isArray(filteredOfferCards) ? [...filteredOfferCards] : [];
+    const list = Array.isArray(filteredOfferCards)
+      ? [...filteredOfferCards]
+      : [];
     const focusedBusinessId = String(markerFocusedBusinessId || "").trim();
     if (!focusedBusinessId) return list;
 
@@ -7582,8 +7699,12 @@ export default function App() {
         item.businessId === focusedBusinessId &&
         getOfferCardSelectionKey(item) === selectedKey,
     );
-    const focusedCards = list.filter((item) => item.businessId === focusedBusinessId);
-    const remainingCards = list.filter((item) => item.businessId !== focusedBusinessId);
+    const focusedCards = list.filter(
+      (item) => item.businessId === focusedBusinessId,
+    );
+    const remainingCards = list.filter(
+      (item) => item.businessId !== focusedBusinessId,
+    );
 
     if (!focusedCards.length) return list;
     if (!selectedForFocused) return [...focusedCards, ...remainingCards];
@@ -7717,7 +7838,11 @@ export default function App() {
       ownerBusiness.merchantDescriptorAliases,
     )
       ? ownerBusiness.merchantDescriptorAliases
-          .map((alias) => String(alias || "").trim().toLowerCase())
+          .map((alias) =>
+            String(alias || "")
+              .trim()
+              .toLowerCase(),
+          )
           .filter(Boolean)
       : [];
     const nextDescriptorAliases = normalizeMerchantDescriptorAliasesInput(
@@ -7962,7 +8087,10 @@ export default function App() {
     }
     return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
   }, [profileName, profileEmail]);
-  const signUpNameParts = useMemo(() => splitFullName(signUpName), [signUpName]);
+  const signUpNameParts = useMemo(
+    () => splitFullName(signUpName),
+    [signUpName],
+  );
   const businessOwnerNameParts = useMemo(
     () => splitFullName(businessOwnerName),
     [businessOwnerName],
@@ -8088,7 +8216,9 @@ export default function App() {
     setAccountRecoveryResults([]);
   }, [activeTab, adminWorkspaceTab]);
   useEffect(() => {
-    if (!(activeTab === "admin" && adminWorkspaceTab === "management" && isAdmin)) {
+    if (
+      !(activeTab === "admin" && adminWorkspaceTab === "management" && isAdmin)
+    ) {
       return;
     }
     loadGlobalCashbackRate().catch(() => {});
@@ -8199,7 +8329,9 @@ export default function App() {
       });
       const list = Array.from(grouped.values());
       list.forEach((group) => {
-        group.receipts.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+        group.receipts.sort(
+          (a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0),
+        );
       });
       return list.sort(
         (a, b) => (b.lastUploadedAt || 0) - (a.lastUploadedAt || 0),
@@ -8286,9 +8418,9 @@ export default function App() {
   );
   const cashoutWithdrawalEntries = useMemo(
     () =>
-      [...(Array.isArray(cashoutPayoutHistory) ? cashoutPayoutHistory : [])].sort(
-        (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
-      ),
+      [
+        ...(Array.isArray(cashoutPayoutHistory) ? cashoutPayoutHistory : []),
+      ].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
     [cashoutPayoutHistory],
   );
   const cashoutWithdrawnTotalCents = useMemo(
@@ -8312,8 +8444,9 @@ export default function App() {
     const cachedClaimUrl = String(cashoutClaimUrl || "").trim();
     if (cachedClaimUrl) return cachedClaimUrl;
     return String(
-      cashoutWithdrawalEntries.find((entry) => String(entry?.claimUrl || "").trim())
-        ?.claimUrl || "",
+      cashoutWithdrawalEntries.find((entry) =>
+        String(entry?.claimUrl || "").trim(),
+      )?.claimUrl || "",
     ).trim();
   }, [cashoutClaimUrl, cashoutWithdrawalEntries]);
   const resumeCashoutClaimLabel = useMemo(() => {
@@ -8514,7 +8647,9 @@ export default function App() {
     setCreateBusinessForm((prev) => ({
       ...prev,
       ...(() => {
-        const draftCategoryKey = String(authBusinessDraft.categoryKey || "").trim();
+        const draftCategoryKey = String(
+          authBusinessDraft.categoryKey || "",
+        ).trim();
         const draftCategoryLabel = String(
           authBusinessDraft.categoryLabel || "",
         ).trim();
@@ -8563,7 +8698,8 @@ export default function App() {
       if (parsed) {
         if (parsed.days) setCreateHoursDays(parsed.days);
         if (parsed.startTime) setCreateHoursStart(parsed.startTime);
-        if (parsed.startMeridiem) setCreateHoursStartMeridiem(parsed.startMeridiem);
+        if (parsed.startMeridiem)
+          setCreateHoursStartMeridiem(parsed.startMeridiem);
         if (parsed.endTime) setCreateHoursEnd(parsed.endTime);
         if (parsed.endMeridiem) setCreateHoursEndMeridiem(parsed.endMeridiem);
       }
@@ -8693,8 +8829,16 @@ export default function App() {
       if (!ensureSupabaseReady(setSignInError)) return;
       setGoogleAuthState("finishing");
 
-      const { code, accessToken, refreshToken, flow, type, tokenHash, ref, error } =
-        parseAuthCallbackParams(url);
+      const {
+        code,
+        accessToken,
+        refreshToken,
+        flow,
+        type,
+        tokenHash,
+        ref,
+        error,
+      } = parseAuthCallbackParams(url);
       const callbackFlow = String(flow || type || "").toLowerCase();
       const referralCode = normalizeReferralCode(ref);
       const hasOAuthPayload =
@@ -8710,7 +8854,9 @@ export default function App() {
             if (typeof supabase.auth.verifyOtp !== "function") {
               passwordRecoveryModeRef.current = false;
               setPasswordRecoveryMode(false);
-              setSignInError("Password reset is unavailable in this app version.");
+              setSignInError(
+                "Password reset is unavailable in this app version.",
+              );
               setAuthView("forgot");
               return;
             }
@@ -8767,7 +8913,10 @@ export default function App() {
             }
           }
         }
-        if (callbackFlow === "stripe_return" || callbackFlow === "stripe_refresh") {
+        if (
+          callbackFlow === "stripe_return" ||
+          callbackFlow === "stripe_refresh"
+        ) {
           setStripeActionStatus((prev) => ({
             ...prev,
             loading: false,
@@ -8999,9 +9148,7 @@ export default function App() {
       }
       if (finalStatus !== "granted") {
         setNotificationPermissionStatus("denied");
-        setTokenError(
-          "Notifications are disabled. Enable them in Settings.",
-        );
+        setTokenError("Notifications are disabled. Enable them in Settings.");
         return;
       }
       setNotificationPermissionStatus("granted");
@@ -9195,7 +9342,9 @@ export default function App() {
   };
 
   const handleForgotPassword = async () => {
-    const email = String(signInEmail || "").trim().toLowerCase();
+    const email = String(signInEmail || "")
+      .trim()
+      .toLowerCase();
     if (!email) {
       setSignInError("Enter your email first, then tap Forgot password.");
       return;
@@ -9245,7 +9394,11 @@ export default function App() {
       Constants.expoConfig?.version || Constants.nativeAppVersion || "unknown",
     );
     const deviceLabel = [
-      Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "",
+      Platform.OS === "ios"
+        ? "iOS"
+        : Platform.OS === "android"
+          ? "Android"
+          : "",
       Device.modelName || "",
     ]
       .filter(Boolean)
@@ -9295,7 +9448,9 @@ export default function App() {
     setPasswordResetError(null);
     setPasswordResetSuccess(null);
     try {
-      const { error } = await supabase.auth.updateUser({ password: nextPassword });
+      const { error } = await supabase.auth.updateUser({
+        password: nextPassword,
+      });
       if (error) {
         setPasswordResetError(error.message || "Unable to update password.");
         return;
@@ -9389,9 +9544,11 @@ export default function App() {
       });
       return;
     }
-    if (!ensureSupabaseReady((message) =>
-      setSecurityStatus({ loading: false, type: "error", message }),
-    )) {
+    if (
+      !ensureSupabaseReady((message) =>
+        setSecurityStatus({ loading: false, type: "error", message }),
+      )
+    ) {
       return;
     }
     const nextPassword = String(securityPasswordDraft || "");
@@ -9461,12 +9618,16 @@ export default function App() {
       });
       return;
     }
-    if (!ensureSupabaseReady((message) =>
-      setSecurityStatus({ loading: false, type: "error", message }),
-    )) {
+    if (
+      !ensureSupabaseReady((message) =>
+        setSecurityStatus({ loading: false, type: "error", message }),
+      )
+    ) {
       return;
     }
-    const nextEmail = String(securityEmailDraft || "").trim().toLowerCase();
+    const nextEmail = String(securityEmailDraft || "")
+      .trim()
+      .toLowerCase();
     const currentEmail = String(profileEmail || authEmail || "")
       .trim()
       .toLowerCase();
@@ -9538,9 +9699,11 @@ export default function App() {
       });
       return;
     }
-    if (!ensureSupabaseReady((message) =>
-      setSecurityStatus({ loading: false, type: "error", message }),
-    )) {
+    if (
+      !ensureSupabaseReady((message) =>
+        setSecurityStatus({ loading: false, type: "error", message }),
+      )
+    ) {
       return;
     }
     const nextPhone = String(securityPhoneDraft || "").trim();
@@ -9588,7 +9751,9 @@ export default function App() {
       setProfilePhone(nextPhone);
       setProfileList((prev) =>
         prev.map((profile) =>
-          profile.id === authUserId ? { ...profile, phone: nextPhone } : profile,
+          profile.id === authUserId
+            ? { ...profile, phone: nextPhone }
+            : profile,
         ),
       );
       await supabase.auth
@@ -9746,7 +9911,8 @@ export default function App() {
       if (payload?.available === false) {
         return {
           ok: false,
-          error: "This email is already registered. Sign in or use a different email.",
+          error:
+            "This email is already registered. Sign in or use a different email.",
         };
       }
       if (payload?.available === true) {
@@ -9875,7 +10041,8 @@ export default function App() {
               state: pendingSignup.state,
               postalCode: pendingSignup.postalCode,
               addressCoords: pendingSignup.addressCoords,
-              merchantDescriptorAliases: pendingSignup.merchantDescriptorAliases,
+              merchantDescriptorAliases:
+                pendingSignup.merchantDescriptorAliases,
             },
           },
         },
@@ -10016,7 +10183,9 @@ export default function App() {
       const signupStartedAtMs = Date.parse(
         String(businessPendingSignup.startedAtIso || ""),
       );
-      const verifiedCreatedAtMs = Date.parse(String(verifiedUser.created_at || ""));
+      const verifiedCreatedAtMs = Date.parse(
+        String(verifiedUser.created_at || ""),
+      );
       if (
         Number.isFinite(signupStartedAtMs) &&
         Number.isFinite(verifiedCreatedAtMs) &&
@@ -10062,7 +10231,9 @@ export default function App() {
           },
         });
       if (updateError) {
-        setBusinessSignUpError(updateError.message || "Unable to finish setup.");
+        setBusinessSignUpError(
+          updateError.message || "Unable to finish setup.",
+        );
         return;
       }
       const activeUser = updatedData?.user || verifiedUser;
@@ -10076,7 +10247,10 @@ export default function App() {
         role: "business_owner",
       });
       if (profileUpsertError) {
-        console.warn("Wello profile upsert failed:", profileUpsertError.message);
+        console.warn(
+          "Wello profile upsert failed:",
+          profileUpsertError.message,
+        );
       }
 
       await hydrateProfile(activeUser, "business_owner");
@@ -10103,7 +10277,8 @@ export default function App() {
           longitude: businessPendingSignup.addressCoords?.longitude ?? null,
           offer_honor_policy_accepted: true,
           offer_honor_policy_version: OFFER_HONOR_POLICY_VERSION,
-          offer_honor_policy_accepted_at: businessPendingSignup.offerHonorAcceptedAt,
+          offer_honor_policy_accepted_at:
+            businessPendingSignup.offerHonorAcceptedAt,
           offer_honor_policy_accepted_by: activeUser.id,
         })
         .select(
@@ -10529,7 +10704,9 @@ export default function App() {
     if (!group) return;
     const targetEntry =
       group.pendingEntries?.[0] ||
-      group.entries?.find((entry) => entry && entry.id && isReviewEligibleEntry(entry)) ||
+      group.entries?.find(
+        (entry) => entry && entry.id && isReviewEligibleEntry(entry),
+      ) ||
       null;
     if (!targetEntry) return;
     openReviewForEntry(targetEntry, group.businessName);
@@ -11947,7 +12124,10 @@ export default function App() {
           } else {
             setOfferStatus((prev) =>
               prev.loading
-                ? { loading: false, error: error.message || "Unable to load offers." }
+                ? {
+                    loading: false,
+                    error: error.message || "Unable to load offers.",
+                  }
                 : prev,
             );
           }
@@ -12406,7 +12586,10 @@ export default function App() {
       image?.height,
     );
     const maxX = Math.max(0, (Number(coverWidth) * scale - viewportWidth) / 2);
-    const maxY = Math.max(0, (Number(coverHeight) * scale - viewportHeight) / 2);
+    const maxY = Math.max(
+      0,
+      (Number(coverHeight) * scale - viewportHeight) / 2,
+    );
     return { maxX, maxY };
   }, []);
 
@@ -12539,8 +12722,7 @@ export default function App() {
     if (!displayWidth || !displayHeight) return null;
 
     const offsetX = (displayWidth - viewportWidth) / 2 - clampedX;
-    const offsetY =
-      (displayHeight - viewportHeight) / 2 - clampedY;
+    const offsetY = (displayHeight - viewportHeight) / 2 - clampedY;
 
     const originX = clampValue(
       Math.round((offsetX / displayWidth) * sourceWidth),
@@ -12602,7 +12784,10 @@ export default function App() {
         livePanX,
         livePanY,
       ] = await Promise.all([
-        readAnimatedValueNow(offerCropBaseScale, offerCropBaseScaleValue.current),
+        readAnimatedValueNow(
+          offerCropBaseScale,
+          offerCropBaseScaleValue.current,
+        ),
         readAnimatedValueNow(
           offerCropPinchScale,
           offerCropPinchScaleValue.current,
@@ -12627,8 +12812,7 @@ export default function App() {
         sourceHeight = Number(dims.height) || 0;
       }
 
-      const cropRect =
-        getCurrentOfferCropRect() ||
+      const cropRect = getCurrentOfferCropRect() ||
         getCenteredOfferCrop(sourceWidth, sourceHeight) || {
           originX: 0,
           originY: 0,
@@ -12804,7 +12988,10 @@ export default function App() {
       if (!silent) {
         setPlaidLinkState((prev) => ({ ...prev, loading: true, error: null }));
       }
-      const { data, error } = await callPlaidFunction("plaid-get-link-status", {});
+      const { data, error } = await callPlaidFunction(
+        "plaid-get-link-status",
+        {},
+      );
       if (error) {
         setPlaidLinkState((prev) => ({
           ...prev,
@@ -12894,7 +13081,8 @@ export default function App() {
   const setHistoryVerificationNotice = useCallback(
     (entry, title, message, variant = "info") => {
       if (!entry?.id) return;
-      const groupKey = entry.businessId || entry.business?.name || "Wello business";
+      const groupKey =
+        entry.businessId || entry.business?.name || "Wello business";
       setExpandedHistoryGroups((prev) => ({ ...prev, [groupKey]: true }));
       setHighlightedHistoryEntryId(entry.id);
       setHistoryVerifyNotice({
@@ -12908,7 +13096,9 @@ export default function App() {
         clearTimeout(historyVerifyNoticeTimerRef.current);
       }
       historyVerifyNoticeTimerRef.current = setTimeout(() => {
-        setHighlightedHistoryEntryId((prev) => (prev === entry.id ? null : prev));
+        setHighlightedHistoryEntryId((prev) =>
+          prev === entry.id ? null : prev,
+        );
         historyVerifyNoticeTimerRef.current = null;
       }, HISTORY_VERIFY_HIGHLIGHT_MS);
     },
@@ -12930,82 +13120,54 @@ export default function App() {
     await AsyncStorage.setItem(key, "1");
   }, [authUserId]);
 
-  const handleLinkPurchaseVerificationBank = useCallback(async (options = {}) => {
-    if (!isSignedIn) {
+  const handleLinkPurchaseVerificationBank = useCallback(
+    async (options = {}) => {
+      if (!isSignedIn) {
+        setPurchaseVerifyStatus({
+          loading: false,
+          targetId: null,
+          error: "Sign in to link a bank account.",
+          success: null,
+        });
+        return;
+      }
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setPlaidLinkState((prev) => ({
+          ...prev,
+          loading: false,
+          error: "Supabase is not configured for purchase verification.",
+        }));
+        return;
+      }
+      if (!options.skipConsent) {
+        const hasConsent = await hasAcceptedPlaidLinkConsent();
+        if (!hasConsent) {
+          plaidLinkAfterConsentRef.current = true;
+          setPlaidConsentModalVisible(true);
+          return;
+        }
+      }
+
+      setPlaidLinkAction("linking");
+      setPlaidLinkState((prev) => ({ ...prev, loading: true, error: null }));
       setPurchaseVerifyStatus({
         loading: false,
         targetId: null,
-        error: "Sign in to link a bank account.",
+        error: null,
         success: null,
       });
-      return;
-    }
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-      setPlaidLinkState((prev) => ({
-        ...prev,
-        loading: false,
-        error: "Supabase is not configured for purchase verification.",
-      }));
-      return;
-    }
-    if (!options.skipConsent) {
-      const hasConsent = await hasAcceptedPlaidLinkConsent();
-      if (!hasConsent) {
-        plaidLinkAfterConsentRef.current = true;
-        setPlaidConsentModalVisible(true);
-        return;
-      }
-    }
 
-    setPlaidLinkAction("linking");
-    setPlaidLinkState((prev) => ({ ...prev, loading: true, error: null }));
-    setPurchaseVerifyStatus({
-      loading: false,
-      targetId: null,
-      error: null,
-      success: null,
-    });
-
-    const requestPayload = {
-      platform: Platform.OS,
-      ...(Platform.OS === "android" && PLAID_ANDROID_PACKAGE_NAME
-        ? { androidPackageName: PLAID_ANDROID_PACKAGE_NAME }
-        : {}),
-    };
-    const { data, error } = await callPlaidFunction(
-      "plaid-create-link-token",
-      requestPayload,
-    );
-    if (error || !data?.linkToken) {
-      setPlaidLinkAction("idle");
-      setPlaidLinkState((prev) => ({
-        ...prev,
-        loading: false,
-        error: PLAID_LINK_UNAVAILABLE_COPY,
-      }));
-      return;
-    }
-
-    try {
-      const plaidDebug = (...parts) => {
-        if (!DEBUG_PLAID_LINK) return;
-        console.log("[PlaidLinkDebug]", ...parts);
-      };
-      const plaidModuleName =
-        Platform.OS === "android" ? "PlaidAndroid" : "RNLinksdk";
-      const plaidTurboModule = TurboModuleRegistry?.get?.(plaidModuleName);
-      const plaidLegacyModule = NativeModules?.[plaidModuleName];
-      const hasPlaidNativeModule = Boolean(plaidTurboModule || plaidLegacyModule);
-      plaidDebug("start", {
+      const requestPayload = {
         platform: Platform.OS,
-        hasAndroidPackage: Boolean(PLAID_ANDROID_PACKAGE_NAME),
-        plaidModuleName,
-        hasPlaidNativeModule,
-        nativePlaidModules: Object.keys(NativeModules || {}).filter((name) =>
-          /plaid|linksdk/i.test(String(name || "")),
-        ),
-      });
-      if (!hasPlaidNativeModule) {
+        ...(Platform.OS === "android" && PLAID_ANDROID_PACKAGE_NAME
+          ? { androidPackageName: PLAID_ANDROID_PACKAGE_NAME }
+          : {}),
+      };
+      const { data, error } = await callPlaidFunction(
+        "plaid-create-link-token",
+        requestPayload,
+      );
+      if (error || !data?.linkToken) {
         setPlaidLinkAction("idle");
         setPlaidLinkState((prev) => ({
           ...prev,
@@ -13015,178 +13177,213 @@ export default function App() {
         return;
       }
 
-      await Promise.race([
-        destroyPlaidLink().catch(() => null),
-        new Promise((resolve) => setTimeout(resolve, 1200)),
-      ]);
-      plaidDebug("destroyDone");
-
-      let linkedSuccessfully = false;
-      let settled = false;
-      let launchWatchdog = null;
-      const clearLaunchWatchdog = () => {
-        if (launchWatchdog) {
-          clearTimeout(launchWatchdog);
-          launchWatchdog = null;
-        }
-      };
-      const settle = (handler) => {
-        if (settled) return;
-        settled = true;
-        if (typeof handler === "function") {
-          handler();
-        }
-      };
-
-      let didOpenAttempt = false;
-      const openLinkSheet = () => {
-        if (didOpenAttempt) return;
-        didOpenAttempt = true;
-        plaidDebug("openAttempt");
-        try {
-          openPlaidLink({
-            logLevel: LinkLogLevel.ERROR,
-            iOSPresentationStyle: LinkIOSPresentationStyle.MODAL,
-            onSuccess: async (success) => {
-              plaidDebug("onSuccess");
-              linkedSuccessfully = true;
-              const publicToken = String(success?.publicToken || "").trim();
-              if (!publicToken) {
-                settle(() => {
-                  clearLaunchWatchdog();
-                  setPlaidLinkAction("idle");
-                  setPlaidLinkState((prev) => ({
-                    ...prev,
-                    loading: false,
-                    error: "Missing public token from Plaid Link.",
-                  }));
-                });
-                return;
-              }
-              const { data: exchangeData, error: exchangeError } =
-                await callPlaidFunction("plaid-exchange-public-token", {
-                  publicToken,
-                });
-              if (exchangeError) {
-                settle(() => {
-                  clearLaunchWatchdog();
-                  setPlaidLinkAction("idle");
-                  setPlaidLinkState((prev) => ({
-                    ...prev,
-                    loading: false,
-                    error: exchangeError,
-                  }));
-                });
-                return;
-              }
-
-              setPurchaseVerifyStatus({
-                loading: false,
-                targetId: null,
-                error: null,
-                success:
-                  exchangeData?.copy?.primary ||
-                  "Bank linked for automatic purchase verification.",
-              });
-              await loadPlaidLinkState({ silent: true });
-              settle(() => {
-                clearLaunchWatchdog();
-                setPlaidLinkAction("idle");
-              });
-            },
-            onExit: (linkExit) => {
-              plaidDebug("onExit", {
-                hasError: Boolean(linkExit?.error),
-                displayMessage: linkExit?.error?.displayMessage || null,
-                errorMessage: linkExit?.error?.errorMessage || null,
-              });
-              const exitMessage =
-                linkExit?.error?.displayMessage ||
-                linkExit?.error?.errorMessage ||
-                null;
-              if (linkedSuccessfully && !exitMessage) {
-                settle(() => {
-                  clearLaunchWatchdog();
-                  setPlaidLinkAction("idle");
-                  setPlaidLinkState((prev) => ({
-                    ...prev,
-                    loading: false,
-                    error: null,
-                  }));
-                });
-                return;
-              }
-              settle(() => {
-                clearLaunchWatchdog();
-                setPlaidLinkAction("idle");
-                setPlaidLinkState((prev) => ({
-                  ...prev,
-                  loading: false,
-                  error: exitMessage || "Bank linking was closed.",
-                }));
-                loadPlaidLinkState({ silent: true });
-              });
-            },
-          });
-          plaidDebug("openCalledReturn");
-        } catch (openError) {
-          plaidDebug("openThrow", {
-            message: openError?.message || String(openError || ""),
-          });
-          settle(() => {
-            clearLaunchWatchdog();
-            setPlaidLinkAction("idle");
-            setPlaidLinkState((prev) => ({
-              ...prev,
-              loading: false,
-              error: toUserFacingError(
-                openError?.message,
-                PLAID_LINK_OPEN_FAILED_COPY,
-              ),
-            }));
-          });
-        }
-      };
-
-      createPlaidLink({
-        token: String(data.linkToken),
-        noLoadingState: false,
-        ...(Platform.OS === "android" ? { logLevel: LinkLogLevel.ERROR } : {}),
-        onLoad: () => {
-          plaidDebug("onLoad");
-          openLinkSheet();
-        },
-      });
-      plaidDebug("createCalled");
-      setTimeout(
-        () => {
-          if (!didOpenAttempt) {
-            plaidDebug("onLoadTimeoutFallback");
-            openLinkSheet();
-          }
-        },
-        Platform.OS === "android" ? 1500 : 900,
-      );
-
-      launchWatchdog = setTimeout(() => {
-        settle(() => {
+      try {
+        const plaidDebug = (...parts) => {
+          if (!DEBUG_PLAID_LINK) return;
+          console.log("[PlaidLinkDebug]", ...parts);
+        };
+        const plaidModuleName =
+          Platform.OS === "android" ? "PlaidAndroid" : "RNLinksdk";
+        const plaidTurboModule = TurboModuleRegistry?.get?.(plaidModuleName);
+        const plaidLegacyModule = NativeModules?.[plaidModuleName];
+        const hasPlaidNativeModule = Boolean(
+          plaidTurboModule || plaidLegacyModule,
+        );
+        plaidDebug("start", {
+          platform: Platform.OS,
+          hasAndroidPackage: Boolean(PLAID_ANDROID_PACKAGE_NAME),
+          plaidModuleName,
+          hasPlaidNativeModule,
+          nativePlaidModules: Object.keys(NativeModules || {}).filter((name) =>
+            /plaid|linksdk/i.test(String(name || "")),
+          ),
+        });
+        if (!hasPlaidNativeModule) {
           setPlaidLinkAction("idle");
           setPlaidLinkState((prev) => ({
             ...prev,
             loading: false,
-            error: PLAID_LINK_OPEN_FAILED_COPY,
+            error: PLAID_LINK_UNAVAILABLE_COPY,
           }));
+          return;
+        }
+
+        await Promise.race([
+          destroyPlaidLink().catch(() => null),
+          new Promise((resolve) => setTimeout(resolve, 1200)),
+        ]);
+        plaidDebug("destroyDone");
+
+        let linkedSuccessfully = false;
+        let settled = false;
+        let launchWatchdog = null;
+        const clearLaunchWatchdog = () => {
+          if (launchWatchdog) {
+            clearTimeout(launchWatchdog);
+            launchWatchdog = null;
+          }
+        };
+        const settle = (handler) => {
+          if (settled) return;
+          settled = true;
+          if (typeof handler === "function") {
+            handler();
+          }
+        };
+
+        let didOpenAttempt = false;
+        const openLinkSheet = () => {
+          if (didOpenAttempt) return;
+          didOpenAttempt = true;
+          plaidDebug("openAttempt");
+          try {
+            openPlaidLink({
+              logLevel: LinkLogLevel.ERROR,
+              iOSPresentationStyle: LinkIOSPresentationStyle.MODAL,
+              onSuccess: async (success) => {
+                plaidDebug("onSuccess");
+                linkedSuccessfully = true;
+                const publicToken = String(success?.publicToken || "").trim();
+                if (!publicToken) {
+                  settle(() => {
+                    clearLaunchWatchdog();
+                    setPlaidLinkAction("idle");
+                    setPlaidLinkState((prev) => ({
+                      ...prev,
+                      loading: false,
+                      error: "Missing public token from Plaid Link.",
+                    }));
+                  });
+                  return;
+                }
+                const { data: exchangeData, error: exchangeError } =
+                  await callPlaidFunction("plaid-exchange-public-token", {
+                    publicToken,
+                  });
+                if (exchangeError) {
+                  settle(() => {
+                    clearLaunchWatchdog();
+                    setPlaidLinkAction("idle");
+                    setPlaidLinkState((prev) => ({
+                      ...prev,
+                      loading: false,
+                      error: exchangeError,
+                    }));
+                  });
+                  return;
+                }
+
+                setPurchaseVerifyStatus({
+                  loading: false,
+                  targetId: null,
+                  error: null,
+                  success:
+                    exchangeData?.copy?.primary ||
+                    "Bank linked for automatic purchase verification.",
+                });
+                await loadPlaidLinkState({ silent: true });
+                settle(() => {
+                  clearLaunchWatchdog();
+                  setPlaidLinkAction("idle");
+                });
+              },
+              onExit: (linkExit) => {
+                plaidDebug("onExit", {
+                  hasError: Boolean(linkExit?.error),
+                  displayMessage: linkExit?.error?.displayMessage || null,
+                  errorMessage: linkExit?.error?.errorMessage || null,
+                });
+                const exitMessage =
+                  linkExit?.error?.displayMessage ||
+                  linkExit?.error?.errorMessage ||
+                  null;
+                if (linkedSuccessfully && !exitMessage) {
+                  settle(() => {
+                    clearLaunchWatchdog();
+                    setPlaidLinkAction("idle");
+                    setPlaidLinkState((prev) => ({
+                      ...prev,
+                      loading: false,
+                      error: null,
+                    }));
+                  });
+                  return;
+                }
+                settle(() => {
+                  clearLaunchWatchdog();
+                  setPlaidLinkAction("idle");
+                  setPlaidLinkState((prev) => ({
+                    ...prev,
+                    loading: false,
+                    error: exitMessage || "Bank linking was closed.",
+                  }));
+                  loadPlaidLinkState({ silent: true });
+                });
+              },
+            });
+            plaidDebug("openCalledReturn");
+          } catch (openError) {
+            plaidDebug("openThrow", {
+              message: openError?.message || String(openError || ""),
+            });
+            settle(() => {
+              clearLaunchWatchdog();
+              setPlaidLinkAction("idle");
+              setPlaidLinkState((prev) => ({
+                ...prev,
+                loading: false,
+                error: toUserFacingError(
+                  openError?.message,
+                  PLAID_LINK_OPEN_FAILED_COPY,
+                ),
+              }));
+            });
+          }
+        };
+
+        createPlaidLink({
+          token: String(data.linkToken),
+          noLoadingState: false,
+          ...(Platform.OS === "android"
+            ? { logLevel: LinkLogLevel.ERROR }
+            : {}),
+          onLoad: () => {
+            plaidDebug("onLoad");
+            openLinkSheet();
+          },
         });
-      }, 8000);
-    } catch (error) {
-      setPlaidLinkAction("idle");
-      setPlaidLinkState((prev) => ({
-        ...prev,
-        loading: false,
-        error: toUserFacingError(error?.message, PLAID_LINK_OPEN_FAILED_COPY),
-      }));
-    }
-  }, [isSignedIn, loadPlaidLinkState, hasAcceptedPlaidLinkConsent]);
+        plaidDebug("createCalled");
+        setTimeout(
+          () => {
+            if (!didOpenAttempt) {
+              plaidDebug("onLoadTimeoutFallback");
+              openLinkSheet();
+            }
+          },
+          Platform.OS === "android" ? 1500 : 900,
+        );
+
+        launchWatchdog = setTimeout(() => {
+          settle(() => {
+            setPlaidLinkAction("idle");
+            setPlaidLinkState((prev) => ({
+              ...prev,
+              loading: false,
+              error: PLAID_LINK_OPEN_FAILED_COPY,
+            }));
+          });
+        }, 8000);
+      } catch (error) {
+        setPlaidLinkAction("idle");
+        setPlaidLinkState((prev) => ({
+          ...prev,
+          loading: false,
+          error: toUserFacingError(error?.message, PLAID_LINK_OPEN_FAILED_COPY),
+        }));
+      }
+    },
+    [isSignedIn, loadPlaidLinkState, hasAcceptedPlaidLinkConsent],
+  );
 
   const closePlaidConsentModal = useCallback(() => {
     plaidLinkAfterConsentRef.current = false;
@@ -13279,7 +13476,10 @@ export default function App() {
         ? new Date(entry.createdAt).toISOString().slice(0, 10)
         : null;
       const merchantName =
-        entry.business?.name || entry.businessName || entry.business?.title || "";
+        entry.business?.name ||
+        entry.businessName ||
+        entry.business?.title ||
+        "";
       const { data, error } = await callPlaidFunction("plaid-verify-purchase", {
         redemptionId: entry.id,
         purchaseDate,
@@ -13966,7 +14166,8 @@ export default function App() {
           details: `Reported from owner receipts screen (${reasonLabel}).`,
           metadata: {
             source: "owner_receipts_modal",
-            review_status: String(receipt?.reviewStatus || "").toLowerCase() || null,
+            review_status:
+              String(receipt?.reviewStatus || "").toLowerCase() || null,
           },
         })
         .select("id")
@@ -14241,9 +14442,10 @@ export default function App() {
       return;
     }
     const isBusinessStripeReadyForOffers = Boolean(
-      (resolvedOwnerBusiness?.stripeAccountId || ownerBusiness?.stripeAccountId) &&
-        (resolvedOwnerBusiness?.stripePaymentMethodId ||
-          ownerBusiness?.stripePaymentMethodId),
+      (resolvedOwnerBusiness?.stripeAccountId ||
+        ownerBusiness?.stripeAccountId) &&
+      (resolvedOwnerBusiness?.stripePaymentMethodId ||
+        ownerBusiness?.stripePaymentMethodId),
     );
     if (!isBusinessStripeReadyForOffers) {
       setOfferError(
@@ -14406,403 +14608,407 @@ export default function App() {
 
   const renderCreateOfferCard = () => {
     const stripeReadyForOffers = Boolean(
-      (resolvedOwnerBusiness?.stripeAccountId || ownerBusiness?.stripeAccountId) &&
-        (resolvedOwnerBusiness?.stripePaymentMethodId ||
-          ownerBusiness?.stripePaymentMethodId),
+      (resolvedOwnerBusiness?.stripeAccountId ||
+        ownerBusiness?.stripeAccountId) &&
+      (resolvedOwnerBusiness?.stripePaymentMethodId ||
+        ownerBusiness?.stripePaymentMethodId),
     );
     return (
       <View style={styles.formCard}>
-      <View style={styles.formHeaderRow}>
-        <View style={styles.formHeaderCopy}>
-          <Text style={styles.formHeaderTitle}>Create offer</Text>
-          <Text style={styles.formHeaderMeta}>
-            Customers will see this on Discover. Your commission is{" "}
-            {formatPercentLabel(ownerCommissionRatePercent)}% on verified
-            receipts from this offer.
-          </Text>
-        </View>
-        <TouchableOpacity
-          style={styles.sectionInfoButton}
-          onPress={() =>
-            openInfoTooltip(
-              "Create offer",
-              `Keep titles short and clear. Add a description with any conditions (limits, dates, eligible items). Offer type is used for filtering and reporting. Your business commission rate is ${formatPercentLabel(ownerCommissionRatePercent)}% on verified receipts.`,
-            )
-          }
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Ionicons
-            name="information-circle-outline"
-            size={18}
-            color={COLORS.muted}
-          />
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.formRow}>
-        <View style={styles.formField}>
-          <Text style={styles.formLabel}>Offer title</Text>
-          <AutoFocusInput
-            style={styles.formInput}
-            placeholder="Example: 20% off first visit"
-            placeholderTextColor={COLORS.muted}
-            value={offerForm.title}
-            onChangeText={(value) => {
-              setOfferForm((prev) => ({
-                ...prev,
-                title: value,
-              }));
-              if (offerError) setOfferError(null);
-              if (offerNotice) setOfferNotice(null);
-            }}
-            maxLength={64}
-            returnKeyType="next"
-          />
-        </View>
-        <View style={styles.formField}>
-          <Text style={styles.formLabel}>Offer type</Text>
-          <TouchableOpacity
-            style={[styles.formInput, styles.selectInput]}
-            onPress={() => setCreateOfferTypeMenuOpen((prev) => !prev)}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.selectInputText}>
-              {getOfferTypePickerLabel(offerForm.typePreset)}
+        <View style={styles.formHeaderRow}>
+          <View style={styles.formHeaderCopy}>
+            <Text style={styles.formHeaderTitle}>Create offer</Text>
+            <Text style={styles.formHeaderMeta}>
+              Customers will see this on Discover. Your commission is{" "}
+              {formatPercentLabel(ownerCommissionRatePercent)}% on verified
+              receipts from this offer.
             </Text>
+          </View>
+          <TouchableOpacity
+            style={styles.sectionInfoButton}
+            onPress={() =>
+              openInfoTooltip(
+                "Create offer",
+                `Keep titles short and clear. Add a description with any conditions (limits, dates, eligible items). Offer type is used for filtering and reporting. Your business commission rate is ${formatPercentLabel(ownerCommissionRatePercent)}% on verified receipts.`,
+              )
+            }
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
             <Ionicons
-              name={createOfferTypeMenuOpen ? "chevron-up" : "chevron-down"}
-              size={16}
+              name="information-circle-outline"
+              size={18}
               color={COLORS.muted}
             />
           </TouchableOpacity>
-          {createOfferTypeMenuOpen && (
-            <View style={styles.selectMenu}>
-              {OFFER_TYPE_DROPDOWN_OPTIONS.map((option) => {
-                const isActive = offerForm.typePreset === option.value;
+        </View>
+
+        <View style={styles.formRow}>
+          <View style={styles.formField}>
+            <Text style={styles.formLabel}>Offer title</Text>
+            <AutoFocusInput
+              style={styles.formInput}
+              placeholder="Example: 20% off first visit"
+              placeholderTextColor={COLORS.muted}
+              value={offerForm.title}
+              onChangeText={(value) => {
+                setOfferForm((prev) => ({
+                  ...prev,
+                  title: value,
+                }));
+                if (offerError) setOfferError(null);
+                if (offerNotice) setOfferNotice(null);
+              }}
+              maxLength={64}
+              returnKeyType="next"
+            />
+          </View>
+          <View style={styles.formField}>
+            <Text style={styles.formLabel}>Offer type</Text>
+            <TouchableOpacity
+              style={[styles.formInput, styles.selectInput]}
+              onPress={() => setCreateOfferTypeMenuOpen((prev) => !prev)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.selectInputText}>
+                {getOfferTypePickerLabel(offerForm.typePreset)}
+              </Text>
+              <Ionicons
+                name={createOfferTypeMenuOpen ? "chevron-up" : "chevron-down"}
+                size={16}
+                color={COLORS.muted}
+              />
+            </TouchableOpacity>
+            {createOfferTypeMenuOpen && (
+              <View style={styles.selectMenu}>
+                {OFFER_TYPE_DROPDOWN_OPTIONS.map((option) => {
+                  const isActive = offerForm.typePreset === option.value;
+                  return (
+                    <TouchableOpacity
+                      key={option.value}
+                      style={[
+                        styles.selectMenuOption,
+                        isActive && styles.selectMenuOptionActive,
+                      ]}
+                      onPress={() => {
+                        setOfferForm((prev) => ({
+                          ...prev,
+                          typePreset: option.value,
+                          typeCustom:
+                            option.value === OFFER_TYPE_OTHER_KEY
+                              ? prev.typeCustom
+                              : "",
+                        }));
+                        setCreateOfferTypeMenuOpen(false);
+                        if (offerError) setOfferError(null);
+                        if (offerNotice) setOfferNotice(null);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.selectMenuOptionText,
+                          isActive && styles.selectMenuOptionTextActive,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+            {offerForm.typePreset === OFFER_TYPE_OTHER_KEY && (
+              <AutoFocusInput
+                style={styles.formInput}
+                placeholder="Type custom offer type"
+                placeholderTextColor={COLORS.muted}
+                value={offerForm.typeCustom}
+                onChangeText={(value) =>
+                  setOfferForm((prev) => ({
+                    ...prev,
+                    typeCustom: value,
+                  }))
+                }
+                maxLength={32}
+              />
+            )}
+          </View>
+        </View>
+
+        <Text style={styles.formLabel}>Description</Text>
+        <AutoFocusInput
+          style={[styles.formInput, styles.formTextarea]}
+          placeholder="Add the details customers should know (limits, dates, eligible items)."
+          placeholderTextColor={COLORS.muted}
+          value={offerForm.description}
+          onChangeText={(value) => {
+            setOfferForm((prev) => ({
+              ...prev,
+              description: value,
+            }));
+            if (offerError) setOfferError(null);
+            if (offerNotice) setOfferNotice(null);
+          }}
+          multiline
+          textAlignVertical="top"
+          maxLength={360}
+        />
+        <Text style={styles.formLabel}>Redemption limit</Text>
+        <View style={styles.limitOptionRow}>
+          {[
+            { key: "unlimited", label: "Unlimited" },
+            { key: "day", label: "1/day" },
+            { key: "week", label: "1/week" },
+            { key: "custom", label: "Custom" },
+          ].map((option) => {
+            const active = offerForm.redemptionLimitMode === option.key;
+            const optionStyles =
+              option.key === "unlimited"
+                ? {
+                    pill: styles.limitOptionUnlimited,
+                    pillActive: styles.limitOptionUnlimitedActive,
+                    text: styles.limitOptionTextUnlimited,
+                  }
+                : option.key === "day"
+                  ? {
+                      pill: styles.limitOptionDay,
+                      pillActive: styles.limitOptionDayActive,
+                      text: styles.limitOptionTextDay,
+                    }
+                  : option.key === "week"
+                    ? {
+                        pill: styles.limitOptionWeek,
+                        pillActive: styles.limitOptionWeekActive,
+                        text: styles.limitOptionTextWeek,
+                      }
+                    : {
+                        pill: styles.limitOptionCustom,
+                        pillActive: styles.limitOptionCustomActive,
+                        text: styles.limitOptionTextCustom,
+                      };
+            return (
+              <TouchableOpacity
+                key={option.key}
+                style={[
+                  styles.limitOption,
+                  optionStyles.pill,
+                  active && optionStyles.pillActive,
+                ]}
+                onPress={() => {
+                  setOfferForm((prev) => ({
+                    ...prev,
+                    redemptionLimitMode: option.key,
+                    redemptionLimitPeriod:
+                      option.key === "week"
+                        ? "week"
+                        : option.key === "day"
+                          ? "day"
+                          : prev.redemptionLimitPeriod,
+                    redemptionLimitCount:
+                      option.key === "custom"
+                        ? prev.redemptionLimitCount || "1"
+                        : "1",
+                  }));
+                  if (offerError) setOfferError(null);
+                  if (offerNotice) setOfferNotice(null);
+                }}
+                activeOpacity={0.85}
+              >
+                <Text
+                  style={[
+                    styles.limitOptionText,
+                    optionStyles.text,
+                    active && styles.limitOptionTextActive,
+                  ]}
+                >
+                  {option.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {offerForm.redemptionLimitMode === "custom" && (
+          <View style={styles.limitCustomRow}>
+            <View style={styles.limitCountWrap}>
+              <AutoFocusInput
+                style={[styles.formInput, styles.limitCountInput]}
+                placeholder="Count"
+                placeholderTextColor={COLORS.muted}
+                value={String(offerForm.redemptionLimitCount || "")}
+                onChangeText={(value) => {
+                  setOfferForm((prev) => ({
+                    ...prev,
+                    redemptionLimitCount: value.replace(/[^\d]/g, ""),
+                  }));
+                  if (offerError) setOfferError(null);
+                  if (offerNotice) setOfferNotice(null);
+                }}
+                keyboardType="number-pad"
+                maxLength={3}
+              />
+            </View>
+            <View style={styles.limitPeriodRow}>
+              {["day", "week"].map((period) => {
+                const active = offerForm.redemptionLimitPeriod === period;
                 return (
                   <TouchableOpacity
-                    key={option.value}
+                    key={period}
                     style={[
-                      styles.selectMenuOption,
-                      isActive && styles.selectMenuOptionActive,
+                      styles.limitPeriodOption,
+                      active && styles.limitPeriodOptionActive,
                     ]}
-                    onPress={() => {
+                    onPress={() =>
                       setOfferForm((prev) => ({
                         ...prev,
-                        typePreset: option.value,
-                        typeCustom:
-                          option.value === OFFER_TYPE_OTHER_KEY
-                            ? prev.typeCustom
-                            : "",
-                      }));
-                      setCreateOfferTypeMenuOpen(false);
-                      if (offerError) setOfferError(null);
-                      if (offerNotice) setOfferNotice(null);
-                    }}
+                        redemptionLimitPeriod: period,
+                      }))
+                    }
+                    activeOpacity={0.85}
                   >
                     <Text
                       style={[
-                        styles.selectMenuOptionText,
-                        isActive && styles.selectMenuOptionTextActive,
+                        styles.limitPeriodText,
+                        active && styles.limitPeriodTextActive,
                       ]}
                     >
-                      {option.label}
+                      per {period}
                     </Text>
                   </TouchableOpacity>
                 );
               })}
             </View>
-          )}
-          {offerForm.typePreset === OFFER_TYPE_OTHER_KEY && (
-            <AutoFocusInput
-              style={styles.formInput}
-              placeholder="Type custom offer type"
-              placeholderTextColor={COLORS.muted}
-              value={offerForm.typeCustom}
-              onChangeText={(value) =>
-                setOfferForm((prev) => ({
-                  ...prev,
-                  typeCustom: value,
-                }))
-              }
-              maxLength={32}
-            />
-          )}
-        </View>
-      </View>
-
-      <Text style={styles.formLabel}>Description</Text>
-      <AutoFocusInput
-        style={[styles.formInput, styles.formTextarea]}
-        placeholder="Add the details customers should know (limits, dates, eligible items)."
-        placeholderTextColor={COLORS.muted}
-        value={offerForm.description}
-        onChangeText={(value) => {
-          setOfferForm((prev) => ({
-            ...prev,
-            description: value,
-          }));
-          if (offerError) setOfferError(null);
-          if (offerNotice) setOfferNotice(null);
-        }}
-        multiline
-        textAlignVertical="top"
-        maxLength={360}
-      />
-      <Text style={styles.formLabel}>Redemption limit</Text>
-      <View style={styles.limitOptionRow}>
-        {[
-          { key: "unlimited", label: "Unlimited" },
-          { key: "day", label: "1/day" },
-          { key: "week", label: "1/week" },
-          { key: "custom", label: "Custom" },
-        ].map((option) => {
-          const active = offerForm.redemptionLimitMode === option.key;
-          const optionStyles =
-            option.key === "unlimited"
-              ? {
-                  pill: styles.limitOptionUnlimited,
-                  pillActive: styles.limitOptionUnlimitedActive,
-                  text: styles.limitOptionTextUnlimited,
-                }
-              : option.key === "day"
-                ? {
-                    pill: styles.limitOptionDay,
-                    pillActive: styles.limitOptionDayActive,
-                    text: styles.limitOptionTextDay,
-                  }
-                : option.key === "week"
-                  ? {
-                      pill: styles.limitOptionWeek,
-                      pillActive: styles.limitOptionWeekActive,
-                      text: styles.limitOptionTextWeek,
-                    }
-                  : {
-                      pill: styles.limitOptionCustom,
-                      pillActive: styles.limitOptionCustomActive,
-                      text: styles.limitOptionTextCustom,
-                    };
-          return (
-            <TouchableOpacity
-              key={option.key}
-              style={[
-                styles.limitOption,
-                optionStyles.pill,
-                active && optionStyles.pillActive,
-              ]}
-              onPress={() => {
-                setOfferForm((prev) => ({
-                  ...prev,
-                  redemptionLimitMode: option.key,
-                  redemptionLimitPeriod:
-                    option.key === "week"
-                      ? "week"
-                      : option.key === "day"
-                        ? "day"
-                        : prev.redemptionLimitPeriod,
-                  redemptionLimitCount:
-                    option.key === "custom"
-                      ? prev.redemptionLimitCount || "1"
-                      : "1",
-                }));
-                if (offerError) setOfferError(null);
-                if (offerNotice) setOfferNotice(null);
-              }}
-              activeOpacity={0.85}
-            >
-              <Text
-                style={[
-                  styles.limitOptionText,
-                  optionStyles.text,
-                  active && styles.limitOptionTextActive,
-                ]}
-              >
-                {option.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      {offerForm.redemptionLimitMode === "custom" && (
-        <View style={styles.limitCustomRow}>
-          <View style={styles.limitCountWrap}>
-            <AutoFocusInput
-              style={[styles.formInput, styles.limitCountInput]}
-              placeholder="Count"
-              placeholderTextColor={COLORS.muted}
-              value={String(offerForm.redemptionLimitCount || "")}
-              onChangeText={(value) => {
-                setOfferForm((prev) => ({
-                  ...prev,
-                  redemptionLimitCount: value.replace(/[^\d]/g, ""),
-                }));
-                if (offerError) setOfferError(null);
-                if (offerNotice) setOfferNotice(null);
-              }}
-              keyboardType="number-pad"
-              maxLength={3}
-            />
           </View>
-          <View style={styles.limitPeriodRow}>
-            {["day", "week"].map((period) => {
-              const active = offerForm.redemptionLimitPeriod === period;
-              return (
-                <TouchableOpacity
-                  key={period}
-                  style={[
-                    styles.limitPeriodOption,
-                    active && styles.limitPeriodOptionActive,
-                  ]}
-                  onPress={() =>
-                    setOfferForm((prev) => ({
-                      ...prev,
-                      redemptionLimitPeriod: period,
-                    }))
-                  }
-                  activeOpacity={0.85}
-                >
-                  <Text
-                    style={[
-                      styles.limitPeriodText,
-                      active && styles.limitPeriodTextActive,
-                    ]}
-                  >
-                    per {period}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-      )}
-      <Text style={styles.formHint}>
-        Applies per customer (rolling 24h/7d).
-      </Text>
-
-      <View style={styles.offerPhotoHeader}>
-        <Text style={styles.formLabel}>Offer photo</Text>
-        {offerImage && (
-          <TouchableOpacity
-            style={styles.offerRemoveButton}
-            onPress={() => {
-              setOfferImage(null);
-              if (offerNotice) setOfferNotice(null);
-            }}
-          >
-            <Text style={styles.offerRemoveButtonText}>Remove</Text>
-          </TouchableOpacity>
         )}
-      </View>
-      {offerImageStatus.error && (
-        <Text style={styles.formError}>{offerImageStatus.error}</Text>
-      )}
-      <TouchableOpacity
-        style={[styles.offerUploadFrame, styles.offerUploadFrameInteractive]}
-        onPress={() => {
-          if (offerNotice) setOfferNotice(null);
-          handlePickOfferImage();
-        }}
-        disabled={offerImageStatus.uploading}
-        activeOpacity={0.85}
-      >
-        {offerImage ? (
-          <>
-            <Image
-              source={{ uri: offerImage.uri }}
-              style={styles.offerUploadPreview}
-              resizeMode="cover"
-              onError={(event) => {
-                console.warn("Wello offer preview failed:", {
-                  uri: offerImage.uri,
-                  error: event.nativeEvent?.error,
-                });
+        <Text style={styles.formHint}>
+          Applies per customer (rolling 24h/7d).
+        </Text>
+
+        <View style={styles.offerPhotoHeader}>
+          <Text style={styles.formLabel}>Offer photo</Text>
+          {offerImage && (
+            <TouchableOpacity
+              style={styles.offerRemoveButton}
+              onPress={() => {
+                setOfferImage(null);
+                if (offerNotice) setOfferNotice(null);
               }}
-            />
-            <View style={styles.offerUploadOverlay}>
-              <Text style={styles.offerUploadOverlayText}>
-                Tap to replace photo
+            >
+              <Text style={styles.offerRemoveButtonText}>Remove</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        {offerImageStatus.error && (
+          <Text style={styles.formError}>{offerImageStatus.error}</Text>
+        )}
+        <TouchableOpacity
+          style={[styles.offerUploadFrame, styles.offerUploadFrameInteractive]}
+          onPress={() => {
+            if (offerNotice) setOfferNotice(null);
+            handlePickOfferImage();
+          }}
+          disabled={offerImageStatus.uploading}
+          activeOpacity={0.85}
+        >
+          {offerImage ? (
+            <>
+              <Image
+                source={{ uri: offerImage.uri }}
+                style={styles.offerUploadPreview}
+                resizeMode="cover"
+                onError={(event) => {
+                  console.warn("Wello offer preview failed:", {
+                    uri: offerImage.uri,
+                    error: event.nativeEvent?.error,
+                  });
+                }}
+              />
+              <View style={styles.offerUploadOverlay}>
+                <Text style={styles.offerUploadOverlayText}>
+                  Tap to replace photo
+                </Text>
+              </View>
+            </>
+          ) : (
+            <View style={styles.offerUploadPlaceholder}>
+              <Ionicons name="image-outline" size={18} color={COLORS.muted} />
+              <Text style={styles.offerUploadHint}>
+                Tap to choose and crop photo.
               </Text>
             </View>
-          </>
-        ) : (
-          <View style={styles.offerUploadPlaceholder}>
-            <Ionicons name="image-outline" size={18} color={COLORS.muted} />
-            <Text style={styles.offerUploadHint}>
-              Tap to choose and crop photo.
+          )}
+          {offerImageStatus.uploading && (
+            <View style={styles.offerUploadBusy}>
+              <ActivityIndicator color={COLORS.pine} />
+            </View>
+          )}
+        </TouchableOpacity>
+        <Text style={styles.formHint}>
+          Use native crop to match the final offer preview.
+        </Text>
+        <View style={styles.legalChecklist}>
+          <TouchableOpacity
+            style={styles.legalCheckRow}
+            onPress={() => {
+              setOfferCreateHonorChecked((prev) => !prev);
+              if (offerError) setOfferError(null);
+            }}
+            activeOpacity={0.85}
+          >
+            <Ionicons
+              name={
+                offerCreateHonorChecked ? "checkmark-circle" : "ellipse-outline"
+              }
+              size={18}
+              color={offerCreateHonorChecked ? COLORS.pine : COLORS.muted}
+            />
+            <Text style={styles.legalCheckText}>
+              I confirm this offer is accurate and my business will honor it
+              exactly as published.
+            </Text>
+          </TouchableOpacity>
+        </View>
+        <TouchableOpacity
+          style={styles.legalLinkButton}
+          onPress={() => Linking.openURL(PRIVACY_POLICY_URL).catch(() => null)}
+        >
+          <Text style={styles.legalLinkText}>Review Privacy Policy</Text>
+        </TouchableOpacity>
+
+        {offerNotice && (
+          <View style={[styles.alertBox, styles.alertSuccess]}>
+            <Text style={styles.alertText}>{offerNotice.text}</Text>
+          </View>
+        )}
+        {offerError && <Text style={styles.formError}>{offerError}</Text>}
+
+        <View style={styles.formActions}>
+          <TouchableOpacity
+            style={[
+              styles.primaryButton,
+              (offerBusy || !stripeReadyForOffers) &&
+                styles.primaryButtonDisabled,
+            ]}
+            onPress={handleCreateOffer}
+            disabled={offerBusy || !stripeReadyForOffers}
+          >
+            <Text style={styles.primaryButtonText}>
+              {offerBusy
+                ? "Saving..."
+                : stripeReadyForOffers
+                  ? "Create offer"
+                  : "Set up payments to create offers"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+        {!stripeReadyForOffers && (
+          <View style={styles.formCardDisabledOverlay}>
+            <Text style={styles.formCardDisabledOverlayText}>
+              Connect Stripe and add a payment method in Dashboard {" > "}{" "}
+              Payments to create offers
             </Text>
           </View>
         )}
-        {offerImageStatus.uploading && (
-          <View style={styles.offerUploadBusy}>
-            <ActivityIndicator color={COLORS.pine} />
-          </View>
-        )}
-      </TouchableOpacity>
-      <Text style={styles.formHint}>
-        Use native crop to match the final offer preview.
-      </Text>
-      <View style={styles.legalChecklist}>
-        <TouchableOpacity
-          style={styles.legalCheckRow}
-          onPress={() => {
-            setOfferCreateHonorChecked((prev) => !prev);
-            if (offerError) setOfferError(null);
-          }}
-          activeOpacity={0.85}
-        >
-          <Ionicons
-            name={offerCreateHonorChecked ? "checkmark-circle" : "ellipse-outline"}
-            size={18}
-            color={offerCreateHonorChecked ? COLORS.pine : COLORS.muted}
-          />
-          <Text style={styles.legalCheckText}>
-            I confirm this offer is accurate and my business will honor it exactly
-            as published.
-          </Text>
-        </TouchableOpacity>
       </View>
-      <TouchableOpacity
-        style={styles.legalLinkButton}
-        onPress={() => Linking.openURL(PRIVACY_POLICY_URL).catch(() => null)}
-      >
-        <Text style={styles.legalLinkText}>Review Privacy Policy</Text>
-      </TouchableOpacity>
-
-      {offerNotice && (
-        <View style={[styles.alertBox, styles.alertSuccess]}>
-          <Text style={styles.alertText}>{offerNotice.text}</Text>
-        </View>
-      )}
-      {offerError && <Text style={styles.formError}>{offerError}</Text>}
-
-      <View style={styles.formActions}>
-        <TouchableOpacity
-          style={[
-            styles.primaryButton,
-            (offerBusy || !stripeReadyForOffers) &&
-              styles.primaryButtonDisabled,
-          ]}
-          onPress={handleCreateOffer}
-          disabled={offerBusy || !stripeReadyForOffers}
-        >
-          <Text style={styles.primaryButtonText}>
-            {offerBusy
-              ? "Saving..."
-              : stripeReadyForOffers
-                ? "Create offer"
-                : "Set up payments to create offers"}
-          </Text>
-        </TouchableOpacity>
-      </View>
-      {!stripeReadyForOffers && (
-        <View style={styles.formCardDisabledOverlay}>
-          <Text style={styles.formCardDisabledOverlayText}>
-            Connect Stripe and add a payment method in Dashboard {" > "} Payments to create offers
-          </Text>
-        </View>
-      )}
-    </View>
     );
   };
 
@@ -14811,9 +15017,10 @@ export default function App() {
     const nextActive = !offer.active;
     if (nextActive) {
       const isBusinessStripeReadyForOffers = Boolean(
-        (resolvedOwnerBusiness?.stripeAccountId || ownerBusiness?.stripeAccountId) &&
-          (resolvedOwnerBusiness?.stripePaymentMethodId ||
-            ownerBusiness?.stripePaymentMethodId),
+        (resolvedOwnerBusiness?.stripeAccountId ||
+          ownerBusiness?.stripeAccountId) &&
+        (resolvedOwnerBusiness?.stripePaymentMethodId ||
+          ownerBusiness?.stripePaymentMethodId),
       );
       if (!isBusinessStripeReadyForOffers) {
         setOfferError(
@@ -15668,7 +15875,8 @@ export default function App() {
       const status = String(verification.status || "").toLowerCase();
       const reasonCode = String(verification.reasonCode || "").toLowerCase();
       const lastCheckedAt = Number(verification.lastCheckedAt) || 0;
-      const ageMs = lastCheckedAt > 0 ? now - lastCheckedAt : Number.MAX_SAFE_INTEGER;
+      const ageMs =
+        lastCheckedAt > 0 ? now - lastCheckedAt : Number.MAX_SAFE_INTEGER;
 
       if (status === "pending" && ageMs >= AUTO_VERIFY_RETRY_MS) {
         return true;
@@ -15875,10 +16083,9 @@ export default function App() {
           offer_highlight: null,
           hours: hoursValue,
           tags: normalizeTagsInput(createBusinessForm.tags),
-          merchant_descriptor_aliases:
-            normalizeMerchantDescriptorAliasesInput(
-              createBusinessForm.merchantDescriptorAliases,
-            ),
+          merchant_descriptor_aliases: normalizeMerchantDescriptorAliasesInput(
+            createBusinessForm.merchantDescriptorAliases,
+          ),
           approval_status: "pending",
           status: "active",
           is_open: true,
@@ -16071,7 +16278,9 @@ export default function App() {
                 const androidIcon = androidMarkerIcons?.normal?.[markerKey];
                 const androidHalo = androidMarkerIcons?.halo?.[markerKey];
                 const useAndroidImages =
-                  Platform.OS === "android" && androidIcon && !FORCE_VECTOR_MARKERS;
+                  Platform.OS === "android" &&
+                  androidIcon &&
+                  !FORCE_VECTOR_MARKERS;
                 const markerAnchor =
                   Platform.OS === "android" && useAndroidImages
                     ? { x: 0.5, y: 0.5 }
@@ -16149,7 +16358,10 @@ export default function App() {
               style={styles.mapShade}
             />
 
-            <View style={[styles.topMeta, { top: uiTopInset }]} pointerEvents="box-none">
+            <View
+              style={[styles.topMeta, { top: uiTopInset }]}
+              pointerEvents="box-none"
+            >
               <View
                 style={[
                   styles.navContainer,
@@ -16158,7 +16370,10 @@ export default function App() {
                 ]}
               >
                 <View
-                  style={[styles.navRow, navNeedsTightFit && styles.navRowTight]}
+                  style={[
+                    styles.navRow,
+                    navNeedsTightFit && styles.navRowTight,
+                  ]}
                   onLayout={handleNavRowLayout}
                 >
                   {navRowWidth > 0 && navIndicatorWidth > 0 ? (
@@ -16175,7 +16390,9 @@ export default function App() {
                   ) : null}
                   {visibleTabs.map((tab, index) => {
                     const isActive = activeTab === tab.key;
-                    const iconName = isActive ? tab.iconActive || tab.icon : tab.icon;
+                    const iconName = isActive
+                      ? tab.iconActive || tab.icon
+                      : tab.icon;
                     const focusAnim = getTabFocusAnim(tab.key);
                     const iconSize = navNeedsTightFit
                       ? IS_COMPACT
@@ -16332,7 +16549,9 @@ export default function App() {
                     <Text style={styles.appDialogTitle}>{appDialog.title}</Text>
                   ) : null}
                   {appDialog.message ? (
-                    <Text style={styles.appDialogMessage}>{appDialog.message}</Text>
+                    <Text style={styles.appDialogMessage}>
+                      {appDialog.message}
+                    </Text>
                   ) : null}
                   <View style={styles.appDialogActions}>
                     {(appDialog.options || []).map((option, index) => {
@@ -16407,8 +16626,8 @@ export default function App() {
                             ? "checkmark-circle"
                             : scannerStatus === "blocked"
                               ? "alert-circle"
-                                : scannerStatus === "error"
-                                  ? "warning"
+                              : scannerStatus === "error"
+                                ? "warning"
                                 : scannerStatus === "redeeming"
                                   ? "card"
                                   : "card"
@@ -16475,10 +16694,15 @@ export default function App() {
                       <TouchableOpacity
                         style={styles.secondaryButton}
                         onPress={() => {
-                          void redeemOfferInStore(scannerBusiness, scannerOffer);
+                          void redeemOfferInStore(
+                            scannerBusiness,
+                            scannerOffer,
+                          );
                         }}
                       >
-                        <Text style={styles.secondaryButtonText}>Try again</Text>
+                        <Text style={styles.secondaryButtonText}>
+                          Try again
+                        </Text>
                       </TouchableOpacity>
                     ) : scannerStatus === "checking" ||
                       scannerStatus === "redeeming" ? (
@@ -16498,7 +16722,10 @@ export default function App() {
                       <TouchableOpacity
                         style={styles.secondaryButton}
                         onPress={() => {
-                          void redeemOfferInStore(scannerBusiness, scannerOffer);
+                          void redeemOfferInStore(
+                            scannerBusiness,
+                            scannerOffer,
+                          );
                         }}
                       >
                         <Text style={styles.secondaryButtonText}>
@@ -16522,8 +16749,8 @@ export default function App() {
                         </Text>
                         <Text style={styles.noticeBody}>
                           Link a bank to enable faster automatic purchase
-                          verification. Some cards or banks may still require receipt
-                          upload.
+                          verification. Some cards or banks may still require
+                          receipt upload.
                         </Text>
                         <View style={styles.verificationPromptActions}>
                           <TouchableOpacity
@@ -16776,13 +17003,12 @@ export default function App() {
                             businessDetail?.hours ||
                             businessDetail?.business?.hours ||
                             "";
-                          const detailDescription =
-                            String(
-                              offer?.description ||
-                                offer?.offerDescription ||
-                                offer?.offer_description ||
-                                "",
-                            ).trim();
+                          const detailDescription = String(
+                            offer?.description ||
+                              offer?.offerDescription ||
+                              offer?.offer_description ||
+                              "",
+                          ).trim();
                           const openFromHours = isBusinessOpenNow(detailHours);
                           const isBusinessOpen =
                             openFromHours === null
@@ -16802,7 +17028,10 @@ export default function App() {
                               <View style={styles.detailOfferTagRow}>
                                 {sanitizeBusinessTags(businessDetail.tags).map(
                                   (tag) => (
-                                    <View key={tag} style={styles.detailOfferTag}>
+                                    <View
+                                      key={tag}
+                                      style={styles.detailOfferTag}
+                                    >
                                       <Text style={styles.detailOfferTagText}>
                                         {tag}
                                       </Text>
@@ -16947,610 +17176,670 @@ export default function App() {
             >
               {/* React Native Modal renders in a separate root on Android; wrap it so RNGH works reliably. */}
               <SafeAreaProvider>
-              <GestureHandlerRootView style={{ flex: 1 }}>
-                <SafeAreaView
-                  style={styles.receiptsScreen}
-                  edges={["top", "bottom"]}
-                >
-                  <View style={styles.receiptsHeader}>
-                    <View>
-                      <Text style={styles.receiptsTitle}>Receipts</Text>
-                      <Text style={styles.receiptsSubtitle}>
-                        View uploaded receipts by offer.
-                      </Text>
-                    </View>
-                    <TouchableOpacity
-                      style={styles.receiptsClose}
-                      onPress={() => {
-                        setReceiptsModalOpen(false);
-                        setReceiptPreview(null);
-                        setReceiptReportStatus({
-                          loading: false,
-                          targetId: null,
-                          error: null,
-                          success: null,
-                        });
-                      }}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    >
-                      <Ionicons name="close" size={18} color={COLORS.ink} />
-                    </TouchableOpacity>
-                  </View>
-
-                  <ScrollView
-                    style={styles.receiptsBody}
-                    contentContainerStyle={styles.receiptsBodyContent}
-                    showsVerticalScrollIndicator={false}
+                <GestureHandlerRootView style={{ flex: 1 }}>
+                  <SafeAreaView
+                    style={styles.receiptsScreen}
+                    edges={["top", "bottom"]}
                   >
-                    {businessReceiptStatus.error && (
-                      <Text style={styles.formError}>
-                        {businessReceiptStatus.error}
-                      </Text>
-                    )}
-                    {businessRedemptionStatus.error && (
-                      <Text style={styles.formError}>
-                        {businessRedemptionStatus.error}
-                      </Text>
-                    )}
-
-                    {businessReceiptStatus.loading ||
-                    businessRedemptionStatus.loading ? (
-                      <View style={styles.remoteNotice}>
-                        <Text style={styles.remoteNoticeText}>
-                          Loading redemptions...
+                    <View style={styles.receiptsHeader}>
+                      <View>
+                        <Text style={styles.receiptsTitle}>Receipts</Text>
+                        <Text style={styles.receiptsSubtitle}>
+                          View uploaded receipts by offer.
                         </Text>
                       </View>
-                    ) : businessReceipts.length === 0 &&
-                      pendingRedemptionGroups.length === 0 ? (
-                      <View style={styles.emptyState}>
-                        <Text style={styles.emptyTitle}>No receipts yet.</Text>
-                        <Text style={styles.emptyCopy}>
-                          Redemptions will appear here as customers redeem
-                          offers.
-                        </Text>
-                      </View>
-                    ) : (
-                      <View style={styles.receiptList}>
-                        {receiptOfferGroups.plaid.length > 0 && (
-                          <>
-                            <Text style={styles.receiptSectionTitle}>
-                              Auto verified by Plaid
-                            </Text>
-                            {receiptOfferGroups.plaid.map((group) => {
-                              const expandKey = `verified:${group.key}`;
-                              const isExpanded = Boolean(
-                                expandedReceiptOffers[expandKey],
-                              );
-                              return (
-                                <View
-                                  key={`verified-${group.key}`}
-                                  style={styles.receiptOfferCard}
-                                >
-                                  <TouchableOpacity
-                                    style={styles.receiptOfferHeader}
-                                    onPress={() =>
-                                      setExpandedReceiptOffers((prev) => ({
-                                        ...prev,
-                                        [expandKey]: !prev[expandKey],
-                                      }))
-                                    }
-                                  >
-                                    <View style={styles.receiptOfferMeta}>
-                                      <Text
-                                        style={styles.receiptOfferTitle}
-                                        numberOfLines={1}
-                                      >
-                                        {group.offerTitle}
-                                      </Text>
-                                      <Text style={styles.receiptOfferSub}>
-                                        {group.receipts.length} receipts{" "}
-                                        {"\u00b7"} Last{" "}
-                                        {formatHistoryTimestamp(
-                                          group.lastUploadedAt,
-                                        )}
-                                      </Text>
-                                    </View>
-                                    <Ionicons
-                                      name={
-                                        isExpanded
-                                          ? "chevron-up"
-                                          : "chevron-down"
-                                      }
-                                      size={18}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                  {isExpanded && (
-                                    <View style={styles.receiptTileGrid}>
-                                      {group.receipts.map((receipt) => (
-                                        <View
-                                          key={receipt.id}
-                                          style={[styles.receiptTile, styles.redeemTile]}
-                                        >
-                                          <View style={styles.receiptAmountWrap}>
-                                            <Text style={styles.receiptAmountValue}>
-                                              {formatCurrencyFromCents(
-                                                receipt.receiptTotalCents,
-                                              )}
-                                            </Text>
-                                            <Text style={styles.receiptAmountHint}>
-                                              Receipt total
-                                            </Text>
-                                          </View>
-                                          <TouchableOpacity
-                                            style={styles.receiptTileReportAction}
-                                            onPress={(event) => {
-                                              event?.stopPropagation?.();
-                                              promptReportReceipt(receipt);
-                                            }}
-                                            accessibilityRole="button"
-                                            accessibilityLabel="Report receipt"
-                                            accessibilityHint="Flags this receipt for admin review."
-                                            hitSlop={{
-                                              top: 8,
-                                              bottom: 8,
-                                              left: 8,
-                                              right: 8,
-                                            }}
-                                          >
-                                            <Ionicons
-                                              name="flag-outline"
-                                              size={13}
-                                              color={COLORS.warning}
-                                            />
-                                            <Text
-                                              style={styles.receiptTileReportActionText}
-                                            >
-                                              Report
-                                            </Text>
-                                          </TouchableOpacity>
-                                          <Text style={styles.receiptTileDate}>
-                                            {formatOfferDate(
-                                              receipt.uploadedAt,
-                                            )}
-                                          </Text>
-                                          <Text style={styles.receiptTileTime}>
-                                            {formatReceiptTime(
-                                              receipt.uploadedAt,
-                                            )}
-                                          </Text>
-                                        </View>
-                                      ))}
-                                    </View>
-                                  )}
-                                </View>
-                              );
-                            })}
-                          </>
-                        )}
-                        {receiptOfferGroups.uploaded.length > 0 && (
-                          <>
-                            <Text style={styles.receiptSectionTitle}>
-                              Verified redemptions
-                            </Text>
-                            {receiptOfferGroups.uploaded.map((group) => {
-                              const expandKey = `verified:${group.key}`;
-                              const isExpanded = Boolean(
-                                expandedReceiptOffers[expandKey],
-                              );
-                              return (
-                                <View
-                                  key={`verified-${group.key}`}
-                                  style={styles.receiptOfferCard}
-                                >
-                                  <TouchableOpacity
-                                    style={styles.receiptOfferHeader}
-                                    onPress={() =>
-                                      setExpandedReceiptOffers((prev) => ({
-                                        ...prev,
-                                        [expandKey]: !prev[expandKey],
-                                      }))
-                                    }
-                                  >
-                                    <View style={styles.receiptOfferMeta}>
-                                      <Text
-                                        style={styles.receiptOfferTitle}
-                                        numberOfLines={1}
-                                      >
-                                        {group.offerTitle}
-                                      </Text>
-                                      <Text style={styles.receiptOfferSub}>
-                                        {group.receipts.length} receipts{" "}
-                                        {"\u00b7"} Last{" "}
-                                        {formatHistoryTimestamp(
-                                          group.lastUploadedAt,
-                                        )}
-                                      </Text>
-                                    </View>
-                                    <Ionicons
-                                      name={
-                                        isExpanded
-                                          ? "chevron-up"
-                                          : "chevron-down"
-                                      }
-                                      size={18}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                  {isExpanded && (
-                                    <View style={styles.receiptTileGrid}>
-                                      {group.receipts.map((receipt) => (
-                                        <TouchableOpacity
-                                          key={receipt.id}
-                                          style={[styles.receiptTile, styles.redeemTile]}
-                                          onPress={() =>
-                                            handleOpenReceiptPreview(
-                                              receipt,
-                                              group.offerTitle,
-                                            )
-                                          }
-                                        >
-                                          <View style={styles.receiptAmountWrap}>
-                                            <Text style={styles.receiptAmountValue}>
-                                              {formatCurrencyFromCents(
-                                                receipt.receiptTotalCents,
-                                              )}
-                                            </Text>
-                                            <Text style={styles.receiptAmountHint}>
-                                              Receipt total
-                                            </Text>
-                                          </View>
-                                          <TouchableOpacity
-                                            style={styles.receiptTileReportAction}
-                                            onPress={(event) => {
-                                              event?.stopPropagation?.();
-                                              promptReportReceipt(receipt);
-                                            }}
-                                            accessibilityRole="button"
-                                            accessibilityLabel="Report receipt"
-                                            accessibilityHint="Flags this receipt for admin review."
-                                            hitSlop={{
-                                              top: 8,
-                                              bottom: 8,
-                                              left: 8,
-                                              right: 8,
-                                            }}
-                                          >
-                                            <Ionicons
-                                              name="flag-outline"
-                                              size={13}
-                                              color={COLORS.warning}
-                                            />
-                                            <Text
-                                              style={styles.receiptTileReportActionText}
-                                            >
-                                              Report
-                                            </Text>
-                                          </TouchableOpacity>
-                                          <View style={styles.receiptTileOpenHint}>
-                                            <Ionicons
-                                              name="chevron-forward"
-                                              size={12}
-                                              color={COLORS.muted}
-                                            />
-                                          </View>
-                                          <Text style={styles.receiptTileDate}>
-                                            {formatOfferDate(
-                                              receipt.uploadedAt,
-                                            )}
-                                          </Text>
-                                          <Text style={styles.receiptTileTime}>
-                                            {formatReceiptTime(
-                                              receipt.uploadedAt,
-                                            )}
-                                          </Text>
-                                        </TouchableOpacity>
-                                      ))}
-                                    </View>
-                                  )}
-                                </View>
-                              );
-                            })}
-                          </>
-                        )}
-                        {pendingRedemptionGroups.length > 0 && (
-                          <>
-                            <Text style={styles.receiptSectionTitle}>
-                              Pending receipts
-                            </Text>
-                            {pendingRedemptionGroups.map((group) => {
-                              const expandKey = `pending:${group.key}`;
-                              const isExpanded = Boolean(
-                                expandedReceiptOffers[expandKey],
-                              );
-                              return (
-                                <View
-                                  key={`pending-${group.key}`}
-                                  style={styles.receiptOfferCard}
-                                >
-                                  <TouchableOpacity
-                                    style={styles.receiptOfferHeader}
-                                    onPress={() =>
-                                      setExpandedReceiptOffers((prev) => ({
-                                        ...prev,
-                                        [expandKey]: !prev[expandKey],
-                                      }))
-                                    }
-                                  >
-                                    <View style={styles.receiptOfferMeta}>
-                                      <Text
-                                        style={styles.receiptOfferTitle}
-                                        numberOfLines={1}
-                                      >
-                                        {group.offerTitle}
-                                      </Text>
-                                      <Text style={styles.receiptOfferSub}>
-                                        {group.entries.length} redeems{" "}
-                                        {"\u00b7"} Last{" "}
-                                        {formatHistoryTimestamp(
-                                          group.lastRedeemed,
-                                        )}
-                                      </Text>
-                                    </View>
-                                    <Ionicons
-                                      name={
-                                        isExpanded
-                                          ? "chevron-up"
-                                          : "chevron-down"
-                                      }
-                                      size={18}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                  {isExpanded && (
-                                    <View style={styles.receiptTileGrid}>
-                                      {group.entries.map((entry) => (
-                                        <View
-                                          key={entry.id}
-                                          style={[
-                                            styles.receiptTile,
-                                            styles.redeemTile,
-                                          ]}
-                                        >
-                                          <View style={styles.redeemTileBadge}>
-                                            <Text
-                                              style={styles.redeemTileBadgeText}
-                                            >
-                                              No receipt
-                                            </Text>
-                                          </View>
-                                          <Text style={styles.receiptTileDate}>
-                                            {formatOfferDate(entry.createdAt)}
-                                          </Text>
-                                          <Text style={styles.receiptTileTime}>
-                                            {formatReceiptTime(entry.createdAt)}
-                                          </Text>
-                                        </View>
-                                      ))}
-                                    </View>
-                                  )}
-                                </View>
-                              );
-                            })}
-                          </>
-                        )}
-                      </View>
-                    )}
-                  </ScrollView>
-                  {receiptPreview && (
-                    <View style={styles.receiptPreviewOverlay}>
-                      <View style={styles.receiptPreviewCard}>
-                        <View style={styles.receiptPreviewHeader}>
-                          <View>
-                            <Text style={styles.receiptPreviewTitle}>
-                              {receiptPreview?.title || "Receipt"}
-                            </Text>
-                            {receiptPreview?.timestamp ? (
-                              <Text style={styles.receiptPreviewMeta}>
-                                Uploaded{" "}
-                                {formatHistoryTimestamp(
-                                  receiptPreview.timestamp,
-                                )}
-                              </Text>
-                            ) : null}
-                          </View>
-                          <View style={styles.receiptPreviewHeaderActions}>
-                            <TouchableOpacity
-                              style={styles.receiptPreviewReport}
-                              onPress={() => promptReportReceipt(receiptPreview)}
-                              disabled={
-                                receiptReportStatus.loading &&
-                                receiptReportStatus.targetId ===
-                                  receiptPreview?.receiptId
-                              }
-                              accessibilityRole="button"
-                              accessibilityLabel="Report receipt"
-                              accessibilityHint="Flags this receipt for admin review."
-                              hitSlop={{
-                                top: 10,
-                                bottom: 10,
-                                left: 10,
-                                right: 10,
-                              }}
-                            >
-                              <Ionicons
-                                name="flag-outline"
-                                size={17}
-                                color={COLORS.warning}
-                              />
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={styles.receiptPreviewReset}
-                              onPress={resetReceiptZoom}
-                              hitSlop={{
-                                top: 10,
-                                bottom: 10,
-                                left: 10,
-                                right: 10,
-                              }}
-                            >
-                              <Ionicons
-                                name="refresh"
-                                size={18}
-                                color={COLORS.ink}
-                              />
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={styles.receiptsClose}
-                              onPress={() => {
-                                setReceiptPreview(null);
-                                setReceiptReportStatus({
-                                  loading: false,
-                                  targetId: null,
-                                  error: null,
-                                  success: null,
-                                });
-                                resetReceiptZoom();
-                              }}
-                              hitSlop={{
-                                top: 10,
-                                bottom: 10,
-                                left: 10,
-                                right: 10,
-                              }}
-                            >
-                              <Ionicons
-                                name="close"
-                                size={18}
-                                color={COLORS.ink}
-                              />
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-                        {receiptReportStatus.targetId ===
-                        receiptPreview?.receiptId ? (
-                          receiptReportStatus.error ? (
-                            <Text style={styles.formError}>
-                              {receiptReportStatus.error}
-                            </Text>
-                          ) : receiptReportStatus.success ? (
-                            <Text style={styles.formSuccess}>
-                              {receiptReportStatus.success}
-                            </Text>
-                          ) : null
-                        ) : null}
-                        {receiptPreview?.loading ? (
-                          <View style={styles.receiptPreviewPlaceholder}>
-                            <Ionicons
-                              name="time-outline"
-                              size={18}
-                              color={COLORS.muted}
-                            />
-                            <Text style={styles.receiptPreviewPlaceholderText}>
-                              Loading receipt...
-                            </Text>
-                          </View>
-                        ) : receiptPreview?.uri ? (
-                          <View
-                            style={styles.receiptPreviewViewport}
-                            onLayout={(event) => {
-                              const { width, height } =
-                                event.nativeEvent.layout || {};
-                              if (!width || !height) return;
-                              const next = { width, height };
-                              receiptViewportSizeRef.current = next;
-                              setReceiptViewportSize(next);
-                            }}
-                          >
-                            <PinchGestureHandler
-                              ref={receiptPinchRef}
-                              simultaneousHandlers={receiptPanRef}
-                              onGestureEvent={onReceiptPinchEvent}
-                              onHandlerStateChange={onReceiptPinchStateChange}
-                            >
-                              <Animated.View style={styles.receiptZoomWrap}>
-                                <PanGestureHandler
-                                  ref={receiptPanRef}
-                                  simultaneousHandlers={receiptPinchRef}
-                                  onGestureEvent={onReceiptPanEvent}
-                                  onHandlerStateChange={onReceiptPanStateChange}
-                                  minPointers={1}
-                                  maxPointers={2}
-                                >
-                                  <Animated.View
-                                    style={[
-                                      styles.receiptPreviewContent,
-                                      (() => {
-                                        const { width: vw, height: vh } =
-                                          receiptViewportSize || {};
-                                        const { width: iw, height: ih } =
-                                          receiptImageSize || {};
-                                        const base = computeContainedSize(
-                                          vw || RECEIPT_PREVIEW_WIDTH,
-                                          vh || RECEIPT_PREVIEW_HEIGHT,
-                                          iw,
-                                          ih,
-                                        );
-                                        return {
-                                          width:
-                                            base.width ||
-                                            vw ||
-                                            RECEIPT_PREVIEW_WIDTH,
-                                          height:
-                                            base.height ||
-                                            vh ||
-                                            RECEIPT_PREVIEW_HEIGHT,
-                                          transform: [
-                                            { translateX: receiptTranslateX },
-                                            { translateY: receiptTranslateY },
-                                            { scale: receiptScale },
-                                          ],
-                                        };
-                                      })(),
-                                    ]}
-                                  >
-                                    <Image
-                                      source={{ uri: receiptPreview.uri }}
-                                      style={styles.receiptPreviewImage}
-                                      resizeMode="contain"
-                                      onLoad={(event) => {
-                                        const source =
-                                          event?.nativeEvent?.source;
-                                        const width =
-                                          Number(source?.width) || 0;
-                                        const height =
-                                          Number(source?.height) || 0;
-                                        if (!width || !height) return;
-                                        const next = { width, height };
-                                        receiptImageSizeRef.current = next;
-                                        setReceiptImageSize(next);
-                                      }}
-                                      onError={() =>
-                                        setReceiptPreview((prev) =>
-                                          prev
-                                            ? {
-                                                ...prev,
-                                                uri: "",
-                                                error:
-                                                  "Unable to load receipt image.",
-                                              }
-                                            : prev,
-                                        )
-                                      }
-                                    />
-                                  </Animated.View>
-                                </PanGestureHandler>
-                              </Animated.View>
-                            </PinchGestureHandler>
-                          </View>
-                        ) : (
-                          <View style={styles.receiptPreviewPlaceholder}>
-                            <Ionicons
-                              name="image-outline"
-                              size={18}
-                              color={COLORS.muted}
-                            />
-                            <Text style={styles.receiptPreviewPlaceholderText}>
-                              {receiptPreview?.error ||
-                                "Receipt image unavailable."}
-                            </Text>
-                          </View>
-                        )}
-                      </View>
+                      <TouchableOpacity
+                        style={styles.receiptsClose}
+                        onPress={() => {
+                          setReceiptsModalOpen(false);
+                          setReceiptPreview(null);
+                          setReceiptReportStatus({
+                            loading: false,
+                            targetId: null,
+                            error: null,
+                            success: null,
+                          });
+                        }}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      >
+                        <Ionicons name="close" size={18} color={COLORS.ink} />
+                      </TouchableOpacity>
                     </View>
-                  )}
-                </SafeAreaView>
-              </GestureHandlerRootView>
+
+                    <ScrollView
+                      style={styles.receiptsBody}
+                      contentContainerStyle={styles.receiptsBodyContent}
+                      showsVerticalScrollIndicator={false}
+                    >
+                      {businessReceiptStatus.error && (
+                        <Text style={styles.formError}>
+                          {businessReceiptStatus.error}
+                        </Text>
+                      )}
+                      {businessRedemptionStatus.error && (
+                        <Text style={styles.formError}>
+                          {businessRedemptionStatus.error}
+                        </Text>
+                      )}
+
+                      {businessReceiptStatus.loading ||
+                      businessRedemptionStatus.loading ? (
+                        <View style={styles.remoteNotice}>
+                          <Text style={styles.remoteNoticeText}>
+                            Loading redemptions...
+                          </Text>
+                        </View>
+                      ) : businessReceipts.length === 0 &&
+                        pendingRedemptionGroups.length === 0 ? (
+                        <View style={styles.emptyState}>
+                          <Text style={styles.emptyTitle}>
+                            No receipts yet.
+                          </Text>
+                          <Text style={styles.emptyCopy}>
+                            Redemptions will appear here as customers redeem
+                            offers.
+                          </Text>
+                        </View>
+                      ) : (
+                        <View style={styles.receiptList}>
+                          {receiptOfferGroups.plaid.length > 0 && (
+                            <>
+                              <Text style={styles.receiptSectionTitle}>
+                                Auto verified by Plaid
+                              </Text>
+                              {receiptOfferGroups.plaid.map((group) => {
+                                const expandKey = `verified:${group.key}`;
+                                const isExpanded = Boolean(
+                                  expandedReceiptOffers[expandKey],
+                                );
+                                return (
+                                  <View
+                                    key={`verified-${group.key}`}
+                                    style={styles.receiptOfferCard}
+                                  >
+                                    <TouchableOpacity
+                                      style={styles.receiptOfferHeader}
+                                      onPress={() =>
+                                        setExpandedReceiptOffers((prev) => ({
+                                          ...prev,
+                                          [expandKey]: !prev[expandKey],
+                                        }))
+                                      }
+                                    >
+                                      <View style={styles.receiptOfferMeta}>
+                                        <Text
+                                          style={styles.receiptOfferTitle}
+                                          numberOfLines={1}
+                                        >
+                                          {group.offerTitle}
+                                        </Text>
+                                        <Text style={styles.receiptOfferSub}>
+                                          {group.receipts.length} receipts{" "}
+                                          {"\u00b7"} Last{" "}
+                                          {formatHistoryTimestamp(
+                                            group.lastUploadedAt,
+                                          )}
+                                        </Text>
+                                      </View>
+                                      <Ionicons
+                                        name={
+                                          isExpanded
+                                            ? "chevron-up"
+                                            : "chevron-down"
+                                        }
+                                        size={18}
+                                        color={COLORS.muted}
+                                      />
+                                    </TouchableOpacity>
+                                    {isExpanded && (
+                                      <View style={styles.receiptTileGrid}>
+                                        {group.receipts.map((receipt) => (
+                                          <View
+                                            key={receipt.id}
+                                            style={[
+                                              styles.receiptTile,
+                                              styles.redeemTile,
+                                            ]}
+                                          >
+                                            <View
+                                              style={styles.receiptAmountWrap}
+                                            >
+                                              <Text
+                                                style={
+                                                  styles.receiptAmountValue
+                                                }
+                                              >
+                                                {formatCurrencyFromCents(
+                                                  receipt.receiptTotalCents,
+                                                )}
+                                              </Text>
+                                              <Text
+                                                style={styles.receiptAmountHint}
+                                              >
+                                                Receipt total
+                                              </Text>
+                                            </View>
+                                            <TouchableOpacity
+                                              style={
+                                                styles.receiptTileReportAction
+                                              }
+                                              onPress={(event) => {
+                                                event?.stopPropagation?.();
+                                                promptReportReceipt(receipt);
+                                              }}
+                                              accessibilityRole="button"
+                                              accessibilityLabel="Report receipt"
+                                              accessibilityHint="Flags this receipt for admin review."
+                                              hitSlop={{
+                                                top: 8,
+                                                bottom: 8,
+                                                left: 8,
+                                                right: 8,
+                                              }}
+                                            >
+                                              <Ionicons
+                                                name="flag-outline"
+                                                size={13}
+                                                color={COLORS.warning}
+                                              />
+                                              <Text
+                                                style={
+                                                  styles.receiptTileReportActionText
+                                                }
+                                              >
+                                                Report
+                                              </Text>
+                                            </TouchableOpacity>
+                                            <Text
+                                              style={styles.receiptTileDate}
+                                            >
+                                              {formatOfferDate(
+                                                receipt.uploadedAt,
+                                              )}
+                                            </Text>
+                                            <Text
+                                              style={styles.receiptTileTime}
+                                            >
+                                              {formatReceiptTime(
+                                                receipt.uploadedAt,
+                                              )}
+                                            </Text>
+                                          </View>
+                                        ))}
+                                      </View>
+                                    )}
+                                  </View>
+                                );
+                              })}
+                            </>
+                          )}
+                          {receiptOfferGroups.uploaded.length > 0 && (
+                            <>
+                              <Text style={styles.receiptSectionTitle}>
+                                Verified redemptions
+                              </Text>
+                              {receiptOfferGroups.uploaded.map((group) => {
+                                const expandKey = `verified:${group.key}`;
+                                const isExpanded = Boolean(
+                                  expandedReceiptOffers[expandKey],
+                                );
+                                return (
+                                  <View
+                                    key={`verified-${group.key}`}
+                                    style={styles.receiptOfferCard}
+                                  >
+                                    <TouchableOpacity
+                                      style={styles.receiptOfferHeader}
+                                      onPress={() =>
+                                        setExpandedReceiptOffers((prev) => ({
+                                          ...prev,
+                                          [expandKey]: !prev[expandKey],
+                                        }))
+                                      }
+                                    >
+                                      <View style={styles.receiptOfferMeta}>
+                                        <Text
+                                          style={styles.receiptOfferTitle}
+                                          numberOfLines={1}
+                                        >
+                                          {group.offerTitle}
+                                        </Text>
+                                        <Text style={styles.receiptOfferSub}>
+                                          {group.receipts.length} receipts{" "}
+                                          {"\u00b7"} Last{" "}
+                                          {formatHistoryTimestamp(
+                                            group.lastUploadedAt,
+                                          )}
+                                        </Text>
+                                      </View>
+                                      <Ionicons
+                                        name={
+                                          isExpanded
+                                            ? "chevron-up"
+                                            : "chevron-down"
+                                        }
+                                        size={18}
+                                        color={COLORS.muted}
+                                      />
+                                    </TouchableOpacity>
+                                    {isExpanded && (
+                                      <View style={styles.receiptTileGrid}>
+                                        {group.receipts.map((receipt) => (
+                                          <TouchableOpacity
+                                            key={receipt.id}
+                                            style={[
+                                              styles.receiptTile,
+                                              styles.redeemTile,
+                                            ]}
+                                            onPress={() =>
+                                              handleOpenReceiptPreview(
+                                                receipt,
+                                                group.offerTitle,
+                                              )
+                                            }
+                                          >
+                                            <View
+                                              style={styles.receiptAmountWrap}
+                                            >
+                                              <Text
+                                                style={
+                                                  styles.receiptAmountValue
+                                                }
+                                              >
+                                                {formatCurrencyFromCents(
+                                                  receipt.receiptTotalCents,
+                                                )}
+                                              </Text>
+                                              <Text
+                                                style={styles.receiptAmountHint}
+                                              >
+                                                Receipt total
+                                              </Text>
+                                            </View>
+                                            <TouchableOpacity
+                                              style={
+                                                styles.receiptTileReportAction
+                                              }
+                                              onPress={(event) => {
+                                                event?.stopPropagation?.();
+                                                promptReportReceipt(receipt);
+                                              }}
+                                              accessibilityRole="button"
+                                              accessibilityLabel="Report receipt"
+                                              accessibilityHint="Flags this receipt for admin review."
+                                              hitSlop={{
+                                                top: 8,
+                                                bottom: 8,
+                                                left: 8,
+                                                right: 8,
+                                              }}
+                                            >
+                                              <Ionicons
+                                                name="flag-outline"
+                                                size={13}
+                                                color={COLORS.warning}
+                                              />
+                                              <Text
+                                                style={
+                                                  styles.receiptTileReportActionText
+                                                }
+                                              >
+                                                Report
+                                              </Text>
+                                            </TouchableOpacity>
+                                            <View
+                                              style={styles.receiptTileOpenHint}
+                                            >
+                                              <Ionicons
+                                                name="chevron-forward"
+                                                size={12}
+                                                color={COLORS.muted}
+                                              />
+                                            </View>
+                                            <Text
+                                              style={styles.receiptTileDate}
+                                            >
+                                              {formatOfferDate(
+                                                receipt.uploadedAt,
+                                              )}
+                                            </Text>
+                                            <Text
+                                              style={styles.receiptTileTime}
+                                            >
+                                              {formatReceiptTime(
+                                                receipt.uploadedAt,
+                                              )}
+                                            </Text>
+                                          </TouchableOpacity>
+                                        ))}
+                                      </View>
+                                    )}
+                                  </View>
+                                );
+                              })}
+                            </>
+                          )}
+                          {pendingRedemptionGroups.length > 0 && (
+                            <>
+                              <Text style={styles.receiptSectionTitle}>
+                                Pending receipts
+                              </Text>
+                              {pendingRedemptionGroups.map((group) => {
+                                const expandKey = `pending:${group.key}`;
+                                const isExpanded = Boolean(
+                                  expandedReceiptOffers[expandKey],
+                                );
+                                return (
+                                  <View
+                                    key={`pending-${group.key}`}
+                                    style={styles.receiptOfferCard}
+                                  >
+                                    <TouchableOpacity
+                                      style={styles.receiptOfferHeader}
+                                      onPress={() =>
+                                        setExpandedReceiptOffers((prev) => ({
+                                          ...prev,
+                                          [expandKey]: !prev[expandKey],
+                                        }))
+                                      }
+                                    >
+                                      <View style={styles.receiptOfferMeta}>
+                                        <Text
+                                          style={styles.receiptOfferTitle}
+                                          numberOfLines={1}
+                                        >
+                                          {group.offerTitle}
+                                        </Text>
+                                        <Text style={styles.receiptOfferSub}>
+                                          {group.entries.length} redeems{" "}
+                                          {"\u00b7"} Last{" "}
+                                          {formatHistoryTimestamp(
+                                            group.lastRedeemed,
+                                          )}
+                                        </Text>
+                                      </View>
+                                      <Ionicons
+                                        name={
+                                          isExpanded
+                                            ? "chevron-up"
+                                            : "chevron-down"
+                                        }
+                                        size={18}
+                                        color={COLORS.muted}
+                                      />
+                                    </TouchableOpacity>
+                                    {isExpanded && (
+                                      <View style={styles.receiptTileGrid}>
+                                        {group.entries.map((entry) => (
+                                          <View
+                                            key={entry.id}
+                                            style={[
+                                              styles.receiptTile,
+                                              styles.redeemTile,
+                                            ]}
+                                          >
+                                            <View
+                                              style={styles.redeemTileBadge}
+                                            >
+                                              <Text
+                                                style={
+                                                  styles.redeemTileBadgeText
+                                                }
+                                              >
+                                                No receipt
+                                              </Text>
+                                            </View>
+                                            <Text
+                                              style={styles.receiptTileDate}
+                                            >
+                                              {formatOfferDate(entry.createdAt)}
+                                            </Text>
+                                            <Text
+                                              style={styles.receiptTileTime}
+                                            >
+                                              {formatReceiptTime(
+                                                entry.createdAt,
+                                              )}
+                                            </Text>
+                                          </View>
+                                        ))}
+                                      </View>
+                                    )}
+                                  </View>
+                                );
+                              })}
+                            </>
+                          )}
+                        </View>
+                      )}
+                    </ScrollView>
+                    {receiptPreview && (
+                      <View style={styles.receiptPreviewOverlay}>
+                        <View style={styles.receiptPreviewCard}>
+                          <View style={styles.receiptPreviewHeader}>
+                            <View>
+                              <Text style={styles.receiptPreviewTitle}>
+                                {receiptPreview?.title || "Receipt"}
+                              </Text>
+                              {receiptPreview?.timestamp ? (
+                                <Text style={styles.receiptPreviewMeta}>
+                                  Uploaded{" "}
+                                  {formatHistoryTimestamp(
+                                    receiptPreview.timestamp,
+                                  )}
+                                </Text>
+                              ) : null}
+                            </View>
+                            <View style={styles.receiptPreviewHeaderActions}>
+                              <TouchableOpacity
+                                style={styles.receiptPreviewReport}
+                                onPress={() =>
+                                  promptReportReceipt(receiptPreview)
+                                }
+                                disabled={
+                                  receiptReportStatus.loading &&
+                                  receiptReportStatus.targetId ===
+                                    receiptPreview?.receiptId
+                                }
+                                accessibilityRole="button"
+                                accessibilityLabel="Report receipt"
+                                accessibilityHint="Flags this receipt for admin review."
+                                hitSlop={{
+                                  top: 10,
+                                  bottom: 10,
+                                  left: 10,
+                                  right: 10,
+                                }}
+                              >
+                                <Ionicons
+                                  name="flag-outline"
+                                  size={17}
+                                  color={COLORS.warning}
+                                />
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.receiptPreviewReset}
+                                onPress={resetReceiptZoom}
+                                hitSlop={{
+                                  top: 10,
+                                  bottom: 10,
+                                  left: 10,
+                                  right: 10,
+                                }}
+                              >
+                                <Ionicons
+                                  name="refresh"
+                                  size={18}
+                                  color={COLORS.ink}
+                                />
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.receiptsClose}
+                                onPress={() => {
+                                  setReceiptPreview(null);
+                                  setReceiptReportStatus({
+                                    loading: false,
+                                    targetId: null,
+                                    error: null,
+                                    success: null,
+                                  });
+                                  resetReceiptZoom();
+                                }}
+                                hitSlop={{
+                                  top: 10,
+                                  bottom: 10,
+                                  left: 10,
+                                  right: 10,
+                                }}
+                              >
+                                <Ionicons
+                                  name="close"
+                                  size={18}
+                                  color={COLORS.ink}
+                                />
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                          {receiptReportStatus.targetId ===
+                          receiptPreview?.receiptId ? (
+                            receiptReportStatus.error ? (
+                              <Text style={styles.formError}>
+                                {receiptReportStatus.error}
+                              </Text>
+                            ) : receiptReportStatus.success ? (
+                              <Text style={styles.formSuccess}>
+                                {receiptReportStatus.success}
+                              </Text>
+                            ) : null
+                          ) : null}
+                          {receiptPreview?.loading ? (
+                            <View style={styles.receiptPreviewPlaceholder}>
+                              <Ionicons
+                                name="time-outline"
+                                size={18}
+                                color={COLORS.muted}
+                              />
+                              <Text
+                                style={styles.receiptPreviewPlaceholderText}
+                              >
+                                Loading receipt...
+                              </Text>
+                            </View>
+                          ) : receiptPreview?.uri ? (
+                            <View
+                              style={styles.receiptPreviewViewport}
+                              onLayout={(event) => {
+                                const { width, height } =
+                                  event.nativeEvent.layout || {};
+                                if (!width || !height) return;
+                                const next = { width, height };
+                                receiptViewportSizeRef.current = next;
+                                setReceiptViewportSize(next);
+                              }}
+                            >
+                              <PinchGestureHandler
+                                ref={receiptPinchRef}
+                                simultaneousHandlers={receiptPanRef}
+                                onGestureEvent={onReceiptPinchEvent}
+                                onHandlerStateChange={onReceiptPinchStateChange}
+                              >
+                                <Animated.View style={styles.receiptZoomWrap}>
+                                  <PanGestureHandler
+                                    ref={receiptPanRef}
+                                    simultaneousHandlers={receiptPinchRef}
+                                    onGestureEvent={onReceiptPanEvent}
+                                    onHandlerStateChange={
+                                      onReceiptPanStateChange
+                                    }
+                                    minPointers={1}
+                                    maxPointers={2}
+                                  >
+                                    <Animated.View
+                                      style={[
+                                        styles.receiptPreviewContent,
+                                        (() => {
+                                          const { width: vw, height: vh } =
+                                            receiptViewportSize || {};
+                                          const { width: iw, height: ih } =
+                                            receiptImageSize || {};
+                                          const base = computeContainedSize(
+                                            vw || RECEIPT_PREVIEW_WIDTH,
+                                            vh || RECEIPT_PREVIEW_HEIGHT,
+                                            iw,
+                                            ih,
+                                          );
+                                          return {
+                                            width:
+                                              base.width ||
+                                              vw ||
+                                              RECEIPT_PREVIEW_WIDTH,
+                                            height:
+                                              base.height ||
+                                              vh ||
+                                              RECEIPT_PREVIEW_HEIGHT,
+                                            transform: [
+                                              { translateX: receiptTranslateX },
+                                              { translateY: receiptTranslateY },
+                                              { scale: receiptScale },
+                                            ],
+                                          };
+                                        })(),
+                                      ]}
+                                    >
+                                      <Image
+                                        source={{ uri: receiptPreview.uri }}
+                                        style={styles.receiptPreviewImage}
+                                        resizeMode="contain"
+                                        onLoad={(event) => {
+                                          const source =
+                                            event?.nativeEvent?.source;
+                                          const width =
+                                            Number(source?.width) || 0;
+                                          const height =
+                                            Number(source?.height) || 0;
+                                          if (!width || !height) return;
+                                          const next = { width, height };
+                                          receiptImageSizeRef.current = next;
+                                          setReceiptImageSize(next);
+                                        }}
+                                        onError={() =>
+                                          setReceiptPreview((prev) =>
+                                            prev
+                                              ? {
+                                                  ...prev,
+                                                  uri: "",
+                                                  error:
+                                                    "Unable to load receipt image.",
+                                                }
+                                              : prev,
+                                          )
+                                        }
+                                      />
+                                    </Animated.View>
+                                  </PanGestureHandler>
+                                </Animated.View>
+                              </PinchGestureHandler>
+                            </View>
+                          ) : (
+                            <View style={styles.receiptPreviewPlaceholder}>
+                              <Ionicons
+                                name="image-outline"
+                                size={18}
+                                color={COLORS.muted}
+                              />
+                              <Text
+                                style={styles.receiptPreviewPlaceholderText}
+                              >
+                                {receiptPreview?.error ||
+                                  "Receipt image unavailable."}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                      </View>
+                    )}
+                  </SafeAreaView>
+                </GestureHandlerRootView>
               </SafeAreaProvider>
             </Modal>
 
@@ -17560,142 +17849,149 @@ export default function App() {
               onRequestClose={closeOfferCropModal}
             >
               <SafeAreaProvider>
-              <GestureHandlerRootView style={styles.receiptPreviewRoot}>
-                <SafeAreaView
-                  style={styles.editOfferScreen}
-                  edges={["top", "bottom"]}
-                >
-                  <View style={styles.editOfferHeader}>
-                    <Text style={styles.editOfferTitle}>Crop offer photo</Text>
-                    <TouchableOpacity
-                      style={styles.receiptsClose}
-                      onPress={closeOfferCropModal}
-                    >
-                      <Ionicons name="close" size={18} color={COLORS.ink} />
-                    </TouchableOpacity>
-                  </View>
-                  <Text style={styles.editOfferSubtitle}>
-                    Move and zoom your image. The frame below is the exact phone
-                    offer preview.
-                  </Text>
-
-                  <View style={styles.offerCropBody}>
-                    <View
-                      style={styles.offerCropViewport}
-                      onLayout={(event) => {
-                        const { width, height } = event.nativeEvent.layout || {};
-                        if (!width || !height) return;
-                        const next = { width, height };
-                        offerCropViewportSizeRef.current = next;
-                        setOfferCropViewportSize(next);
-                      }}
-                    >
-                      <PinchGestureHandler
-                        ref={offerCropPinchRef}
-                        simultaneousHandlers={offerCropPanRef}
-                        onGestureEvent={onOfferCropPinchEvent}
-                        onHandlerStateChange={onOfferCropPinchStateChange}
-                      >
-                        <Animated.View style={styles.receiptZoomWrap}>
-                          <PanGestureHandler
-                            ref={offerCropPanRef}
-                            simultaneousHandlers={offerCropPinchRef}
-                            onGestureEvent={onOfferCropPanEvent}
-                            onHandlerStateChange={onOfferCropPanStateChange}
-                            minPointers={1}
-                            maxPointers={2}
-                          >
-                            <Animated.View
-                              style={[
-                                styles.offerCropPreviewContent,
-                                (() => {
-                                  const { width: vw, height: vh } =
-                                    offerCropViewportSize || {};
-                                  const { width: iw, height: ih } =
-                                    offerCropImageSize || {};
-                                  const base = computeCoverSize(
-                                    vw || 320,
-                                    vh || 320 / OFFER_IMAGE_ASPECT,
-                                    iw,
-                                    ih,
-                                  );
-                                  return {
-                                    width: base.width || vw || 320,
-                                    height:
-                                      base.height ||
-                                      vh ||
-                                      320 / OFFER_IMAGE_ASPECT,
-                                    transform: [
-                                      { scale: offerCropScale },
-                                      { translateX: offerCropTranslateX },
-                                      { translateY: offerCropTranslateY },
-                                    ],
-                                  };
-                                })(),
-                              ]}
-                            >
-                              {offerCropModal.asset?.uri ? (
-                                <Image
-                                  source={{ uri: offerCropModal.asset.uri }}
-                                  style={styles.offerCropPreviewImage}
-                                  resizeMode="cover"
-                                  onLoad={(event) => {
-                                    const source = event?.nativeEvent?.source;
-                                    const width = Number(source?.width) || 0;
-                                    const height = Number(source?.height) || 0;
-                                    if (!width || !height) return;
-                                    const next = { width, height };
-                                    offerCropImageSizeRef.current = next;
-                                    setOfferCropImageSize(next);
-                                  }}
-                                />
-                              ) : (
-                                <View style={styles.offerCropFallback}>
-                                  <Text style={styles.offerCropFallbackText}>
-                                    Image unavailable
-                                  </Text>
-                                </View>
-                              )}
-                            </Animated.View>
-                          </PanGestureHandler>
-                        </Animated.View>
-                      </PinchGestureHandler>
-                      <View
-                        pointerEvents="none"
-                        style={styles.offerCropGuideBorder}
-                      />
-                    </View>
-                    <Text style={styles.formHint}>
-                      Ratio locked to 1.91:1 so it fills the offer card exactly.
-                    </Text>
-                    {offerCropModal.error ? (
-                      <Text style={styles.formError}>{offerCropModal.error}</Text>
-                    ) : null}
-                  </View>
-
-                  <View style={styles.formActions}>
-                    <TouchableOpacity
-                      style={styles.secondaryButton}
-                      onPress={resetOfferCropTransform}
-                      disabled={offerCropModal.saving}
-                    >
-                      <Text style={styles.secondaryButtonText}>Reset</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[
-                        styles.primaryButton,
-                        offerCropModal.saving && styles.primaryButtonDisabled,
-                      ]}
-                      onPress={handleSaveOfferCrop}
-                      disabled={offerCropModal.saving}
-                    >
-                      <Text style={styles.primaryButtonText}>
-                        {offerCropModal.saving ? "Saving..." : "Save photo"}
+                <GestureHandlerRootView style={styles.receiptPreviewRoot}>
+                  <SafeAreaView
+                    style={styles.editOfferScreen}
+                    edges={["top", "bottom"]}
+                  >
+                    <View style={styles.editOfferHeader}>
+                      <Text style={styles.editOfferTitle}>
+                        Crop offer photo
                       </Text>
-                    </TouchableOpacity>
-                  </View>
-                </SafeAreaView>
-              </GestureHandlerRootView>
+                      <TouchableOpacity
+                        style={styles.receiptsClose}
+                        onPress={closeOfferCropModal}
+                      >
+                        <Ionicons name="close" size={18} color={COLORS.ink} />
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.editOfferSubtitle}>
+                      Move and zoom your image. The frame below is the exact
+                      phone offer preview.
+                    </Text>
+
+                    <View style={styles.offerCropBody}>
+                      <View
+                        style={styles.offerCropViewport}
+                        onLayout={(event) => {
+                          const { width, height } =
+                            event.nativeEvent.layout || {};
+                          if (!width || !height) return;
+                          const next = { width, height };
+                          offerCropViewportSizeRef.current = next;
+                          setOfferCropViewportSize(next);
+                        }}
+                      >
+                        <PinchGestureHandler
+                          ref={offerCropPinchRef}
+                          simultaneousHandlers={offerCropPanRef}
+                          onGestureEvent={onOfferCropPinchEvent}
+                          onHandlerStateChange={onOfferCropPinchStateChange}
+                        >
+                          <Animated.View style={styles.receiptZoomWrap}>
+                            <PanGestureHandler
+                              ref={offerCropPanRef}
+                              simultaneousHandlers={offerCropPinchRef}
+                              onGestureEvent={onOfferCropPanEvent}
+                              onHandlerStateChange={onOfferCropPanStateChange}
+                              minPointers={1}
+                              maxPointers={2}
+                            >
+                              <Animated.View
+                                style={[
+                                  styles.offerCropPreviewContent,
+                                  (() => {
+                                    const { width: vw, height: vh } =
+                                      offerCropViewportSize || {};
+                                    const { width: iw, height: ih } =
+                                      offerCropImageSize || {};
+                                    const base = computeCoverSize(
+                                      vw || 320,
+                                      vh || 320 / OFFER_IMAGE_ASPECT,
+                                      iw,
+                                      ih,
+                                    );
+                                    return {
+                                      width: base.width || vw || 320,
+                                      height:
+                                        base.height ||
+                                        vh ||
+                                        320 / OFFER_IMAGE_ASPECT,
+                                      transform: [
+                                        { scale: offerCropScale },
+                                        { translateX: offerCropTranslateX },
+                                        { translateY: offerCropTranslateY },
+                                      ],
+                                    };
+                                  })(),
+                                ]}
+                              >
+                                {offerCropModal.asset?.uri ? (
+                                  <Image
+                                    source={{ uri: offerCropModal.asset.uri }}
+                                    style={styles.offerCropPreviewImage}
+                                    resizeMode="cover"
+                                    onLoad={(event) => {
+                                      const source = event?.nativeEvent?.source;
+                                      const width = Number(source?.width) || 0;
+                                      const height =
+                                        Number(source?.height) || 0;
+                                      if (!width || !height) return;
+                                      const next = { width, height };
+                                      offerCropImageSizeRef.current = next;
+                                      setOfferCropImageSize(next);
+                                    }}
+                                  />
+                                ) : (
+                                  <View style={styles.offerCropFallback}>
+                                    <Text style={styles.offerCropFallbackText}>
+                                      Image unavailable
+                                    </Text>
+                                  </View>
+                                )}
+                              </Animated.View>
+                            </PanGestureHandler>
+                          </Animated.View>
+                        </PinchGestureHandler>
+                        <View
+                          pointerEvents="none"
+                          style={styles.offerCropGuideBorder}
+                        />
+                      </View>
+                      <Text style={styles.formHint}>
+                        Ratio locked to 1.91:1 so it fills the offer card
+                        exactly.
+                      </Text>
+                      {offerCropModal.error ? (
+                        <Text style={styles.formError}>
+                          {offerCropModal.error}
+                        </Text>
+                      ) : null}
+                    </View>
+
+                    <View style={styles.formActions}>
+                      <TouchableOpacity
+                        style={styles.secondaryButton}
+                        onPress={resetOfferCropTransform}
+                        disabled={offerCropModal.saving}
+                      >
+                        <Text style={styles.secondaryButtonText}>Reset</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.primaryButton,
+                          offerCropModal.saving && styles.primaryButtonDisabled,
+                        ]}
+                        onPress={handleSaveOfferCrop}
+                        disabled={offerCropModal.saving}
+                      >
+                        <Text style={styles.primaryButtonText}>
+                          {offerCropModal.saving ? "Saving..." : "Save photo"}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </SafeAreaView>
+                </GestureHandlerRootView>
               </SafeAreaProvider>
             </Modal>
 
@@ -17762,7 +18058,9 @@ export default function App() {
                       {getOfferTypePickerLabel(editOfferDraft.typePreset)}
                     </Text>
                     <Ionicons
-                      name={editOfferTypeMenuOpen ? "chevron-up" : "chevron-down"}
+                      name={
+                        editOfferTypeMenuOpen ? "chevron-up" : "chevron-down"
+                      }
                       size={16}
                       color={COLORS.muted}
                     />
@@ -17770,7 +18068,8 @@ export default function App() {
                   {editOfferTypeMenuOpen && (
                     <View style={styles.selectMenu}>
                       {OFFER_TYPE_DROPDOWN_OPTIONS.map((option) => {
-                        const isActive = editOfferDraft.typePreset === option.value;
+                        const isActive =
+                          editOfferDraft.typePreset === option.value;
                         return (
                           <TouchableOpacity
                             key={option.value}
@@ -17883,7 +18182,9 @@ export default function App() {
                             : "ellipse-outline"
                         }
                         size={18}
-                        color={editOfferHonorChecked ? COLORS.pine : COLORS.muted}
+                        color={
+                          editOfferHonorChecked ? COLORS.pine : COLORS.muted
+                        }
                       />
                       <Text style={styles.legalCheckText}>
                         I confirm this edited offer is accurate and my business
@@ -17897,7 +18198,9 @@ export default function App() {
                       Linking.openURL(PRIVACY_POLICY_URL).catch(() => null)
                     }
                   >
-                    <Text style={styles.legalLinkText}>Review Privacy Policy</Text>
+                    <Text style={styles.legalLinkText}>
+                      Review Privacy Policy
+                    </Text>
                   </TouchableOpacity>
 
                   {editOfferStatus.error && (
@@ -17932,118 +18235,118 @@ export default function App() {
               presentationStyle="fullScreen"
             >
               <SafeAreaProvider>
-              <SafeAreaView
-                style={styles.editOfferScreen}
-                edges={["top", "bottom"]}
-              >
-                <View
-                  style={[styles.editOfferHeader, styles.ownerOffersHeader]}
+                <SafeAreaView
+                  style={styles.editOfferScreen}
+                  edges={["top", "bottom"]}
                 >
-                  <Text style={styles.editOfferTitle}>Your offers</Text>
-                  <TouchableOpacity
-                    style={styles.receiptsClose}
-                    onPress={() => setOwnerOffersModalOpen(false)}
-                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  <View
+                    style={[styles.editOfferHeader, styles.ownerOffersHeader]}
                   >
-                    <Ionicons name="close" size={18} color={COLORS.ink} />
-                  </TouchableOpacity>
-                </View>
-                <Text style={styles.editOfferSubtitle}>
-                  Tap an offer to view full details or request edits.
-                </Text>
-                <ScrollView
-                  style={styles.editOfferBody}
-                  contentContainerStyle={styles.editOfferBodyContent}
-                  showsVerticalScrollIndicator={false}
-                >
-                  {ownerOffersStatus.error && (
-                    <Text style={styles.formError}>
-                      {ownerOffersStatus.error}
-                    </Text>
-                  )}
-                  {ownerOffersStatus.loading ? (
-                    <View style={styles.remoteNotice}>
-                      <Text style={styles.remoteNoticeText}>
-                        Loading offers...
+                    <Text style={styles.editOfferTitle}>Your offers</Text>
+                    <TouchableOpacity
+                      style={styles.receiptsClose}
+                      onPress={() => setOwnerOffersModalOpen(false)}
+                      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    >
+                      <Ionicons name="close" size={18} color={COLORS.ink} />
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.editOfferSubtitle}>
+                    Tap an offer to view full details or request edits.
+                  </Text>
+                  <ScrollView
+                    style={styles.editOfferBody}
+                    contentContainerStyle={styles.editOfferBodyContent}
+                    showsVerticalScrollIndicator={false}
+                  >
+                    {ownerOffersStatus.error && (
+                      <Text style={styles.formError}>
+                        {ownerOffersStatus.error}
                       </Text>
-                    </View>
-                  ) : ownerOffersList.length === 0 ? (
-                    <View style={styles.emptyState}>
-                      <Text style={styles.emptyTitle}>No offers yet.</Text>
-                      <Text style={styles.emptyCopy}>
-                        Create your first offer to show on Discover.
-                      </Text>
-                    </View>
-                  ) : (
-                    <View style={styles.offerList}>
-                      {ownerOffersList.map((offer) => {
-                        const isExpanded = Boolean(
-                          expandedOwnerOffers[offer.id],
-                        );
-                        const statusLabel =
-                          offer.approvalStatus === "pending"
-                            ? "Pending review"
-                            : offer.approvalStatus === "rejected"
-                              ? "Rejected"
-                              : "Approved";
-                        const offerTypeLabel = offer.offerType
-                          ? normalizeOfferType(offer.offerType)
-                          : "Offer";
-                        const canEdit = offer.approvalStatus !== "pending";
-                        return (
-                          <View key={offer.id} style={styles.ownerOfferCard}>
-                            <TouchableOpacity
-                              style={styles.ownerOfferHeader}
-                              onPress={() =>
-                                setExpandedOwnerOffers((prev) => ({
-                                  ...prev,
-                                  [offer.id]: !prev[offer.id],
-                                }))
-                              }
-                            >
-                              <View style={styles.offerMeta}>
-                                <Text style={styles.offerTitle}>
-                                  {offer.title || "Untitled offer"}
-                                </Text>
-                                <Text style={styles.offerStatus}>
-                                  {offer.active ? "Active" : "Paused"}{" "}
-                                  {"\u00b7"}{" "}
-                                  {statusLabel}
-                                </Text>
-                              </View>
-                              <Ionicons
-                                name={
-                                  isExpanded ? "chevron-up" : "chevron-down"
+                    )}
+                    {ownerOffersStatus.loading ? (
+                      <View style={styles.remoteNotice}>
+                        <Text style={styles.remoteNoticeText}>
+                          Loading offers...
+                        </Text>
+                      </View>
+                    ) : ownerOffersList.length === 0 ? (
+                      <View style={styles.emptyState}>
+                        <Text style={styles.emptyTitle}>No offers yet.</Text>
+                        <Text style={styles.emptyCopy}>
+                          Create your first offer to show on Discover.
+                        </Text>
+                      </View>
+                    ) : (
+                      <View style={styles.offerList}>
+                        {ownerOffersList.map((offer) => {
+                          const isExpanded = Boolean(
+                            expandedOwnerOffers[offer.id],
+                          );
+                          const statusLabel =
+                            offer.approvalStatus === "pending"
+                              ? "Pending review"
+                              : offer.approvalStatus === "rejected"
+                                ? "Rejected"
+                                : "Approved";
+                          const offerTypeLabel = offer.offerType
+                            ? normalizeOfferType(offer.offerType)
+                            : "Offer";
+                          const canEdit = offer.approvalStatus !== "pending";
+                          return (
+                            <View key={offer.id} style={styles.ownerOfferCard}>
+                              <TouchableOpacity
+                                style={styles.ownerOfferHeader}
+                                onPress={() =>
+                                  setExpandedOwnerOffers((prev) => ({
+                                    ...prev,
+                                    [offer.id]: !prev[offer.id],
+                                  }))
                                 }
-                                size={18}
-                                color={COLORS.muted}
-                              />
-                            </TouchableOpacity>
-                            {isExpanded && (
-                              <View style={styles.ownerOfferBody}>
-                                {offer.imageUrl ? (
-                                  <Image
-                                    source={{ uri: offer.imageUrl }}
-                                    style={styles.detailOfferImage}
-                                    resizeMode="cover"
-                                  />
-                                ) : (
-                                  <View
-                                    style={styles.ownerOfferImagePlaceholder}
-                                  >
-                                    <Ionicons
-                                      name="image-outline"
-                                      size={18}
-                                      color={COLORS.muted}
+                              >
+                                <View style={styles.offerMeta}>
+                                  <Text style={styles.offerTitle}>
+                                    {offer.title || "Untitled offer"}
+                                  </Text>
+                                  <Text style={styles.offerStatus}>
+                                    {offer.active ? "Active" : "Paused"}{" "}
+                                    {"\u00b7"} {statusLabel}
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name={
+                                    isExpanded ? "chevron-up" : "chevron-down"
+                                  }
+                                  size={18}
+                                  color={COLORS.muted}
+                                />
+                              </TouchableOpacity>
+                              {isExpanded && (
+                                <View style={styles.ownerOfferBody}>
+                                  {offer.imageUrl ? (
+                                    <Image
+                                      source={{ uri: offer.imageUrl }}
+                                      style={styles.detailOfferImage}
+                                      resizeMode="cover"
                                     />
-                                    <Text style={styles.cardMediaLabel}>
-                                      Offer image
-                                    </Text>
-                                  </View>
-                                )}
-                                <View style={styles.detailOfferTagRow}>
-                                  {sanitizeBusinessTags(ownerBusiness?.tags).map(
-                                    (tag) => (
+                                  ) : (
+                                    <View
+                                      style={styles.ownerOfferImagePlaceholder}
+                                    >
+                                      <Ionicons
+                                        name="image-outline"
+                                        size={18}
+                                        color={COLORS.muted}
+                                      />
+                                      <Text style={styles.cardMediaLabel}>
+                                        Offer image
+                                      </Text>
+                                    </View>
+                                  )}
+                                  <View style={styles.detailOfferTagRow}>
+                                    {sanitizeBusinessTags(
+                                      ownerBusiness?.tags,
+                                    ).map((tag) => (
                                       <View
                                         key={tag}
                                         style={styles.detailOfferTag}
@@ -18052,60 +18355,59 @@ export default function App() {
                                           {tag}
                                         </Text>
                                       </View>
-                                    ),
-                                  )}
-                                </View>
-                                {offer.description ? (
-                                  <Text style={styles.detailOfferText}>
-                                    {offer.description}
-                                  </Text>
-                                ) : null}
-                                <View style={styles.detailOfferMetaRow}>
-                                  <Text style={styles.detailOfferMeta}>
-                                    {offerTypeLabel}
-                                  </Text>
-                                </View>
-                                <View style={styles.offerActionsRow}>
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.offerAction,
-                                      !canEdit && styles.offerActionDisabled,
-                                    ]}
-                                    onPress={() => handleOpenOfferEdit(offer)}
-                                    disabled={!canEdit}
-                                  >
-                                    <Text style={styles.offerActionText}>
-                                      {canEdit
-                                        ? "Request edit"
-                                        : "Pending review"}
+                                    ))}
+                                  </View>
+                                  {offer.description ? (
+                                    <Text style={styles.detailOfferText}>
+                                      {offer.description}
                                     </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={styles.offerActionGhost}
-                                    onPress={() => handleToggleOffer(offer)}
-                                  >
-                                    <Text style={styles.offerActionTextGhost}>
-                                      {offer.active ? "Pause" : "Activate"}
+                                  ) : null}
+                                  <View style={styles.detailOfferMetaRow}>
+                                    <Text style={styles.detailOfferMeta}>
+                                      {offerTypeLabel}
                                     </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={styles.offerActionGhost}
-                                    onPress={() => handleDeleteOffer(offer)}
-                                  >
-                                    <Text style={styles.offerActionTextGhost}>
-                                      Delete
-                                    </Text>
-                                  </TouchableOpacity>
+                                  </View>
+                                  <View style={styles.offerActionsRow}>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.offerAction,
+                                        !canEdit && styles.offerActionDisabled,
+                                      ]}
+                                      onPress={() => handleOpenOfferEdit(offer)}
+                                      disabled={!canEdit}
+                                    >
+                                      <Text style={styles.offerActionText}>
+                                        {canEdit
+                                          ? "Request edit"
+                                          : "Pending review"}
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      style={styles.offerActionGhost}
+                                      onPress={() => handleToggleOffer(offer)}
+                                    >
+                                      <Text style={styles.offerActionTextGhost}>
+                                        {offer.active ? "Pause" : "Activate"}
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      style={styles.offerActionGhost}
+                                      onPress={() => handleDeleteOffer(offer)}
+                                    >
+                                      <Text style={styles.offerActionTextGhost}>
+                                        Delete
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
                                 </View>
-                              </View>
-                            )}
-                          </View>
-                        );
-                      })}
-                    </View>
-                  )}
-                </ScrollView>
-              </SafeAreaView>
+                              )}
+                            </View>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </ScrollView>
+                </SafeAreaView>
               </SafeAreaProvider>
             </Modal>
 
@@ -18267,19 +18569,26 @@ export default function App() {
               statusBarTranslucent
             >
               <View
-                style={[styles.cashoutCelebrationOverlay, { paddingTop: uiTopInset + 14 }]}
+                style={[
+                  styles.cashoutCelebrationOverlay,
+                  { paddingTop: uiTopInset + 14 },
+                ]}
                 pointerEvents="none"
               >
                 <View style={styles.cashoutCelebrationCard}>
                   <View style={styles.cashoutCelebrationIconWrap}>
-                    <Ionicons name="trophy-outline" size={16} color={COLORS.white} />
+                    <Ionicons
+                      name="trophy-outline"
+                      size={16}
+                      color={COLORS.white}
+                    />
                   </View>
                   <Text style={styles.cashoutCelebrationTitle}>
                     Cashout started
                   </Text>
                   <Text style={styles.cashoutCelebrationBody}>
-                    {formatCurrencyFromCents(cashoutCelebration.amountCents)} is on
-                    the way to your payout bank.
+                    {formatCurrencyFromCents(cashoutCelebration.amountCents)} is
+                    on the way to your payout bank.
                   </Text>
                 </View>
                 <ConfettiDrizzle
@@ -18308,7 +18617,9 @@ export default function App() {
                     },
                   ]}
                 >
-                  <Text style={styles.tremendousClaimModalTitle}>Payout options</Text>
+                  <Text style={styles.tremendousClaimModalTitle}>
+                    Payout options
+                  </Text>
                   <TouchableOpacity
                     style={styles.tremendousClaimModalCloseButton}
                     onPress={closeTremendousClaimModal}
@@ -18337,17 +18648,24 @@ export default function App() {
                       injectedJavaScript={TREMENDOUS_CLAIM_NOTRANSLATE_JS}
                       startInLoadingState
                       onLoadStart={() => {
-                        setTremendousClaimLoading(true);
+                        armTremendousClaimLoading();
                         setTremendousClaimError(null);
                       }}
+                      onLoadProgress={(event) => {
+                        const progress =
+                          Number(event?.nativeEvent?.progress) || 0;
+                        if (progress >= 0.35) {
+                          finishTremendousClaimLoading();
+                        }
+                      }}
                       onLoadEnd={() => {
-                        setTremendousClaimLoading(false);
+                        finishTremendousClaimLoading();
                       }}
                       onError={(event) => {
                         const description = String(
                           event?.nativeEvent?.description || "",
                         ).trim();
-                        setTremendousClaimLoading(false);
+                        finishTremendousClaimLoading();
                         setTremendousClaimError(
                           toUserFacingError(
                             description,
@@ -18356,8 +18674,9 @@ export default function App() {
                         );
                       }}
                       onHttpError={(event) => {
-                        const statusCode = Number(event?.nativeEvent?.statusCode) || 0;
-                        setTremendousClaimLoading(false);
+                        const statusCode =
+                          Number(event?.nativeEvent?.statusCode) || 0;
+                        finishTremendousClaimLoading();
                         setTremendousClaimError(
                           statusCode === 401 || statusCode === 403
                             ? "Payout options expired. Please request cashout again."
@@ -18377,7 +18696,10 @@ export default function App() {
                     </View>
                   )}
                   {tremendousClaimLoading ? (
-                    <View style={styles.tremendousClaimLoadingOverlay}>
+                    <View
+                      pointerEvents="none"
+                      style={styles.tremendousClaimLoadingOverlay}
+                    >
                       <ActivityIndicator size="small" color={COLORS.pine} />
                     </View>
                   ) : null}
@@ -18411,10 +18733,14 @@ export default function App() {
                     <Text style={styles.formHint}>Saving preferences...</Text>
                   ) : null}
                   {preferencesStatus.error ? (
-                    <Text style={styles.formError}>{preferencesStatus.error}</Text>
+                    <Text style={styles.formError}>
+                      {preferencesStatus.error}
+                    </Text>
                   ) : null}
                   <View style={styles.notificationSettingsRow}>
-                    <Text style={styles.notificationSettingsLabel}>New offers</Text>
+                    <Text style={styles.notificationSettingsLabel}>
+                      New offers
+                    </Text>
                     <NotificationToggle
                       value={notificationPreferences.new_offer}
                       onValueChange={(value) =>
@@ -18479,7 +18805,9 @@ export default function App() {
               <View style={styles.modalOverlay}>
                 <View style={styles.plaidConsentModalCard}>
                   <View style={styles.modalHeader}>
-                    <Text style={styles.modalTitle}>Before you connect a bank</Text>
+                    <Text style={styles.modalTitle}>
+                      Before you connect a bank
+                    </Text>
                     <TouchableOpacity
                       style={styles.modalCloseButton}
                       onPress={closePlaidConsentModal}
@@ -18489,7 +18817,8 @@ export default function App() {
                     </TouchableOpacity>
                   </View>
                   <Text style={styles.modalSubtitle}>
-                    Wello uses linked bank data to verify eligible purchases for cashback and to help prevent fraud.
+                    Wello uses linked bank data to verify eligible purchases for
+                    cashback and to help prevent fraud.
                   </Text>
                   <Text style={styles.plaidConsentBodyText}>
                     By continuing, you agree to our Terms and Privacy Policy.
@@ -18497,7 +18826,9 @@ export default function App() {
                   <View style={styles.plaidConsentLinksRow}>
                     <TouchableOpacity
                       style={styles.plaidConsentLink}
-                      onPress={() => Linking.openURL(TERMS_URL).catch(() => null)}
+                      onPress={() =>
+                        Linking.openURL(TERMS_URL).catch(() => null)
+                      }
                     >
                       <Text style={styles.plaidConsentLinkText}>Terms</Text>
                     </TouchableOpacity>
@@ -18505,7 +18836,8 @@ export default function App() {
                     <TouchableOpacity
                       style={styles.plaidConsentLink}
                       onPress={() =>
-                        Linking.openURL(PRIVACY_POLICY_URL).catch(() => null)}
+                        Linking.openURL(PRIVACY_POLICY_URL).catch(() => null)
+                      }
                     >
                       <Text style={styles.plaidConsentLinkText}>Privacy</Text>
                     </TouchableOpacity>
@@ -18527,7 +18859,9 @@ export default function App() {
                       disabled={plaidConsentSaving}
                     >
                       <Text style={styles.plaidConsentAgreeText}>
-                        {plaidConsentSaving ? "Saving..." : "Agree and continue"}
+                        {plaidConsentSaving
+                          ? "Saving..."
+                          : "Agree and continue"}
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -18594,9 +18928,7 @@ export default function App() {
                     />
                     <TouchableOpacity
                       style={styles.passwordToggleButton}
-                      onPress={() =>
-                        setShowPasswordResetDraft((prev) => !prev)
-                      }
+                      onPress={() => setShowPasswordResetDraft((prev) => !prev)}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     >
                       <Ionicons
@@ -18652,7 +18984,9 @@ export default function App() {
                     <Text style={styles.formError}>{passwordResetError}</Text>
                   ) : null}
                   {passwordResetSuccess ? (
-                    <Text style={styles.formSuccess}>{passwordResetSuccess}</Text>
+                    <Text style={styles.formSuccess}>
+                      {passwordResetSuccess}
+                    </Text>
                   ) : null}
                   <TouchableOpacity
                     style={[
@@ -18760,7 +19094,9 @@ export default function App() {
                       <Ionicons
                         name="search"
                         size={16}
-                        color={discoverSearchFocused ? COLORS.pine : COLORS.muted}
+                        color={
+                          discoverSearchFocused ? COLORS.pine : COLORS.muted
+                        }
                         style={styles.searchIcon}
                       />
                       <AutoFocusInput
@@ -18844,7 +19180,9 @@ export default function App() {
                           disabled={plaidPromptBusy}
                         >
                           <Text style={styles.discoverPlaidPromptConnectText}>
-                            {plaidPromptBusy ? "Opening..." : plaidPromptCopy.cta}
+                            {plaidPromptBusy
+                              ? "Opening..."
+                              : plaidPromptCopy.cta}
                           </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
@@ -18853,7 +19191,11 @@ export default function App() {
                           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                           accessibilityLabel="Dismiss bank verification reminder"
                         >
-                          <Ionicons name="close" size={16} color={COLORS.muted} />
+                          <Ionicons
+                            name="close"
+                            size={16}
+                            color={COLORS.muted}
+                          />
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -18886,7 +19228,9 @@ export default function App() {
                         })}
                       </View>
                       <View style={styles.filterRadiusBlock}>
-                        <Text style={styles.filterRadiusLabel}>Radius (miles)</Text>
+                        <Text style={styles.filterRadiusLabel}>
+                          Radius (miles)
+                        </Text>
                         <View style={styles.filterRadiusRow}>
                           {DISCOVER_RADIUS_OPTIONS.map((option) => {
                             const isActive = discoverRadiusKey === option.key;
@@ -18959,10 +19303,13 @@ export default function App() {
                           onPress={() => handleCardPress(item)}
                           onRedeem={() => handleRedeemOffer(item)}
                           selected={
-                            selectedOfferCardId === getOfferCardSelectionKey(item)
+                            selectedOfferCardId ===
+                            getOfferCardSelectionKey(item)
                           }
                           cashbackRatePercent={
-                            accountRole === "consumer" ? cashbackRatePercent : null
+                            accountRole === "consumer"
+                              ? cashbackRatePercent
+                              : null
                           }
                         />
                       ))}
@@ -18982,18 +19329,25 @@ export default function App() {
                 >
                   <View style={styles.tremendousDemoCard}>
                     <View style={styles.tremendousDemoHeader}>
-                      <Text style={styles.tremendousDemoTitle}>Tremendous Cashout Demo</Text>
+                      <Text style={styles.tremendousDemoTitle}>
+                        Tremendous Cashout Demo
+                      </Text>
                       <View style={styles.tremendousDemoBadge}>
-                        <Text style={styles.tremendousDemoBadgeText}>Sandbox</Text>
+                        <Text style={styles.tremendousDemoBadgeText}>
+                          Sandbox
+                        </Text>
                       </View>
                     </View>
                     <Text style={styles.tremendousDemoSubtitle}>
-                      Cash out available Wello balance through Tremendous, then continue in
-                      their hosted redemption flow to pick payout options.
+                      Cash out available Wello balance through Tremendous, then
+                      continue in their hosted redemption flow to pick payout
+                      options.
                     </Text>
                     <View style={styles.tremendousDemoRow}>
                       <View style={styles.tremendousDemoAmountWrap}>
-                        <Text style={styles.tremendousDemoLabel}>Cashout amount</Text>
+                        <Text style={styles.tremendousDemoLabel}>
+                          Cashout amount
+                        </Text>
                         <TextInput
                           style={styles.tremendousDemoInput}
                           value={tremendousDemoAmountText}
@@ -19002,7 +19356,9 @@ export default function App() {
                               formatCashoutAmountInput(value),
                             )
                           }
-                          keyboardType={Platform.OS === "ios" ? "decimal-pad" : "numeric"}
+                          keyboardType={
+                            Platform.OS === "ios" ? "decimal-pad" : "numeric"
+                          }
                           autoCorrect={false}
                           placeholder="0.00"
                           placeholderTextColor={COLORS.muted}
@@ -19012,16 +19368,21 @@ export default function App() {
                         style={styles.tremendousDemoMaxButton}
                         onPress={() =>
                           setTremendousDemoAmountText(
-                            formatCashoutAmountInput(tremendousDemoAvailableCents),
+                            formatCashoutAmountInput(
+                              tremendousDemoAvailableCents,
+                            ),
                           )
                         }
                         disabled={tremendousDemoState.loading}
                       >
-                        <Text style={styles.tremendousDemoMaxButtonText}>Max</Text>
+                        <Text style={styles.tremendousDemoMaxButtonText}>
+                          Max
+                        </Text>
                       </TouchableOpacity>
                     </View>
                     <Text style={styles.tremendousDemoMetaText}>
-                      Available: {formatCurrencyFromCents(tremendousDemoAvailableCents)}
+                      Available:{" "}
+                      {formatCurrencyFromCents(tremendousDemoAvailableCents)}
                     </Text>
                     {tremendousDemoUsingVirtualBalance && (
                       <Text style={styles.tremendousDemoMetaHint}>
@@ -19031,12 +19392,12 @@ export default function App() {
                     {String(tremendousDemoAmountText || "").trim() &&
                       (tremendousDemoPreview.mode === "invalid" ||
                         tremendousDemoPreview.mode === "below_min") && (
-                      <Text style={styles.tremendousDemoErrorText}>
-                        {tremendousDemoPreview.mode === "below_min"
-                          ? `Minimum cashout is ${formatCurrencyFromCents(TREMENDOUS_DEMO_MIN_AMOUNT_CENTS)}.`
-                          : `Max cashout is ${formatCurrencyFromCents(tremendousDemoAvailableCents)}.`}
-                      </Text>
-                    )}
+                        <Text style={styles.tremendousDemoErrorText}>
+                          {tremendousDemoPreview.mode === "below_min"
+                            ? `Minimum cashout is ${formatCurrencyFromCents(TREMENDOUS_DEMO_MIN_AMOUNT_CENTS)}.`
+                            : `Max cashout is ${formatCurrencyFromCents(tremendousDemoAvailableCents)}.`}
+                        </Text>
+                      )}
                     {tremendousDemoState.error ? (
                       <Text style={styles.tremendousDemoErrorText}>
                         {tremendousDemoState.error}
@@ -19047,7 +19408,8 @@ export default function App() {
                         {tremendousDemoState.success}
                       </Text>
                     ) : null}
-                    {(tremendousDemoState.orderId || tremendousDemoState.rewardId) && (
+                    {(tremendousDemoState.orderId ||
+                      tremendousDemoState.rewardId) && (
                       <View style={styles.tremendousDemoMetaRow}>
                         <Text style={styles.tremendousDemoMetaText}>
                           Order: {tremendousDemoState.orderId || "--"}
@@ -19059,9 +19421,14 @@ export default function App() {
                     )}
                     {cashoutPayoutHistory.length > 0 && (
                       <View style={styles.tremendousDemoHistoryWrap}>
-                        <Text style={styles.tremendousDemoLabel}>Recent cashouts</Text>
+                        <Text style={styles.tremendousDemoLabel}>
+                          Recent cashouts
+                        </Text>
                         {cashoutPayoutHistory.slice(0, 3).map((entry) => (
-                          <View key={`trm-demo-history-${entry.id}`} style={styles.tremendousDemoHistoryRow}>
+                          <View
+                            key={`trm-demo-history-${entry.id}`}
+                            style={styles.tremendousDemoHistoryRow}
+                          >
                             <Text style={styles.tremendousDemoHistoryAmount}>
                               {formatCurrencyFromCents(entry.amountCents)}
                             </Text>
@@ -19094,7 +19461,10 @@ export default function App() {
                         }
                       >
                         {tremendousDemoState.loading ? (
-                          <ActivityIndicator size="small" color={COLORS.white} />
+                          <ActivityIndicator
+                            size="small"
+                            color={COLORS.white}
+                          />
                         ) : (
                           <Text style={styles.tremendousDemoPrimaryButtonText}>
                             {tremendousDemoPreview.label}
@@ -19106,7 +19476,9 @@ export default function App() {
                           style={styles.tremendousDemoSecondaryButton}
                           onPress={handleOpenTremendousDemoClaimUrl}
                         >
-                          <Text style={styles.tremendousDemoSecondaryButtonText}>
+                          <Text
+                            style={styles.tremendousDemoSecondaryButtonText}
+                          >
                             Open payout options
                           </Text>
                         </TouchableOpacity>
@@ -19116,13 +19488,16 @@ export default function App() {
 
                   <View style={styles.demoIntroCard}>
                     <View style={styles.demoIntroHeader}>
-                      <Text style={styles.demoIntroTitle}>Discover Layout Lab</Text>
+                      <Text style={styles.demoIntroTitle}>
+                        Discover Layout Lab
+                      </Text>
                       <View style={styles.demoIntroBadge}>
                         <Text style={styles.demoIntroBadgeText}>Preview</Text>
                       </View>
                     </View>
                     <Text style={styles.demoIntroSubtitle}>
-                      Compare card styles without changing your live Discover feed.
+                      Compare card styles without changing your live Discover
+                      feed.
                     </Text>
                     <View style={styles.demoIntroMetaRow}>
                       <Text style={styles.demoIntroMetaText}>
@@ -19267,7 +19642,9 @@ export default function App() {
                     </View>
                   ) : filteredDemoOfferCards.length === 0 ? (
                     <View style={styles.emptyState}>
-                      <Text style={styles.emptyTitle}>No demo cards match.</Text>
+                      <Text style={styles.emptyTitle}>
+                        No demo cards match.
+                      </Text>
                       <Text style={styles.emptyCopy}>
                         Try a different search or reset filters.
                       </Text>
@@ -19276,9 +19653,11 @@ export default function App() {
                     <View style={styles.demoListStack}>
                       {filteredDemoOfferCards.map((item) => {
                         const category = getCategoryConfig(item.categoryKey);
-                        const offerTitle = item.offerTitle || item.offer || "Offer";
+                        const offerTitle =
+                          item.offerTitle || item.offer || "Offer";
                         const cashbackLabel =
-                          formatPercentOnlyLabel(cashbackRatePercent) || "Cashback";
+                          formatPercentOnlyLabel(cashbackRatePercent) ||
+                          "Cashback";
                         const isOpen = item.isOpen !== false;
                         return (
                           <View
@@ -19293,7 +19672,9 @@ export default function App() {
                                   resizeMode="cover"
                                 />
                               ) : (
-                                <View style={styles.demoEditorialSplitMediaFallback}>
+                                <View
+                                  style={styles.demoEditorialSplitMediaFallback}
+                                >
                                   <Ionicons
                                     name="image-outline"
                                     size={20}
@@ -19302,19 +19683,34 @@ export default function App() {
                                 </View>
                               )}
                               <LinearGradient
-                                colors={["transparent", "rgba(15, 23, 42, 0.5)"]}
+                                colors={[
+                                  "transparent",
+                                  "rgba(15, 23, 42, 0.5)",
+                                ]}
                                 start={{ x: 0.5, y: 0 }}
                                 end={{ x: 0.5, y: 1 }}
                                 style={styles.demoEditorialSplitShade}
                               />
                               <View style={styles.demoEditorialSplitOverlayRow}>
-                                <View style={styles.demoEditorialSplitCategoryPill}>
-                                  <Text style={styles.demoEditorialSplitCategoryText}>
+                                <View
+                                  style={styles.demoEditorialSplitCategoryPill}
+                                >
+                                  <Text
+                                    style={
+                                      styles.demoEditorialSplitCategoryText
+                                    }
+                                  >
                                     {category.display}
                                   </Text>
                                 </View>
-                                <View style={styles.demoEditorialSplitCashbackPill}>
-                                  <Text style={styles.demoEditorialSplitCashbackText}>
+                                <View
+                                  style={styles.demoEditorialSplitCashbackPill}
+                                >
+                                  <Text
+                                    style={
+                                      styles.demoEditorialSplitCashbackText
+                                    }
+                                  >
                                     {cashbackLabel}
                                   </Text>
                                 </View>
@@ -19322,7 +19718,10 @@ export default function App() {
                             </View>
                             <View style={styles.demoEditorialSplitBody}>
                               <View style={styles.demoEditorialSplitTopRow}>
-                                <Text style={styles.demoEditorialSplitName} numberOfLines={1}>
+                                <Text
+                                  style={styles.demoEditorialSplitName}
+                                  numberOfLines={1}
+                                >
                                   {item.name}
                                 </Text>
                                 <Text
@@ -19336,11 +19735,16 @@ export default function App() {
                                   {isOpen ? "Open now" : "Closed"}
                                 </Text>
                               </View>
-                              <Text style={styles.demoEditorialSplitOffer} numberOfLines={1}>
+                              <Text
+                                style={styles.demoEditorialSplitOffer}
+                                numberOfLines={1}
+                              >
                                 {offerTitle}
                               </Text>
                               <View style={styles.demoEditorialSplitFooter}>
-                                <Text style={styles.demoPreviewOnlyText}>Preview only</Text>
+                                <Text style={styles.demoPreviewOnlyText}>
+                                  Preview only
+                                </Text>
                                 <Ionicons
                                   name="chevron-forward"
                                   size={16}
@@ -19357,13 +19761,17 @@ export default function App() {
                       <ScrollView
                         horizontal
                         showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.demoEditorialSplitHorizontalRail}
+                        contentContainerStyle={
+                          styles.demoEditorialSplitHorizontalRail
+                        }
                       >
                         {filteredDemoOfferCards.map((item) => {
                           const category = getCategoryConfig(item.categoryKey);
-                          const offerTitle = item.offerTitle || item.offer || "Offer";
+                          const offerTitle =
+                            item.offerTitle || item.offer || "Offer";
                           const cashbackLabel =
-                            formatPercentOnlyLabel(cashbackRatePercent) || "Cashback";
+                            formatPercentOnlyLabel(cashbackRatePercent) ||
+                            "Cashback";
                           const isOpen = item.isOpen !== false;
                           return (
                             <View
@@ -19381,7 +19789,11 @@ export default function App() {
                                     resizeMode="cover"
                                   />
                                 ) : (
-                                  <View style={styles.demoEditorialSplitMediaFallback}>
+                                  <View
+                                    style={
+                                      styles.demoEditorialSplitMediaFallback
+                                    }
+                                  >
                                     <Ionicons
                                       name="image-outline"
                                       size={20}
@@ -19390,19 +19802,40 @@ export default function App() {
                                   </View>
                                 )}
                                 <LinearGradient
-                                  colors={["transparent", "rgba(15, 23, 42, 0.5)"]}
+                                  colors={[
+                                    "transparent",
+                                    "rgba(15, 23, 42, 0.5)",
+                                  ]}
                                   start={{ x: 0.5, y: 0 }}
                                   end={{ x: 0.5, y: 1 }}
                                   style={styles.demoEditorialSplitShade}
                                 />
-                                <View style={styles.demoEditorialSplitOverlayRow}>
-                                  <View style={styles.demoEditorialSplitCategoryPill}>
-                                    <Text style={styles.demoEditorialSplitCategoryText}>
+                                <View
+                                  style={styles.demoEditorialSplitOverlayRow}
+                                >
+                                  <View
+                                    style={
+                                      styles.demoEditorialSplitCategoryPill
+                                    }
+                                  >
+                                    <Text
+                                      style={
+                                        styles.demoEditorialSplitCategoryText
+                                      }
+                                    >
                                       {category.display}
                                     </Text>
                                   </View>
-                                  <View style={styles.demoEditorialSplitCashbackPill}>
-                                    <Text style={styles.demoEditorialSplitCashbackText}>
+                                  <View
+                                    style={
+                                      styles.demoEditorialSplitCashbackPill
+                                    }
+                                  >
+                                    <Text
+                                      style={
+                                        styles.demoEditorialSplitCashbackText
+                                      }
+                                    >
                                       {cashbackLabel}
                                     </Text>
                                   </View>
@@ -19410,7 +19843,10 @@ export default function App() {
                               </View>
                               <View style={styles.demoEditorialSplitBody}>
                                 <View style={styles.demoEditorialSplitTopRow}>
-                                  <Text style={styles.demoEditorialSplitName} numberOfLines={1}>
+                                  <Text
+                                    style={styles.demoEditorialSplitName}
+                                    numberOfLines={1}
+                                  >
                                     {item.name}
                                   </Text>
                                   <Text
@@ -19424,11 +19860,16 @@ export default function App() {
                                     {isOpen ? "Open now" : "Closed"}
                                   </Text>
                                 </View>
-                                <Text style={styles.demoEditorialSplitOffer} numberOfLines={1}>
+                                <Text
+                                  style={styles.demoEditorialSplitOffer}
+                                  numberOfLines={1}
+                                >
                                   {offerTitle}
                                 </Text>
                                 <View style={styles.demoEditorialSplitFooter}>
-                                  <Text style={styles.demoPreviewOnlyText}>Preview only</Text>
+                                  <Text style={styles.demoPreviewOnlyText}>
+                                    Preview only
+                                  </Text>
                                   <Ionicons
                                     name="chevron-forward"
                                     size={16}
@@ -19445,10 +19886,12 @@ export default function App() {
                     <View style={styles.demoListStack}>
                       {filteredDemoOfferCards.map((item) => {
                         const category = getCategoryConfig(item.categoryKey);
-                        const offerTitle = item.offerTitle || item.offer || "Offer";
+                        const offerTitle =
+                          item.offerTitle || item.offer || "Offer";
                         const offerDescription = item.offerDescription || "";
                         const cashbackLabel =
-                          formatPercentOnlyLabel(cashbackRatePercent) || "Cashback";
+                          formatPercentOnlyLabel(cashbackRatePercent) ||
+                          "Cashback";
                         const isOpen = item.isOpen !== false;
                         return (
                           <View
@@ -19472,28 +19915,47 @@ export default function App() {
                                 </View>
                               )}
                               <LinearGradient
-                                colors={["transparent", "rgba(15, 23, 42, 0.76)"]}
+                                colors={[
+                                  "transparent",
+                                  "rgba(15, 23, 42, 0.76)",
+                                ]}
                                 start={{ x: 0.5, y: 0 }}
                                 end={{ x: 0.5, y: 1 }}
                                 style={styles.demoEditorialGradient}
                               />
                               <View style={styles.demoEditorialContent}>
                                 <View style={styles.demoEditorialTopRow}>
-                                  <View style={styles.demoEditorialCategoryPill}>
-                                    <Text style={styles.demoEditorialCategoryPillText}>
+                                  <View
+                                    style={styles.demoEditorialCategoryPill}
+                                  >
+                                    <Text
+                                      style={
+                                        styles.demoEditorialCategoryPillText
+                                      }
+                                    >
                                       {category.display}
                                     </Text>
                                   </View>
-                                  <View style={styles.demoEditorialCashbackPill}>
-                                    <Text style={styles.demoEditorialCashbackText}>
+                                  <View
+                                    style={styles.demoEditorialCashbackPill}
+                                  >
+                                    <Text
+                                      style={styles.demoEditorialCashbackText}
+                                    >
                                       {cashbackLabel}
                                     </Text>
                                   </View>
                                 </View>
-                                <Text style={styles.demoEditorialName} numberOfLines={1}>
+                                <Text
+                                  style={styles.demoEditorialName}
+                                  numberOfLines={1}
+                                >
                                   {item.name}
                                 </Text>
-                                <Text style={styles.demoEditorialOffer} numberOfLines={1}>
+                                <Text
+                                  style={styles.demoEditorialOffer}
+                                  numberOfLines={1}
+                                >
                                   {offerTitle}
                                 </Text>
                                 {offerDescription ? (
@@ -19526,7 +19988,9 @@ export default function App() {
                                   {isOpen ? "Open now" : "Closed"}
                                 </Text>
                               </View>
-                              <Text style={styles.demoPreviewOnlyText}>Preview only</Text>
+                              <Text style={styles.demoPreviewOnlyText}>
+                                Preview only
+                              </Text>
                             </View>
                           </View>
                         );
@@ -19621,1495 +20085,1582 @@ export default function App() {
                           </View>
                         ) : (
                           <>
-                        <View style={styles.analyticsGrid}>
-                          <TouchableOpacity
-                            style={[
-                              styles.analyticsCard,
-                              styles.analyticsCardInteractive,
-                            ]}
-                            onPress={() => {
-                              setViewsModalOpen(true);
-                              loadOfferViewsBreakdown(
-                                ownerBusiness?.id || ownerBusinessId,
-                              );
-                            }}
-                            activeOpacity={0.85}
-                          >
-                            <Text style={styles.analyticsValue}>
-                              {formatMetricValue(ownerMetrics.views)}
-                            </Text>
-                            <View style={styles.analyticsLabelRow}>
-                              <Text style={styles.analyticsLabel}>Views</Text>
-                              <Ionicons
-                                name="chevron-forward"
-                                size={14}
-                                color={COLORS.muted}
-                              />
+                            <View style={styles.analyticsGrid}>
+                              <TouchableOpacity
+                                style={[
+                                  styles.analyticsCard,
+                                  styles.analyticsCardInteractive,
+                                ]}
+                                onPress={() => {
+                                  setViewsModalOpen(true);
+                                  loadOfferViewsBreakdown(
+                                    ownerBusiness?.id || ownerBusinessId,
+                                  );
+                                }}
+                                activeOpacity={0.85}
+                              >
+                                <Text style={styles.analyticsValue}>
+                                  {formatMetricValue(ownerMetrics.views)}
+                                </Text>
+                                <View style={styles.analyticsLabelRow}>
+                                  <Text style={styles.analyticsLabel}>
+                                    Views
+                                  </Text>
+                                  <Ionicons
+                                    name="chevron-forward"
+                                    size={14}
+                                    color={COLORS.muted}
+                                  />
+                                </View>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={[
+                                  styles.analyticsCard,
+                                  styles.analyticsCardInteractive,
+                                ]}
+                                onPress={() => setReceiptsModalOpen(true)}
+                                activeOpacity={0.85}
+                              >
+                                <Text style={styles.analyticsValue}>
+                                  {formatMetricValue(ownerMetrics.redemptions)}
+                                </Text>
+                                <View style={styles.analyticsLabelRow}>
+                                  <Text style={styles.analyticsLabel}>
+                                    Redemptions
+                                  </Text>
+                                  <Ionicons
+                                    name="chevron-forward"
+                                    size={14}
+                                    color={COLORS.muted}
+                                  />
+                                </View>
+                              </TouchableOpacity>
+                              <View style={styles.analyticsCard}>
+                                <Text style={styles.analyticsValue}>
+                                  {formatMetricValue(ownerMetrics.reach)}
+                                </Text>
+                                <View style={styles.analyticsLabelRow}>
+                                  <Text style={styles.analyticsLabel}>
+                                    Reach
+                                  </Text>
+                                  <TouchableOpacity
+                                    style={styles.analyticsInfoButton}
+                                    onPress={triggerReachTooltip}
+                                  >
+                                    <Ionicons
+                                      name="information-circle-outline"
+                                      size={14}
+                                      color={COLORS.muted}
+                                    />
+                                  </TouchableOpacity>
+                                </View>
+                                {showReachTooltip && (
+                                  <View style={styles.analyticsTooltip}>
+                                    <Text style={styles.analyticsTooltipText}>
+                                      Reach is the estimated number of unique
+                                      people who saw your listing.
+                                    </Text>
+                                  </View>
+                                )}
+                              </View>
                             </View>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={[
-                              styles.analyticsCard,
-                              styles.analyticsCardInteractive,
-                            ]}
-                            onPress={() => setReceiptsModalOpen(true)}
-                            activeOpacity={0.85}
-                          >
-                            <Text style={styles.analyticsValue}>
-                              {formatMetricValue(ownerMetrics.redemptions)}
-                            </Text>
-                            <View style={styles.analyticsLabelRow}>
-                              <Text style={styles.analyticsLabel}>
-                                Redemptions
+                            {ownerAnalyticsStatus.error && (
+                              <Text style={styles.formError}>
+                                {ownerAnalyticsStatus.error}
                               </Text>
-                              <Ionicons
-                                name="chevron-forward"
-                                size={14}
-                                color={COLORS.muted}
-                              />
-                            </View>
-                          </TouchableOpacity>
-                          <View style={styles.analyticsCard}>
-                            <Text style={styles.analyticsValue}>
-                              {formatMetricValue(ownerMetrics.reach)}
-                            </Text>
-                            <View style={styles.analyticsLabelRow}>
-                              <Text style={styles.analyticsLabel}>Reach</Text>
-                              <TouchableOpacity
-                                style={styles.analyticsInfoButton}
-                                onPress={triggerReachTooltip}
-                              >
-                                <Ionicons
-                                  name="information-circle-outline"
-                                  size={14}
-                                  color={COLORS.muted}
-                                />
-                              </TouchableOpacity>
-                            </View>
-                            {showReachTooltip && (
-                              <View style={styles.analyticsTooltip}>
-                                <Text style={styles.analyticsTooltipText}>
-                                  Reach is the estimated number of unique people
-                                  who saw your listing.
-                                </Text>
-                              </View>
                             )}
-                          </View>
-                        </View>
-                        {ownerAnalyticsStatus.error && (
-                          <Text style={styles.formError}>
-                            {ownerAnalyticsStatus.error}
-                          </Text>
-                        )}
 
-                        <View style={styles.sectionBlock}>
-                          <View style={styles.sectionTitleRow}>
-                            <Text
-                              style={[
-                                styles.sectionTitleAlt,
-                                styles.sectionTitleTight,
-                              ]}
-                            >
-                              Payments
-                            </Text>
-                            <TouchableOpacity
-                              style={styles.sectionInfoButton}
-                              onPress={() =>
-                                openInfoTooltip(
-                                  "Payments",
-                                  `Commission is ${formatPercentLabel(ownerCommissionRatePercent)}% of each verified receipt total for your business. Customer cashback currently defaults to ${formatPercentLabel(ownerDefaultCashbackPercent)}% and promo codes can increase it. Your commission is billed monthly. The billing portal is for payment methods and invoices.`,
-                                )
-                              }
-                              hitSlop={{
-                                top: 10,
-                                bottom: 10,
-                                left: 10,
-                                right: 10,
-                              }}
-                            >
-                              <Ionicons
-                                name="information-circle-outline"
-                                size={18}
-                                color={COLORS.muted}
-                              />
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-                        <View style={styles.paymentCard}>
-                          <View style={styles.paymentHeaderRow}>
-                            <View style={styles.paymentHeaderBadges}>
-                              <View style={styles.paymentRow}>
-                                <Text style={styles.paymentLabel}>
-                                  Stripe account
-                                </Text>
-                                <View
+                            <View style={styles.sectionBlock}>
+                              <View style={styles.sectionTitleRow}>
+                                <Text
                                   style={[
-                                    styles.paymentBadge,
-                                    resolvedOwnerBusiness?.stripeAccountId
-                                      ? styles.paymentBadgeActive
-                                      : styles.paymentBadgeInactive,
+                                    styles.sectionTitleAlt,
+                                    styles.sectionTitleTight,
                                   ]}
                                 >
-                                  <Text style={styles.paymentBadgeText}>
-                                    {resolvedOwnerBusiness?.stripeAccountId
-                                      ? "Connected"
-                                      : "Not connected"}
-                                  </Text>
-                                </View>
-                              </View>
-                              <View style={styles.paymentRow}>
-                                <Text style={styles.paymentLabel}>
-                                  Payment method
+                                  Payments
                                 </Text>
-                                <View
-                                  style={[
-                                    styles.paymentBadge,
-                                    resolvedOwnerBusiness?.stripePaymentMethodId
-                                      ? styles.paymentBadgeActive
-                                      : styles.paymentBadgeInactive,
-                                  ]}
+                                <TouchableOpacity
+                                  style={styles.sectionInfoButton}
+                                  onPress={() =>
+                                    openInfoTooltip(
+                                      "Payments",
+                                      `Commission is ${formatPercentLabel(ownerCommissionRatePercent)}% of each verified receipt total for your business. Customer cashback currently defaults to ${formatPercentLabel(ownerDefaultCashbackPercent)}% and promo codes can increase it. Your commission is billed monthly. The billing portal is for payment methods and invoices.`,
+                                    )
+                                  }
+                                  hitSlop={{
+                                    top: 10,
+                                    bottom: 10,
+                                    left: 10,
+                                    right: 10,
+                                  }}
                                 >
-                                  <Text style={styles.paymentBadgeText}>
-                                    {resolvedOwnerBusiness?.stripePaymentMethodId
-                                      ? "On file"
-                                      : "Needed"}
-                                  </Text>
-                                </View>
+                                  <Ionicons
+                                    name="information-circle-outline"
+                                    size={18}
+                                    color={COLORS.muted}
+                                  />
+                                </TouchableOpacity>
                               </View>
                             </View>
-                          </View>
-                          <View style={styles.paymentRow}>
-                            <Text style={styles.paymentLabel}>
-                              Commission rate
-                            </Text>
-                            <Text style={styles.paymentAmount}>
-                              {formatPercentLabel(ownerCommissionRatePercent)}%
-                            </Text>
-                          </View>
-                          <View style={styles.paymentRow}>
-                            <Text style={styles.paymentLabel}>
-                              Gross income
-                            </Text>
-                            <Text style={styles.paymentAmount}>
-                              {formatCurrencyFromCents(
-                                billingMetrics.periodVerifiedGrossCents,
-                              )}
-                            </Text>
-                          </View>
-                          <View style={styles.paymentRow}>
-                            <Text style={styles.paymentLabel}>Charges due</Text>
-                            <Text style={styles.paymentAmount}>
-                              {formatCurrencyFromCents(
-                                Math.max(
-                                  0,
-                                  (Number(billingMetrics.periodTotalCents) ||
-                                    0) -
-                                    (Number(billingMetrics.periodPaidCents) ||
-                                      0),
-                                ),
-                              )}
-                            </Text>
-                          </View>
-                          <View style={styles.paymentRow}>
-                            <Text style={styles.paymentLabel}>
-                              Net after fees
-                            </Text>
-                            <Text style={styles.paymentAmount}>
-                              {formatCurrencyFromCents(
-                                Math.max(
-                                  0,
-                                  (Number(
+                            <View style={styles.paymentCard}>
+                              <View style={styles.paymentHeaderRow}>
+                                <View style={styles.paymentHeaderBadges}>
+                                  <View style={styles.paymentRow}>
+                                    <Text style={styles.paymentLabel}>
+                                      Stripe account
+                                    </Text>
+                                    <View
+                                      style={[
+                                        styles.paymentBadge,
+                                        resolvedOwnerBusiness?.stripeAccountId
+                                          ? styles.paymentBadgeActive
+                                          : styles.paymentBadgeInactive,
+                                      ]}
+                                    >
+                                      <Text style={styles.paymentBadgeText}>
+                                        {resolvedOwnerBusiness?.stripeAccountId
+                                          ? "Connected"
+                                          : "Not connected"}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                  <View style={styles.paymentRow}>
+                                    <Text style={styles.paymentLabel}>
+                                      Payment method
+                                    </Text>
+                                    <View
+                                      style={[
+                                        styles.paymentBadge,
+                                        resolvedOwnerBusiness?.stripePaymentMethodId
+                                          ? styles.paymentBadgeActive
+                                          : styles.paymentBadgeInactive,
+                                      ]}
+                                    >
+                                      <Text style={styles.paymentBadgeText}>
+                                        {resolvedOwnerBusiness?.stripePaymentMethodId
+                                          ? "On file"
+                                          : "Needed"}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                </View>
+                              </View>
+                              <View style={styles.paymentRow}>
+                                <Text style={styles.paymentLabel}>
+                                  Commission rate
+                                </Text>
+                                <Text style={styles.paymentAmount}>
+                                  {formatPercentLabel(
+                                    ownerCommissionRatePercent,
+                                  )}
+                                  %
+                                </Text>
+                              </View>
+                              <View style={styles.paymentRow}>
+                                <Text style={styles.paymentLabel}>
+                                  Gross income
+                                </Text>
+                                <Text style={styles.paymentAmount}>
+                                  {formatCurrencyFromCents(
                                     billingMetrics.periodVerifiedGrossCents,
-                                  ) || 0) -
-                                    (Number(billingMetrics.periodTotalCents) ||
-                                      0),
-                                ),
+                                  )}
+                                </Text>
+                              </View>
+                              <View style={styles.paymentRow}>
+                                <Text style={styles.paymentLabel}>
+                                  Charges due
+                                </Text>
+                                <Text style={styles.paymentAmount}>
+                                  {formatCurrencyFromCents(
+                                    Math.max(
+                                      0,
+                                      (Number(
+                                        billingMetrics.periodTotalCents,
+                                      ) || 0) -
+                                        (Number(
+                                          billingMetrics.periodPaidCents,
+                                        ) || 0),
+                                    ),
+                                  )}
+                                </Text>
+                              </View>
+                              <View style={styles.paymentRow}>
+                                <Text style={styles.paymentLabel}>
+                                  Net after fees
+                                </Text>
+                                <Text style={styles.paymentAmount}>
+                                  {formatCurrencyFromCents(
+                                    Math.max(
+                                      0,
+                                      (Number(
+                                        billingMetrics.periodVerifiedGrossCents,
+                                      ) || 0) -
+                                        (Number(
+                                          billingMetrics.periodTotalCents,
+                                        ) || 0),
+                                    ),
+                                  )}
+                                </Text>
+                              </View>
+                              {billingStatus.loading && (
+                                <Text style={styles.formHint}>
+                                  Updating charges...
+                                </Text>
                               )}
-                            </Text>
-                          </View>
-                          {billingStatus.loading && (
-                            <Text style={styles.formHint}>
-                              Updating charges...
-                            </Text>
-                          )}
-                          {billingStatus.error && (
-                            <Text style={styles.formError}>
-                              {billingStatus.error}
-                            </Text>
-                          )}
-                          <View style={styles.paymentActionsRow}>
-                            {!resolvedOwnerBusiness?.stripeAccountId ? (
-                              <TouchableOpacity
-                                style={[
-                                  styles.primaryButton,
-                                  stripeActionStatus.loading &&
-                                    styles.primaryButtonDisabled,
-                                ]}
-                                onPress={handleStripeConnect}
-                                disabled={stripeActionStatus.loading}
-                              >
-                                <Text style={styles.primaryButtonText}>
-                                  Connect Stripe
+                              {billingStatus.error && (
+                                <Text style={styles.formError}>
+                                  {billingStatus.error}
                                 </Text>
-                              </TouchableOpacity>
-                            ) : !resolvedOwnerBusiness?.stripePaymentMethodId ? (
-                              <TouchableOpacity
-                                style={[
-                                  styles.primaryButton,
-                                  stripeActionStatus.loading &&
-                                    styles.primaryButtonDisabled,
-                                ]}
-                                onPress={handleStripePaymentSetup}
-                                disabled={stripeActionStatus.loading}
-                              >
-                                <Text style={styles.primaryButtonText}>
-                                  Add payment method
-                                </Text>
-                              </TouchableOpacity>
-                            ) : (
-                              <TouchableOpacity
-                                style={[
-                                  styles.primaryButton,
-                                  stripeActionStatus.loading &&
-                                    styles.primaryButtonDisabled,
-                                ]}
-                                onPress={handleStripeManage}
-                                disabled={stripeActionStatus.loading}
-                              >
-                                <Text style={styles.primaryButtonText}>
-                                  Billing portal
-                                </Text>
-                              </TouchableOpacity>
-                            )}
-                          </View>
-                          {stripeActionStatus.error && (
-                            <Text style={styles.formError}>
-                              {formatStripeError(stripeActionStatus.error)}
-                            </Text>
-                          )}
-                          {stripeActionStatus.success && (
-                            <Text style={styles.formSuccess}>
-                              {stripeActionStatus.success}
-                            </Text>
-                          )}
-                        </View>
-
-                        <View style={styles.sectionBlock}>
-                          <View
-                            style={[
-                              styles.sectionTitleRow,
-                              styles.offersSectionTitleRow,
-                            ]}
-                          >
-                            <Text
-                              style={[
-                                styles.sectionTitleAlt,
-                                styles.sectionTitleTight,
-                              ]}
-                            >
-                              Offers
-                            </Text>
-                            <TouchableOpacity
-                              style={styles.sectionInfoButton}
-                              onPress={() =>
-                                openInfoTooltip(
-                                  "Offers",
-                                  "Create and manage offers customers see on Discover. Redemption limits apply per customer.",
-                                )
-                              }
-                              hitSlop={{
-                                top: 10,
-                                bottom: 10,
-                                left: 10,
-                                right: 10,
-                              }}
-                            >
-                              <Ionicons
-                                name="information-circle-outline"
-                                size={18}
-                                color={COLORS.muted}
-                              />
-                            </TouchableOpacity>
-                          </View>
-                          <TouchableOpacity
-                            style={styles.offersCtaButton}
-                            onPress={() => setOwnerOffersModalOpen(true)}
-                            activeOpacity={0.9}
-                          >
-                            <View style={styles.offersCtaLeft}>
-                              <View style={styles.offersCtaIconWrap}>
-                                <Ionicons
-                                  name="sparkles-outline"
-                                  size={16}
-                                  color={COLORS.white}
-                                />
+                              )}
+                              <View style={styles.paymentActionsRow}>
+                                {!resolvedOwnerBusiness?.stripeAccountId ? (
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.primaryButton,
+                                      stripeActionStatus.loading &&
+                                        styles.primaryButtonDisabled,
+                                    ]}
+                                    onPress={handleStripeConnect}
+                                    disabled={stripeActionStatus.loading}
+                                  >
+                                    <Text style={styles.primaryButtonText}>
+                                      Connect Stripe
+                                    </Text>
+                                  </TouchableOpacity>
+                                ) : !resolvedOwnerBusiness?.stripePaymentMethodId ? (
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.primaryButton,
+                                      stripeActionStatus.loading &&
+                                        styles.primaryButtonDisabled,
+                                    ]}
+                                    onPress={handleStripePaymentSetup}
+                                    disabled={stripeActionStatus.loading}
+                                  >
+                                    <Text style={styles.primaryButtonText}>
+                                      Add payment method
+                                    </Text>
+                                  </TouchableOpacity>
+                                ) : (
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.primaryButton,
+                                      stripeActionStatus.loading &&
+                                        styles.primaryButtonDisabled,
+                                    ]}
+                                    onPress={handleStripeManage}
+                                    disabled={stripeActionStatus.loading}
+                                  >
+                                    <Text style={styles.primaryButtonText}>
+                                      Billing portal
+                                    </Text>
+                                  </TouchableOpacity>
+                                )}
                               </View>
-                              <View style={styles.offersCtaCopy}>
-                                <Text style={styles.offersCtaTitle}>
-                                  View current offers
+                              {stripeActionStatus.error && (
+                                <Text style={styles.formError}>
+                                  {formatStripeError(stripeActionStatus.error)}
                                 </Text>
-                                <Text style={styles.offersCtaMeta}>
-                                  Manage live and pending campaigns
+                              )}
+                              {stripeActionStatus.success && (
+                                <Text style={styles.formSuccess}>
+                                  {stripeActionStatus.success}
                                 </Text>
-                              </View>
+                              )}
                             </View>
-                            <Ionicons
-                              name="chevron-forward"
-                              size={18}
-                              color={COLORS.white}
-                            />
-                          </TouchableOpacity>
-                        </View>
 
-                        {ownerBusiness && renderCreateOfferCard()}
-
-                        <View style={styles.sectionBlock}>
-                          <View style={styles.sectionTitleRow}>
-                            <Text
-                              style={[
-                                styles.sectionTitleAlt,
-                                styles.sectionTitleTight,
-                              ]}
-                            >
-                              Business info
-                            </Text>
-                            <TouchableOpacity
-                              style={styles.sectionInfoButton}
-                              onPress={() =>
-                                openInfoTooltip(
-                                  "Business info",
-                                  "Update what customers see on your listing. Changes to name, address, category, and offers are reviewed before they go live.",
-                                )
-                              }
-                              hitSlop={{
-                                top: 10,
-                                bottom: 10,
-                                left: 10,
-                                right: 10,
-                              }}
-                            >
-                              <Ionicons
-                                name="information-circle-outline"
-                                size={18}
-                                color={COLORS.muted}
-                              />
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-
-                        {ownerBusiness ? (
-                          <View style={styles.formCard}>
-                            <View style={styles.formHeaderRow}>
-                              <View>
-                                <Text style={styles.formHeaderTitle}>
-                                  {ownerBusiness.name}
-                                </Text>
-                                <Text style={styles.formHeaderMeta}>
-                                  {
-                                    getCategoryConfig(ownerBusiness.categoryKey)
-                                      .display
-                                  }{" "}
-                                </Text>
-                              </View>
+                            <View style={styles.sectionBlock}>
                               <View
                                 style={[
-                                  styles.statusPill,
-                                  ownerBusiness.isOpen
-                                    ? styles.statusApproved
-                                    : styles.statusRejected,
+                                  styles.sectionTitleRow,
+                                  styles.offersSectionTitleRow,
                                 ]}
                               >
-                                <Text style={styles.statusText}>
-                                  {ownerBusiness.isOpen ? "Open" : "Closed"}
-                                </Text>
-                              </View>
-                            </View>
-
-                            {ownerBusiness.pendingEdits && (
-                              <View style={styles.pendingNotice}>
-                                <Text style={styles.pendingNoticeTitle}>
-                                  Changes pending approval
-                                </Text>
-                                <Text style={styles.pendingNoticeBody}>
-                                  Updates to your name, address, category, or
-                                  offer are reviewed before they go live.
-                                </Text>
-                                <View style={styles.pendingList}>
-                                  {Object.keys(ownerBusiness.pendingEdits)
-                                    .filter((field) => field !== "coordinate")
-                                    .map((field) => (
-                                      <View
-                                        key={field}
-                                        style={styles.pendingPill}
-                                      >
-                                        <Text style={styles.pendingPillText}>
-                                          {getPendingEditLabel(field)}
-                                        </Text>
-                                      </View>
-                                    ))}
-                                </View>
-                              </View>
-                            )}
-
-                            {!isEditingBusiness && (
-                              <View style={styles.editGate}>
-                                <Text style={styles.editGateText}>
-                                  Request an edit to unlock your business info.
-                                  Name, address, category, and offer changes are
-                                  reviewed before they go live.
+                                <Text
+                                  style={[
+                                    styles.sectionTitleAlt,
+                                    styles.sectionTitleTight,
+                                  ]}
+                                >
+                                  Offers
                                 </Text>
                                 <TouchableOpacity
-                                  style={[
-                                    styles.primaryButton,
-                                    !canRequestEdits &&
-                                      styles.primaryButtonDisabled,
-                                  ]}
-                                  onPress={() => {
-                                    if (!canRequestEdits) return;
-                                    setIsEditingBusiness(true);
-                                    setFormMessage(null);
+                                  style={styles.sectionInfoButton}
+                                  onPress={() =>
+                                    openInfoTooltip(
+                                      "Offers",
+                                      "Create and manage offers customers see on Discover. Redemption limits apply per customer.",
+                                    )
+                                  }
+                                  hitSlop={{
+                                    top: 10,
+                                    bottom: 10,
+                                    left: 10,
+                                    right: 10,
                                   }}
-                                  disabled={!canRequestEdits}
                                 >
-                                  <Text style={styles.primaryButtonText}>
-                                    Request edit
-                                  </Text>
+                                  <Ionicons
+                                    name="information-circle-outline"
+                                    size={18}
+                                    color={COLORS.muted}
+                                  />
                                 </TouchableOpacity>
                               </View>
-                            )}
-                            {isEditingBusiness && (
-                              <View style={styles.editGateActive}>
-                                <Text style={styles.editGateActiveText}>
-                                  You're in edit mode. Submit changes for
-                                  review.
-                                </Text>
-                              </View>
-                            )}
-
-                            <Text style={styles.formLabel}>Business name</Text>
-                            <AutoFocusInput
-                              style={[
-                                styles.formInput,
-                                !canEditBusiness && styles.formInputDisabled,
-                              ]}
-                              placeholder="Company name"
-                              placeholderTextColor={COLORS.muted}
-                              value={formData.name}
-                              editable={canEditBusiness}
-                              onChangeText={(value) =>
-                                handleFormChange("name", value)
-                              }
-                            />
-
-                            <Text style={styles.formLabel}>
-                              Business address
-                            </Text>
-                            <AutoFocusInput
-                              style={[
-                                styles.formInput,
-                                !canEditBusiness && styles.formInputDisabled,
-                              ]}
-                              placeholder="Start typing an address"
-                              placeholderTextColor={COLORS.muted}
-                              value={formData.address}
-                              editable={canEditBusiness}
-                              onChangeText={handleAddressChange}
-                            />
-                            {!GOOGLE_PLACES_KEY && canEditBusiness && (
-                              <Text style={styles.formHint}>
-                                Add your Google Places key in `.env` to enable
-                                address autocomplete.
-                              </Text>
-                            )}
-                            {addressLoading && canEditBusiness && (
-                              <Text style={styles.formHint}>
-                                Searching addresses...
-                              </Text>
-                            )}
-                            {addressError && canEditBusiness && (
-                              <Text style={styles.formError}>
-                                {addressError}
-                              </Text>
-                            )}
-                            {canEditBusiness && addressResults.length > 0 && (
-                              <View style={styles.suggestionList}>
-                                {addressResults.map((result) => (
-                                  <TouchableOpacity
-                                    key={result.place_id}
-                                    style={styles.suggestionItem}
-                                    onPress={() =>
-                                      handleSelectSuggestion(result)
-                                    }
-                                  >
-                                    <Text style={styles.suggestionTitle}>
-                                      {result.structured_formatting
-                                        ?.main_text || result.description}
-                                    </Text>
-                                    {result.structured_formatting
-                                      ?.secondary_text && (
-                                      <Text style={styles.suggestionSubtitle}>
-                                        {
-                                          result.structured_formatting
-                                            .secondary_text
-                                        }
-                                      </Text>
-                                    )}
-                                  </TouchableOpacity>
-                                ))}
-                              </View>
-                            )}
-
-                            <View style={styles.formRow}>
-                              <View style={styles.formField}>
-                                <Text style={styles.formLabel}>City</Text>
-                                <AutoFocusInput
-                                  style={[
-                                    styles.formInput,
-                                    !canEditBusiness &&
-                                      styles.formInputDisabled,
-                                  ]}
-                                  placeholder="City"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={formData.city}
-                                  editable={canEditBusiness}
-                                  onChangeText={(value) =>
-                                    handleFormChange("city", value)
-                                  }
-                                />
-                              </View>
-                              <View style={styles.formField}>
-                                <Text style={styles.formLabel}>State</Text>
-                                <AutoFocusInput
-                                  style={[
-                                    styles.formInput,
-                                    !canEditBusiness &&
-                                      styles.formInputDisabled,
-                                  ]}
-                                  placeholder="State (e.g., OH)"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={formData.state}
-                                  editable={canEditBusiness}
-                                  onChangeText={(value) =>
-                                    handleFormChange("state", value)
-                                  }
-                                />
-                              </View>
-                              <View style={styles.formField}>
-                                <Text style={styles.formLabel}>Zip code</Text>
-                                <AutoFocusInput
-                                  style={[
-                                    styles.formInput,
-                                    !canEditBusiness &&
-                                      styles.formInputDisabled,
-                                  ]}
-                                  placeholder="ZIP code"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={formData.postalCode}
-                                  editable={canEditBusiness}
-                                  onChangeText={(value) =>
-                                    handleFormChange("postalCode", value)
-                                  }
-                                  keyboardType="number-pad"
-                                />
-                              </View>
-                            </View>
-
-                            <Text style={styles.formLabel}>Category</Text>
-                            <View style={styles.categoryRow}>
-                              {CATEGORY_OPTIONS.map((option) => {
-                                const isActive =
-                                  formData.categoryKey === option.key;
-                                return (
-                                  <TouchableOpacity
-                                    key={option.key}
-                                    style={[
-                                      styles.categoryChip,
-                                      isActive && styles.categoryChipActive,
-                                      !canEditBusiness &&
-                                        styles.categoryChipDisabled,
-                                    ]}
-                                    disabled={!canEditBusiness}
-                                    onPress={() =>
-                                      handleFormChange(
-                                        "categoryKey",
-                                        option.key,
-                                      )
-                                    }
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.categoryChipText,
-                                        isActive &&
-                                          styles.categoryChipTextActive,
-                                        !canEditBusiness &&
-                                          styles.categoryChipTextDisabled,
-                                      ]}
-                                    >
-                                      {option.label}
-                                    </Text>
-                                  </TouchableOpacity>
-                                );
-                              })}
-                            </View>
-
-                            <Text style={styles.formLabel}>
-                              Operating days
-                            </Text>
-                            <View
-                              style={[
-                                styles.operatingDaysRow,
-                                !canEditBusiness && styles.operatingDaysRowDisabled,
-                              ]}
-                            >
-                              {OPERATING_DAY_OPTIONS.map((day) => {
-                                const selected = parseOperatingDaysValue(
-                                  editHoursDays,
-                                ).includes(day.key);
-                                return (
-                                  <TouchableOpacity
-                                    key={`edit-day-${day.key}`}
-                                    style={[
-                                      styles.operatingDayChip,
-                                      selected && styles.operatingDayChipActive,
-                                      !canEditBusiness &&
-                                        styles.operatingDayChipDisabled,
-                                    ]}
-                                    disabled={!canEditBusiness}
-                                    onPress={() =>
-                                      setEditHoursDays((prev) =>
-                                        toggleOperatingDayValue(prev, day.key),
-                                      )
-                                    }
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.operatingDayChipText,
-                                        selected &&
-                                          styles.operatingDayChipTextActive,
-                                      ]}
-                                    >
-                                      {day.label}
-                                    </Text>
-                                  </TouchableOpacity>
-                                );
-                              })}
-                            </View>
-                            <Text style={styles.formHint}>
-                              Selected: {formatOperatingDaysValue(editHoursDays)}
-                            </Text>
-
-                            <Text style={styles.formLabel}>
-                              Operating hours
-                            </Text>
-                            <View style={styles.timeRow}>
-                              <View style={styles.timeBlock}>
-                                <Text style={styles.timeLabel}>Start</Text>
-                                <View style={styles.timeInputRow}>
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.timeSelect,
-                                      !canEditBusiness &&
-                                        styles.timeSelectDisabled,
-                                    ]}
-                                    onPress={() => openTimePicker("editStart")}
-                                    disabled={!canEditBusiness}
-                                  >
-                                    <Text style={styles.timeSelectText}>
-                                      {editHoursStart ||
-                                        (IS_COMPACT ? "Select" : "Select time")}
-                                    </Text>
-                                    <Ionicons
-                                      name="chevron-down"
-                                      size={16}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                  <View style={styles.timeMeridiem}>
-                                    {["AM", "PM"].map((label) => {
-                                      const isActive =
-                                        editHoursStartMeridiem === label;
-                                      return (
-                                        <TouchableOpacity
-                                          key={label}
-                                          style={[
-                                            styles.timeMeridiemPill,
-                                            isActive &&
-                                              styles.timeMeridiemPillActive,
-                                            !canEditBusiness &&
-                                              styles.timeMeridiemPillDisabled,
-                                          ]}
-                                          onPress={() =>
-                                            setEditHoursStartMeridiem(label)
-                                          }
-                                          disabled={!canEditBusiness}
-                                        >
-                                          <Text
-                                            style={[
-                                              styles.timeMeridiemText,
-                                              isActive &&
-                                                styles.timeMeridiemTextActive,
-                                              !canEditBusiness &&
-                                                styles.timeMeridiemTextDisabled,
-                                            ]}
-                                          >
-                                            {label}
-                                          </Text>
-                                        </TouchableOpacity>
-                                      );
-                                    })}
-                                  </View>
-                                </View>
-                              </View>
-                              <View style={styles.timeBlock}>
-                                <Text style={styles.timeLabel}>End</Text>
-                                <View style={styles.timeInputRow}>
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.timeSelect,
-                                      !canEditBusiness &&
-                                        styles.timeSelectDisabled,
-                                    ]}
-                                    onPress={() => openTimePicker("editEnd")}
-                                    disabled={!canEditBusiness}
-                                  >
-                                    <Text style={styles.timeSelectText}>
-                                      {editHoursEnd ||
-                                        (IS_COMPACT ? "Select" : "Select time")}
-                                    </Text>
-                                    <Ionicons
-                                      name="chevron-down"
-                                      size={16}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                  <View style={styles.timeMeridiem}>
-                                    {["AM", "PM"].map((label) => {
-                                      const isActive =
-                                        editHoursEndMeridiem === label;
-                                      return (
-                                        <TouchableOpacity
-                                          key={label}
-                                          style={[
-                                            styles.timeMeridiemPill,
-                                            isActive &&
-                                              styles.timeMeridiemPillActive,
-                                            !canEditBusiness &&
-                                              styles.timeMeridiemPillDisabled,
-                                          ]}
-                                          onPress={() =>
-                                            setEditHoursEndMeridiem(label)
-                                          }
-                                          disabled={!canEditBusiness}
-                                        >
-                                          <Text
-                                            style={[
-                                              styles.timeMeridiemText,
-                                              isActive &&
-                                                styles.timeMeridiemTextActive,
-                                              !canEditBusiness &&
-                                                styles.timeMeridiemTextDisabled,
-                                            ]}
-                                          >
-                                            {label}
-                                          </Text>
-                                        </TouchableOpacity>
-                                      );
-                                    })}
-                                  </View>
-                                </View>
-                              </View>
-                            </View>
-
-                            <Text style={styles.formLabel}>
-                              Descriptor aliases (optional)
-                            </Text>
-                            <AutoFocusInput
-                              style={[
-                                styles.formInput,
-                                styles.descriptorInput,
-                                !canEditTags && styles.formInputDisabled,
-                              ]}
-                              placeholder="One per line (example: SQ * YOUR BUSINESS)"
-                              placeholderTextColor={COLORS.muted}
-                              value={formData.merchantDescriptorAliases}
-                              editable={canEditTags}
-                              onChangeText={(value) =>
-                                handleFormChange("merchantDescriptorAliases", value)
-                              }
-                              multiline
-                              textAlignVertical="top"
-                            />
-                            <Text style={styles.formHint}>
-                              Optional: helps improve automatic bank verification.
-                            </Text>
-
-                            <Text style={styles.formLabel}>Tags</Text>
-                            <View
-                              style={[
-                                styles.tagOptionRow,
-                                !canEditTags && styles.tagOptionRowDisabled,
-                              ]}
-                            >
-                              {TAG_OPTIONS.map((option) => {
-                                const isActive = selectedBusinessTags.has(
-                                  option.value,
-                                );
-                                return (
-                                  <TouchableOpacity
-                                    key={option.value}
-                                    style={[
-                                      styles.tagOptionPill,
-                                      isActive && styles.tagOptionPillActive,
-                                      !canEditTags &&
-                                        styles.tagOptionPillDisabled,
-                                    ]}
-                                    disabled={!canEditTags}
-                                    onPress={() => {
-                                      if (!canEditTags) return;
-                                      const next = new Set(
-                                        selectedBusinessTags,
-                                      );
-                                      if (next.has(option.value)) {
-                                        next.delete(option.value);
-                                      } else {
-                                        next.add(option.value);
-                                      }
-                                      handleFormChange(
-                                        "tags",
-                                        Array.from(next).join(", "),
-                                      );
-                                    }}
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.tagOptionText,
-                                        isActive && styles.tagOptionTextActive,
-                                      ]}
-                                    >
-                                      {option.label}
-                                    </Text>
-                                  </TouchableOpacity>
-                                );
-                              })}
-                            </View>
-                            <View style={styles.tagActionsRow}>
-                              <Text style={[styles.formHint, styles.tagActionsHint]}>
-                                Tags and descriptor aliases save instantly.
-                              </Text>
                               <TouchableOpacity
-                                style={[
-                                  styles.tagSaveButton,
-                                  (!tagsDirty || tagSaveStatus.saving) &&
-                                    styles.tagSaveButtonDisabled,
-                                ]}
-                                onPress={handleSaveTags}
-                                disabled={!tagsDirty || tagSaveStatus.saving}
+                                style={styles.offersCtaButton}
+                                onPress={() => setOwnerOffersModalOpen(true)}
+                                activeOpacity={0.9}
                               >
-                                <Text style={styles.tagSaveButtonText}>
-                                  {tagSaveStatus.saving
-                                    ? "Saving..."
-                                    : "Save details"}
-                                </Text>
+                                <View style={styles.offersCtaLeft}>
+                                  <View style={styles.offersCtaIconWrap}>
+                                    <Ionicons
+                                      name="sparkles-outline"
+                                      size={16}
+                                      color={COLORS.white}
+                                    />
+                                  </View>
+                                  <View style={styles.offersCtaCopy}>
+                                    <Text style={styles.offersCtaTitle}>
+                                      View current offers
+                                    </Text>
+                                    <Text style={styles.offersCtaMeta}>
+                                      Manage live and pending campaigns
+                                    </Text>
+                                  </View>
+                                </View>
+                                <Ionicons
+                                  name="chevron-forward"
+                                  size={18}
+                                  color={COLORS.white}
+                                />
                               </TouchableOpacity>
                             </View>
-                            {tagSaveStatus.error && (
-                              <Text style={styles.formError}>
-                                {tagSaveStatus.error}
-                              </Text>
-                            )}
-                            {tagSaveStatus.success && (
-                              <Text style={styles.formHint}>
-                                {tagSaveStatus.success}
-                              </Text>
-                            )}
 
-                            {isEditingBusiness && (
-                              <View style={styles.formActions}>
-                                <TouchableOpacity
+                            {ownerBusiness && renderCreateOfferCard()}
+
+                            <View style={styles.sectionBlock}>
+                              <View style={styles.sectionTitleRow}>
+                                <Text
                                   style={[
-                                    styles.primaryButton,
-                                    businessSaveBusy &&
-                                      styles.primaryButtonDisabled,
+                                    styles.sectionTitleAlt,
+                                    styles.sectionTitleTight,
                                   ]}
-                                  onPress={handleSaveBusiness}
-                                  disabled={businessSaveBusy}
                                 >
-                                  <Text style={styles.primaryButtonText}>
-                                    {businessSaveBusy
-                                      ? "Submitting..."
-                                      : "Submit for review"}
-                                  </Text>
-                                </TouchableOpacity>
+                                  Business info
+                                </Text>
                                 <TouchableOpacity
-                                  style={styles.secondaryButton}
-                                  onPress={() => {
-                                    if (ownerBusiness) {
-                                      setFormData(
-                                        buildFormFromBusiness(ownerBusiness),
-                                      );
-                                    }
-                                    setFormMessage(null);
-                                    setIsEditingBusiness(false);
+                                  style={styles.sectionInfoButton}
+                                  onPress={() =>
+                                    openInfoTooltip(
+                                      "Business info",
+                                      "Update what customers see on your listing. Changes to name, address, category, and offers are reviewed before they go live.",
+                                    )
+                                  }
+                                  hitSlop={{
+                                    top: 10,
+                                    bottom: 10,
+                                    left: 10,
+                                    right: 10,
                                   }}
                                 >
-                                  <Text style={styles.secondaryButtonText}>
-                                    Cancel
-                                  </Text>
+                                  <Ionicons
+                                    name="information-circle-outline"
+                                    size={18}
+                                    color={COLORS.muted}
+                                  />
                                 </TouchableOpacity>
-                              </View>
-                            )}
-                          </View>
-                        ) : (
-                          <View style={styles.formCard}>
-                            <Text style={styles.formHeaderTitle}>
-                              Create your business profile
-                            </Text>
-                            <Text style={styles.formHeaderMeta}>
-                              Add your listing details. You can edit them later
-                              if needed.
-                            </Text>
-
-                            <Text style={styles.formLabel}>Business name</Text>
-                            <AutoFocusInput
-                              style={styles.formInput}
-                              placeholder="Company name"
-                              placeholderTextColor={COLORS.muted}
-                              value={createBusinessForm.name}
-                              onChangeText={(value) =>
-                                setCreateBusinessForm((prev) => ({
-                                  ...prev,
-                                  name: value,
-                                }))
-                              }
-                            />
-
-                            <Text style={styles.formLabel}>
-                              Business address
-                            </Text>
-                            <AutoFocusInput
-                              style={styles.formInput}
-                              placeholder="Street address"
-                              placeholderTextColor={COLORS.muted}
-                              value={createBusinessForm.address}
-                              onChangeText={handleCreateAddressChange}
-                            />
-                            {!GOOGLE_PLACES_KEY && (
-                              <Text style={styles.formHint}>
-                                Add your Google Places key in `.env` to enable
-                                address autocomplete.
-                              </Text>
-                            )}
-                            {createAddressLoading && (
-                              <Text style={styles.formHint}>
-                                Searching addresses...
-                              </Text>
-                            )}
-                            {createAddressError && (
-                              <Text style={styles.formError}>
-                                {createAddressError}
-                              </Text>
-                            )}
-                            {createAddressResults.length > 0 && (
-                              <View style={styles.suggestionList}>
-                                {createAddressResults.map((result) => (
-                                  <TouchableOpacity
-                                    key={result.place_id}
-                                    style={styles.suggestionItem}
-                                    onPress={() =>
-                                      handleSelectCreateSuggestion(result)
-                                    }
-                                  >
-                                    <Text style={styles.suggestionTitle}>
-                                      {result.structured_formatting
-                                        ?.main_text || result.description}
-                                    </Text>
-                                    {result.structured_formatting
-                                      ?.secondary_text && (
-                                      <Text style={styles.suggestionSubtitle}>
-                                        {
-                                          result.structured_formatting
-                                            .secondary_text
-                                        }
-                                      </Text>
-                                    )}
-                                  </TouchableOpacity>
-                                ))}
-                              </View>
-                            )}
-
-                            <View style={styles.formRow}>
-                              <View style={styles.formField}>
-                                <Text style={styles.formLabel}>City</Text>
-                                <AutoFocusInput
-                                  style={styles.formInput}
-                                  placeholder="City"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={createBusinessForm.city}
-                                  onChangeText={(value) =>
-                                    setCreateBusinessForm((prev) => ({
-                                      ...prev,
-                                      city: value,
-                                    }))
-                                  }
-                                />
-                              </View>
-                              <View style={styles.formField}>
-                                <Text style={styles.formLabel}>State</Text>
-                                <AutoFocusInput
-                                  style={styles.formInput}
-                                  placeholder="State (e.g., OH)"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={createBusinessForm.state}
-                                  onChangeText={(value) =>
-                                    setCreateBusinessForm((prev) => ({
-                                      ...prev,
-                                      state: value,
-                                    }))
-                                  }
-                                />
-                              </View>
-                              <View style={styles.formField}>
-                                <Text style={styles.formLabel}>Zip code</Text>
-                                <AutoFocusInput
-                                  style={styles.formInput}
-                                  placeholder="ZIP code"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={createBusinessForm.postalCode}
-                                  onChangeText={(value) =>
-                                    setCreateBusinessForm((prev) => ({
-                                      ...prev,
-                                      postalCode: value,
-                                    }))
-                                  }
-                                  keyboardType="number-pad"
-                                />
                               </View>
                             </View>
 
-                            <Text style={styles.formLabel}>Category</Text>
-                            <TouchableOpacity
-                              style={[styles.formInput, styles.selectInput]}
-                              onPress={() =>
-                                setCreateBusinessCategoryMenuOpen(
-                                  (prev) => !prev,
-                                )
-                              }
-                              activeOpacity={0.8}
-                            >
-                              <Text style={styles.selectInputText}>
-                                {getCategoryPickerLabel(
-                                  createBusinessForm.categoryKey,
-                                  createBusinessForm.categoryCustomLabel,
+                            {ownerBusiness ? (
+                              <View style={styles.formCard}>
+                                <View style={styles.formHeaderRow}>
+                                  <View>
+                                    <Text style={styles.formHeaderTitle}>
+                                      {ownerBusiness.name}
+                                    </Text>
+                                    <Text style={styles.formHeaderMeta}>
+                                      {
+                                        getCategoryConfig(
+                                          ownerBusiness.categoryKey,
+                                        ).display
+                                      }{" "}
+                                    </Text>
+                                  </View>
+                                  <View
+                                    style={[
+                                      styles.statusPill,
+                                      ownerBusiness.isOpen
+                                        ? styles.statusApproved
+                                        : styles.statusRejected,
+                                    ]}
+                                  >
+                                    <Text style={styles.statusText}>
+                                      {ownerBusiness.isOpen ? "Open" : "Closed"}
+                                    </Text>
+                                  </View>
+                                </View>
+
+                                {ownerBusiness.pendingEdits && (
+                                  <View style={styles.pendingNotice}>
+                                    <Text style={styles.pendingNoticeTitle}>
+                                      Changes pending approval
+                                    </Text>
+                                    <Text style={styles.pendingNoticeBody}>
+                                      Updates to your name, address, category,
+                                      or offer are reviewed before they go live.
+                                    </Text>
+                                    <View style={styles.pendingList}>
+                                      {Object.keys(ownerBusiness.pendingEdits)
+                                        .filter(
+                                          (field) => field !== "coordinate",
+                                        )
+                                        .map((field) => (
+                                          <View
+                                            key={field}
+                                            style={styles.pendingPill}
+                                          >
+                                            <Text
+                                              style={styles.pendingPillText}
+                                            >
+                                              {getPendingEditLabel(field)}
+                                            </Text>
+                                          </View>
+                                        ))}
+                                    </View>
+                                  </View>
                                 )}
-                              </Text>
-                              <Ionicons
-                                name={
-                                  createBusinessCategoryMenuOpen
-                                    ? "chevron-up"
-                                    : "chevron-down"
-                                }
-                                size={16}
-                                color={COLORS.muted}
-                              />
-                            </TouchableOpacity>
-                            {createBusinessCategoryMenuOpen && (
-                              <View style={styles.selectMenu}>
-                                {CATEGORY_OPTIONS_WITH_OTHER.map((option) => {
-                                  const isActive =
-                                    createBusinessForm.categoryKey ===
-                                    option.key;
-                                  return (
+
+                                {!isEditingBusiness && (
+                                  <View style={styles.editGate}>
+                                    <Text style={styles.editGateText}>
+                                      Request an edit to unlock your business
+                                      info. Name, address, category, and offer
+                                      changes are reviewed before they go live.
+                                    </Text>
                                     <TouchableOpacity
-                                      key={option.key}
                                       style={[
-                                        styles.selectMenuOption,
-                                        isActive &&
-                                          styles.selectMenuOptionActive,
+                                        styles.primaryButton,
+                                        !canRequestEdits &&
+                                          styles.primaryButtonDisabled,
                                       ]}
                                       onPress={() => {
-                                        setCreateBusinessForm((prev) => ({
-                                          ...prev,
-                                          categoryKey: option.key,
-                                          categoryCustomLabel:
-                                            option.key === CATEGORY_OTHER_KEY
-                                              ? prev.categoryCustomLabel
-                                              : "",
-                                        }));
-                                        setCreateBusinessCategoryMenuOpen(
-                                          false,
-                                        );
+                                        if (!canRequestEdits) return;
+                                        setIsEditingBusiness(true);
+                                        setFormMessage(null);
                                       }}
+                                      disabled={!canRequestEdits}
                                     >
-                                      <Text
-                                        style={[
-                                          styles.selectMenuOptionText,
-                                          isActive &&
-                                            styles.selectMenuOptionTextActive,
-                                        ]}
-                                      >
-                                        {option.label}
+                                      <Text style={styles.primaryButtonText}>
+                                        Request edit
                                       </Text>
                                     </TouchableOpacity>
-                                  );
-                                })}
-                              </View>
-                            )}
-                            {createBusinessForm.categoryKey ===
-                              CATEGORY_OTHER_KEY && (
-                              <>
+                                  </View>
+                                )}
+                                {isEditingBusiness && (
+                                  <View style={styles.editGateActive}>
+                                    <Text style={styles.editGateActiveText}>
+                                      You're in edit mode. Submit changes for
+                                      review.
+                                    </Text>
+                                  </View>
+                                )}
+
                                 <Text style={styles.formLabel}>
-                                  Custom category
+                                  Business name
+                                </Text>
+                                <AutoFocusInput
+                                  style={[
+                                    styles.formInput,
+                                    !canEditBusiness &&
+                                      styles.formInputDisabled,
+                                  ]}
+                                  placeholder="Company name"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={formData.name}
+                                  editable={canEditBusiness}
+                                  onChangeText={(value) =>
+                                    handleFormChange("name", value)
+                                  }
+                                />
+
+                                <Text style={styles.formLabel}>
+                                  Business address
+                                </Text>
+                                <AutoFocusInput
+                                  style={[
+                                    styles.formInput,
+                                    !canEditBusiness &&
+                                      styles.formInputDisabled,
+                                  ]}
+                                  placeholder="Start typing an address"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={formData.address}
+                                  editable={canEditBusiness}
+                                  onChangeText={handleAddressChange}
+                                />
+                                {!GOOGLE_PLACES_KEY && canEditBusiness && (
+                                  <Text style={styles.formHint}>
+                                    Add your Google Places key in `.env` to
+                                    enable address autocomplete.
+                                  </Text>
+                                )}
+                                {addressLoading && canEditBusiness && (
+                                  <Text style={styles.formHint}>
+                                    Searching addresses...
+                                  </Text>
+                                )}
+                                {addressError && canEditBusiness && (
+                                  <Text style={styles.formError}>
+                                    {addressError}
+                                  </Text>
+                                )}
+                                {canEditBusiness &&
+                                  addressResults.length > 0 && (
+                                    <View style={styles.suggestionList}>
+                                      {addressResults.map((result) => (
+                                        <TouchableOpacity
+                                          key={result.place_id}
+                                          style={styles.suggestionItem}
+                                          onPress={() =>
+                                            handleSelectSuggestion(result)
+                                          }
+                                        >
+                                          <Text style={styles.suggestionTitle}>
+                                            {result.structured_formatting
+                                              ?.main_text || result.description}
+                                          </Text>
+                                          {result.structured_formatting
+                                            ?.secondary_text && (
+                                            <Text
+                                              style={styles.suggestionSubtitle}
+                                            >
+                                              {
+                                                result.structured_formatting
+                                                  .secondary_text
+                                              }
+                                            </Text>
+                                          )}
+                                        </TouchableOpacity>
+                                      ))}
+                                    </View>
+                                  )}
+
+                                <View style={styles.formRow}>
+                                  <View style={styles.formField}>
+                                    <Text style={styles.formLabel}>City</Text>
+                                    <AutoFocusInput
+                                      style={[
+                                        styles.formInput,
+                                        !canEditBusiness &&
+                                          styles.formInputDisabled,
+                                      ]}
+                                      placeholder="City"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={formData.city}
+                                      editable={canEditBusiness}
+                                      onChangeText={(value) =>
+                                        handleFormChange("city", value)
+                                      }
+                                    />
+                                  </View>
+                                  <View style={styles.formField}>
+                                    <Text style={styles.formLabel}>State</Text>
+                                    <AutoFocusInput
+                                      style={[
+                                        styles.formInput,
+                                        !canEditBusiness &&
+                                          styles.formInputDisabled,
+                                      ]}
+                                      placeholder="State (e.g., OH)"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={formData.state}
+                                      editable={canEditBusiness}
+                                      onChangeText={(value) =>
+                                        handleFormChange("state", value)
+                                      }
+                                    />
+                                  </View>
+                                  <View style={styles.formField}>
+                                    <Text style={styles.formLabel}>
+                                      Zip code
+                                    </Text>
+                                    <AutoFocusInput
+                                      style={[
+                                        styles.formInput,
+                                        !canEditBusiness &&
+                                          styles.formInputDisabled,
+                                      ]}
+                                      placeholder="ZIP code"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={formData.postalCode}
+                                      editable={canEditBusiness}
+                                      onChangeText={(value) =>
+                                        handleFormChange("postalCode", value)
+                                      }
+                                      keyboardType="number-pad"
+                                    />
+                                  </View>
+                                </View>
+
+                                <Text style={styles.formLabel}>Category</Text>
+                                <View style={styles.categoryRow}>
+                                  {CATEGORY_OPTIONS.map((option) => {
+                                    const isActive =
+                                      formData.categoryKey === option.key;
+                                    return (
+                                      <TouchableOpacity
+                                        key={option.key}
+                                        style={[
+                                          styles.categoryChip,
+                                          isActive && styles.categoryChipActive,
+                                          !canEditBusiness &&
+                                            styles.categoryChipDisabled,
+                                        ]}
+                                        disabled={!canEditBusiness}
+                                        onPress={() =>
+                                          handleFormChange(
+                                            "categoryKey",
+                                            option.key,
+                                          )
+                                        }
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.categoryChipText,
+                                            isActive &&
+                                              styles.categoryChipTextActive,
+                                            !canEditBusiness &&
+                                              styles.categoryChipTextDisabled,
+                                          ]}
+                                        >
+                                          {option.label}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    );
+                                  })}
+                                </View>
+
+                                <Text style={styles.formLabel}>
+                                  Operating days
+                                </Text>
+                                <View
+                                  style={[
+                                    styles.operatingDaysRow,
+                                    !canEditBusiness &&
+                                      styles.operatingDaysRowDisabled,
+                                  ]}
+                                >
+                                  {OPERATING_DAY_OPTIONS.map((day) => {
+                                    const selected = parseOperatingDaysValue(
+                                      editHoursDays,
+                                    ).includes(day.key);
+                                    return (
+                                      <TouchableOpacity
+                                        key={`edit-day-${day.key}`}
+                                        style={[
+                                          styles.operatingDayChip,
+                                          selected &&
+                                            styles.operatingDayChipActive,
+                                          !canEditBusiness &&
+                                            styles.operatingDayChipDisabled,
+                                        ]}
+                                        disabled={!canEditBusiness}
+                                        onPress={() =>
+                                          setEditHoursDays((prev) =>
+                                            toggleOperatingDayValue(
+                                              prev,
+                                              day.key,
+                                            ),
+                                          )
+                                        }
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.operatingDayChipText,
+                                            selected &&
+                                              styles.operatingDayChipTextActive,
+                                          ]}
+                                        >
+                                          {day.label}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    );
+                                  })}
+                                </View>
+                                <Text style={styles.formHint}>
+                                  Selected:{" "}
+                                  {formatOperatingDaysValue(editHoursDays)}
+                                </Text>
+
+                                <Text style={styles.formLabel}>
+                                  Operating hours
+                                </Text>
+                                <View style={styles.timeRow}>
+                                  <View style={styles.timeBlock}>
+                                    <Text style={styles.timeLabel}>Start</Text>
+                                    <View style={styles.timeInputRow}>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.timeSelect,
+                                          !canEditBusiness &&
+                                            styles.timeSelectDisabled,
+                                        ]}
+                                        onPress={() =>
+                                          openTimePicker("editStart")
+                                        }
+                                        disabled={!canEditBusiness}
+                                      >
+                                        <Text style={styles.timeSelectText}>
+                                          {editHoursStart ||
+                                            (IS_COMPACT
+                                              ? "Select"
+                                              : "Select time")}
+                                        </Text>
+                                        <Ionicons
+                                          name="chevron-down"
+                                          size={16}
+                                          color={COLORS.muted}
+                                        />
+                                      </TouchableOpacity>
+                                      <View style={styles.timeMeridiem}>
+                                        {["AM", "PM"].map((label) => {
+                                          const isActive =
+                                            editHoursStartMeridiem === label;
+                                          return (
+                                            <TouchableOpacity
+                                              key={label}
+                                              style={[
+                                                styles.timeMeridiemPill,
+                                                isActive &&
+                                                  styles.timeMeridiemPillActive,
+                                                !canEditBusiness &&
+                                                  styles.timeMeridiemPillDisabled,
+                                              ]}
+                                              onPress={() =>
+                                                setEditHoursStartMeridiem(label)
+                                              }
+                                              disabled={!canEditBusiness}
+                                            >
+                                              <Text
+                                                style={[
+                                                  styles.timeMeridiemText,
+                                                  isActive &&
+                                                    styles.timeMeridiemTextActive,
+                                                  !canEditBusiness &&
+                                                    styles.timeMeridiemTextDisabled,
+                                                ]}
+                                              >
+                                                {label}
+                                              </Text>
+                                            </TouchableOpacity>
+                                          );
+                                        })}
+                                      </View>
+                                    </View>
+                                  </View>
+                                  <View style={styles.timeBlock}>
+                                    <Text style={styles.timeLabel}>End</Text>
+                                    <View style={styles.timeInputRow}>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.timeSelect,
+                                          !canEditBusiness &&
+                                            styles.timeSelectDisabled,
+                                        ]}
+                                        onPress={() =>
+                                          openTimePicker("editEnd")
+                                        }
+                                        disabled={!canEditBusiness}
+                                      >
+                                        <Text style={styles.timeSelectText}>
+                                          {editHoursEnd ||
+                                            (IS_COMPACT
+                                              ? "Select"
+                                              : "Select time")}
+                                        </Text>
+                                        <Ionicons
+                                          name="chevron-down"
+                                          size={16}
+                                          color={COLORS.muted}
+                                        />
+                                      </TouchableOpacity>
+                                      <View style={styles.timeMeridiem}>
+                                        {["AM", "PM"].map((label) => {
+                                          const isActive =
+                                            editHoursEndMeridiem === label;
+                                          return (
+                                            <TouchableOpacity
+                                              key={label}
+                                              style={[
+                                                styles.timeMeridiemPill,
+                                                isActive &&
+                                                  styles.timeMeridiemPillActive,
+                                                !canEditBusiness &&
+                                                  styles.timeMeridiemPillDisabled,
+                                              ]}
+                                              onPress={() =>
+                                                setEditHoursEndMeridiem(label)
+                                              }
+                                              disabled={!canEditBusiness}
+                                            >
+                                              <Text
+                                                style={[
+                                                  styles.timeMeridiemText,
+                                                  isActive &&
+                                                    styles.timeMeridiemTextActive,
+                                                  !canEditBusiness &&
+                                                    styles.timeMeridiemTextDisabled,
+                                                ]}
+                                              >
+                                                {label}
+                                              </Text>
+                                            </TouchableOpacity>
+                                          );
+                                        })}
+                                      </View>
+                                    </View>
+                                  </View>
+                                </View>
+
+                                <Text style={styles.formLabel}>
+                                  Descriptor aliases (optional)
+                                </Text>
+                                <AutoFocusInput
+                                  style={[
+                                    styles.formInput,
+                                    styles.descriptorInput,
+                                    !canEditTags && styles.formInputDisabled,
+                                  ]}
+                                  placeholder="One per line (example: SQ * YOUR BUSINESS)"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={formData.merchantDescriptorAliases}
+                                  editable={canEditTags}
+                                  onChangeText={(value) =>
+                                    handleFormChange(
+                                      "merchantDescriptorAliases",
+                                      value,
+                                    )
+                                  }
+                                  multiline
+                                  textAlignVertical="top"
+                                />
+                                <Text style={styles.formHint}>
+                                  Optional: helps improve automatic bank
+                                  verification.
+                                </Text>
+
+                                <Text style={styles.formLabel}>Tags</Text>
+                                <View
+                                  style={[
+                                    styles.tagOptionRow,
+                                    !canEditTags && styles.tagOptionRowDisabled,
+                                  ]}
+                                >
+                                  {TAG_OPTIONS.map((option) => {
+                                    const isActive = selectedBusinessTags.has(
+                                      option.value,
+                                    );
+                                    return (
+                                      <TouchableOpacity
+                                        key={option.value}
+                                        style={[
+                                          styles.tagOptionPill,
+                                          isActive &&
+                                            styles.tagOptionPillActive,
+                                          !canEditTags &&
+                                            styles.tagOptionPillDisabled,
+                                        ]}
+                                        disabled={!canEditTags}
+                                        onPress={() => {
+                                          if (!canEditTags) return;
+                                          const next = new Set(
+                                            selectedBusinessTags,
+                                          );
+                                          if (next.has(option.value)) {
+                                            next.delete(option.value);
+                                          } else {
+                                            next.add(option.value);
+                                          }
+                                          handleFormChange(
+                                            "tags",
+                                            Array.from(next).join(", "),
+                                          );
+                                        }}
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.tagOptionText,
+                                            isActive &&
+                                              styles.tagOptionTextActive,
+                                          ]}
+                                        >
+                                          {option.label}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    );
+                                  })}
+                                </View>
+                                <View style={styles.tagActionsRow}>
+                                  <Text
+                                    style={[
+                                      styles.formHint,
+                                      styles.tagActionsHint,
+                                    ]}
+                                  >
+                                    Tags and descriptor aliases save instantly.
+                                  </Text>
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.tagSaveButton,
+                                      (!tagsDirty || tagSaveStatus.saving) &&
+                                        styles.tagSaveButtonDisabled,
+                                    ]}
+                                    onPress={handleSaveTags}
+                                    disabled={
+                                      !tagsDirty || tagSaveStatus.saving
+                                    }
+                                  >
+                                    <Text style={styles.tagSaveButtonText}>
+                                      {tagSaveStatus.saving
+                                        ? "Saving..."
+                                        : "Save details"}
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                                {tagSaveStatus.error && (
+                                  <Text style={styles.formError}>
+                                    {tagSaveStatus.error}
+                                  </Text>
+                                )}
+                                {tagSaveStatus.success && (
+                                  <Text style={styles.formHint}>
+                                    {tagSaveStatus.success}
+                                  </Text>
+                                )}
+
+                                {isEditingBusiness && (
+                                  <View style={styles.formActions}>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.primaryButton,
+                                        businessSaveBusy &&
+                                          styles.primaryButtonDisabled,
+                                      ]}
+                                      onPress={handleSaveBusiness}
+                                      disabled={businessSaveBusy}
+                                    >
+                                      <Text style={styles.primaryButtonText}>
+                                        {businessSaveBusy
+                                          ? "Submitting..."
+                                          : "Submit for review"}
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      style={styles.secondaryButton}
+                                      onPress={() => {
+                                        if (ownerBusiness) {
+                                          setFormData(
+                                            buildFormFromBusiness(
+                                              ownerBusiness,
+                                            ),
+                                          );
+                                        }
+                                        setFormMessage(null);
+                                        setIsEditingBusiness(false);
+                                      }}
+                                    >
+                                      <Text style={styles.secondaryButtonText}>
+                                        Cancel
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                )}
+                              </View>
+                            ) : (
+                              <View style={styles.formCard}>
+                                <Text style={styles.formHeaderTitle}>
+                                  Create your business profile
+                                </Text>
+                                <Text style={styles.formHeaderMeta}>
+                                  Add your listing details. You can edit them
+                                  later if needed.
+                                </Text>
+
+                                <Text style={styles.formLabel}>
+                                  Business name
                                 </Text>
                                 <AutoFocusInput
                                   style={styles.formInput}
-                                  placeholder="Enter custom category"
+                                  placeholder="Company name"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={createBusinessForm.name}
+                                  onChangeText={(value) =>
+                                    setCreateBusinessForm((prev) => ({
+                                      ...prev,
+                                      name: value,
+                                    }))
+                                  }
+                                />
+
+                                <Text style={styles.formLabel}>
+                                  Business address
+                                </Text>
+                                <AutoFocusInput
+                                  style={styles.formInput}
+                                  placeholder="Street address"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={createBusinessForm.address}
+                                  onChangeText={handleCreateAddressChange}
+                                />
+                                {!GOOGLE_PLACES_KEY && (
+                                  <Text style={styles.formHint}>
+                                    Add your Google Places key in `.env` to
+                                    enable address autocomplete.
+                                  </Text>
+                                )}
+                                {createAddressLoading && (
+                                  <Text style={styles.formHint}>
+                                    Searching addresses...
+                                  </Text>
+                                )}
+                                {createAddressError && (
+                                  <Text style={styles.formError}>
+                                    {createAddressError}
+                                  </Text>
+                                )}
+                                {createAddressResults.length > 0 && (
+                                  <View style={styles.suggestionList}>
+                                    {createAddressResults.map((result) => (
+                                      <TouchableOpacity
+                                        key={result.place_id}
+                                        style={styles.suggestionItem}
+                                        onPress={() =>
+                                          handleSelectCreateSuggestion(result)
+                                        }
+                                      >
+                                        <Text style={styles.suggestionTitle}>
+                                          {result.structured_formatting
+                                            ?.main_text || result.description}
+                                        </Text>
+                                        {result.structured_formatting
+                                          ?.secondary_text && (
+                                          <Text
+                                            style={styles.suggestionSubtitle}
+                                          >
+                                            {
+                                              result.structured_formatting
+                                                .secondary_text
+                                            }
+                                          </Text>
+                                        )}
+                                      </TouchableOpacity>
+                                    ))}
+                                  </View>
+                                )}
+
+                                <View style={styles.formRow}>
+                                  <View style={styles.formField}>
+                                    <Text style={styles.formLabel}>City</Text>
+                                    <AutoFocusInput
+                                      style={styles.formInput}
+                                      placeholder="City"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={createBusinessForm.city}
+                                      onChangeText={(value) =>
+                                        setCreateBusinessForm((prev) => ({
+                                          ...prev,
+                                          city: value,
+                                        }))
+                                      }
+                                    />
+                                  </View>
+                                  <View style={styles.formField}>
+                                    <Text style={styles.formLabel}>State</Text>
+                                    <AutoFocusInput
+                                      style={styles.formInput}
+                                      placeholder="State (e.g., OH)"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={createBusinessForm.state}
+                                      onChangeText={(value) =>
+                                        setCreateBusinessForm((prev) => ({
+                                          ...prev,
+                                          state: value,
+                                        }))
+                                      }
+                                    />
+                                  </View>
+                                  <View style={styles.formField}>
+                                    <Text style={styles.formLabel}>
+                                      Zip code
+                                    </Text>
+                                    <AutoFocusInput
+                                      style={styles.formInput}
+                                      placeholder="ZIP code"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={createBusinessForm.postalCode}
+                                      onChangeText={(value) =>
+                                        setCreateBusinessForm((prev) => ({
+                                          ...prev,
+                                          postalCode: value,
+                                        }))
+                                      }
+                                      keyboardType="number-pad"
+                                    />
+                                  </View>
+                                </View>
+
+                                <Text style={styles.formLabel}>Category</Text>
+                                <TouchableOpacity
+                                  style={[styles.formInput, styles.selectInput]}
+                                  onPress={() =>
+                                    setCreateBusinessCategoryMenuOpen(
+                                      (prev) => !prev,
+                                    )
+                                  }
+                                  activeOpacity={0.8}
+                                >
+                                  <Text style={styles.selectInputText}>
+                                    {getCategoryPickerLabel(
+                                      createBusinessForm.categoryKey,
+                                      createBusinessForm.categoryCustomLabel,
+                                    )}
+                                  </Text>
+                                  <Ionicons
+                                    name={
+                                      createBusinessCategoryMenuOpen
+                                        ? "chevron-up"
+                                        : "chevron-down"
+                                    }
+                                    size={16}
+                                    color={COLORS.muted}
+                                  />
+                                </TouchableOpacity>
+                                {createBusinessCategoryMenuOpen && (
+                                  <View style={styles.selectMenu}>
+                                    {CATEGORY_OPTIONS_WITH_OTHER.map(
+                                      (option) => {
+                                        const isActive =
+                                          createBusinessForm.categoryKey ===
+                                          option.key;
+                                        return (
+                                          <TouchableOpacity
+                                            key={option.key}
+                                            style={[
+                                              styles.selectMenuOption,
+                                              isActive &&
+                                                styles.selectMenuOptionActive,
+                                            ]}
+                                            onPress={() => {
+                                              setCreateBusinessForm((prev) => ({
+                                                ...prev,
+                                                categoryKey: option.key,
+                                                categoryCustomLabel:
+                                                  option.key ===
+                                                  CATEGORY_OTHER_KEY
+                                                    ? prev.categoryCustomLabel
+                                                    : "",
+                                              }));
+                                              setCreateBusinessCategoryMenuOpen(
+                                                false,
+                                              );
+                                            }}
+                                          >
+                                            <Text
+                                              style={[
+                                                styles.selectMenuOptionText,
+                                                isActive &&
+                                                  styles.selectMenuOptionTextActive,
+                                              ]}
+                                            >
+                                              {option.label}
+                                            </Text>
+                                          </TouchableOpacity>
+                                        );
+                                      },
+                                    )}
+                                  </View>
+                                )}
+                                {createBusinessForm.categoryKey ===
+                                  CATEGORY_OTHER_KEY && (
+                                  <>
+                                    <Text style={styles.formLabel}>
+                                      Custom category
+                                    </Text>
+                                    <AutoFocusInput
+                                      style={styles.formInput}
+                                      placeholder="Enter custom category"
+                                      placeholderTextColor={COLORS.muted}
+                                      value={
+                                        createBusinessForm.categoryCustomLabel
+                                      }
+                                      onChangeText={(value) =>
+                                        setCreateBusinessForm((prev) => ({
+                                          ...prev,
+                                          categoryCustomLabel: value,
+                                        }))
+                                      }
+                                    />
+                                  </>
+                                )}
+
+                                <Text style={styles.formLabel}>Phone</Text>
+                                <AutoFocusInput
+                                  style={styles.formInput}
+                                  placeholder="(555) 123-4567"
+                                  placeholderTextColor={COLORS.muted}
+                                  value={createBusinessForm.phone}
+                                  onChangeText={(value) =>
+                                    setCreateBusinessForm((prev) => ({
+                                      ...prev,
+                                      phone: value,
+                                    }))
+                                  }
+                                  keyboardType="phone-pad"
+                                />
+
+                                <Text style={styles.formLabel}>
+                                  Operating days
+                                </Text>
+                                <View style={styles.operatingDaysRow}>
+                                  {OPERATING_DAY_OPTIONS.map((day) => {
+                                    const selected = parseOperatingDaysValue(
+                                      createHoursDays,
+                                    ).includes(day.key);
+                                    return (
+                                      <TouchableOpacity
+                                        key={`create-day-${day.key}`}
+                                        style={[
+                                          styles.operatingDayChip,
+                                          selected &&
+                                            styles.operatingDayChipActive,
+                                        ]}
+                                        onPress={() =>
+                                          setCreateHoursDays((prev) =>
+                                            toggleOperatingDayValue(
+                                              prev,
+                                              day.key,
+                                            ),
+                                          )
+                                        }
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.operatingDayChipText,
+                                            selected &&
+                                              styles.operatingDayChipTextActive,
+                                          ]}
+                                        >
+                                          {day.label}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    );
+                                  })}
+                                </View>
+                                <Text style={styles.formHint}>
+                                  Selected:{" "}
+                                  {formatOperatingDaysValue(createHoursDays)}
+                                </Text>
+
+                                <Text style={styles.formLabel}>
+                                  Operating hours
+                                </Text>
+                                <View style={styles.timeRow}>
+                                  <View style={styles.timeBlock}>
+                                    <Text style={styles.timeLabel}>Start</Text>
+                                    <View style={styles.timeInputRow}>
+                                      <TouchableOpacity
+                                        style={styles.timeSelect}
+                                        onPress={() =>
+                                          openTimePicker("createStart")
+                                        }
+                                      >
+                                        <Text style={styles.timeSelectText}>
+                                          {createHoursStart ||
+                                            (IS_COMPACT
+                                              ? "Select"
+                                              : "Select time")}
+                                        </Text>
+                                        <Ionicons
+                                          name="chevron-down"
+                                          size={16}
+                                          color={COLORS.muted}
+                                        />
+                                      </TouchableOpacity>
+                                      <View style={styles.timeMeridiem}>
+                                        {["AM", "PM"].map((label) => {
+                                          const isActive =
+                                            createHoursStartMeridiem === label;
+                                          return (
+                                            <TouchableOpacity
+                                              key={label}
+                                              style={[
+                                                styles.timeMeridiemPill,
+                                                isActive &&
+                                                  styles.timeMeridiemPillActive,
+                                              ]}
+                                              onPress={() =>
+                                                setCreateHoursStartMeridiem(
+                                                  label,
+                                                )
+                                              }
+                                            >
+                                              <Text
+                                                style={[
+                                                  styles.timeMeridiemText,
+                                                  isActive &&
+                                                    styles.timeMeridiemTextActive,
+                                                ]}
+                                              >
+                                                {label}
+                                              </Text>
+                                            </TouchableOpacity>
+                                          );
+                                        })}
+                                      </View>
+                                    </View>
+                                  </View>
+                                  <View style={styles.timeBlock}>
+                                    <Text style={styles.timeLabel}>End</Text>
+                                    <View style={styles.timeInputRow}>
+                                      <TouchableOpacity
+                                        style={styles.timeSelect}
+                                        onPress={() =>
+                                          openTimePicker("createEnd")
+                                        }
+                                      >
+                                        <Text style={styles.timeSelectText}>
+                                          {createHoursEnd ||
+                                            (IS_COMPACT
+                                              ? "Select"
+                                              : "Select time")}
+                                        </Text>
+                                        <Ionicons
+                                          name="chevron-down"
+                                          size={16}
+                                          color={COLORS.muted}
+                                        />
+                                      </TouchableOpacity>
+                                      <View style={styles.timeMeridiem}>
+                                        {["AM", "PM"].map((label) => {
+                                          const isActive =
+                                            createHoursEndMeridiem === label;
+                                          return (
+                                            <TouchableOpacity
+                                              key={label}
+                                              style={[
+                                                styles.timeMeridiemPill,
+                                                isActive &&
+                                                  styles.timeMeridiemPillActive,
+                                              ]}
+                                              onPress={() =>
+                                                setCreateHoursEndMeridiem(label)
+                                              }
+                                            >
+                                              <Text
+                                                style={[
+                                                  styles.timeMeridiemText,
+                                                  isActive &&
+                                                    styles.timeMeridiemTextActive,
+                                                ]}
+                                              >
+                                                {label}
+                                              </Text>
+                                            </TouchableOpacity>
+                                          );
+                                        })}
+                                      </View>
+                                    </View>
+                                  </View>
+                                </View>
+
+                                <Text style={styles.formLabel}>
+                                  Descriptor aliases (optional)
+                                </Text>
+                                <AutoFocusInput
+                                  style={[
+                                    styles.formInput,
+                                    styles.descriptorInput,
+                                  ]}
+                                  placeholder="One per line (example: SQ * YOUR BUSINESS)"
                                   placeholderTextColor={COLORS.muted}
                                   value={
-                                    createBusinessForm.categoryCustomLabel
+                                    createBusinessForm.merchantDescriptorAliases
                                   }
                                   onChangeText={(value) =>
                                     setCreateBusinessForm((prev) => ({
                                       ...prev,
-                                      categoryCustomLabel: value,
+                                      merchantDescriptorAliases: value,
                                     }))
                                   }
+                                  multiline
+                                  textAlignVertical="top"
                                 />
-                              </>
-                            )}
+                                <Text style={styles.formHint}>
+                                  Optional: helps improve automatic bank
+                                  verification.
+                                </Text>
 
-                            <Text style={styles.formLabel}>Phone</Text>
-                            <AutoFocusInput
-                              style={styles.formInput}
-                              placeholder="(555) 123-4567"
-                              placeholderTextColor={COLORS.muted}
-                              value={createBusinessForm.phone}
-                              onChangeText={(value) =>
-                                setCreateBusinessForm((prev) => ({
-                                  ...prev,
-                                  phone: value,
-                                }))
-                              }
-                              keyboardType="phone-pad"
-                            />
-
-                            <Text style={styles.formLabel}>
-                              Operating days
-                            </Text>
-                            <View style={styles.operatingDaysRow}>
-                              {OPERATING_DAY_OPTIONS.map((day) => {
-                                const selected = parseOperatingDaysValue(
-                                  createHoursDays,
-                                ).includes(day.key);
-                                return (
-                                  <TouchableOpacity
-                                    key={`create-day-${day.key}`}
-                                    style={[
-                                      styles.operatingDayChip,
-                                      selected && styles.operatingDayChipActive,
-                                    ]}
-                                    onPress={() =>
-                                      setCreateHoursDays((prev) =>
-                                        toggleOperatingDayValue(prev, day.key),
-                                      )
-                                    }
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.operatingDayChipText,
-                                        selected &&
-                                          styles.operatingDayChipTextActive,
-                                      ]}
-                                    >
-                                      {day.label}
-                                    </Text>
-                                  </TouchableOpacity>
-                                );
-                              })}
-                            </View>
-                            <Text style={styles.formHint}>
-                              Selected: {formatOperatingDaysValue(createHoursDays)}
-                            </Text>
-
-                            <Text style={styles.formLabel}>
-                              Operating hours
-                            </Text>
-                            <View style={styles.timeRow}>
-                              <View style={styles.timeBlock}>
-                                <Text style={styles.timeLabel}>Start</Text>
-                                <View style={styles.timeInputRow}>
-                                  <TouchableOpacity
-                                    style={styles.timeSelect}
-                                    onPress={() =>
-                                      openTimePicker("createStart")
-                                    }
-                                  >
-                                    <Text style={styles.timeSelectText}>
-                                      {createHoursStart ||
-                                        (IS_COMPACT ? "Select" : "Select time")}
-                                    </Text>
-                                    <Ionicons
-                                      name="chevron-down"
-                                      size={16}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                  <View style={styles.timeMeridiem}>
-                                    {["AM", "PM"].map((label) => {
-                                      const isActive =
-                                        createHoursStartMeridiem === label;
-                                      return (
-                                        <TouchableOpacity
-                                          key={label}
-                                          style={[
-                                            styles.timeMeridiemPill,
-                                            isActive &&
-                                              styles.timeMeridiemPillActive,
-                                          ]}
-                                          onPress={() =>
-                                            setCreateHoursStartMeridiem(label)
+                                <Text style={styles.formLabel}>Tags</Text>
+                                <View style={styles.tagOptionRow}>
+                                  {TAG_OPTIONS.map((option) => {
+                                    const isActive = selectedCreateTags.has(
+                                      option.value,
+                                    );
+                                    return (
+                                      <TouchableOpacity
+                                        key={option.value}
+                                        style={[
+                                          styles.tagOptionPill,
+                                          isActive &&
+                                            styles.tagOptionPillActive,
+                                        ]}
+                                        onPress={() => {
+                                          const next = new Set(
+                                            selectedCreateTags,
+                                          );
+                                          if (next.has(option.value)) {
+                                            next.delete(option.value);
+                                          } else {
+                                            next.add(option.value);
                                           }
-                                        >
-                                          <Text
-                                            style={[
-                                              styles.timeMeridiemText,
-                                              isActive &&
-                                                styles.timeMeridiemTextActive,
-                                            ]}
-                                          >
-                                            {label}
-                                          </Text>
-                                        </TouchableOpacity>
-                                      );
-                                    })}
-                                  </View>
-                                </View>
-                              </View>
-                              <View style={styles.timeBlock}>
-                                <Text style={styles.timeLabel}>End</Text>
-                                <View style={styles.timeInputRow}>
-                                  <TouchableOpacity
-                                    style={styles.timeSelect}
-                                    onPress={() => openTimePicker("createEnd")}
-                                  >
-                                    <Text style={styles.timeSelectText}>
-                                      {createHoursEnd ||
-                                        (IS_COMPACT ? "Select" : "Select time")}
-                                    </Text>
-                                    <Ionicons
-                                      name="chevron-down"
-                                      size={16}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                  <View style={styles.timeMeridiem}>
-                                    {["AM", "PM"].map((label) => {
-                                      const isActive =
-                                        createHoursEndMeridiem === label;
-                                      return (
-                                        <TouchableOpacity
-                                          key={label}
+                                          setCreateBusinessForm((prev) => ({
+                                            ...prev,
+                                            tags: Array.from(next).join(", "),
+                                          }));
+                                        }}
+                                      >
+                                        <Text
                                           style={[
-                                            styles.timeMeridiemPill,
+                                            styles.tagOptionText,
                                             isActive &&
-                                              styles.timeMeridiemPillActive,
+                                              styles.tagOptionTextActive,
                                           ]}
-                                          onPress={() =>
-                                            setCreateHoursEndMeridiem(label)
-                                          }
                                         >
-                                          <Text
-                                            style={[
-                                              styles.timeMeridiemText,
-                                              isActive &&
-                                                styles.timeMeridiemTextActive,
-                                            ]}
-                                          >
-                                            {label}
-                                          </Text>
-                                        </TouchableOpacity>
-                                      );
-                                    })}
-                                  </View>
+                                          {option.label}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    );
+                                  })}
                                 </View>
-                              </View>
-                            </View>
-
-                            <Text style={styles.formLabel}>
-                              Descriptor aliases (optional)
-                            </Text>
-                            <AutoFocusInput
-                              style={[styles.formInput, styles.descriptorInput]}
-                              placeholder="One per line (example: SQ * YOUR BUSINESS)"
-                              placeholderTextColor={COLORS.muted}
-                              value={createBusinessForm.merchantDescriptorAliases}
-                              onChangeText={(value) =>
-                                setCreateBusinessForm((prev) => ({
-                                  ...prev,
-                                  merchantDescriptorAliases: value,
-                                }))
-                              }
-                              multiline
-                              textAlignVertical="top"
-                            />
-                            <Text style={styles.formHint}>
-                              Optional: helps improve automatic bank verification.
-                            </Text>
-
-                            <Text style={styles.formLabel}>Tags</Text>
-                            <View style={styles.tagOptionRow}>
-                              {TAG_OPTIONS.map((option) => {
-                                const isActive = selectedCreateTags.has(
-                                  option.value,
-                                );
-                                return (
+                                <View style={styles.legalChecklist}>
                                   <TouchableOpacity
-                                    key={option.value}
-                                    style={[
-                                      styles.tagOptionPill,
-                                      isActive && styles.tagOptionPillActive,
-                                    ]}
+                                    style={styles.legalCheckRow}
                                     onPress={() => {
-                                      const next = new Set(selectedCreateTags);
-                                      if (next.has(option.value)) {
-                                        next.delete(option.value);
-                                      } else {
-                                        next.add(option.value);
+                                      setCreateBusinessAuthorizedChecked(
+                                        (prev) => !prev,
+                                      );
+                                      if (createBusinessError) {
+                                        setCreateBusinessError(null);
                                       }
-                                      setCreateBusinessForm((prev) => ({
-                                        ...prev,
-                                        tags: Array.from(next).join(", "),
-                                      }));
                                     }}
+                                    activeOpacity={0.85}
                                   >
-                                    <Text
-                                      style={[
-                                        styles.tagOptionText,
-                                        isActive && styles.tagOptionTextActive,
-                                      ]}
-                                    >
-                                      {option.label}
+                                    <Ionicons
+                                      name={
+                                        createBusinessAuthorizedChecked
+                                          ? "checkmark-circle"
+                                          : "ellipse-outline"
+                                      }
+                                      size={18}
+                                      color={
+                                        createBusinessAuthorizedChecked
+                                          ? COLORS.pine
+                                          : COLORS.muted
+                                      }
+                                    />
+                                    <Text style={styles.legalCheckText}>
+                                      I am authorized to act on behalf of this
+                                      business.
                                     </Text>
                                   </TouchableOpacity>
-                                );
-                              })}
-                            </View>
-                            <View style={styles.legalChecklist}>
-                              <TouchableOpacity
-                                style={styles.legalCheckRow}
-                                onPress={() => {
-                                  setCreateBusinessAuthorizedChecked(
-                                    (prev) => !prev,
-                                  );
-                                  if (createBusinessError) {
-                                    setCreateBusinessError(null);
+                                  <TouchableOpacity
+                                    style={styles.legalCheckRow}
+                                    onPress={() => {
+                                      setCreateBusinessHonorOffersChecked(
+                                        (prev) => !prev,
+                                      );
+                                      if (createBusinessError) {
+                                        setCreateBusinessError(null);
+                                      }
+                                    }}
+                                    activeOpacity={0.85}
+                                  >
+                                    <Ionicons
+                                      name={
+                                        createBusinessHonorOffersChecked
+                                          ? "checkmark-circle"
+                                          : "ellipse-outline"
+                                      }
+                                      size={18}
+                                      color={
+                                        createBusinessHonorOffersChecked
+                                          ? COLORS.pine
+                                          : COLORS.muted
+                                      }
+                                    />
+                                    <Text style={styles.legalCheckText}>
+                                      I agree this business will honor every
+                                      approved offer as published.
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                                <TouchableOpacity
+                                  style={styles.legalLinkButton}
+                                  onPress={() =>
+                                    Linking.openURL(PRIVACY_POLICY_URL).catch(
+                                      () => null,
+                                    )
                                   }
-                                }}
-                                activeOpacity={0.85}
-                              >
-                                <Ionicons
-                                  name={
-                                    createBusinessAuthorizedChecked
-                                      ? "checkmark-circle"
-                                      : "ellipse-outline"
-                                  }
-                                  size={18}
-                                  color={
-                                    createBusinessAuthorizedChecked
-                                      ? COLORS.pine
-                                      : COLORS.muted
-                                  }
-                                />
-                                <Text style={styles.legalCheckText}>
-                                  I am authorized to act on behalf of this
-                                  business.
-                                </Text>
-                              </TouchableOpacity>
-                              <TouchableOpacity
-                                style={styles.legalCheckRow}
-                                onPress={() => {
-                                  setCreateBusinessHonorOffersChecked(
-                                    (prev) => !prev,
-                                  );
-                                  if (createBusinessError) {
-                                    setCreateBusinessError(null);
-                                  }
-                                }}
-                                activeOpacity={0.85}
-                              >
-                                <Ionicons
-                                  name={
-                                    createBusinessHonorOffersChecked
-                                      ? "checkmark-circle"
-                                      : "ellipse-outline"
-                                  }
-                                  size={18}
-                                  color={
-                                    createBusinessHonorOffersChecked
-                                      ? COLORS.pine
-                                      : COLORS.muted
-                                  }
-                                />
-                                <Text style={styles.legalCheckText}>
-                                  I agree this business will honor every approved
-                                  offer as published.
-                                </Text>
-                              </TouchableOpacity>
-                            </View>
-                            <TouchableOpacity
-                              style={styles.legalLinkButton}
-                              onPress={() =>
-                                Linking.openURL(PRIVACY_POLICY_URL).catch(
-                                  () => null,
-                                )
-                              }
-                            >
-                              <Text style={styles.legalLinkText}>
-                                Review Privacy Policy
-                              </Text>
-                            </TouchableOpacity>
+                                >
+                                  <Text style={styles.legalLinkText}>
+                                    Review Privacy Policy
+                                  </Text>
+                                </TouchableOpacity>
 
-                            {createBusinessError && (
-                              <Text style={styles.formError}>
-                                {createBusinessError}
-                              </Text>
+                                {createBusinessError && (
+                                  <Text style={styles.formError}>
+                                    {createBusinessError}
+                                  </Text>
+                                )}
+
+                                <View style={styles.formActions}>
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.primaryButton,
+                                      createBusinessBusy &&
+                                        styles.primaryButtonDisabled,
+                                    ]}
+                                    onPress={handleCreateBusinessProfile}
+                                    disabled={createBusinessBusy}
+                                  >
+                                    <Text style={styles.primaryButtonText}>
+                                      {createBusinessBusy
+                                        ? "Creating..."
+                                        : "Create profile"}
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                              </View>
                             )}
 
-                            <View style={styles.formActions}>
-                              <TouchableOpacity
+                            {formMessage && (
+                              <View
                                 style={[
-                                  styles.primaryButton,
-                                  createBusinessBusy &&
-                                    styles.primaryButtonDisabled,
+                                  styles.alertBox,
+                                  formMessage.type === "error"
+                                    ? styles.alertError
+                                    : styles.alertSuccess,
                                 ]}
-                                onPress={handleCreateBusinessProfile}
-                                disabled={createBusinessBusy}
                               >
-                                <Text style={styles.primaryButtonText}>
-                                  {createBusinessBusy
-                                    ? "Creating..."
-                                    : "Create profile"}
+                                <Text style={styles.alertText}>
+                                  {formMessage.text}
                                 </Text>
-                              </TouchableOpacity>
-                            </View>
-                          </View>
-                        )}
+                              </View>
+                            )}
 
-                        {formMessage && (
-                          <View
-                            style={[
-                              styles.alertBox,
-                              formMessage.type === "error"
-                                ? styles.alertError
-                                : styles.alertSuccess,
-                            ]}
-                          >
-                            <Text style={styles.alertText}>
-                              {formMessage.text}
-                            </Text>
-                          </View>
-                        )}
-
-                        {/* Offer management lives in the Business Dashboard tab. */}
+                            {/* Offer management lives in the Business Dashboard tab. */}
                           </>
                         )}
                       </>
@@ -21134,7 +21685,7 @@ export default function App() {
                         ) : (
                           <>
                             <View style={styles.sectionBlock}>
-                             <Text style={styles.sectionTitleAlt}>
+                              <Text style={styles.sectionTitleAlt}>
                                 History
                               </Text>
                             </View>
@@ -21168,21 +21719,27 @@ export default function App() {
                                 ]}
                               >
                                 <View style={styles.historyVerifyNoticeHeader}>
-                                  <View style={styles.historyVerifyNoticeHeaderLeft}>
+                                  <View
+                                    style={styles.historyVerifyNoticeHeaderLeft}
+                                  >
                                     <Ionicons
                                       name={
-                                        historyVerifyNotice.variant === "warning"
+                                        historyVerifyNotice.variant ===
+                                        "warning"
                                           ? "alert-circle-outline"
                                           : "information-circle-outline"
                                       }
                                       size={16}
                                       color={
-                                        historyVerifyNotice.variant === "warning"
+                                        historyVerifyNotice.variant ===
+                                        "warning"
                                           ? "#B45309"
                                           : "#1D4ED8"
                                       }
                                     />
-                                    <Text style={styles.historyVerifyNoticeTitle}>
+                                    <Text
+                                      style={styles.historyVerifyNoticeTitle}
+                                    >
                                       {historyVerifyNotice.title}
                                     </Text>
                                   </View>
@@ -21248,7 +21805,9 @@ export default function App() {
                                       plaidLinkAction !== "idle"
                                     }
                                   >
-                                    <Text style={styles.receiptCollapsedManageText}>
+                                    <Text
+                                      style={styles.receiptCollapsedManageText}
+                                    >
                                       Manage
                                     </Text>
                                     <Ionicons
@@ -21268,22 +21827,26 @@ export default function App() {
                                           plaidLinkAction !== "idle") &&
                                           styles.receiptNoticeActionButtonDisabled,
                                       ]}
-                                      onPress={handleLinkPurchaseVerificationBank}
+                                      onPress={
+                                        handleLinkPurchaseVerificationBank
+                                      }
                                       disabled={
                                         plaidLinkState.loading ||
                                         plaidLinkAction !== "idle"
                                       }
                                     >
                                       <Text
-                                        style={styles.receiptNoticeActionPrimaryText}
+                                        style={
+                                          styles.receiptNoticeActionPrimaryText
+                                        }
                                       >
                                         {plaidLinkAction === "linking"
                                           ? "Opening Plaid Link..."
                                           : plaidNeedsAttention
                                             ? plaidPromptCopy.cta
-                                        : hasLinkedPlaidBank
-                                            ? "Link another bank"
-                                            : "Enable instant verification"}
+                                            : hasLinkedPlaidBank
+                                              ? "Link another bank"
+                                              : "Enable instant verification"}
                                       </Text>
                                     </TouchableOpacity>
                                     {hasLinkedPlaidBank && (
@@ -21312,14 +21875,14 @@ export default function App() {
                                       </TouchableOpacity>
                                     )}
                                   </View>
-                                    <Text style={styles.receiptNoticeMeta}>
-                                      {plaidLinkState.loading
-                                        ? "Checking linked bank status..."
+                                  <Text style={styles.receiptNoticeMeta}>
+                                    {plaidLinkState.loading
+                                      ? "Checking linked bank status..."
                                       : plaidNeedsAttention
                                         ? plaidPromptCopy.body
                                         : hasLinkedPlaidBank
-                                        ? `Linked banks: ${plaidLinkState.linkedCount}`
-                                        : "Link a bank for instant verification"}
+                                          ? `Linked banks: ${plaidLinkState.linkedCount}`
+                                          : "Link a bank for instant verification"}
                                   </Text>
                                   {plaidLinkState.error && (
                                     <Text style={styles.receiptNoticeMetaError}>
@@ -21333,7 +21896,9 @@ export default function App() {
                                         setHistoryVerificationExpanded(false)
                                       }
                                     >
-                                      <Text style={styles.receiptCollapseButtonText}>
+                                      <Text
+                                        style={styles.receiptCollapseButtonText}
+                                      >
                                         Hide details
                                       </Text>
                                     </TouchableOpacity>
@@ -21398,7 +21963,8 @@ export default function App() {
                                       receiptUploadStatus.targetId === entry.id;
                                     const isAutoVerifying =
                                       purchaseVerifyStatus.loading &&
-                                      purchaseVerifyStatus.targetId === entry.id;
+                                      purchaseVerifyStatus.targetId ===
+                                        entry.id;
                                     const needsReceipt = !hasReceipt;
                                     const purchaseVerification =
                                       entry.purchaseVerification || null;
@@ -21453,7 +22019,7 @@ export default function App() {
                                       if (receiptReviewStatus === "pending") {
                                         return {
                                           icon: "time-outline",
-                                            text: "Review in progress",
+                                          text: "Review in progress",
                                           tone: "pending",
                                         };
                                       }
@@ -21551,7 +22117,8 @@ export default function App() {
                                               color={
                                                 statusCopy.tone === "success"
                                                   ? "#166534"
-                                                  : statusCopy.tone === "pending"
+                                                  : statusCopy.tone ===
+                                                      "pending"
                                                     ? "#92400E"
                                                     : COLORS.muted
                                               }
@@ -21570,7 +22137,9 @@ export default function App() {
                                           </View>
                                         )}
                                         {isReceiptActionable && (
-                                          <View style={styles.historyEntryTapHint}>
+                                          <View
+                                            style={styles.historyEntryTapHint}
+                                          >
                                             <Text
                                               style={
                                                 styles.historyEntryTapHintText
@@ -21642,7 +22211,8 @@ export default function App() {
                                       <Pressable
                                         style={({ pressed }) => [
                                           styles.historyGroupHeader,
-                                          pressed && styles.historyGroupHeaderPressed,
+                                          pressed &&
+                                            styles.historyGroupHeaderPressed,
                                         ]}
                                         android_ripple={{
                                           color: hexToRgba(accentColor, 0.12),
@@ -21655,7 +22225,9 @@ export default function App() {
                                           }))
                                         }
                                       >
-                                        <View style={styles.historyGroupHeaderLeft}>
+                                        <View
+                                          style={styles.historyGroupHeaderLeft}
+                                        >
                                           <View
                                             style={[
                                               styles.historyGroupAvatar,
@@ -21687,7 +22259,9 @@ export default function App() {
                                             >
                                               {group.businessName}
                                             </Text>
-                                            <View style={styles.historyGroupSubRow}>
+                                            <View
+                                              style={styles.historyGroupSubRow}
+                                            >
                                               <Text
                                                 style={styles.historyGroupSub}
                                                 numberOfLines={1}
@@ -21698,8 +22272,12 @@ export default function App() {
                                           </View>
                                         </View>
 
-                                        <View style={styles.historyGroupActions}>
-                                          <View style={styles.historyGroupChevron}>
+                                        <View
+                                          style={styles.historyGroupActions}
+                                        >
+                                          <View
+                                            style={styles.historyGroupChevron}
+                                          >
                                             <Ionicons
                                               name={
                                                 isExpanded
@@ -21713,9 +22291,13 @@ export default function App() {
                                         </View>
                                       </Pressable>
                                       {earnedTotalCents > 0 && (
-                                        <View style={styles.historyGroupEarnedBar}>
+                                        <View
+                                          style={styles.historyGroupEarnedBar}
+                                        >
                                           <Text
-                                            style={styles.historyGroupEarnedBarText}
+                                            style={
+                                              styles.historyGroupEarnedBarText
+                                            }
                                           >
                                             Total cashback earned:{" "}
                                             {formatCurrencyFromCents(
@@ -21744,7 +22326,11 @@ export default function App() {
                                                 size={14}
                                                 color="#1E3A8A"
                                               />
-                                              <Text style={styles.historyReviewLinkText}>
+                                              <Text
+                                                style={
+                                                  styles.historyReviewLinkText
+                                                }
+                                              >
                                                 Rate visit
                                               </Text>
                                               <Ionicons
@@ -21754,7 +22340,9 @@ export default function App() {
                                               />
                                             </TouchableOpacity>
                                           )}
-                                          {orderedEntries.map(renderHistoryEntry)}
+                                          {orderedEntries.map(
+                                            renderHistoryEntry,
+                                          )}
                                         </View>
                                       )}
                                     </View>
@@ -21800,7 +22388,10 @@ export default function App() {
                               </View>
                             </View>
                             <View
-                              style={[styles.pointsCard, styles.cashoutHeroCard]}
+                              style={[
+                                styles.pointsCard,
+                                styles.cashoutHeroCard,
+                              ]}
                             >
                               <View
                                 style={[
@@ -21845,11 +22436,15 @@ export default function App() {
                                     </View>
                                     <Text style={styles.cashoutAmountHint}>
                                       Minimum:{" "}
-                                      {formatCurrencyFromCents(MIN_CASHOUT_CENTS)}
+                                      {formatCurrencyFromCents(
+                                        MIN_CASHOUT_CENTS,
+                                      )}
                                     </Text>
                                     <View style={styles.cashoutAmountRow}>
                                       <View style={styles.cashoutAmountField}>
-                                        <Text style={styles.cashoutAmountPrefix}>
+                                        <Text
+                                          style={styles.cashoutAmountPrefix}
+                                        >
                                           $
                                         </Text>
                                         <AutoFocusInput
@@ -21858,7 +22453,8 @@ export default function App() {
                                           onChangeText={(value) =>
                                             setCashoutAmountText(
                                               formatCashoutAmountInput(value),
-                                            )}
+                                            )
+                                          }
                                           placeholder="0.00"
                                           placeholderTextColor={COLORS.muted}
                                           keyboardType="number-pad"
@@ -21878,14 +22474,17 @@ export default function App() {
                                         }
                                         disabled={cashoutActionStatus.loading}
                                       >
-                                        <Text style={styles.cashoutAmountMaxText}>
+                                        <Text
+                                          style={styles.cashoutAmountMaxText}
+                                        >
                                           Max
                                         </Text>
                                       </TouchableOpacity>
                                     </View>
                                     {String(cashoutAmountText || "").trim() &&
                                       (cashoutPreview.mode === "invalid" ||
-                                        cashoutPreview.mode === "below_min") && (
+                                        cashoutPreview.mode ===
+                                          "below_min") && (
                                         <Text style={styles.formError}>
                                           {cashoutPreview.mode === "below_min"
                                             ? `Minimum cashout is ${formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.`
@@ -21901,8 +22500,9 @@ export default function App() {
                                         styles.cashoutPayoutButton,
                                         (cashoutPreview.mode === "invalid" ||
                                           cashoutPreview.mode === "below_min" ||
-                                          (Number(cashbackBalance.availableCents) ||
-                                            0) <= 0 ||
+                                          (Number(
+                                            cashbackBalance.availableCents,
+                                          ) || 0) <= 0 ||
                                           cashoutActionStatus.loading) &&
                                           styles.cashoutPayoutButtonDisabled,
                                       ]}
@@ -21910,12 +22510,15 @@ export default function App() {
                                       disabled={
                                         cashoutPreview.mode === "invalid" ||
                                         cashoutPreview.mode === "below_min" ||
-                                        (Number(cashbackBalance.availableCents) ||
-                                          0) <= 0 ||
+                                        (Number(
+                                          cashbackBalance.availableCents,
+                                        ) || 0) <= 0 ||
                                         cashoutActionStatus.loading
                                       }
                                     >
-                                      <Text style={styles.cashoutPayoutButtonText}>
+                                      <Text
+                                        style={styles.cashoutPayoutButtonText}
+                                      >
                                         {cashoutPreview.label}
                                       </Text>
                                     </TouchableOpacity>
@@ -21933,7 +22536,9 @@ export default function App() {
                                         disabled={cashoutActionStatus.loading}
                                       >
                                         <Text
-                                          style={styles.cashoutOpenPayoutButtonText}
+                                          style={
+                                            styles.cashoutOpenPayoutButtonText
+                                          }
                                         >
                                           {resumeCashoutClaimLabel}
                                         </Text>
@@ -21942,8 +22547,8 @@ export default function App() {
                                   </View>
                                   {resumeCashoutClaimUrl ? (
                                     <Text style={styles.cashoutResumeHint}>
-                                      Closed payout options by mistake? Tap above
-                                      to reopen.
+                                      Closed payout options by mistake? Tap
+                                      above to reopen.
                                     </Text>
                                   ) : null}
                                 </>
@@ -22012,12 +22617,16 @@ export default function App() {
                                 ]}
                               >
                                 <View style={styles.cashoutActivitySection}>
-                                  <Text style={styles.cashoutActivitySectionTitle}>
+                                  <Text
+                                    style={styles.cashoutActivitySectionTitle}
+                                  >
                                     Earned cashback
                                   </Text>
                                   <Text style={styles.cashoutActivitySummary}>
                                     Total earned:{" "}
-                                    {formatCurrencyFromCents(cashoutEarnedTotalCents)}
+                                    {formatCurrencyFromCents(
+                                      cashoutEarnedTotalCents,
+                                    )}
                                   </Text>
                                   {cashoutEarnedHistoryEntries.length === 0 ? (
                                     <Text style={styles.formHint}>
@@ -22033,10 +22642,14 @@ export default function App() {
                                             style={styles.cashoutEarnedRow}
                                           >
                                             <View
-                                              style={styles.cashoutEarnedRowMain}
+                                              style={
+                                                styles.cashoutEarnedRowMain
+                                              }
                                             >
                                               <Text
-                                                style={styles.cashoutEarnedOffer}
+                                                style={
+                                                  styles.cashoutEarnedOffer
+                                                }
                                                 numberOfLines={1}
                                               >
                                                 {entry.offer?.title ||
@@ -22068,7 +22681,9 @@ export default function App() {
                                 </View>
                                 <View style={styles.cashoutActivityDivider} />
                                 <View style={styles.cashoutActivitySection}>
-                                  <Text style={styles.cashoutActivitySectionTitle}>
+                                  <Text
+                                    style={styles.cashoutActivitySectionTitle}
+                                  >
                                     Withdrawals
                                   </Text>
                                   <Text style={styles.cashoutActivitySummary}>
@@ -22090,15 +22705,23 @@ export default function App() {
                                             key={`cashout-withdraw-${entry.id}`}
                                             style={styles.cashoutWithdrawalRow}
                                           >
-                                            <View style={styles.cashoutEarnedRowMain}>
+                                            <View
+                                              style={
+                                                styles.cashoutEarnedRowMain
+                                              }
+                                            >
                                               <Text
-                                                style={styles.cashoutEarnedOffer}
+                                                style={
+                                                  styles.cashoutEarnedOffer
+                                                }
                                                 numberOfLines={1}
                                               >
                                                 Withdrawal
                                               </Text>
                                               <Text
-                                                style={styles.cashoutWithdrawalMeta}
+                                                style={
+                                                  styles.cashoutWithdrawalMeta
+                                                }
                                                 numberOfLines={1}
                                               >
                                                 {formatHistoryTimestamp(
@@ -22156,208 +22779,217 @@ export default function App() {
                               </View>
                             ) : null}
                             {showLegacyStripeCashoutUi ? (
-                              <View style={[styles.sectionBlock, styles.cashoutBankPanel]}>
-                              <View style={styles.cashoutTitleRow}>
-                                <View style={styles.sectionTitleIcon}>
-                                  <Ionicons
-                                    name="card-outline"
-                                    size={16}
-                                    color={COLORS.ink}
-                                  />
-                                </View>
-                                <Text style={styles.sectionTitleAlt}>
-                                  Bank account
-                                </Text>
-                              </View>
-                              <View style={styles.cashoutStatusLine}>
-                                <View
-                                  style={[
-                                    styles.cashoutStatusDot,
-                                    cashoutStatus.payoutsEnabled
-                                      ? styles.cashoutStatusDotReady
-                                      : styles.cashoutStatusDotMuted,
-                                  ]}
-                                />
-                                <Text style={styles.cashoutStatusLineText}>
-                                  {cashoutPayoutStatusCopy}
-                                </Text>
-                              </View>
                               <View
                                 style={[
-                                  styles.cashoutSelectedAccountCard,
-                                  !selectedPayoutAccountDetails.hasAccount &&
-                                    styles.cashoutSelectedAccountCardEmpty,
+                                  styles.sectionBlock,
+                                  styles.cashoutBankPanel,
                                 ]}
                               >
+                                <View style={styles.cashoutTitleRow}>
+                                  <View style={styles.sectionTitleIcon}>
+                                    <Ionicons
+                                      name="card-outline"
+                                      size={16}
+                                      color={COLORS.ink}
+                                    />
+                                  </View>
+                                  <Text style={styles.sectionTitleAlt}>
+                                    Bank account
+                                  </Text>
+                                </View>
+                                <View style={styles.cashoutStatusLine}>
+                                  <View
+                                    style={[
+                                      styles.cashoutStatusDot,
+                                      cashoutStatus.payoutsEnabled
+                                        ? styles.cashoutStatusDotReady
+                                        : styles.cashoutStatusDotMuted,
+                                    ]}
+                                  />
+                                  <Text style={styles.cashoutStatusLineText}>
+                                    {cashoutPayoutStatusCopy}
+                                  </Text>
+                                </View>
                                 <View
                                   style={[
-                                    styles.cashoutSelectedAccountIcon,
+                                    styles.cashoutSelectedAccountCard,
                                     !selectedPayoutAccountDetails.hasAccount &&
-                                      styles.cashoutSelectedAccountIconMuted,
+                                      styles.cashoutSelectedAccountCardEmpty,
                                   ]}
                                 >
-                                  <Ionicons
-                                    name={
-                                      selectedPayoutAccountDetails.hasAccount
-                                        ? "business-outline"
-                                        : "alert-circle-outline"
-                                    }
-                                    size={14}
-                                    color={
-                                      selectedPayoutAccountDetails.hasAccount
-                                        ? COLORS.pine
-                                        : COLORS.muted
-                                    }
-                                  />
-                                </View>
-                                <View style={styles.cashoutLinkedAccountMain}>
-                                  <Text
-                                    style={styles.cashoutLinkedAccountTitle}
-                                    numberOfLines={1}
-                                  >
-                                    {selectedPayoutAccountDetails.title}
-                                  </Text>
-                                  <Text
-                                    style={styles.cashoutLinkedAccountMeta}
-                                    numberOfLines={1}
-                                  >
-                                    {selectedPayoutAccountDetails.detail}
-                                  </Text>
-                                </View>
-                              </View>
-                              {cashoutStatusState.loading && (
-                                <View style={styles.cashoutStatusHint}>
-                                  <ActivityIndicator
-                                    size="small"
-                                    color={COLORS.muted}
-                                  />
-                                  <Text style={styles.cashoutStatusText}>
-                                    Checking status...
-                                  </Text>
-                                </View>
-                              )}
-                              {cashoutStatusState.error && (
-                                <Text style={styles.cashoutErrorText}>
-                                  {cashoutStatusState.error}
-                                </Text>
-                              )}
-                              {cashoutActionStatus.error && (
-                                <Text style={styles.cashoutErrorText}>
-                                  {cashoutActionStatus.error}
-                                </Text>
-                              )}
-                              {cashoutActionStatus.success && (
-                                <Text style={styles.cashoutSuccessText}>
-                                  {cashoutActionStatus.success}
-                                </Text>
-                              )}
-                              <View style={styles.cashoutButtonStack}>
-                                {(!cashoutStatus.connected ||
-                                  !cashoutStatus.bankSelected ||
-                                  !cashoutStatus.payoutsEnabled ||
-                                  cashoutStatus.requirementsDue.length > 0 ||
-                                  !cashoutStatus.detailsSubmitted) && (
-                                  <TouchableOpacity
+                                  <View
                                     style={[
-                                      styles.cashoutActionCard,
-                                      styles.cashoutActionCardPrimary,
-                                      cashoutActionStatus.loading &&
-                                        styles.cashoutActionCardDisabled,
+                                      styles.cashoutSelectedAccountIcon,
+                                      !selectedPayoutAccountDetails.hasAccount &&
+                                        styles.cashoutSelectedAccountIconMuted,
                                     ]}
-                                    onPress={handleCashoutConnect}
-                                    disabled={cashoutActionStatus.loading}
                                   >
-                                    <View style={styles.cashoutActionMain}>
-                                      <View
+                                    <Ionicons
+                                      name={
+                                        selectedPayoutAccountDetails.hasAccount
+                                          ? "business-outline"
+                                          : "alert-circle-outline"
+                                      }
+                                      size={14}
+                                      color={
+                                        selectedPayoutAccountDetails.hasAccount
+                                          ? COLORS.pine
+                                          : COLORS.muted
+                                      }
+                                    />
+                                  </View>
+                                  <View style={styles.cashoutLinkedAccountMain}>
+                                    <Text
+                                      style={styles.cashoutLinkedAccountTitle}
+                                      numberOfLines={1}
+                                    >
+                                      {selectedPayoutAccountDetails.title}
+                                    </Text>
+                                    <Text
+                                      style={styles.cashoutLinkedAccountMeta}
+                                      numberOfLines={1}
+                                    >
+                                      {selectedPayoutAccountDetails.detail}
+                                    </Text>
+                                  </View>
+                                </View>
+                                {cashoutStatusState.loading && (
+                                  <View style={styles.cashoutStatusHint}>
+                                    <ActivityIndicator
+                                      size="small"
+                                      color={COLORS.muted}
+                                    />
+                                    <Text style={styles.cashoutStatusText}>
+                                      Checking status...
+                                    </Text>
+                                  </View>
+                                )}
+                                {cashoutStatusState.error && (
+                                  <Text style={styles.cashoutErrorText}>
+                                    {cashoutStatusState.error}
+                                  </Text>
+                                )}
+                                {cashoutActionStatus.error && (
+                                  <Text style={styles.cashoutErrorText}>
+                                    {cashoutActionStatus.error}
+                                  </Text>
+                                )}
+                                {cashoutActionStatus.success && (
+                                  <Text style={styles.cashoutSuccessText}>
+                                    {cashoutActionStatus.success}
+                                  </Text>
+                                )}
+                                <View style={styles.cashoutButtonStack}>
+                                  {(!cashoutStatus.connected ||
+                                    !cashoutStatus.bankSelected ||
+                                    !cashoutStatus.payoutsEnabled ||
+                                    cashoutStatus.requirementsDue.length > 0 ||
+                                    !cashoutStatus.detailsSubmitted) && (
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.cashoutActionCard,
+                                        styles.cashoutActionCardPrimary,
+                                        cashoutActionStatus.loading &&
+                                          styles.cashoutActionCardDisabled,
+                                      ]}
+                                      onPress={handleCashoutConnect}
+                                      disabled={cashoutActionStatus.loading}
+                                    >
+                                      <View style={styles.cashoutActionMain}>
+                                        <View
+                                          style={[
+                                            styles.cashoutActionIconWrap,
+                                            styles.cashoutActionIconWrapPrimary,
+                                          ]}
+                                        >
+                                          <Ionicons
+                                            name="wallet-outline"
+                                            size={15}
+                                            color={COLORS.white}
+                                          />
+                                        </View>
+                                        <View style={styles.cashoutActionCopy}>
+                                          <Text
+                                            style={[
+                                              styles.cashoutActionTitle,
+                                              styles.cashoutActionTitlePrimary,
+                                            ]}
+                                          >
+                                            Link bank
+                                          </Text>
+                                          <Text
+                                            style={[
+                                              styles.cashoutActionSubtitle,
+                                              styles.cashoutActionSubtitlePrimary,
+                                            ]}
+                                          >
+                                            Securely link your Stripe payout
+                                            account.
+                                          </Text>
+                                        </View>
+                                      </View>
+                                      <Ionicons
+                                        name="chevron-forward"
+                                        size={16}
+                                        color={COLORS.white}
+                                      />
+                                    </TouchableOpacity>
+                                  )}
+                                  {cashoutStatus.connected &&
+                                    cashoutStatus.bankSelected && (
+                                      <TouchableOpacity
                                         style={[
-                                          styles.cashoutActionIconWrap,
-                                          styles.cashoutActionIconWrapPrimary,
+                                          styles.cashoutActionCard,
+                                          styles.cashoutActionCardPrimary,
+                                          cashoutActionStatus.loading &&
+                                            styles.cashoutActionCardDisabled,
                                         ]}
+                                        onPress={handleCashoutManage}
+                                        disabled={cashoutActionStatus.loading}
                                       >
+                                        <View style={styles.cashoutActionMain}>
+                                          <View
+                                            style={[
+                                              styles.cashoutActionIconWrap,
+                                              styles.cashoutActionIconWrapPrimary,
+                                            ]}
+                                          >
+                                            <Ionicons
+                                              name="settings-outline"
+                                              size={15}
+                                              color={COLORS.white}
+                                            />
+                                          </View>
+                                          <View
+                                            style={styles.cashoutActionCopy}
+                                          >
+                                            <Text
+                                              style={[
+                                                styles.cashoutActionTitle,
+                                                styles.cashoutActionTitlePrimary,
+                                              ]}
+                                            >
+                                              Payout settings
+                                            </Text>
+                                            <Text
+                                              style={[
+                                                styles.cashoutActionSubtitle,
+                                                styles.cashoutActionSubtitlePrimary,
+                                              ]}
+                                            >
+                                              Review and update your Stripe
+                                              payout setup.
+                                            </Text>
+                                          </View>
+                                        </View>
                                         <Ionicons
-                                          name="wallet-outline"
-                                          size={15}
+                                          name="chevron-forward"
+                                          size={16}
                                           color={COLORS.white}
                                         />
-                                      </View>
-                                      <View style={styles.cashoutActionCopy}>
-                                        <Text
-                                          style={[
-                                            styles.cashoutActionTitle,
-                                            styles.cashoutActionTitlePrimary,
-                                          ]}
-                                        >
-                                          Link bank
-                                        </Text>
-                                        <Text
-                                          style={[
-                                            styles.cashoutActionSubtitle,
-                                            styles.cashoutActionSubtitlePrimary,
-                                          ]}
-                                        >
-                                          Securely link your Stripe payout account.
-                                        </Text>
-                                      </View>
-                                    </View>
-                                    <Ionicons
-                                      name="chevron-forward"
-                                      size={16}
-                                      color={COLORS.white}
-                                    />
-                                  </TouchableOpacity>
-                                )}
-                                {cashoutStatus.connected &&
-                                  cashoutStatus.bankSelected && (
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.cashoutActionCard,
-                                      styles.cashoutActionCardPrimary,
-                                      cashoutActionStatus.loading &&
-                                        styles.cashoutActionCardDisabled,
-                                    ]}
-                                    onPress={handleCashoutManage}
-                                    disabled={cashoutActionStatus.loading}
-                                  >
-                                    <View style={styles.cashoutActionMain}>
-                                      <View
-                                        style={[
-                                          styles.cashoutActionIconWrap,
-                                          styles.cashoutActionIconWrapPrimary,
-                                        ]}
-                                      >
-                                        <Ionicons
-                                          name="settings-outline"
-                                          size={15}
-                                          color={COLORS.white}
-                                        />
-                                      </View>
-                                      <View style={styles.cashoutActionCopy}>
-                                        <Text
-                                          style={[
-                                            styles.cashoutActionTitle,
-                                            styles.cashoutActionTitlePrimary,
-                                          ]}
-                                        >
-                                          Payout settings
-                                        </Text>
-                                        <Text
-                                          style={[
-                                            styles.cashoutActionSubtitle,
-                                            styles.cashoutActionSubtitlePrimary,
-                                          ]}
-                                        >
-                                          Review and update your Stripe payout setup.
-                                        </Text>
-                                      </View>
-                                    </View>
-                                    <Ionicons
-                                      name="chevron-forward"
-                                      size={16}
-                                      color={COLORS.white}
-                                    />
-                                  </TouchableOpacity>
-                                )}
-                              </View>
+                                      </TouchableOpacity>
+                                    )}
+                                </View>
                               </View>
                             ) : null}
                           </>
@@ -22413,13 +23045,14 @@ export default function App() {
                                     {googleAuthButtonLabel}
                                   </Text>
                                 </TouchableOpacity>
-                                {googleAuthInFlight && !!googleAuthStatusCopy && (
-                                  <View style={styles.authGoogleStatusRow}>
-                                    <Text style={styles.authGoogleStatusText}>
-                                      {googleAuthStatusCopy}
-                                    </Text>
-                                  </View>
-                                )}
+                                {googleAuthInFlight &&
+                                  !!googleAuthStatusCopy && (
+                                    <View style={styles.authGoogleStatusRow}>
+                                      <Text style={styles.authGoogleStatusText}>
+                                        {googleAuthStatusCopy}
+                                      </Text>
+                                    </View>
+                                  )}
 
                                 <TouchableOpacity
                                   style={styles.authSecondaryButton}
@@ -22493,13 +23126,14 @@ export default function App() {
                                     {googleAuthButtonLabel}
                                   </Text>
                                 </TouchableOpacity>
-                                {googleAuthInFlight && !!googleAuthStatusCopy && (
-                                  <View style={styles.authGoogleStatusRow}>
-                                    <Text style={styles.authGoogleStatusText}>
-                                      {googleAuthStatusCopy}
-                                    </Text>
-                                  </View>
-                                )}
+                                {googleAuthInFlight &&
+                                  !!googleAuthStatusCopy && (
+                                    <View style={styles.authGoogleStatusRow}>
+                                      <Text style={styles.authGoogleStatusText}>
+                                        {googleAuthStatusCopy}
+                                      </Text>
+                                    </View>
+                                  )}
 
                                 <Text style={styles.formLabel}>Email</Text>
                                 <AutoFocusInput
@@ -22553,7 +23187,12 @@ export default function App() {
                                     onPress={() =>
                                       setShowSignInPassword((prev) => !prev)
                                     }
-                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                    hitSlop={{
+                                      top: 8,
+                                      bottom: 8,
+                                      left: 8,
+                                      right: 8,
+                                    }}
                                   >
                                     <Ionicons
                                       name={
@@ -22620,7 +23259,8 @@ export default function App() {
                                 </TouchableOpacity>
                                 <View style={styles.authLegalBlock}>
                                   <Text style={styles.authLegalCopy}>
-                                    By continuing, you agree to our Terms and Privacy.
+                                    By continuing, you agree to our Terms and
+                                    Privacy.
                                   </Text>
                                   <View style={styles.authLegalLinksRow}>
                                     <TouchableOpacity
@@ -22634,7 +23274,9 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>
+                                      ·
+                                    </Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -22646,7 +23288,9 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>
+                                      ·
+                                    </Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -22750,7 +23394,8 @@ export default function App() {
                                 </TouchableOpacity>
                                 <View style={styles.authLegalBlock}>
                                   <Text style={styles.authLegalCopy}>
-                                    By continuing, you agree to our Terms and Privacy.
+                                    By continuing, you agree to our Terms and
+                                    Privacy.
                                   </Text>
                                   <View style={styles.authLegalLinksRow}>
                                     <TouchableOpacity
@@ -22764,7 +23409,9 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>
+                                      ·
+                                    </Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -22776,7 +23423,9 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>
+                                      ·
+                                    </Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -22811,11 +23460,13 @@ export default function App() {
                                   <Text style={styles.authBackText}>Back</Text>
                                 </TouchableOpacity>
 
-                                <Text style={styles.authTitle}>Forgot email</Text>
+                                <Text style={styles.authTitle}>
+                                  Forgot email
+                                </Text>
                                 <Text style={styles.authSubtitle}>
-                                  For security, we recover account emails through
-                                  support. Send a quick request and we'll help you
-                                  verify ownership.
+                                  For security, we recover account emails
+                                  through support. Send a quick request and
+                                  we'll help you verify ownership.
                                 </Text>
 
                                 <TouchableOpacity
@@ -22918,7 +23569,12 @@ export default function App() {
                                     onPress={() =>
                                       setShowSignUpPassword((prev) => !prev)
                                     }
-                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                    hitSlop={{
+                                      top: 8,
+                                      bottom: 8,
+                                      left: 8,
+                                      right: 8,
+                                    }}
                                   >
                                     <Ionicons
                                       name={
@@ -22954,7 +23610,8 @@ export default function App() {
                                 </TouchableOpacity>
                                 <View style={styles.authLegalBlock}>
                                   <Text style={styles.authLegalCopy}>
-                                    By continuing, you agree to our Terms and Privacy.
+                                    By continuing, you agree to our Terms and
+                                    Privacy.
                                   </Text>
                                   <View style={styles.authLegalLinksRow}>
                                     <TouchableOpacity
@@ -22968,7 +23625,9 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>
+                                      ·
+                                    </Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -22980,7 +23639,9 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>
+                                      ·
+                                    </Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -23015,7 +23676,9 @@ export default function App() {
                                   Create business account
                                 </Text>
                                 <Text style={styles.authSubtitle}>
-                                  Business accounts use one-time email verification and are reviewed before going live.
+                                  Business accounts use one-time email
+                                  verification and are reviewed before going
+                                  live.
                                 </Text>
 
                                 <View style={styles.formRow}>
@@ -23068,9 +23731,7 @@ export default function App() {
                                 <TouchableOpacity
                                   style={[styles.authInput, styles.selectInput]}
                                   onPress={() =>
-                                    setBusinessCategoryMenuOpen(
-                                      (prev) => !prev,
-                                    )
+                                    setBusinessCategoryMenuOpen((prev) => !prev)
                                   }
                                   activeOpacity={0.8}
                                 >
@@ -23105,15 +23766,20 @@ export default function App() {
                                                 styles.selectMenuOptionActive,
                                             ]}
                                             onPress={() => {
-                                              setBusinessCategoryKey(option.key);
+                                              setBusinessCategoryKey(
+                                                option.key,
+                                              );
                                               if (
-                                                option.key !== CATEGORY_OTHER_KEY
+                                                option.key !==
+                                                CATEGORY_OTHER_KEY
                                               ) {
                                                 setBusinessCategoryCustomLabel(
                                                   "",
                                                 );
                                               }
-                                              setBusinessCategoryMenuOpen(false);
+                                              setBusinessCategoryMenuOpen(
+                                                false,
+                                              );
                                             }}
                                           >
                                             <Text
@@ -23141,7 +23807,9 @@ export default function App() {
                                       placeholder="Enter custom category"
                                       placeholderTextColor={COLORS.muted}
                                       value={businessCategoryCustomLabel}
-                                      onChangeText={setBusinessCategoryCustomLabel}
+                                      onChangeText={
+                                        setBusinessCategoryCustomLabel
+                                      }
                                     />
                                   </>
                                 )}
@@ -23252,16 +23920,22 @@ export default function App() {
                                   Descriptor aliases (optional)
                                 </Text>
                                 <AutoFocusInput
-                                  style={[styles.authInput, styles.descriptorInput]}
+                                  style={[
+                                    styles.authInput,
+                                    styles.descriptorInput,
+                                  ]}
                                   placeholder="One per line (example: SQ * YOUR BUSINESS)"
                                   placeholderTextColor={COLORS.muted}
                                   value={businessDescriptorAliasesInput}
-                                  onChangeText={setBusinessDescriptorAliasesInput}
+                                  onChangeText={
+                                    setBusinessDescriptorAliasesInput
+                                  }
                                   multiline
                                   textAlignVertical="top"
                                 />
                                 <Text style={styles.formHint}>
-                                  Optional: helps improve automatic bank verification.
+                                  Optional: helps improve automatic bank
+                                  verification.
                                 </Text>
 
                                 <Text style={styles.formLabel}>
@@ -23517,7 +24191,8 @@ export default function App() {
                                 </TouchableOpacity>
                                 <View style={styles.authLegalBlock}>
                                   <Text style={styles.authLegalCopy}>
-                                    By continuing, you agree to our Terms and Privacy.
+                                    By continuing, you agree to our Terms and
+                                    Privacy.
                                   </Text>
                                   <View style={styles.authLegalLinksRow}>
                                     <TouchableOpacity
@@ -23531,7 +24206,9 @@ export default function App() {
                                         Terms
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>
+                                      ·
+                                    </Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -23543,7 +24220,9 @@ export default function App() {
                                         Privacy
                                       </Text>
                                     </TouchableOpacity>
-                                    <Text style={styles.authLegalDivider}>·</Text>
+                                    <Text style={styles.authLegalDivider}>
+                                      ·
+                                    </Text>
                                     <TouchableOpacity
                                       onPress={() =>
                                         Linking.openURL(
@@ -23580,9 +24259,7 @@ export default function App() {
                                     size={16}
                                     color={COLORS.muted}
                                   />
-                                  <Text style={styles.authBackText}>
-                                    Back
-                                  </Text>
+                                  <Text style={styles.authBackText}>Back</Text>
                                 </TouchableOpacity>
 
                                 <Text style={styles.authTitle}>
@@ -23590,11 +24267,14 @@ export default function App() {
                                 </Text>
                                 <Text style={styles.authSubtitle}>
                                   Enter the one-time code sent to{" "}
-                                  {businessOtpSentEmail || businessEmail.trim().toLowerCase()}.
-                                  Then create your password.
+                                  {businessOtpSentEmail ||
+                                    businessEmail.trim().toLowerCase()}
+                                  . Then create your password.
                                 </Text>
 
-                                <Text style={styles.formLabel}>One-time code</Text>
+                                <Text style={styles.formLabel}>
+                                  One-time code
+                                </Text>
                                 <AutoFocusInput
                                   style={styles.authInput}
                                   placeholder="8-digit code"
@@ -23605,13 +24285,16 @@ export default function App() {
                                       .replace(/\D/g, "")
                                       .slice(0, 8);
                                     setBusinessOtpCode(next);
-                                    if (businessSignUpError) setBusinessSignUpError(null);
-                                    if (businessSignUpNotice) setBusinessSignUpNotice(null);
+                                    if (businessSignUpError)
+                                      setBusinessSignUpError(null);
+                                    if (businessSignUpNotice)
+                                      setBusinessSignUpNotice(null);
                                   }}
                                   keyboardType="number-pad"
                                   returnKeyType="go"
                                   onSubmitEditing={() => {
-                                    if (!authBusy) handleVerifyBusinessSignUpCode();
+                                    if (!authBusy)
+                                      handleVerifyBusinessSignUpCode();
                                   }}
                                 />
                                 <Text style={styles.formLabel}>Password</Text>
@@ -23626,17 +24309,28 @@ export default function App() {
                                     value={businessVerifyPassword}
                                     onChangeText={(value) => {
                                       setBusinessVerifyPassword(value);
-                                      if (businessSignUpError) setBusinessSignUpError(null);
-                                      if (businessSignUpNotice) setBusinessSignUpNotice(null);
+                                      if (businessSignUpError)
+                                        setBusinessSignUpError(null);
+                                      if (businessSignUpNotice)
+                                        setBusinessSignUpNotice(null);
                                     }}
-                                    secureTextEntry={!showBusinessVerifyPassword}
+                                    secureTextEntry={
+                                      !showBusinessVerifyPassword
+                                    }
                                   />
                                   <TouchableOpacity
                                     style={styles.passwordToggleButton}
                                     onPress={() =>
-                                      setShowBusinessVerifyPassword((prev) => !prev)
+                                      setShowBusinessVerifyPassword(
+                                        (prev) => !prev,
+                                      )
                                     }
-                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                    hitSlop={{
+                                      top: 8,
+                                      bottom: 8,
+                                      left: 8,
+                                      right: 8,
+                                    }}
                                   >
                                     <Ionicons
                                       name={
@@ -23649,7 +24343,9 @@ export default function App() {
                                     />
                                   </TouchableOpacity>
                                 </View>
-                                <Text style={styles.formLabel}>Confirm password</Text>
+                                <Text style={styles.formLabel}>
+                                  Confirm password
+                                </Text>
                                 <View style={styles.passwordInputWrapper}>
                                   <AutoFocusInput
                                     style={[
@@ -23661,13 +24357,18 @@ export default function App() {
                                     value={businessVerifyPasswordConfirm}
                                     onChangeText={(value) => {
                                       setBusinessVerifyPasswordConfirm(value);
-                                      if (businessSignUpError) setBusinessSignUpError(null);
-                                      if (businessSignUpNotice) setBusinessSignUpNotice(null);
+                                      if (businessSignUpError)
+                                        setBusinessSignUpError(null);
+                                      if (businessSignUpNotice)
+                                        setBusinessSignUpNotice(null);
                                     }}
-                                    secureTextEntry={!showBusinessVerifyPasswordConfirm}
+                                    secureTextEntry={
+                                      !showBusinessVerifyPasswordConfirm
+                                    }
                                     returnKeyType="go"
                                     onSubmitEditing={() => {
-                                      if (!authBusy) handleVerifyBusinessSignUpCode();
+                                      if (!authBusy)
+                                        handleVerifyBusinessSignUpCode();
                                     }}
                                   />
                                   <TouchableOpacity
@@ -23677,7 +24378,12 @@ export default function App() {
                                         (prev) => !prev,
                                       )
                                     }
-                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                    hitSlop={{
+                                      top: 8,
+                                      bottom: 8,
+                                      left: 8,
+                                      right: 8,
+                                    }}
                                   >
                                     <Ionicons
                                       name={
@@ -23711,7 +24417,9 @@ export default function App() {
                                   disabled={authBusy}
                                 >
                                   <Text style={styles.authButtonText}>
-                                    {authBusy ? "Verifying..." : "Verify and continue"}
+                                    {authBusy
+                                      ? "Verifying..."
+                                      : "Verify and continue"}
                                   </Text>
                                 </TouchableOpacity>
                                 <TouchableOpacity
@@ -23764,9 +24472,17 @@ export default function App() {
                               </View>
                             </View>
 
-                            <View style={[styles.notificationPanel, styles.notificationPanelPro]}>
+                            <View
+                              style={[
+                                styles.notificationPanel,
+                                styles.notificationPanelPro,
+                              ]}
+                            >
                               <LinearGradient
-                                colors={["rgba(11, 33, 71, 0.08)", "rgba(11, 33, 71, 0)"]}
+                                colors={[
+                                  "rgba(11, 33, 71, 0.08)",
+                                  "rgba(11, 33, 71, 0)",
+                                ]}
                                 start={{ x: 0, y: 0 }}
                                 end={{ x: 1, y: 1 }}
                                 style={styles.notificationGradientAccent}
@@ -23784,7 +24500,9 @@ export default function App() {
                                     <Text style={styles.notificationTitleText}>
                                       Notifications
                                     </Text>
-                                    <Text style={styles.notificationSubtitleText}>
+                                    <Text
+                                      style={styles.notificationSubtitleText}
+                                    >
                                       {enabledNotificationCount} of 3 enabled
                                     </Text>
                                   </View>
@@ -23856,7 +24574,9 @@ export default function App() {
 
                               <TouchableOpacity
                                 style={styles.notificationManageButton}
-                                onPress={() => setNotificationSettingsOpen(true)}
+                                onPress={() =>
+                                  setNotificationSettingsOpen(true)
+                                }
                               >
                                 <View style={styles.notificationManageCopy}>
                                   <Text style={styles.notificationManageTitle}>
@@ -23870,7 +24590,9 @@ export default function App() {
                                 />
                               </TouchableOpacity>
                               {tokenError && (
-                                <Text style={styles.formError}>{tokenError}</Text>
+                                <Text style={styles.formError}>
+                                  {tokenError}
+                                </Text>
                               )}
                             </View>
 
@@ -23909,10 +24631,14 @@ export default function App() {
                                   </View>
                                   <View style={styles.referralProgressCard}>
                                     <View style={styles.referralProgressHeader}>
-                                      <Text style={styles.referralProgressTitle}>
+                                      <Text
+                                        style={styles.referralProgressTitle}
+                                      >
                                         Monthly progress
                                       </Text>
-                                      <Text style={styles.referralProgressAmount}>
+                                      <Text
+                                        style={styles.referralProgressAmount}
+                                      >
                                         {formatCurrencyFromCents(
                                           referralMonthlyEarnedCents,
                                         )}{" "}
@@ -23939,7 +24665,8 @@ export default function App() {
                                       {formatCurrencyFromCents(
                                         referralMonthlyRemainingCents,
                                       )}{" "}
-                                      | Rewarded {referralState.stats.rewardedBothCount}
+                                      | Rewarded{" "}
+                                      {referralState.stats.rewardedBothCount}
                                     </Text>
                                   </View>
                                   {referralClaimStatusMeta ? (
@@ -24044,7 +24771,9 @@ export default function App() {
                                             size={12}
                                             color={COLORS.pine}
                                           />
-                                          <Text style={styles.promoActivePillText}>
+                                          <Text
+                                            style={styles.promoActivePillText}
+                                          >
                                             {promoState.code}
                                           </Text>
                                         </View>
@@ -24052,8 +24781,9 @@ export default function App() {
                                     </View>
                                     <View style={styles.promoRatePill}>
                                       <Text style={styles.promoRateText}>
-                                        {formatCashbackRateLabel(cashbackRatePercent) ||
-                                          "Cashback"}
+                                        {formatCashbackRateLabel(
+                                          cashbackRatePercent,
+                                        ) || "Cashback"}
                                       </Text>
                                     </View>
                                   </View>
@@ -24128,14 +24858,18 @@ export default function App() {
                               </>
                             ) : null}
 
-                            <View style={[styles.formCard, styles.securityCard]}>
+                            <View
+                              style={[styles.formCard, styles.securityCard]}
+                            >
                               <View style={styles.accountSectionHeader}>
                                 <Ionicons
                                   name="person-circle-outline"
                                   size={16}
                                   color={COLORS.pine}
                                 />
-                                <Text style={styles.formHeaderTitle}>Account</Text>
+                                <Text style={styles.formHeaderTitle}>
+                                  Account
+                                </Text>
                               </View>
                               <View style={styles.formRow}>
                                 <View style={styles.formField}>
@@ -24174,7 +24908,10 @@ export default function App() {
 
                               <Text style={styles.formLabel}>Email</Text>
                               <AutoFocusInput
-                                style={[styles.formInput, styles.formInputDisabled]}
+                                style={[
+                                  styles.formInput,
+                                  styles.formInputDisabled,
+                                ]}
                                 placeholder="you@example.com"
                                 placeholderTextColor={COLORS.muted}
                                 value={profileEmail}
@@ -24230,7 +24967,9 @@ export default function App() {
                                     securityActivePanel === "email" &&
                                       styles.securityActionPillActive,
                                   ]}
-                                  onPress={() => setActiveSecurityPanel("email")}
+                                  onPress={() =>
+                                    setActiveSecurityPanel("email")
+                                  }
                                 >
                                   <Text
                                     style={[
@@ -24248,7 +24987,9 @@ export default function App() {
                                     securityActivePanel === "phone" &&
                                       styles.securityActionPillActive,
                                   ]}
-                                  onPress={() => setActiveSecurityPanel("phone")}
+                                  onPress={() =>
+                                    setActiveSecurityPanel("phone")
+                                  }
                                 >
                                   <Text
                                     style={[
@@ -24266,7 +25007,9 @@ export default function App() {
                                     securityActivePanel === "password" &&
                                       styles.securityActionPillActive,
                                   ]}
-                                  onPress={() => setActiveSecurityPanel("password")}
+                                  onPress={() =>
+                                    setActiveSecurityPanel("password")
+                                  }
                                 >
                                   <Text
                                     style={[
@@ -24298,7 +25041,9 @@ export default function App() {
                                         setSecurityCurrentPassword(value);
                                         clearSecurityStatusMessage();
                                       }}
-                                      secureTextEntry={!showSecurityCurrentPassword}
+                                      secureTextEntry={
+                                        !showSecurityCurrentPassword
+                                      }
                                       autoCapitalize="none"
                                       autoCorrect={false}
                                     />
@@ -24309,7 +25054,12 @@ export default function App() {
                                           (prev) => !prev,
                                         )
                                       }
-                                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                      hitSlop={{
+                                        top: 8,
+                                        bottom: 8,
+                                        left: 8,
+                                        right: 8,
+                                      }}
                                     >
                                       <Ionicons
                                         name={
@@ -24325,7 +25075,9 @@ export default function App() {
 
                                   {securityActivePanel === "email" ? (
                                     <>
-                                      <Text style={styles.formLabel}>New email</Text>
+                                      <Text style={styles.formLabel}>
+                                        New email
+                                      </Text>
                                       <AutoFocusInput
                                         style={styles.formInput}
                                         placeholder="new-email@example.com"
@@ -24356,7 +25108,8 @@ export default function App() {
                                       </TouchableOpacity>
                                       {pendingEmailChange ? (
                                         <Text style={styles.securityMetaText}>
-                                          Pending confirmation: {pendingEmailChange}
+                                          Pending confirmation:{" "}
+                                          {pendingEmailChange}
                                         </Text>
                                       ) : null}
                                     </>
@@ -24382,10 +25135,14 @@ export default function App() {
                                           isProfilePhoneFocusedRef.current = true;
                                           nudgeSheetToBottomForKeyboard(40);
                                           nudgeSheetToBottomForKeyboard(
-                                            Platform.OS === "android" ? 240 : 180,
+                                            Platform.OS === "android"
+                                              ? 240
+                                              : 180,
                                           );
                                           nudgeSheetToBottomForKeyboard(
-                                            Platform.OS === "android" ? 360 : 320,
+                                            Platform.OS === "android"
+                                              ? 360
+                                              : 320,
                                           );
                                         }}
                                         onBlur={() => {
@@ -24429,7 +25186,9 @@ export default function App() {
                                             setSecurityPasswordDraft(value);
                                             clearSecurityStatusMessage();
                                           }}
-                                          secureTextEntry={!showSecurityPasswordDraft}
+                                          secureTextEntry={
+                                            !showSecurityPasswordDraft
+                                          }
                                           autoCapitalize="none"
                                           autoCorrect={false}
                                         />
@@ -24440,7 +25199,12 @@ export default function App() {
                                               (prev) => !prev,
                                             )
                                           }
-                                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                          hitSlop={{
+                                            top: 8,
+                                            bottom: 8,
+                                            left: 8,
+                                            right: 8,
+                                          }}
                                         >
                                           <Ionicons
                                             name={
@@ -24469,7 +25233,9 @@ export default function App() {
                                             setSecurityPasswordConfirm(value);
                                             clearSecurityStatusMessage();
                                           }}
-                                          secureTextEntry={!showSecurityPasswordConfirm}
+                                          secureTextEntry={
+                                            !showSecurityPasswordConfirm
+                                          }
                                           autoCapitalize="none"
                                           autoCorrect={false}
                                           returnKeyType="done"
@@ -24486,7 +25252,12 @@ export default function App() {
                                               (prev) => !prev,
                                             )
                                           }
-                                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                          hitSlop={{
+                                            top: 8,
+                                            bottom: 8,
+                                            left: 8,
+                                            right: 8,
+                                          }}
                                         >
                                           <Ionicons
                                             name={
@@ -24543,11 +25314,16 @@ export default function App() {
                                   size={16}
                                   color={COLORS.pine}
                                 />
-                                <Text style={styles.formHeaderTitle}>Support</Text>
+                                <Text style={styles.formHeaderTitle}>
+                                  Support
+                                </Text>
                               </View>
                               <View style={styles.supportActionsRow}>
                                 <TouchableOpacity
-                                  style={[styles.primaryButton, styles.supportActionButton]}
+                                  style={[
+                                    styles.primaryButton,
+                                    styles.supportActionButton,
+                                  ]}
                                   onPress={handleContactSupport}
                                 >
                                   <Text style={styles.primaryButtonText}>
@@ -24684,7 +25460,9 @@ export default function App() {
                                     <Ionicons
                                       name={tab.icon}
                                       size={14}
-                                      color={isActive ? COLORS.white : COLORS.pine}
+                                      color={
+                                        isActive ? COLORS.white : COLORS.pine
+                                      }
                                     />
                                   </View>
                                   <View style={styles.adminWorkspaceTabCount}>
@@ -24751,176 +25529,190 @@ export default function App() {
                               </View>
                             ) : (
                               pendingEditBusinesses.map((business) => {
-                            const isExpanded = Boolean(
-                              expandedAdminEdits[business.id],
-                            );
-                            const pendingEdits = business.pendingEdits || {};
-                            const fields = Object.keys(pendingEdits).filter(
-                              (field) => field !== "coordinate",
-                            );
-                            const resolveValue = (field, value) => {
-                              if (field === "categoryKey") {
-                                return getCategoryConfig(value).display;
-                              }
-                              return value || "--";
-                            };
-                            return (
-                              <View key={business.id} style={styles.adminCard}>
-                                <TouchableOpacity
-                                  style={styles.adminHeaderRow}
-                                  onPress={() =>
-                                    setExpandedAdminEdits((prev) => ({
-                                      ...prev,
-                                      [business.id]: !prev[business.id],
-                                    }))
+                                const isExpanded = Boolean(
+                                  expandedAdminEdits[business.id],
+                                );
+                                const pendingEdits =
+                                  business.pendingEdits || {};
+                                const fields = Object.keys(pendingEdits).filter(
+                                  (field) => field !== "coordinate",
+                                );
+                                const resolveValue = (field, value) => {
+                                  if (field === "categoryKey") {
+                                    return getCategoryConfig(value).display;
                                   }
-                                >
-                                  <View style={styles.adminHeaderText}>
-                                    <Text style={styles.adminTitle}>
-                                      {business.name}
-                                    </Text>
-                                    <Text style={styles.adminMeta}>
-                                      {
-                                        getCategoryConfig(business.categoryKey)
-                                          .display
+                                  return value || "--";
+                                };
+                                return (
+                                  <View
+                                    key={business.id}
+                                    style={styles.adminCard}
+                                  >
+                                    <TouchableOpacity
+                                      style={styles.adminHeaderRow}
+                                      onPress={() =>
+                                        setExpandedAdminEdits((prev) => ({
+                                          ...prev,
+                                          [business.id]: !prev[business.id],
+                                        }))
                                       }
-                                    </Text>
-                                  </View>
-                                  <Ionicons
-                                    name={
-                                      isExpanded ? "chevron-up" : "chevron-down"
-                                    }
-                                    size={18}
-                                    color={COLORS.muted}
-                                  />
-                                </TouchableOpacity>
-                                <Text style={styles.adminOffer}>
-                                  Requested updates
-                                </Text>
-                                <View style={styles.pendingList}>
-                                  {fields.map((field) => (
-                                    <View
-                                      key={field}
-                                      style={styles.pendingPill}
                                     >
-                                      <Text style={styles.pendingPillText}>
-                                        {getPendingEditLabel(field)}
-                                      </Text>
-                                    </View>
-                                  ))}
-                                </View>
-                                {isExpanded && fields.length > 0 && (
-                                  <View style={styles.adminDetails}>
-                                    {fields.map((field) => (
-                                      <View
-                                        key={field}
-                                        style={styles.adminDetailRow}
-                                      >
-                                        <Text style={styles.adminDetailLabel}>
-                                          {getPendingEditLabel(field)}
+                                      <View style={styles.adminHeaderText}>
+                                        <Text style={styles.adminTitle}>
+                                          {business.name}
                                         </Text>
-                                        <Text style={styles.adminDetailValue}>
-                                          {resolveValue(field, business[field])}
-                                        </Text>
-                                        <Text
-                                          style={styles.adminDetailValueNew}
-                                        >
-                                          {resolveValue(
-                                            field,
-                                            pendingEdits[field],
-                                          )}
+                                        <Text style={styles.adminMeta}>
+                                          {
+                                            getCategoryConfig(
+                                              business.categoryKey,
+                                            ).display
+                                          }
                                         </Text>
                                       </View>
-                                    ))}
+                                      <Ionicons
+                                        name={
+                                          isExpanded
+                                            ? "chevron-up"
+                                            : "chevron-down"
+                                        }
+                                        size={18}
+                                        color={COLORS.muted}
+                                      />
+                                    </TouchableOpacity>
+                                    <Text style={styles.adminOffer}>
+                                      Requested updates
+                                    </Text>
+                                    <View style={styles.pendingList}>
+                                      {fields.map((field) => (
+                                        <View
+                                          key={field}
+                                          style={styles.pendingPill}
+                                        >
+                                          <Text style={styles.pendingPillText}>
+                                            {getPendingEditLabel(field)}
+                                          </Text>
+                                        </View>
+                                      ))}
+                                    </View>
+                                    {isExpanded && fields.length > 0 && (
+                                      <View style={styles.adminDetails}>
+                                        {fields.map((field) => (
+                                          <View
+                                            key={field}
+                                            style={styles.adminDetailRow}
+                                          >
+                                            <Text
+                                              style={styles.adminDetailLabel}
+                                            >
+                                              {getPendingEditLabel(field)}
+                                            </Text>
+                                            <Text
+                                              style={styles.adminDetailValue}
+                                            >
+                                              {resolveValue(
+                                                field,
+                                                business[field],
+                                              )}
+                                            </Text>
+                                            <Text
+                                              style={styles.adminDetailValueNew}
+                                            >
+                                              {resolveValue(
+                                                field,
+                                                pendingEdits[field],
+                                              )}
+                                            </Text>
+                                          </View>
+                                        ))}
+                                      </View>
+                                    )}
+                                    <View style={styles.adminActions}>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.adminApprove,
+                                          isQueueActionArmed(
+                                            "edit",
+                                            business.id,
+                                            "approve",
+                                          ) && styles.adminActionArmed,
+                                        ]}
+                                        onPress={() =>
+                                          runQueueGuardedAction({
+                                            scope: "edit",
+                                            id: business.id,
+                                            action: "approve",
+                                            title: "Approve edit request?",
+                                            message:
+                                              "This will apply all pending edits to the business listing.",
+                                            onConfirm: () =>
+                                              handleApproveEdits(business.id),
+                                          })
+                                        }
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.adminActionText,
+                                            isQueueActionArmed(
+                                              "edit",
+                                              business.id,
+                                              "approve",
+                                            ) && styles.adminActionArmedText,
+                                          ]}
+                                        >
+                                          {isQueueActionArmed(
+                                            "edit",
+                                            business.id,
+                                            "approve",
+                                          )
+                                            ? "Confirm approve"
+                                            : "Arm approve"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.adminReject,
+                                          isQueueActionArmed(
+                                            "edit",
+                                            business.id,
+                                            "reject",
+                                          ) && styles.adminActionArmed,
+                                        ]}
+                                        onPress={() =>
+                                          runQueueGuardedAction({
+                                            scope: "edit",
+                                            id: business.id,
+                                            action: "reject",
+                                            title: "Reject edit request?",
+                                            message:
+                                              "This will discard the pending edits for this listing.",
+                                            onConfirm: () =>
+                                              handleRejectEdits(business.id),
+                                          })
+                                        }
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.adminActionText,
+                                            styles.adminActionTextDark,
+                                            isQueueActionArmed(
+                                              "edit",
+                                              business.id,
+                                              "reject",
+                                            ) && styles.adminActionArmedText,
+                                          ]}
+                                        >
+                                          {isQueueActionArmed(
+                                            "edit",
+                                            business.id,
+                                            "reject",
+                                          )
+                                            ? "Confirm reject"
+                                            : "Arm reject"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    </View>
                                   </View>
-                                )}
-                                <View style={styles.adminActions}>
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.adminApprove,
-                                      isQueueActionArmed(
-                                        "edit",
-                                        business.id,
-                                        "approve",
-                                      ) && styles.adminActionArmed,
-                                    ]}
-                                    onPress={() =>
-                                      runQueueGuardedAction({
-                                        scope: "edit",
-                                        id: business.id,
-                                        action: "approve",
-                                        title: "Approve edit request?",
-                                        message:
-                                          "This will apply all pending edits to the business listing.",
-                                        onConfirm: () =>
-                                          handleApproveEdits(business.id),
-                                      })
-                                    }
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.adminActionText,
-                                        isQueueActionArmed(
-                                          "edit",
-                                          business.id,
-                                          "approve",
-                                        ) && styles.adminActionArmedText,
-                                      ]}
-                                    >
-                                      {isQueueActionArmed(
-                                        "edit",
-                                        business.id,
-                                        "approve",
-                                      )
-                                        ? "Confirm approve"
-                                        : "Arm approve"}
-                                    </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.adminReject,
-                                      isQueueActionArmed(
-                                        "edit",
-                                        business.id,
-                                        "reject",
-                                      ) && styles.adminActionArmed,
-                                    ]}
-                                    onPress={() =>
-                                      runQueueGuardedAction({
-                                        scope: "edit",
-                                        id: business.id,
-                                        action: "reject",
-                                        title: "Reject edit request?",
-                                        message:
-                                          "This will discard the pending edits for this listing.",
-                                        onConfirm: () =>
-                                          handleRejectEdits(business.id),
-                                      })
-                                    }
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.adminActionText,
-                                        styles.adminActionTextDark,
-                                        isQueueActionArmed(
-                                          "edit",
-                                          business.id,
-                                          "reject",
-                                        ) && styles.adminActionArmedText,
-                                      ]}
-                                    >
-                                      {isQueueActionArmed(
-                                        "edit",
-                                        business.id,
-                                        "reject",
-                                      )
-                                        ? "Confirm reject"
-                                        : "Arm reject"}
-                                    </Text>
-                                  </TouchableOpacity>
-                                </View>
-                              </View>
-                            );
+                                );
                               })
                             )}
 
@@ -24929,7 +25721,8 @@ export default function App() {
                                 Pending offers
                               </Text>
                               <Text style={styles.sectionBody}>
-                                Review new offers before they appear on Discover.
+                                Review new offers before they appear on
+                                Discover.
                               </Text>
                             </View>
 
@@ -24955,312 +25748,347 @@ export default function App() {
                               </View>
                             ) : (
                               pendingOffers.map((offer) => {
-                            const isExpanded = Boolean(
-                              expandedAdminOffers[offer.id],
-                            );
-                            const offerLimitLabel = formatOfferRedemptionLimit(
-                              offer.redemptionLimitPeriod,
-                              offer.redemptionLimitCount,
-                            );
-                            const offerCreatedLabel = formatHistoryTimestamp(
-                              offer.createdAt,
-                            );
-                            const offerCreatedShort =
-                              formatShortDate(offer.createdAt) ||
-                              "Date unavailable";
-                            const businessCreatedLabel = offer.business
-                              ?.created_at
-                              ? formatHistoryTimestamp(
-                                  offer.business.created_at,
-                                )
-                              : null;
-                            const businessCategoryLabel =
-                              offer.business?.category_label ||
-                              getCategoryConfig(
-                                offer.business?.category_key || "restaurant",
-                              ).display;
-                            return (
-                              <View key={offer.id} style={styles.adminCard}>
-                                <TouchableOpacity
-                                  style={styles.adminHeaderRow}
-                                  onPress={() =>
-                                    setExpandedAdminOffers((prev) => ({
-                                      ...prev,
-                                      [offer.id]: !prev[offer.id],
-                                    }))
-                                  }
-                                >
-                                  <View style={styles.adminHeaderText}>
-                                    <Text style={styles.adminTitle}>
-                                      {offer.title || "New offer"}
-                                    </Text>
-                                    <Text style={styles.adminMeta}>
-                                      {offer.business?.name || "Business"}
-                                    </Text>
-                                  </View>
-                                  <Ionicons
-                                    name={
-                                      isExpanded ? "chevron-up" : "chevron-down"
-                                    }
-                                    size={18}
-                                    color={COLORS.muted}
-                                  />
-                                </TouchableOpacity>
-                                <View style={styles.adminQuickMetaRow}>
-                                  <View style={styles.adminQuickMetaChip}>
-                                    <Text style={styles.adminQuickMetaText}>
-                                      {`Created ${offerCreatedShort}`}
-                                    </Text>
-                                  </View>
-                                  <View style={styles.adminQuickMetaChip}>
-                                    <Text style={styles.adminQuickMetaText}>
-                                      {offerLimitLabel}
-                                    </Text>
-                                  </View>
-                                </View>
-                                {isExpanded && (
-                                  <View style={styles.adminDetails}>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Offer photo
-                                      </Text>
-                                      {offer.imageUrl ? (
-                                        <Image
-                                          source={{ uri: offer.imageUrl }}
-                                          style={styles.adminOfferImage}
-                                          resizeMode="cover"
-                                        />
-                                      ) : (
-                                        <View
-                                          style={styles.adminOfferImagePlaceholder}
-                                        >
+                                const isExpanded = Boolean(
+                                  expandedAdminOffers[offer.id],
+                                );
+                                const offerLimitLabel =
+                                  formatOfferRedemptionLimit(
+                                    offer.redemptionLimitPeriod,
+                                    offer.redemptionLimitCount,
+                                  );
+                                const offerCreatedLabel =
+                                  formatHistoryTimestamp(offer.createdAt);
+                                const offerCreatedShort =
+                                  formatShortDate(offer.createdAt) ||
+                                  "Date unavailable";
+                                const businessCreatedLabel = offer.business
+                                  ?.created_at
+                                  ? formatHistoryTimestamp(
+                                      offer.business.created_at,
+                                    )
+                                  : null;
+                                const businessCategoryLabel =
+                                  offer.business?.category_label ||
+                                  getCategoryConfig(
+                                    offer.business?.category_key ||
+                                      "restaurant",
+                                  ).display;
+                                return (
+                                  <View key={offer.id} style={styles.adminCard}>
+                                    <TouchableOpacity
+                                      style={styles.adminHeaderRow}
+                                      onPress={() =>
+                                        setExpandedAdminOffers((prev) => ({
+                                          ...prev,
+                                          [offer.id]: !prev[offer.id],
+                                        }))
+                                      }
+                                    >
+                                      <View style={styles.adminHeaderText}>
+                                        <Text style={styles.adminTitle}>
+                                          {offer.title || "New offer"}
+                                        </Text>
+                                        <Text style={styles.adminMeta}>
+                                          {offer.business?.name || "Business"}
+                                        </Text>
+                                      </View>
+                                      <Ionicons
+                                        name={
+                                          isExpanded
+                                            ? "chevron-up"
+                                            : "chevron-down"
+                                        }
+                                        size={18}
+                                        color={COLORS.muted}
+                                      />
+                                    </TouchableOpacity>
+                                    <View style={styles.adminQuickMetaRow}>
+                                      <View style={styles.adminQuickMetaChip}>
+                                        <Text style={styles.adminQuickMetaText}>
+                                          {`Created ${offerCreatedShort}`}
+                                        </Text>
+                                      </View>
+                                      <View style={styles.adminQuickMetaChip}>
+                                        <Text style={styles.adminQuickMetaText}>
+                                          {offerLimitLabel}
+                                        </Text>
+                                      </View>
+                                    </View>
+                                    {isExpanded && (
+                                      <View style={styles.adminDetails}>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Offer photo
+                                          </Text>
+                                          {offer.imageUrl ? (
+                                            <Image
+                                              source={{ uri: offer.imageUrl }}
+                                              style={styles.adminOfferImage}
+                                              resizeMode="cover"
+                                            />
+                                          ) : (
+                                            <View
+                                              style={
+                                                styles.adminOfferImagePlaceholder
+                                              }
+                                            >
+                                              <Text
+                                                style={
+                                                  styles.adminOfferImagePlaceholderText
+                                                }
+                                              >
+                                                No photo uploaded
+                                              </Text>
+                                            </View>
+                                          )}
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Description
+                                          </Text>
                                           <Text
-                                            style={
-                                              styles.adminOfferImagePlaceholderText
-                                            }
+                                            style={styles.adminDetailValueFull}
                                           >
-                                            No photo uploaded
+                                            {offer.description || "--"}
                                           </Text>
                                         </View>
-                                      )}
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Description
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {offer.description || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Redemption limit
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {offerLimitLabel}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Business category
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {businessCategoryLabel || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Offer ID
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {offer.id || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Active
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {offer.active ? "Yes" : "No"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Approval status
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {offer.approvalStatus || "pending"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Offer type
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {offer.offerType
-                                          ? normalizeOfferType(offer.offerType)
-                                          : "Offer"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Created
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {offerCreatedLabel}
-                                      </Text>
-                                    </View>
-                                    {businessCreatedLabel ? (
-                                      <View style={styles.adminDetailRow}>
-                                        <Text style={styles.adminDetailLabel}>
-                                          Business created
-                                        </Text>
-                                        <Text style={styles.adminDetailValueFull}>
-                                          {businessCreatedLabel}
-                                        </Text>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Redemption limit
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {offerLimitLabel}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Business category
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {businessCategoryLabel || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Offer ID
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {offer.id || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Active
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {offer.active ? "Yes" : "No"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Approval status
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {offer.approvalStatus || "pending"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Offer type
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {offer.offerType
+                                              ? normalizeOfferType(
+                                                  offer.offerType,
+                                                )
+                                              : "Offer"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Created
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {offerCreatedLabel}
+                                          </Text>
+                                        </View>
+                                        {businessCreatedLabel ? (
+                                          <View style={styles.adminDetailRow}>
+                                            <Text
+                                              style={styles.adminDetailLabel}
+                                            >
+                                              Business created
+                                            </Text>
+                                            <Text
+                                              style={
+                                                styles.adminDetailValueFull
+                                              }
+                                            >
+                                              {businessCreatedLabel}
+                                            </Text>
+                                          </View>
+                                        ) : null}
+                                        {offer.business?.name ? (
+                                          <View style={styles.adminDetailRow}>
+                                            <Text
+                                              style={styles.adminDetailLabel}
+                                            >
+                                              Business
+                                            </Text>
+                                            <Text
+                                              style={
+                                                styles.adminDetailValueFull
+                                              }
+                                            >
+                                              {offer.business.name}
+                                            </Text>
+                                          </View>
+                                        ) : null}
                                       </View>
-                                    ) : null}
-                                    {offer.business?.name ? (
-                                      <View style={styles.adminDetailRow}>
-                                        <Text style={styles.adminDetailLabel}>
-                                          Business
+                                    )}
+                                    <View style={styles.adminActions}>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.adminApprove,
+                                          isQueueActionArmed(
+                                            "offer",
+                                            offer.id,
+                                            "approve",
+                                          ) && styles.adminActionArmed,
+                                        ]}
+                                        onPress={() =>
+                                          runQueueGuardedAction({
+                                            scope: "offer",
+                                            id: offer.id,
+                                            action: "approve",
+                                            title: "Approve this offer?",
+                                            message:
+                                              "This will publish the offer to Discover for eligible users.",
+                                            onConfirm: () =>
+                                              handleApproveOffer(offer.id),
+                                          })
+                                        }
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.adminActionText,
+                                            isQueueActionArmed(
+                                              "offer",
+                                              offer.id,
+                                              "approve",
+                                            ) && styles.adminActionArmedText,
+                                          ]}
+                                        >
+                                          {isQueueActionArmed(
+                                            "offer",
+                                            offer.id,
+                                            "approve",
+                                          )
+                                            ? "Confirm approve"
+                                            : "Arm approve"}
                                         </Text>
-                                        <Text style={styles.adminDetailValueFull}>
-                                          {offer.business.name}
+                                      </TouchableOpacity>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.adminReject,
+                                          isQueueActionArmed(
+                                            "offer",
+                                            offer.id,
+                                            "reject",
+                                          ) && styles.adminActionArmed,
+                                        ]}
+                                        onPress={() =>
+                                          runQueueGuardedAction({
+                                            scope: "offer",
+                                            id: offer.id,
+                                            action: "reject",
+                                            title: "Reject this offer?",
+                                            message:
+                                              "This will mark the offer rejected and deactivate it.",
+                                            onConfirm: () =>
+                                              handleRejectOffer(offer.id),
+                                          })
+                                        }
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.adminActionText,
+                                            styles.adminActionTextDark,
+                                            isQueueActionArmed(
+                                              "offer",
+                                              offer.id,
+                                              "reject",
+                                            ) && styles.adminActionArmedText,
+                                          ]}
+                                        >
+                                          {isQueueActionArmed(
+                                            "offer",
+                                            offer.id,
+                                            "reject",
+                                          )
+                                            ? "Confirm reject"
+                                            : "Arm reject"}
                                         </Text>
-                                      </View>
-                                    ) : null}
+                                      </TouchableOpacity>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.adminDelete,
+                                          isQueueActionArmed(
+                                            "offer",
+                                            offer.id,
+                                            "delete",
+                                          ) && styles.adminActionArmed,
+                                        ]}
+                                        onPress={() =>
+                                          runQueueGuardedAction({
+                                            scope: "offer",
+                                            id: offer.id,
+                                            action: "delete",
+                                            title: "Delete this pending offer?",
+                                            message:
+                                              "This permanently removes the pending offer and attempts to remove the uploaded image.",
+                                            onConfirm: () =>
+                                              handleAdminDeleteOffer(offer),
+                                          })
+                                        }
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.adminActionText,
+                                            styles.adminActionTextDark,
+                                            isQueueActionArmed(
+                                              "offer",
+                                              offer.id,
+                                              "delete",
+                                            ) && styles.adminActionArmedText,
+                                          ]}
+                                        >
+                                          {isQueueActionArmed(
+                                            "offer",
+                                            offer.id,
+                                            "delete",
+                                          )
+                                            ? "Confirm delete"
+                                            : "Arm delete"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    </View>
                                   </View>
-                                )}
-                                <View style={styles.adminActions}>
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.adminApprove,
-                                      isQueueActionArmed(
-                                        "offer",
-                                        offer.id,
-                                        "approve",
-                                      ) && styles.adminActionArmed,
-                                    ]}
-                                    onPress={() =>
-                                      runQueueGuardedAction({
-                                        scope: "offer",
-                                        id: offer.id,
-                                        action: "approve",
-                                        title: "Approve this offer?",
-                                        message:
-                                          "This will publish the offer to Discover for eligible users.",
-                                        onConfirm: () =>
-                                          handleApproveOffer(offer.id),
-                                      })
-                                    }
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.adminActionText,
-                                        isQueueActionArmed(
-                                          "offer",
-                                          offer.id,
-                                          "approve",
-                                        ) && styles.adminActionArmedText,
-                                      ]}
-                                    >
-                                      {isQueueActionArmed(
-                                        "offer",
-                                        offer.id,
-                                        "approve",
-                                      )
-                                        ? "Confirm approve"
-                                        : "Arm approve"}
-                                    </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.adminReject,
-                                      isQueueActionArmed(
-                                        "offer",
-                                        offer.id,
-                                        "reject",
-                                      ) && styles.adminActionArmed,
-                                    ]}
-                                    onPress={() =>
-                                      runQueueGuardedAction({
-                                        scope: "offer",
-                                        id: offer.id,
-                                        action: "reject",
-                                        title: "Reject this offer?",
-                                        message:
-                                          "This will mark the offer rejected and deactivate it.",
-                                        onConfirm: () =>
-                                          handleRejectOffer(offer.id),
-                                      })
-                                    }
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.adminActionText,
-                                        styles.adminActionTextDark,
-                                        isQueueActionArmed(
-                                          "offer",
-                                          offer.id,
-                                          "reject",
-                                        ) && styles.adminActionArmedText,
-                                      ]}
-                                    >
-                                      {isQueueActionArmed(
-                                        "offer",
-                                        offer.id,
-                                        "reject",
-                                      )
-                                        ? "Confirm reject"
-                                        : "Arm reject"}
-                                    </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.adminDelete,
-                                      isQueueActionArmed(
-                                        "offer",
-                                        offer.id,
-                                        "delete",
-                                      ) && styles.adminActionArmed,
-                                    ]}
-                                    onPress={() =>
-                                      runQueueGuardedAction({
-                                        scope: "offer",
-                                        id: offer.id,
-                                        action: "delete",
-                                        title: "Delete this pending offer?",
-                                        message:
-                                          "This permanently removes the pending offer and attempts to remove the uploaded image.",
-                                        onConfirm: () =>
-                                          handleAdminDeleteOffer(offer),
-                                      })
-                                    }
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.adminActionText,
-                                        styles.adminActionTextDark,
-                                        isQueueActionArmed(
-                                          "offer",
-                                          offer.id,
-                                          "delete",
-                                        ) && styles.adminActionArmedText,
-                                      ]}
-                                    >
-                                      {isQueueActionArmed(
-                                        "offer",
-                                        offer.id,
-                                        "delete",
-                                      )
-                                        ? "Confirm delete"
-                                        : "Arm delete"}
-                                    </Text>
-                                  </TouchableOpacity>
-                                </View>
-                              </View>
-                            );
+                                );
                               })
                             )}
 
@@ -25284,447 +26112,489 @@ export default function App() {
                               </View>
                             ) : (
                               pendingBusinesses.map((business) => {
-                            const isExpanded = Boolean(
-                              expandedAdminBusinesses[business.id],
-                            );
-                            const addressLine = [
-                              business.address,
-                              [
-                                business.city,
-                                business.state,
-                                business.postalCode,
-                              ]
-                                .filter(Boolean)
-                                .join(", "),
-                            ]
-                              .filter(Boolean)
-                              .join(", ");
-                            const tagLine = sanitizeBusinessTags(
-                              business.tags,
-                            ).join(", ");
-                            const categoryLabel = getCategoryConfig(
-                              business.categoryKey,
-                            ).display;
-                            const coordinateLabel =
-                              business.coordinate &&
-                              Number.isFinite(
-                                Number(business.coordinate.latitude),
-                              ) &&
-                              Number.isFinite(
-                                Number(business.coordinate.longitude),
-                              )
-                                ? `${Number(business.coordinate.latitude).toFixed(6)}, ${Number(business.coordinate.longitude).toFixed(6)}`
-                                : "--";
-                            const hasDirectionsTarget = Boolean(
-                              business.address ||
-                                (business.coordinate &&
+                                const isExpanded = Boolean(
+                                  expandedAdminBusinesses[business.id],
+                                );
+                                const addressLine = [
+                                  business.address,
+                                  [
+                                    business.city,
+                                    business.state,
+                                    business.postalCode,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(", "),
+                                ]
+                                  .filter(Boolean)
+                                  .join(", ");
+                                const tagLine = sanitizeBusinessTags(
+                                  business.tags,
+                                ).join(", ");
+                                const categoryLabel = getCategoryConfig(
+                                  business.categoryKey,
+                                ).display;
+                                const coordinateLabel =
+                                  business.coordinate &&
                                   Number.isFinite(
                                     Number(business.coordinate.latitude),
                                   ) &&
                                   Number.isFinite(
                                     Number(business.coordinate.longitude),
-                                  )),
-                            );
-                            const selectedCommissionRate =
-                              normalizeBusinessCommissionRateCents(
-                                pendingBusinessCommissionRates[business.id],
-                              );
-                            const businessHighlight = String(
-                              business.offer || "",
-                            ).trim();
-                            const businessSummaryText =
-                              businessHighlight || "No offer highlight submitted.";
-                            const businessCreatedLabel =
-                              formatHistoryTimestamp(business.createdAt);
-                            const businessCreatedShort =
-                              formatShortDate(business.createdAt) ||
-                              "Date unavailable";
-                            return (
-                              <View key={business.id} style={styles.adminCard}>
-                                <TouchableOpacity
-                                  style={styles.adminHeaderRow}
-                                  onPress={() =>
-                                    setExpandedAdminBusinesses((prev) => ({
-                                      ...prev,
-                                      [business.id]: !prev[business.id],
-                                    }))
-                                  }
-                                >
-                                  <View style={styles.adminHeaderText}>
-                                    <Text style={styles.adminTitle}>
-                                      {business.name}
-                                    </Text>
-                                    <Text style={styles.adminMeta}>
-                                      {
-                                        getCategoryConfig(business.categoryKey)
-                                          .display
+                                  )
+                                    ? `${Number(business.coordinate.latitude).toFixed(6)}, ${Number(business.coordinate.longitude).toFixed(6)}`
+                                    : "--";
+                                const hasDirectionsTarget = Boolean(
+                                  business.address ||
+                                  (business.coordinate &&
+                                    Number.isFinite(
+                                      Number(business.coordinate.latitude),
+                                    ) &&
+                                    Number.isFinite(
+                                      Number(business.coordinate.longitude),
+                                    )),
+                                );
+                                const selectedCommissionRate =
+                                  normalizeBusinessCommissionRateCents(
+                                    pendingBusinessCommissionRates[business.id],
+                                  );
+                                const businessHighlight = String(
+                                  business.offer || "",
+                                ).trim();
+                                const businessSummaryText =
+                                  businessHighlight ||
+                                  "No offer highlight submitted.";
+                                const businessCreatedLabel =
+                                  formatHistoryTimestamp(business.createdAt);
+                                const businessCreatedShort =
+                                  formatShortDate(business.createdAt) ||
+                                  "Date unavailable";
+                                return (
+                                  <View
+                                    key={business.id}
+                                    style={styles.adminCard}
+                                  >
+                                    <TouchableOpacity
+                                      style={styles.adminHeaderRow}
+                                      onPress={() =>
+                                        setExpandedAdminBusinesses((prev) => ({
+                                          ...prev,
+                                          [business.id]: !prev[business.id],
+                                        }))
                                       }
+                                    >
+                                      <View style={styles.adminHeaderText}>
+                                        <Text style={styles.adminTitle}>
+                                          {business.name}
+                                        </Text>
+                                        <Text style={styles.adminMeta}>
+                                          {
+                                            getCategoryConfig(
+                                              business.categoryKey,
+                                            ).display
+                                          }
+                                        </Text>
+                                      </View>
+                                      <Ionicons
+                                        name={
+                                          isExpanded
+                                            ? "chevron-up"
+                                            : "chevron-down"
+                                        }
+                                        size={18}
+                                        color={COLORS.muted}
+                                      />
+                                    </TouchableOpacity>
+                                    <Text style={styles.adminOffer}>
+                                      {businessSummaryText}
                                     </Text>
-                                  </View>
-                                  <Ionicons
-                                    name={
-                                      isExpanded ? "chevron-up" : "chevron-down"
-                                    }
-                                    size={18}
-                                    color={COLORS.muted}
-                                  />
-                                </TouchableOpacity>
-                                <Text style={styles.adminOffer}>
-                                  {businessSummaryText}
-                                </Text>
-                                <View style={styles.adminQuickMetaRow}>
-                                  <View style={styles.adminQuickMetaChip}>
-                                    <Text style={styles.adminQuickMetaText}>
-                                      {`Submitted ${businessCreatedShort}`}
-                                    </Text>
-                                  </View>
-                                  <View style={styles.adminQuickMetaChip}>
-                                    <Text style={styles.adminQuickMetaText}>
-                                      {`Commission ${selectedCommissionRate / 10}%`}
-                                    </Text>
-                                  </View>
-                                </View>
-                                {isExpanded && (
-                                  <View style={styles.adminDetails}>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Business name
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {business.name || "--"}
-                                      </Text>
+                                    <View style={styles.adminQuickMetaRow}>
+                                      <View style={styles.adminQuickMetaChip}>
+                                        <Text style={styles.adminQuickMetaText}>
+                                          {`Submitted ${businessCreatedShort}`}
+                                        </Text>
+                                      </View>
+                                      <View style={styles.adminQuickMetaChip}>
+                                        <Text style={styles.adminQuickMetaText}>
+                                          {`Commission ${selectedCommissionRate / 10}%`}
+                                        </Text>
+                                      </View>
                                     </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Category
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {categoryLabel || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Highlight
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {businessHighlight || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Address
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {addressLine || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        City
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {business.city || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        State
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {business.state || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Postal code
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {business.postalCode || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Phone
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {business.phone || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Hours
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {business.hours || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Coordinates
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {coordinateLabel}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Listing status
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {business.status || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Open now
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {business.isOpen ? "Yes" : "No"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Business ID
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {business.id || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Owner ID
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {business.ownerId || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Tags
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {tagLine || "--"}
-                                      </Text>
-                                    </View>
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Commission rate
-                                      </Text>
-                                      <View style={styles.adminRatePicker}>
-                                        {BUSINESS_COMMISSION_OPTIONS.map(
-                                          (option) => {
-                                            const isSelected =
-                                              selectedCommissionRate ===
-                                              option.value;
-                                            return (
-                                              <TouchableOpacity
-                                                key={`${business.id}-${option.value}`}
-                                                style={[
-                                                  styles.adminRateOption,
-                                                  isSelected &&
-                                                    styles.adminRateOptionSelected,
-                                                ]}
-                                                onPress={() =>
-                                                  setPendingBusinessCommissionRates(
-                                                    (prev) => ({
-                                                      ...prev,
-                                                      [business.id]:
-                                                        option.value,
-                                                    }),
-                                                  )
+                                    {isExpanded && (
+                                      <View style={styles.adminDetails}>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Business name
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {business.name || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Category
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {categoryLabel || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Highlight
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {businessHighlight || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Address
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {addressLine || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            City
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {business.city || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            State
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {business.state || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Postal code
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {business.postalCode || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Phone
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {business.phone || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Hours
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {business.hours || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Coordinates
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {coordinateLabel}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Listing status
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {business.status || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Open now
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {business.isOpen ? "Yes" : "No"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Business ID
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {business.id || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Owner ID
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {business.ownerId || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Tags
+                                          </Text>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {tagLine || "--"}
+                                          </Text>
+                                        </View>
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Commission rate
+                                          </Text>
+                                          <View style={styles.adminRatePicker}>
+                                            {BUSINESS_COMMISSION_OPTIONS.map(
+                                              (option) => {
+                                                const isSelected =
+                                                  selectedCommissionRate ===
+                                                  option.value;
+                                                return (
+                                                  <TouchableOpacity
+                                                    key={`${business.id}-${option.value}`}
+                                                    style={[
+                                                      styles.adminRateOption,
+                                                      isSelected &&
+                                                        styles.adminRateOptionSelected,
+                                                    ]}
+                                                    onPress={() =>
+                                                      setPendingBusinessCommissionRates(
+                                                        (prev) => ({
+                                                          ...prev,
+                                                          [business.id]:
+                                                            option.value,
+                                                        }),
+                                                      )
+                                                    }
+                                                  >
+                                                    <Text
+                                                      style={[
+                                                        styles.adminRateOptionText,
+                                                        isSelected &&
+                                                          styles.adminRateOptionTextSelected,
+                                                      ]}
+                                                    >
+                                                      {option.label}
+                                                    </Text>
+                                                  </TouchableOpacity>
+                                                );
+                                              },
+                                            )}
+                                          </View>
+                                          <Text style={styles.adminMeta}>
+                                            This rate is applied on approval.
+                                          </Text>
+                                        </View>
+                                        {hasDirectionsTarget && (
+                                          <View style={styles.adminDetailRow}>
+                                            <TouchableOpacity
+                                              style={styles.adminRouteButton}
+                                              onPress={() =>
+                                                openMapsForBusiness(business)
+                                              }
+                                            >
+                                              <Ionicons
+                                                name="navigate-outline"
+                                                size={14}
+                                                color={COLORS.ink}
+                                              />
+                                              <Text
+                                                style={
+                                                  styles.adminRouteButtonText
                                                 }
                                               >
-                                                <Text
-                                                  style={[
-                                                    styles.adminRateOptionText,
-                                                    isSelected &&
-                                                      styles.adminRateOptionTextSelected,
-                                                  ]}
-                                                >
-                                                  {option.label}
-                                                </Text>
-                                              </TouchableOpacity>
-                                            );
-                                          },
+                                                Directions
+                                              </Text>
+                                            </TouchableOpacity>
+                                          </View>
                                         )}
-                                      </View>
-                                      <Text style={styles.adminMeta}>
-                                        This rate is applied on approval.
-                                      </Text>
-                                    </View>
-                                    {hasDirectionsTarget && (
-                                      <View style={styles.adminDetailRow}>
-                                        <TouchableOpacity
-                                          style={styles.adminRouteButton}
-                                          onPress={() =>
-                                            openMapsForBusiness(business)
-                                          }
-                                        >
-                                          <Ionicons
-                                            name="navigate-outline"
-                                            size={14}
-                                            color={COLORS.ink}
-                                          />
-                                          <Text
-                                            style={
-                                              styles.adminRouteButtonText
-                                            }
-                                          >
-                                            Directions
+                                        <View style={styles.adminDetailRow}>
+                                          <Text style={styles.adminDetailLabel}>
+                                            Submitted
                                           </Text>
-                                        </TouchableOpacity>
+                                          <Text
+                                            style={styles.adminDetailValueFull}
+                                          >
+                                            {businessCreatedLabel}
+                                          </Text>
+                                        </View>
                                       </View>
                                     )}
-                                    <View style={styles.adminDetailRow}>
-                                      <Text style={styles.adminDetailLabel}>
-                                        Submitted
-                                      </Text>
-                                      <Text style={styles.adminDetailValueFull}>
-                                        {businessCreatedLabel}
-                                      </Text>
+                                    <View style={styles.adminActions}>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.adminApprove,
+                                          isQueueActionArmed(
+                                            "business",
+                                            business.id,
+                                            "approve",
+                                          ) && styles.adminActionArmed,
+                                        ]}
+                                        onPress={() =>
+                                          runQueueGuardedAction({
+                                            scope: "business",
+                                            id: business.id,
+                                            action: "approve",
+                                            title: "Approve business listing?",
+                                            message: `This will approve the listing and apply a ${selectedCommissionRate / 10}% commission rate.`,
+                                            onConfirm: () =>
+                                              handleApprove(
+                                                business.id,
+                                                selectedCommissionRate,
+                                              ),
+                                          })
+                                        }
+                                      >
+                                        <Text
+                                          numberOfLines={1}
+                                          adjustsFontSizeToFit
+                                          minimumFontScale={0.85}
+                                          style={[
+                                            styles.adminActionText,
+                                            isQueueActionArmed(
+                                              "business",
+                                              business.id,
+                                              "approve",
+                                            ) && styles.adminActionArmedText,
+                                          ]}
+                                        >
+                                          {isQueueActionArmed(
+                                            "business",
+                                            business.id,
+                                            "approve",
+                                          )
+                                            ? "Confirm"
+                                            : "Arm approve"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.adminReject,
+                                          isQueueActionArmed(
+                                            "business",
+                                            business.id,
+                                            "reject",
+                                          ) && styles.adminActionArmed,
+                                        ]}
+                                        onPress={() =>
+                                          runQueueGuardedAction({
+                                            scope: "business",
+                                            id: business.id,
+                                            action: "reject",
+                                            title: "Reject business listing?",
+                                            message:
+                                              "This will mark the listing as rejected and keep it inactive.",
+                                            onConfirm: () =>
+                                              handleReject(business.id),
+                                          })
+                                        }
+                                      >
+                                        <Text
+                                          numberOfLines={1}
+                                          adjustsFontSizeToFit
+                                          minimumFontScale={0.85}
+                                          style={[
+                                            styles.adminActionText,
+                                            styles.adminActionTextDark,
+                                            isQueueActionArmed(
+                                              "business",
+                                              business.id,
+                                              "reject",
+                                            ) && styles.adminActionArmedText,
+                                          ]}
+                                        >
+                                          {isQueueActionArmed(
+                                            "business",
+                                            business.id,
+                                            "reject",
+                                          )
+                                            ? "Confirm"
+                                            : "Arm reject"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.adminDelete,
+                                          isQueueActionArmed(
+                                            "business",
+                                            business.id,
+                                            "delete",
+                                          ) && styles.adminActionArmed,
+                                        ]}
+                                        onPress={() =>
+                                          runQueueGuardedAction({
+                                            scope: "business",
+                                            id: business.id,
+                                            action: "delete",
+                                            title:
+                                              "Delete this pending business?",
+                                            message:
+                                              "This permanently removes the business, linked offers, and attempts image cleanup.",
+                                            onConfirm: () =>
+                                              handleAdminDeleteBusiness(
+                                                business,
+                                              ),
+                                          })
+                                        }
+                                      >
+                                        <Text
+                                          numberOfLines={1}
+                                          adjustsFontSizeToFit
+                                          minimumFontScale={0.85}
+                                          style={[
+                                            styles.adminActionText,
+                                            styles.adminActionTextDark,
+                                            isQueueActionArmed(
+                                              "business",
+                                              business.id,
+                                              "delete",
+                                            ) && styles.adminActionArmedText,
+                                          ]}
+                                        >
+                                          {isQueueActionArmed(
+                                            "business",
+                                            business.id,
+                                            "delete",
+                                          )
+                                            ? "Confirm"
+                                            : "Arm delete"}
+                                        </Text>
+                                      </TouchableOpacity>
                                     </View>
                                   </View>
-                                )}
-                                <View style={styles.adminActions}>
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.adminApprove,
-                                      isQueueActionArmed(
-                                        "business",
-                                        business.id,
-                                        "approve",
-                                      ) && styles.adminActionArmed,
-                                    ]}
-                                    onPress={() =>
-                                      runQueueGuardedAction({
-                                        scope: "business",
-                                        id: business.id,
-                                        action: "approve",
-                                        title: "Approve business listing?",
-                                        message: `This will approve the listing and apply a ${selectedCommissionRate / 10}% commission rate.`,
-                                        onConfirm: () =>
-                                          handleApprove(
-                                            business.id,
-                                            selectedCommissionRate,
-                                          ),
-                                      })
-                                    }
-                                  >
-                                    <Text
-                                      numberOfLines={1}
-                                      adjustsFontSizeToFit
-                                      minimumFontScale={0.85}
-                                      style={[
-                                        styles.adminActionText,
-                                        isQueueActionArmed(
-                                          "business",
-                                          business.id,
-                                          "approve",
-                                        ) && styles.adminActionArmedText,
-                                      ]}
-                                    >
-                                      {isQueueActionArmed(
-                                        "business",
-                                        business.id,
-                                        "approve",
-                                      )
-                                        ? "Confirm"
-                                        : "Arm approve"}
-                                    </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.adminReject,
-                                      isQueueActionArmed(
-                                        "business",
-                                        business.id,
-                                        "reject",
-                                      ) && styles.adminActionArmed,
-                                    ]}
-                                    onPress={() =>
-                                      runQueueGuardedAction({
-                                        scope: "business",
-                                        id: business.id,
-                                        action: "reject",
-                                        title: "Reject business listing?",
-                                        message:
-                                          "This will mark the listing as rejected and keep it inactive.",
-                                        onConfirm: () =>
-                                          handleReject(business.id),
-                                      })
-                                    }
-                                  >
-                                    <Text
-                                      numberOfLines={1}
-                                      adjustsFontSizeToFit
-                                      minimumFontScale={0.85}
-                                      style={[
-                                        styles.adminActionText,
-                                        styles.adminActionTextDark,
-                                        isQueueActionArmed(
-                                          "business",
-                                          business.id,
-                                          "reject",
-                                        ) && styles.adminActionArmedText,
-                                      ]}
-                                    >
-                                      {isQueueActionArmed(
-                                        "business",
-                                        business.id,
-                                        "reject",
-                                      )
-                                        ? "Confirm"
-                                        : "Arm reject"}
-                                    </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.adminDelete,
-                                      isQueueActionArmed(
-                                        "business",
-                                        business.id,
-                                        "delete",
-                                      ) && styles.adminActionArmed,
-                                    ]}
-                                    onPress={() =>
-                                      runQueueGuardedAction({
-                                        scope: "business",
-                                        id: business.id,
-                                        action: "delete",
-                                        title: "Delete this pending business?",
-                                        message:
-                                          "This permanently removes the business, linked offers, and attempts image cleanup.",
-                                        onConfirm: () =>
-                                          handleAdminDeleteBusiness(business),
-                                      })
-                                    }
-                                  >
-                                    <Text
-                                      numberOfLines={1}
-                                      adjustsFontSizeToFit
-                                      minimumFontScale={0.85}
-                                      style={[
-                                        styles.adminActionText,
-                                        styles.adminActionTextDark,
-                                        isQueueActionArmed(
-                                          "business",
-                                          business.id,
-                                          "delete",
-                                        ) && styles.adminActionArmedText,
-                                      ]}
-                                    >
-                                      {isQueueActionArmed(
-                                        "business",
-                                        business.id,
-                                        "delete",
-                                      )
-                                        ? "Confirm"
-                                        : "Arm delete"}
-                                    </Text>
-                                  </TouchableOpacity>
-                                </View>
-                              </View>
-                            );
+                                );
                               })
                             )}
                           </>
@@ -25745,8 +26615,9 @@ export default function App() {
                                   </View>
                                 </View>
                                 <Text style={styles.adminCashbackSubtitle}>
-                                  Set the default cashback % for consumers across
-                                  the app. Promo codes can still override this.
+                                  Set the default cashback % for consumers
+                                  across the app. Promo codes can still override
+                                  this.
                                 </Text>
                                 <View style={styles.adminCashbackInputRow}>
                                   <AutoFocusInput
@@ -25832,9 +26703,10 @@ export default function App() {
                                 </Text>
                               </View>
                               <Text style={styles.adminDangerBody}>
-                                Deletions now require two steps: arm delete, then
-                                confirm in a final dialog. Business deletion also
-                                removes related offers and image files.
+                                Deletions now require two steps: arm delete,
+                                then confirm in a final dialog. Business
+                                deletion also removes related offers and image
+                                files.
                               </Text>
                             </View>
                             {isAdmin ? (
@@ -25843,8 +26715,8 @@ export default function App() {
                                   Account recovery lookup
                                 </Text>
                                 <Text style={styles.adminRecoverySubtitle}>
-                                  Search by name, phone, or possible email to help
-                                  users recover sign-in access.
+                                  Search by name, phone, or possible email to
+                                  help users recover sign-in access.
                                 </Text>
                                 <AutoFocusInput
                                   style={styles.formInput}
@@ -25958,7 +26830,9 @@ export default function App() {
                                       </Text>
                                       {profile.email ? (
                                         <View
-                                          style={styles.adminRecoveryResultActions}
+                                          style={
+                                            styles.adminRecoveryResultActions
+                                          }
                                         >
                                           <TouchableOpacity
                                             style={[
@@ -26057,7 +26931,9 @@ export default function App() {
                                             setArmedManagementOfferDeletes({
                                               [offerDeleteKey]: true,
                                             });
-                                            setArmedManagementBusinessDeletes({});
+                                            setArmedManagementBusinessDeletes(
+                                              {},
+                                            );
                                           }}
                                         >
                                           <Text
@@ -26184,15 +27060,19 @@ export default function App() {
                                   ],
                                 );
                                 return (
-                                  <View key={business.id} style={styles.adminCard}>
+                                  <View
+                                    key={business.id}
+                                    style={styles.adminCard}
+                                  >
                                     <View style={styles.adminHeader}>
                                       <Text style={styles.adminTitle}>
                                         {business.name}
                                       </Text>
                                       <Text style={styles.adminMeta}>
                                         {
-                                          getCategoryConfig(business.categoryKey)
-                                            .display
+                                          getCategoryConfig(
+                                            business.categoryKey,
+                                          ).display
                                         }
                                       </Text>
                                     </View>
@@ -26312,7 +27192,6 @@ export default function App() {
                             )}
                           </>
                         )}
-
                       </>
                     ) : (
                       <View style={styles.emptyState}>
@@ -33948,11 +34827,3 @@ const styles = StyleSheet.create({
     backgroundColor: "#2563EB",
   },
 });
-
-
-
-
-
-
-
-
