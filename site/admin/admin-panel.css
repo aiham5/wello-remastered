@@ -1,42 +1,43 @@
 .admin-root {
-  --admin-bg: var(--bg, #f3f6fb);
+  --admin-bg: #f6f8fb;
   --admin-text: var(--ink, #0f172a);
   --admin-muted: var(--muted, #64748b);
-  --admin-surface: rgba(255, 255, 255, 0.94);
-  --admin-surface-soft: rgba(248, 250, 252, 0.92);
-  --admin-topbar-bg: rgba(255, 255, 255, 0.9);
-  --admin-border: rgba(15, 23, 42, 0.14);
-  --admin-border-strong: rgba(15, 23, 42, 0.2);
-  --admin-hover: rgba(15, 42, 77, 0.08);
+  --admin-surface: #ffffff;
+  --admin-surface-soft: #fbfcfe;
+  --admin-topbar-bg: rgba(246, 248, 251, 0.98);
+  --admin-border: rgba(15, 23, 42, 0.1);
+  --admin-border-strong: rgba(15, 23, 42, 0.16);
+  --admin-hover: rgba(15, 42, 77, 0.05);
   --admin-active-bg: #0f2a4d;
   --admin-active-text: #ffffff;
-  --admin-shadow: 0 12px 34px rgba(15, 23, 42, 0.08);
+  --admin-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
   --admin-backdrop: rgba(2, 6, 23, 0.52);
   --admin-input-bg: #ffffff;
-  --admin-table-header-bg: rgba(255, 255, 255, 0.98);
+  --admin-table-header-bg: #f8fafc;
   --admin-table-row-alt: rgba(15, 23, 42, 0.02);
   --admin-toast-bg: #0f172a;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   min-height: 100vh;
   background: var(--admin-bg);
   color: var(--admin-text);
 }
 
 html[data-theme="dark"] .admin-root {
-  --admin-bg: #0a1320;
+  --admin-bg: #0d1520;
   --admin-text: #e5edf8;
   --admin-muted: #9fb0c8;
-  --admin-surface: rgba(16, 27, 42, 0.95);
-  --admin-surface-soft: rgba(12, 22, 35, 0.92);
-  --admin-topbar-bg: rgba(10, 19, 32, 0.9);
-  --admin-border: rgba(148, 174, 209, 0.24);
-  --admin-border-strong: rgba(148, 174, 209, 0.32);
-  --admin-hover: rgba(93, 164, 255, 0.14);
+  --admin-surface: #121c29;
+  --admin-surface-soft: #0f1824;
+  --admin-topbar-bg: rgba(13, 21, 32, 0.98);
+  --admin-border: rgba(148, 174, 209, 0.18);
+  --admin-border-strong: rgba(148, 174, 209, 0.26);
+  --admin-hover: rgba(93, 164, 255, 0.1);
   --admin-active-bg: #1f4f82;
   --admin-active-text: #ffffff;
-  --admin-shadow: 0 16px 38px rgba(2, 8, 23, 0.5);
+  --admin-shadow: 0 6px 18px rgba(2, 8, 23, 0.28);
   --admin-backdrop: rgba(1, 8, 20, 0.7);
   --admin-input-bg: #101b2a;
-  --admin-table-header-bg: rgba(12, 22, 35, 0.98);
+  --admin-table-header-bg: #172231;
   --admin-table-row-alt: rgba(148, 174, 209, 0.05);
   --admin-toast-bg: #0b1422;
 }
@@ -49,9 +50,8 @@ html[data-theme="dark"] .admin-root {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 20px;
+  padding: 12px 18px;
   border-bottom: 1px solid var(--admin-border);
-  backdrop-filter: blur(8px);
   background: var(--admin-topbar-bg);
 }
 
@@ -78,20 +78,20 @@ html[data-theme="dark"] .admin-root {
 }
 
 .admin-main {
-  padding: 16px 20px 24px;
+  padding: 14px 18px 22px;
 }
 
 .admin-shell {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 14px;
 }
 
 .admin-sidebar {
   position: sticky;
-  top: 82px;
+  top: 74px;
   align-self: start;
-  padding: 16px;
+  padding: 14px;
 }
 
 .admin-sidebar h3 {
@@ -112,10 +112,11 @@ html[data-theme="dark"] .admin-root {
   border: 1px solid var(--admin-border);
   background: var(--admin-input-bg);
   color: var(--admin-text);
-  border-radius: 12px;
-  padding: 10px 12px;
-  font: 600 14px/1.3 "Rubik", sans-serif;
+  border-radius: 10px;
+  padding: 9px 11px;
+  font: 600 14px/1.3 inherit;
   cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
 .admin-nav-btn:hover {
@@ -138,7 +139,7 @@ html[data-theme="dark"] .admin-root {
 
 .workspace-heading h1 {
   margin: 0;
-  font-size: 24px;
+  font-size: 22px;
 }
 
 .workspace-content {
@@ -149,8 +150,8 @@ html[data-theme="dark"] .admin-root {
 .panel-card {
   background: var(--admin-surface);
   border: 1px solid var(--admin-border);
-  border-radius: 16px;
-  padding: 14px;
+  border-radius: 12px;
+  padding: 12px;
   box-shadow: var(--admin-shadow);
 }
 
@@ -163,7 +164,7 @@ html[data-theme="dark"] .admin-root {
 
 .module-header h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: 18px;
 }
 
 .module-header p {
@@ -185,7 +186,7 @@ html[data-theme="dark"] .admin-root {
 
 .kpi-card {
   border: 1px solid var(--admin-border);
-  border-radius: 14px;
+  border-radius: 12px;
   padding: 12px;
   background: var(--admin-input-bg);
 }
@@ -198,7 +199,7 @@ html[data-theme="dark"] .admin-root {
 
 .kpi-card .value {
   margin-top: 8px;
-  font: 700 24px/1.2 "Rubik", sans-serif;
+  font: 700 22px/1.2 inherit;
 }
 
 .kpi-card p {
@@ -242,9 +243,9 @@ html[data-theme="dark"] .admin-root {
 .field textarea {
   width: 100%;
   border: 1px solid var(--admin-border);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 10px 11px;
-  font: 500 14px/1.3 "Rubik", sans-serif;
+  font: 500 14px/1.3 inherit;
   background: var(--admin-input-bg);
   color: var(--admin-text);
 }
@@ -373,7 +374,7 @@ html[data-theme="dark"] .admin-root {
 
 .detail-line {
   border: 1px solid var(--admin-border);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 8px;
   background: var(--admin-input-bg);
 }
@@ -412,7 +413,7 @@ html[data-theme="dark"] .admin-root {
   gap: 12px;
   align-items: center;
   border: 1px solid var(--admin-border);
-  border-radius: 12px;
+  border-radius: 10px;
   padding: 10px;
   margin-bottom: 8px;
   background: var(--admin-input-bg);
@@ -527,7 +528,7 @@ html[data-theme="dark"] .admin-root {
   max-width: 360px;
   background: var(--admin-toast-bg);
   color: #ffffff;
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 10px 12px;
   font-size: 13px;
   transform: translateY(8px);

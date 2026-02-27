@@ -45,6 +45,7 @@ let confirmModal = null;
 let drawer = null;
 let activeModuleKey = null;
 let authSyncInFlight = null;
+let backgroundRefreshTimer = null;
 
 const setTheme = (theme) => {
   const normalized = theme === "dark" ? "dark" : "light";
@@ -96,6 +97,9 @@ const isTransientIdentityError = (error) => {
   );
 };
 
+const isRecoverableSessionError = (error) =>
+  Boolean(runtime?.isAuthError?.(error)) || isTransientIdentityError(error);
+
 const selectModuleInNav = (key) => {
   ui.navList?.querySelectorAll("button[data-module]").forEach((button) => {
     const active = button.getAttribute("data-module") === key;
@@ -119,6 +123,16 @@ const mountModule = async (key) => {
   try {
     await module.mount({ content: ui.moduleContent, runtime, toast, confirmModal, drawer, router, store });
   } catch (error) {
+    if (isRecoverableSessionError(error)) {
+      try {
+        const session = await runtime.refreshSession({ force: true });
+        await syncIdentity(session, { allowCachedProfile: true });
+        await module.mount({ content: ui.moduleContent, runtime, toast, confirmModal, drawer, router, store });
+        return;
+      } catch (retryError) {
+        error = retryError;
+      }
+    }
     toast.error(runtime?.normalizeSupabaseError(error, "Unable to load module."));
     ui.moduleContent.innerHTML = "<div class='admin-empty'>Unable to load this module.</div>";
   }
@@ -176,7 +190,7 @@ const syncIdentity = async (sessionHint = null, options = {}) => {
 
 const handleSessionRefresh = async () => {
   try {
-    const session = await runtime.getSession();
+    const session = await runtime.refreshSession({ force: true });
     await syncIdentity(session, { allowCachedProfile: true });
     await mountModule(store.getState().activeModule || "overview");
     toast.success("Session refreshed.");
@@ -185,6 +199,30 @@ const handleSessionRefresh = async () => {
     resetIdentityUi();
     setAuthError(runtime.normalizeSupabaseError(error, "Session expired. Please sign in again."));
   }
+};
+
+const keepSessionWarm = async ({ silent = true, force = false } = {}) => {
+  try {
+    const session = await runtime.refreshSession({ force });
+    if (!session?.user) return false;
+    await syncIdentity(session, { allowCachedProfile: true });
+    return true;
+  } catch (error) {
+    if (silent && isRecoverableSessionError(error) && store.getState().profile) {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const scheduleBackgroundRefresh = (delayMs = 900) => {
+  if (backgroundRefreshTimer) {
+    window.clearTimeout(backgroundRefreshTimer);
+  }
+  backgroundRefreshTimer = window.setTimeout(() => {
+    backgroundRefreshTimer = null;
+    keepSessionWarm({ silent: true, force: false }).catch(() => null);
+  }, delayMs);
 };
 
 const handleSignIn = async () => {
@@ -236,6 +274,10 @@ const init = async () => {
     });
 
     ui.signOut?.addEventListener("click", async () => {
+      if (backgroundRefreshTimer) {
+        window.clearTimeout(backgroundRefreshTimer);
+        backgroundRefreshTimer = null;
+      }
       await runtime.signOut();
       store.setState({ session: null, profile: null });
       drawer.close();
@@ -251,8 +293,24 @@ const init = async () => {
       setTheme(dark ? "light" : "dark");
     });
 
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && store.getState().profile) {
+        scheduleBackgroundRefresh(250);
+      }
+    });
+    window.addEventListener("focus", () => {
+      if (store.getState().profile) scheduleBackgroundRefresh(150);
+    });
+    window.addEventListener("pageshow", () => {
+      if (store.getState().profile) scheduleBackgroundRefresh(150);
+    });
+
     runtime.client.auth.onAuthStateChange(async (event, session) => {
       if (event === "SIGNED_OUT") {
+        if (backgroundRefreshTimer) {
+          window.clearTimeout(backgroundRefreshTimer);
+          backgroundRefreshTimer = null;
+        }
         store.setState({ session: null, profile: null });
         drawer.close();
         confirmModal.close();
@@ -269,16 +327,21 @@ const init = async () => {
         if (!activeModuleKey) router.start();
       } catch (error) {
         const normalized = runtime.normalizeSupabaseError(error, "Session refresh failed.");
+        const keepCurrentSession =
+          isBackgroundEvent &&
+          (isRecoverableSessionError(error) || normalized.includes("Session expired"));
+
+        if (keepCurrentSession && store.getState().profile) {
+          scheduleBackgroundRefresh(1200);
+          return;
+        }
+
         const isFatal =
           normalized.includes("Access denied") ||
-          normalized.includes("Session expired") ||
           event === "INITIAL_SESSION" ||
           event === "SIGNED_IN";
 
-        if (!isFatal && isBackgroundEvent) {
-          toast?.warning("Session refresh delayed. Your current session is still active.");
-          return;
-        }
+        if (!isFatal && isBackgroundEvent) return;
 
         store.setState({ session: null, profile: null });
         resetIdentityUi();

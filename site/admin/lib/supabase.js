@@ -1,8 +1,9 @@
-﻿import { withTimeout } from "./http.js";
+import { withTimeout } from "./http.js";
 
 const DB_TIMEOUT_MS = 45000;
 const EDGE_TIMEOUT_MS = 25000;
 const STAFF_ROLES = new Set(["admin", "supervisor"]);
+const SESSION_REFRESH_BUFFER_MS = 1000 * 60 * 2;
 
 const createTimedFetch = (timeoutMs) => async (input, init = {}) => {
   const controller = new AbortController();
@@ -53,6 +54,27 @@ const normalizeSupabaseError = (error, fallback = "Request failed.") => {
   return fallback;
 };
 
+const isAuthError = (error) => {
+  const message = String(error?.message || "").trim().toLowerCase();
+  if (!message) return false;
+  return (
+    message.includes("jwt") ||
+    message.includes("token") ||
+    message.includes("session") ||
+    message.includes("auth") ||
+    message.includes("refresh token") ||
+    message.includes("invalid claim") ||
+    message.includes("401") ||
+    message.includes("403")
+  );
+};
+
+const sessionExpiresSoon = (session) => {
+  const expiresAtSeconds = Number(session?.expires_at) || 0;
+  if (!expiresAtSeconds) return true;
+  return expiresAtSeconds * 1000 - Date.now() <= SESSION_REFRESH_BUFFER_MS;
+};
+
 export const createSupabaseRuntime = ({ supabaseUrl, supabaseAnonKey }) => {
   if (!supabaseUrl || !supabaseAnonKey || !window.supabase?.createClient) {
     throw new Error("Missing Supabase configuration for admin panel.");
@@ -63,16 +85,59 @@ export const createSupabaseRuntime = ({ supabaseUrl, supabaseAnonKey }) => {
     global: { fetch: createTimedFetch(DB_TIMEOUT_MS) },
   });
 
-  const getSession = async () => {
-    const { data, error } = await withTimeout(client.auth.getSession(), 12000, "getSession");
-    if (error) throw error;
-    return data?.session || null;
+  let sessionRefreshPromise = null;
+
+  const refreshSession = async ({ force = false } = {}) => {
+    if (sessionRefreshPromise) return sessionRefreshPromise;
+    sessionRefreshPromise = (async () => {
+      const { data, error } = await withTimeout(client.auth.getSession(), 12000, "getSession");
+      if (error) throw error;
+      const currentSession = data?.session || null;
+      if (!force && currentSession?.access_token && !sessionExpiresSoon(currentSession)) {
+        return currentSession;
+      }
+      const refreshed = await withTimeout(client.auth.refreshSession(), 15000, "refreshSession");
+      if (refreshed?.error) {
+        if (currentSession?.access_token) return currentSession;
+        throw refreshed.error;
+      }
+      return refreshed?.data?.session || currentSession || null;
+    })();
+
+    try {
+      return await sessionRefreshPromise;
+    } finally {
+      sessionRefreshPromise = null;
+    }
   };
 
-  const getUser = async () => {
-    const { data, error } = await withTimeout(client.auth.getUser(), 12000, "getUser");
+  const getSession = async ({ forceRefresh = false } = {}) => {
+    if (forceRefresh) return refreshSession({ force: true });
+    const { data, error } = await withTimeout(client.auth.getSession(), 12000, "getSession");
     if (error) throw error;
-    return data?.user || null;
+    const session = data?.session || null;
+    if (session?.access_token && !sessionExpiresSoon(session)) return session;
+    return refreshSession({ force: false });
+  };
+
+  const getUser = async ({ forceRefresh = false } = {}) => {
+    let session = await getSession({ forceRefresh });
+
+    const attempt = async (accessToken) => {
+      const { data, error } = await withTimeout(client.auth.getUser(accessToken), 12000, "getUser");
+      if (error) throw error;
+      return data?.user || null;
+    };
+
+    try {
+      if (session?.access_token) return (await attempt(session.access_token)) || session?.user || null;
+      return session?.user || null;
+    } catch (error) {
+      if (!isAuthError(error)) throw error;
+      session = await refreshSession({ force: true });
+      if (session?.access_token) return (await attempt(session.access_token)) || session?.user || null;
+      return session?.user || null;
+    }
   };
 
   const signIn = async ({ email, password }) => {
@@ -84,14 +149,26 @@ export const createSupabaseRuntime = ({ supabaseUrl, supabaseAnonKey }) => {
     await withTimeout(client.auth.signOut({ scope: "local" }), 12000, "signOut");
   };
 
-  const getProfile = async (userId) => {
-    const { data, error } = await client
-      .from("profiles")
-      .select("id, email, full_name, role")
-      .eq("id", userId)
-      .maybeSingle();
-    if (error) throw error;
-    return data || null;
+  const getProfile = async (userId, { forceRefresh = false } = {}) => {
+    await getSession({ forceRefresh });
+
+    const load = async () => {
+      const { data, error } = await client
+        .from("profiles")
+        .select("id, email, full_name, role")
+        .eq("id", userId)
+        .maybeSingle();
+      if (error) throw error;
+      return data || null;
+    };
+
+    try {
+      return await load();
+    } catch (error) {
+      if (!isAuthError(error)) throw error;
+      await refreshSession({ force: true });
+      return load();
+    }
   };
 
   const ensureStaffProfile = async ({ session: sessionHint = null } = {}) => {
@@ -102,7 +179,12 @@ export const createSupabaseRuntime = ({ supabaseUrl, supabaseAnonKey }) => {
       session = await getSession();
       user = session?.user || null;
     }
+    if (!user?.id) {
+      session = await refreshSession({ force: true });
+      user = session?.user || null;
+    }
     if (!user?.id) throw new Error("Session expired. Please sign in again.");
+
     const profile = await getProfile(user.id);
     if (!profile || !STAFF_ROLES.has(String(profile.role || ""))) {
       throw new Error("Access denied. Admin or supervisor role required.");
@@ -111,7 +193,16 @@ export const createSupabaseRuntime = ({ supabaseUrl, supabaseAnonKey }) => {
   };
 
   const invokeFunction = async (name, body = {}) => {
-    const { data, error } = await withTimeout(client.functions.invoke(name, { body }), EDGE_TIMEOUT_MS, name);
+    const invoke = async () =>
+      withTimeout(client.functions.invoke(name, { body }), EDGE_TIMEOUT_MS, name);
+
+    let result = await invoke();
+    if (result?.error && isAuthError(result.error)) {
+      await refreshSession({ force: true });
+      result = await invoke();
+    }
+
+    const { data, error } = result;
     if (error) {
       const err = new Error(normalizeSupabaseError(error, `Unable to run ${name}.`));
       err.cause = error;
@@ -139,6 +230,7 @@ export const createSupabaseRuntime = ({ supabaseUrl, supabaseAnonKey }) => {
   return {
     client,
     getSession,
+    refreshSession,
     getUser,
     signIn,
     signOut,
@@ -146,6 +238,7 @@ export const createSupabaseRuntime = ({ supabaseUrl, supabaseAnonKey }) => {
     ensureStaffProfile,
     invokeFunction,
     logAction,
+    isAuthError,
     normalizeSupabaseError,
   };
 };
