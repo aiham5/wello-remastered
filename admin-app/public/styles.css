@@ -809,17 +809,21 @@ html[data-theme="dark"] .field select option {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.55);
+  background-color: rgba(15, 23, 42, 0.55);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
   z-index: 50;
   backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 
 .modal-card {
   position: relative;
-  background: var(--surface);
+  background: var(--surface, #ffffff);
+  background-color: var(--surface, #ffffff);
+  opacity: 1;
   border-radius: 24px;
   padding: 18px;
   width: min(90vw, 980px);
@@ -847,7 +851,8 @@ html[data-theme="dark"] .field select option {
   height: 36px;
   border-radius: 50%;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--surface, #ffffff);
+  background-color: var(--surface, #ffffff);
   cursor: pointer;
   font-size: 18px;
   color: var(--ink);
@@ -1111,6 +1116,9 @@ html[data-theme="dark"] .admin .status-pill {
 .admin .modal-card {
   border-radius: 18px;
   width: min(92vw, 1120px);
+  background: var(--surface, #ffffff);
+  background-color: var(--surface, #ffffff);
+  opacity: 1;
 }
 
 @media (max-width: 1280px) {

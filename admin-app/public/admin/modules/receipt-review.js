@@ -11,6 +11,9 @@ import { debounce } from "../lib/http.js";
 
 const PAGE_SIZE = 30;
 const RECEIPT_BUCKET_CANDIDATES = ["receipt-images", "receipt_uploads", "receipts"];
+const RECEIPT_SIGNED_URL_TTL_MS = 30 * 60 * 1000;
+const RECEIPT_SIGNED_URL_REFRESH_BUFFER_MS = 90 * 1000;
+const receiptImageCache = new Map();
 
 const safeDecode = (value) => {
   try {
@@ -86,17 +89,39 @@ const buildStorageTargets = (parsed) => {
 
 const resolveReceiptImage = async (runtime, storagePath) => {
   const normalizedRawPath = String(storagePath || "").trim().replace(/^\/+/, "");
+  if (!normalizedRawPath) {
+    return {
+      signedUrl: "",
+      resolvedPath: "",
+      resolvedBucket: "",
+      errorReason: "Missing receipt path.",
+    };
+  }
+
+  const cached = receiptImageCache.get(normalizedRawPath);
+  if (
+    cached &&
+    cached.expiresAt > Date.now() + RECEIPT_SIGNED_URL_REFRESH_BUFFER_MS
+  ) {
+    return cached.result;
+  }
+
   if (normalizedRawPath.startsWith("receipts/")) {
     const r2Result = await runtime.client.storage
       .from("__r2__")
       .createSignedUrl(normalizedRawPath, 60 * 30);
     if (!r2Result?.error && r2Result?.data?.signedUrl) {
-      return {
+      const result = {
         signedUrl: r2Result.data.signedUrl,
         resolvedPath: normalizedRawPath,
         resolvedBucket: "r2",
         errorReason: "",
       };
+      receiptImageCache.set(normalizedRawPath, {
+        expiresAt: Date.now() + RECEIPT_SIGNED_URL_TTL_MS,
+        result,
+      });
+      return result;
     }
   }
 
@@ -111,12 +136,17 @@ const resolveReceiptImage = async (runtime, storagePath) => {
   }
 
   if (parsed.directUrl) {
-    return {
+    const result = {
       signedUrl: parsed.directUrl,
       resolvedPath: parsed.directUrl,
       resolvedBucket: "external",
       errorReason: "",
     };
+    receiptImageCache.set(normalizedRawPath, {
+      expiresAt: Date.now() + RECEIPT_SIGNED_URL_TTL_MS,
+      result,
+    });
+    return result;
   }
 
   const targets = buildStorageTargets(parsed);
@@ -124,24 +154,34 @@ const resolveReceiptImage = async (runtime, storagePath) => {
   for (const target of targets) {
     const result = await runtime.client.storage.from(target.bucket).createSignedUrl(target.path, 60 * 30);
     if (!result?.error && result?.data?.signedUrl) {
-      return {
+      const resolved = {
         signedUrl: result.data.signedUrl,
         resolvedPath: target.path,
         resolvedBucket: target.bucket,
         errorReason: "",
       };
+      receiptImageCache.set(normalizedRawPath, {
+        expiresAt: Date.now() + RECEIPT_SIGNED_URL_TTL_MS,
+        result: resolved,
+      });
+      return resolved;
     }
     if (result?.error?.message) {
       lastError = result.error.message;
     }
   }
 
-  return {
+  const unresolved = {
     signedUrl: "",
     resolvedPath: parsed.objectPath || "",
     resolvedBucket: parsed.bucket || "",
     errorReason: lastError || "No readable image in configured receipt stores.",
   };
+  receiptImageCache.set(normalizedRawPath, {
+    expiresAt: Date.now() + 30 * 1000,
+    result: unresolved,
+  });
+  return unresolved;
 };
 
 const renderDetailPlaceholder = (container, message) => {
@@ -329,6 +369,11 @@ export const receiptReviewModule = {
               ${image.signedUrl ? '<button class="button secondary" id="rr-open-image" type="button">Open full image</button>' : ""}
             </div>
           </div>
+          ${
+            image.signedUrl
+              ? '<div class="cta-row"><button class="button secondary" id="rr-open-image-large" type="button">View full receipt image</button></div>'
+              : ""
+          }
           <div class="cta-row">
             <button class="button primary" id="rr-verify" ${isPending ? "" : "disabled"}>Verify receipt</button>
             <button class="button danger-outline" id="rr-reject" ${isPending ? "" : "disabled"}>Reject receipt</button>
@@ -337,6 +382,9 @@ export const receiptReviewModule = {
       `;
 
       detailContainer.querySelector("#rr-open-image")?.addEventListener("click", () => {
+        window.open(image.signedUrl, "_blank", "noopener,noreferrer");
+      });
+      detailContainer.querySelector("#rr-open-image-large")?.addEventListener("click", () => {
         window.open(image.signedUrl, "_blank", "noopener,noreferrer");
       });
 
@@ -439,6 +487,12 @@ export const receiptReviewModule = {
             await load();
           },
         });
+
+        // Warm cache for visible rows to avoid delayed detail panel image loads.
+        const prefetchRows = state.rows.slice(0, Math.min(6, state.rows.length));
+        Promise.allSettled(
+          prefetchRows.map((item) => resolveReceiptImage(runtime, item.storage_path)),
+        );
 
         await renderDetail(getSelectedRow());
       } catch (error) {
