@@ -51,6 +51,34 @@ const drawer = createDrawer({
 
 let router = null;
 let activeModuleKey = null;
+const navGroups = [];
+const navGroupedModules = MODULES.reduce((acc, module) => {
+  const group = String(module.group || "Operations");
+  if (!acc[group]) {
+    acc[group] = [];
+    navGroups.push(group);
+  }
+  acc[group].push(module);
+  return acc;
+}, {});
+
+const escapeHtml = (value) =>
+  String(value ?? "").replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      case "'":
+        return "&#39;";
+      default:
+        return char;
+    }
+  });
 
 const setTheme = (theme) => {
   const normalized = theme === "dark" ? "dark" : "light";
@@ -91,10 +119,38 @@ const selectModuleInNav = (key) => {
 
 const buildNav = () => {
   if (!ui.navList) return;
-  ui.navList.innerHTML = MODULES.map(
-    (module) =>
-      `<li><button type="button" class="admin-nav-btn" data-module="${module.key}">${module.label}</button></li>`,
-  ).join("");
+  ui.navList.innerHTML = navGroups
+    .map((group) => {
+      const modules = navGroupedModules[group] || [];
+      return `
+        <li class="admin-nav-group">
+          <p class="admin-nav-group-label">${escapeHtml(group)}</p>
+          <ul class="admin-nav-group-list">
+            ${modules
+              .map(
+                (module) => `
+              <li>
+                <button
+                  type="button"
+                  class="admin-nav-btn"
+                  data-module="${escapeHtml(module.key)}"
+                  aria-label="${escapeHtml(module.label)}"
+                >
+                  <span class="admin-nav-icon" aria-hidden="true">${escapeHtml(module.icon || "NA")}</span>
+                  <span class="admin-nav-copy">
+                    <strong>${escapeHtml(module.label)}</strong>
+                    <small>${escapeHtml(module.description || "")}</small>
+                  </span>
+                </button>
+              </li>
+            `,
+              )
+              .join("")}
+          </ul>
+        </li>
+      `;
+    })
+    .join("");
 
   ui.navList.querySelectorAll("button[data-module]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -112,7 +168,7 @@ const mountModule = async (key) => {
   store.setState({ activeModule: module.key });
   selectModuleInNav(module.key);
   if (ui.moduleTitle) ui.moduleTitle.textContent = module.label;
-  if (ui.moduleSubTitle) ui.moduleSubTitle.textContent = "";
+  if (ui.moduleSubTitle) ui.moduleSubTitle.textContent = module.description || "";
 
   ui.moduleContent.innerHTML = "<div class='admin-loading'>Loading module...</div>";
 

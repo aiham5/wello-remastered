@@ -4,17 +4,17 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Wello Admin Panel</title>
-    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+    <link rel="icon" type="image/png" href="/assets/wello-mark.png" />
     <script src="/admin/theme-init.js"></script>
-    <link rel="stylesheet" href="/styles.css?v=admin-20260227a" />
-    <link rel="stylesheet" href="/admin/admin-panel.css?v=admin-20260227a" />
+    <link rel="stylesheet" href="/styles.css?v=admin-20260227c" />
+    <link rel="stylesheet" href="/admin/admin-panel.css?v=admin-20260227c" />
   </head>
   <body class="admin">
     <div class="admin-root">
       <header class="admin-topbar">
         <a class="brand" href="/">
-          <img src="/assets/wello-logo.jpeg" alt="Wello logo" />
-          <span>Wello Admin</span>
+          <img src="/assets/wello-mark.png" alt="Wello logo" />
+          <span>Wello Operations</span>
         </a>
         <div class="topbar-actions">
           <div class="identity-chip">
@@ -48,7 +48,10 @@
 
         <section id="app-shell" class="admin-shell is-hidden">
           <aside class="admin-sidebar panel-card">
-            <h3>Operations</h3>
+            <div class="sidebar-head">
+              <h3>Admin Console</h3>
+              <p>Moderation, payouts, billing, and security controls.</p>
+            </div>
             <ul id="admin-nav-list" class="admin-nav-list"></ul>
           </aside>
           <section class="admin-workspace">
@@ -85,6 +88,6 @@
 
     <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
-    <script type="module" src="/admin/app.js?v=admin-20260227a"></script>
+    <script type="module" src="/admin/app.js?v=admin-20260227c"></script>
   </body>
 </html>

@@ -5,7 +5,121 @@ import { renderPagination } from "../components/pagination.js";
 import { debounce } from "../lib/http.js";
 
 const PAGE_SIZE = 30;
-const RECEIPT_BUCKET = "receipt-images";
+const RECEIPT_BUCKET_CANDIDATES = ["receipt-images", "receipt_uploads", "receipts"];
+const safeDecode = (value) => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return String(value || "");
+  }
+};
+
+const splitStoragePath = (storagePath) => {
+  const raw = String(storagePath || "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) {
+    const fromStorageApi = raw.match(/\/storage\/v1\/object\/(?:public|sign)\/([^/]+)\/([^?]+)/i);
+    if (fromStorageApi) {
+      return {
+        directUrl: "",
+        bucket: safeDecode(fromStorageApi[1]),
+        objectPath: safeDecode(fromStorageApi[2]),
+      };
+    }
+    return { directUrl: raw, bucket: "", objectPath: "" };
+  }
+
+  let normalized = raw.replace(/^\/+/, "");
+  const fromPublicPrefix = normalized.match(/^public\/([^/]+)\/(.+)$/i);
+  if (fromPublicPrefix) {
+    normalized = `${fromPublicPrefix[1]}/${fromPublicPrefix[2]}`;
+  }
+
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length >= 2) {
+    return {
+      directUrl: "",
+      bucket: parts[0],
+      objectPath: parts.slice(1).join("/"),
+    };
+  }
+
+  return {
+    directUrl: "",
+    bucket: "",
+    objectPath: normalized,
+  };
+};
+
+const buildStorageTargets = (parsed) => {
+  const targets = [];
+  const seen = new Set();
+  const add = (bucket, objectPath) => {
+    const cleanBucket = String(bucket || "").trim();
+    const cleanPath = String(objectPath || "").trim().replace(/^\/+/, "");
+    if (!cleanBucket || !cleanPath) return;
+    const key = `${cleanBucket}/${cleanPath}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push({ bucket: cleanBucket, path: cleanPath });
+  };
+
+  if (parsed?.bucket && parsed?.objectPath) {
+    add(parsed.bucket, parsed.objectPath);
+  }
+
+  const fallbackPath = parsed?.objectPath || "";
+  if (fallbackPath) {
+    RECEIPT_BUCKET_CANDIDATES.forEach((bucket) => add(bucket, fallbackPath));
+  }
+
+  return targets;
+};
+
+const resolveReceiptImage = async (runtime, storagePath) => {
+  const parsed = splitStoragePath(storagePath);
+  if (!parsed) {
+    return {
+      signedUrl: "",
+      resolvedPath: "",
+      resolvedBucket: "",
+      errorReason: "Missing receipt path.",
+    };
+  }
+
+  if (parsed.directUrl) {
+    return {
+      signedUrl: parsed.directUrl,
+      resolvedPath: parsed.directUrl,
+      resolvedBucket: "external",
+      errorReason: "",
+    };
+  }
+
+  const targets = buildStorageTargets(parsed);
+  let lastError = "";
+  for (const target of targets) {
+    const result = await runtime.client.storage.from(target.bucket).createSignedUrl(target.path, 60 * 30);
+    if (!result?.error && result?.data?.signedUrl) {
+      return {
+        signedUrl: result.data.signedUrl,
+        resolvedPath: target.path,
+        resolvedBucket: target.bucket,
+        errorReason: "",
+      };
+    }
+    if (result?.error?.message) {
+      lastError = result.error.message;
+    }
+  }
+
+  return {
+    signedUrl: "",
+    resolvedPath: parsed.objectPath || "",
+    resolvedBucket: parsed.bucket || "",
+    errorReason: lastError || "No readable image in configured receipt buckets.",
+  };
+};
 
 export const receiptReviewModule = {
   key: "receipt-review",
@@ -164,12 +278,8 @@ export const receiptReviewModule = {
     };
 
     const openReceipt = async (row) => {
-      let signedUrl = "";
-      const path = String(row.storage_path || "").trim();
-      if (path) {
-        const result = await runtime.client.storage.from(RECEIPT_BUCKET).createSignedUrl(path, 60 * 30);
-        signedUrl = result?.data?.signedUrl || "";
-      }
+      const image = await resolveReceiptImage(runtime, row.storage_path);
+      const signedUrl = image.signedUrl;
 
       const node = document.createElement("div");
       node.className = "detail-form-wrapper";
@@ -182,12 +292,30 @@ export const receiptReviewModule = {
         </div>
         <label class="field"><span>Receipt total ($)</span><input id="rr-total" type="number" min="0" step="0.01" value="${escapeHtml(dollarsFromCents(row.receipt_total_cents || 0))}" /></label>
         <label class="field"><span>Review notes</span><textarea id="rr-notes" rows="4">${escapeHtml(row.review_notes || "")}</textarea></label>
-        <div class="drawer-image-wrap">${signedUrl ? `<img src="${signedUrl}" alt="Receipt image" />` : "<div class='admin-empty'>No image available</div>"}</div>
+        <div class="drawer-image-wrap">
+          ${signedUrl ? `<img src="${signedUrl}" alt="Receipt image" />` : "<div class='admin-empty'>Unable to load receipt image.</div>"}
+          <div class="receipt-image-meta">
+            <span title="${escapeHtml(row.storage_path || "")}">
+              ${signedUrl
+                ? escapeHtml(`Source: ${image.resolvedBucket}/${image.resolvedPath}`)
+                : escapeHtml(`Image unavailable: ${image.errorReason}`)}
+            </span>
+            ${
+              signedUrl
+                ? '<button class="button secondary" id="rr-open-image" type="button">Open full image</button>'
+                : ""
+            }
+          </div>
+        </div>
         <div class="cta-row">
           <button class="button primary" id="rr-verify">Verify receipt</button>
           <button class="button danger-outline" id="rr-reject">Reject receipt</button>
         </div>
       `;
+
+      node.querySelector("#rr-open-image")?.addEventListener("click", () => {
+        window.open(signedUrl, "_blank", "noopener,noreferrer");
+      });
 
       node.querySelector("#rr-verify")?.addEventListener("click", () => {
         const totalCents = centsFromDollars(node.querySelector("#rr-total")?.value);

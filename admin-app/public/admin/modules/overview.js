@@ -37,6 +37,10 @@ export const overviewModule = {
           <button class="button secondary" data-route="business-approvals">Business approvals</button>
           <button class="button secondary" data-route="offer-moderation">Offer moderation</button>
           <button class="button secondary" data-route="cashout-ops">Cashout ops</button>
+          <button class="button secondary" data-route="billing">Billing</button>
+          <button class="button secondary" data-route="promotions">Promotions</button>
+          <button class="button secondary" data-route="users-roles">Users and roles</button>
+          <button class="button secondary" data-route="audit-events">Audit and events</button>
         </div>
       </section>
     `;
