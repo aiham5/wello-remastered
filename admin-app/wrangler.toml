@@ -3,14 +3,12 @@ compatibility_date = "2026-02-27"
 pages_build_output_dir = "public"
 
 [vars]
-# Example: your-team.cloudflareaccess.com
-CF_ACCESS_TEAM_DOMAIN = ""
+CF_ACCESS_TEAM_DOMAIN = "wello-admin.cloudflareaccess.com"
 # Cloudflare Access application AUD tag
-CF_ACCESS_AUD = ""
+CF_ACCESS_AUD = "52204e984bceb5f654232dca44ebed75e7f15042ad510ce803e8590b2cd32be3"
 # Optional second-layer allowlist (comma-separated emails)
-ADMIN_ALLOWED_EMAILS = ""
+ADMIN_ALLOWED_EMAILS = "support@wellopartners.com"
 # Optional, defaults to "*"
 ADMIN_CORS_ORIGIN = ""
-# Supabase project URL, e.g. https://xxxx.supabase.co
-SUPABASE_URL = ""
+SUPABASE_URL = "https://qrohvdlntdowewhkwfub.supabase.co"
 
