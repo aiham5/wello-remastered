@@ -5,6 +5,15 @@ import {
   json,
   SUPABASE_SERVICE_ROLE_KEY,
 } from "./auth.ts";
+import {
+  plaidCreateLinkToken,
+  plaidCreateProcessorToken,
+  plaidExchangePublicToken,
+  plaidGetAccounts,
+  plaidGetAuthNumbers,
+  plaidGetInstitutionById,
+  plaidGetItem,
+} from "./plaid.ts";
 
 type CreateOptions = { endpointName: string; requireIdempotencyKey: boolean };
 type BasicOptions = { endpointName: string };
@@ -34,9 +43,8 @@ const CHECKBOOK_PUBLISHABLE_KEY = envString(
   envString("CHECKBOOK_ACCESS_KEY"),
 );
 const CHECKBOOK_SECRET_KEY = envString("CHECKBOOK_SECRET_KEY");
-const CHECKBOOK_ONBOARDING_URL_TEMPLATE = envString(
-  "CHECKBOOK_ONBOARDING_URL_TEMPLATE",
-);
+const CHECKBOOK_PLAID_PROCESSOR = envString("CHECKBOOK_PLAID_PROCESSOR", "checkbook")
+  .toLowerCase();
 const CHECKBOOK_WEBHOOK_KEY = envString(
   "CHECKBOOK_WEBHOOK_KEY",
   envString("CHECKBOOK_WEBHOOK_SECRET"),
@@ -108,6 +116,27 @@ const splitFullName = (value: string) => {
     firstName: parts.slice(0, -1).join(" ").slice(0, 80),
     lastName: parts.slice(-1).join(" ").slice(0, 80),
   };
+};
+const normalizePlaidAccountSubtype = (value: unknown) =>
+  String(value || "").trim().toLowerCase();
+const mapCheckbookAccountType = (subtype: string) =>
+  subtype === "savings" ? "SAVINGS" : "CHECKING";
+const pickPreferredPlaidAccount = (
+  accounts: Array<Record<string, unknown>>,
+  requestedAccountId: string,
+) => {
+  const normalizedRequested = String(requestedAccountId || "").trim();
+  if (normalizedRequested) {
+    const direct = accounts.find((account) =>
+      String(account?.account_id || "").trim() === normalizedRequested
+    );
+    if (direct) return direct;
+  }
+  const preferred = accounts.find((account) => {
+    const subtype = normalizePlaidAccountSubtype(account?.subtype);
+    return subtype === "checking" || subtype === "savings";
+  });
+  return preferred || accounts[0] || null;
 };
 const deriveUuidFromKey = async (value: string) => {
   const hash = await sha256Hex(String(value || "").trim().toLowerCase());
@@ -421,11 +450,9 @@ const resolveProfile = async (
   return { email, fullName };
 };
 
-const getOrCreateRecipient = async (
+const getExistingRecipient = async (
   supabase: ReturnType<typeof createAdminSupabase>,
   userId: string,
-  email: string,
-  _fullName: string,
 ) => {
   const { data: existing } = await supabase
     .from("cashout_recipients")
@@ -433,42 +460,255 @@ const getOrCreateRecipient = async (
     .eq("user_id", userId)
     .eq("provider", "checkbook")
     .maybeSingle();
-  if (existing?.recipient_provider_id) {
-    return {
-      recipientId: String(existing.recipient_provider_id),
-      recipientStatus: String(existing.recipient_status || "").trim().toLowerCase() || "needs_onboarding",
-      bankSummary: String(existing.bank_summary || "").trim() || null,
-    };
-  }
-  // Checkbook digital checks can be sent directly to the recipient email, so we
-  // store a deterministic recipient id for linkage/approval without forcing an
-  // external onboarding call here.
-  const recipientId = await deriveUuidFromKey(`checkbook:${userId}:${email}`);
-  const bankSummary = "Checkbook transfer enabled";
-  await supabase.from("cashout_recipients").upsert(
-    {
-      user_id: userId,
-      provider: "checkbook",
-      recipient_provider_id: recipientId,
-      recipient_status: "linked",
-      bank_summary: bankSummary,
-      last_synced_at: new Date().toISOString(),
-    },
-    { onConflict: "user_id" },
-  );
-  return { recipientId, recipientStatus: "linked", bankSummary };
+  return {
+    recipientId: String(existing?.recipient_provider_id || "").trim() || null,
+    recipientStatus: String(existing?.recipient_status || "").trim().toLowerCase() ||
+      "needs_onboarding",
+    bankSummary: String(existing?.bank_summary || "").trim() || null,
+  };
 };
 
-const createOnboardingUrl = async (
-  recipientId: string,
+const upsertLinkedPlaidData = async (
+  supabase: ReturnType<typeof createAdminSupabase>,
   userId: string,
-  email: string,
+  itemId: string,
+  accessToken: string,
+  institutionId: string | null,
+  institutionName: string | null,
+  accounts: Array<Record<string, unknown>>,
 ) => {
-  if (!CHECKBOOK_ONBOARDING_URL_TEMPLATE) return null;
-  return CHECKBOOK_ONBOARDING_URL_TEMPLATE
-    .replaceAll("{recipientId}", encodeURIComponent(recipientId))
-    .replaceAll("{userId}", encodeURIComponent(userId))
-    .replaceAll("{email}", encodeURIComponent(email));
+  const { error: upsertItemError } = await supabase
+    .from("plaid_linked_items")
+    .upsert(
+      {
+        user_id: userId,
+        plaid_item_id: itemId,
+        plaid_access_token: accessToken,
+        institution_id: institutionId,
+        institution_name: institutionName,
+        status: "active",
+        available_products: [],
+        billed_products: [],
+        last_sync_at: new Date().toISOString(),
+        update_mode_required: false,
+        update_mode_reason: null,
+        update_mode_detected_at: null,
+        new_accounts_available: false,
+        last_webhook_code: "LINK_SUCCESS",
+      },
+      { onConflict: "plaid_item_id" },
+    );
+  if (upsertItemError) {
+    throw new HttpError(
+      upsertItemError.message || "Unable to save linked bank item.",
+      500,
+      { reason: "plaid_item_upsert_failed" },
+    );
+  }
+
+  const mappedAccounts = accounts
+    .filter((account) => String(account?.account_id || "").trim().length > 0)
+    .map((account) => ({
+      user_id: userId,
+      plaid_item_id: itemId,
+      plaid_account_id: String(account?.account_id || "").trim(),
+      account_name: String(
+        account?.official_name || account?.name || account?.subtype ||
+          "Bank account",
+      ).trim(),
+      account_mask: String(account?.mask || "").trim() || null,
+      account_subtype: String(account?.subtype || "").trim() || null,
+      account_type: String(account?.type || "").trim() || null,
+      status: "active",
+    }));
+
+  if (mappedAccounts.length > 0) {
+    const { error: accountUpsertError } = await supabase
+      .from("plaid_linked_accounts")
+      .upsert(mappedAccounts, {
+        onConflict: "plaid_item_id,plaid_account_id",
+      });
+    if (accountUpsertError) {
+      throw new HttpError(
+        accountUpsertError.message || "Unable to save linked bank accounts.",
+        500,
+        { reason: "plaid_accounts_upsert_failed" },
+      );
+    }
+    const keepAccountIds = new Set(
+      mappedAccounts.map((account) => account.plaid_account_id),
+    );
+    const { data: activeRows } = await supabase
+      .from("plaid_linked_accounts")
+      .select("id, plaid_account_id")
+      .eq("user_id", userId)
+      .eq("plaid_item_id", itemId)
+      .eq("status", "active");
+    const staleIds = (Array.isArray(activeRows) ? activeRows : [])
+      .filter((row) =>
+        !keepAccountIds.has(String(row?.plaid_account_id || "").trim())
+      )
+      .map((row) => row.id)
+      .filter(Boolean);
+    if (staleIds.length > 0) {
+      await supabase
+        .from("plaid_linked_accounts")
+        .update({ status: "revoked" })
+        .in("id", staleIds);
+    }
+  }
+};
+
+const linkCheckbookRecipientFromPlaid = async (
+  supabase: ReturnType<typeof createAdminSupabase>,
+  userId: string,
+  profile: { email: string; fullName: string },
+  payload: { publicToken: string; plaidAccountId: string | null },
+) => {
+  const exchange = await plaidExchangePublicToken(payload.publicToken);
+  const item = await plaidGetItem(exchange.access_token);
+  const accountsRes = await plaidGetAccounts(exchange.access_token);
+  const accounts = (Array.isArray(accountsRes.accounts)
+    ? accountsRes.accounts
+    : []) as Array<Record<string, unknown>>;
+  if (!accounts.length) {
+    throw new HttpError("No bank account was shared from Plaid.", 400, {
+      reason: "plaid_no_accounts",
+    });
+  }
+  const selectedAccount = pickPreferredPlaidAccount(
+    accounts,
+    payload.plaidAccountId || "",
+  );
+  if (!selectedAccount) {
+    throw new HttpError("No eligible bank account selected.", 400, {
+      reason: "plaid_account_not_selected",
+    });
+  }
+  const plaidAccountId = String(selectedAccount?.account_id || "").trim();
+  if (!plaidAccountId) {
+    throw new HttpError("No eligible bank account selected.", 400, {
+      reason: "plaid_account_not_selected",
+    });
+  }
+  const institutionId = String(item?.item?.institution_id || "").trim() || null;
+  let institutionName: string | null = null;
+  if (institutionId) {
+    try {
+      const institution = await plaidGetInstitutionById(institutionId, ["US"]);
+      institutionName = String(institution?.institution?.name || "").trim() || null;
+    } catch {
+      institutionName = null;
+    }
+  }
+  await upsertLinkedPlaidData(
+    supabase,
+    userId,
+    exchange.item_id,
+    exchange.access_token,
+    institutionId,
+    institutionName,
+    accounts,
+  );
+
+  const processor = await plaidCreateProcessorToken(
+    exchange.access_token,
+    plaidAccountId,
+    CHECKBOOK_PLAID_PROCESSOR || "checkbook",
+  );
+  const processorToken = String(processor?.processor_token || "").trim();
+  if (!processorToken) {
+    throw new HttpError("Unable to prepare bank account for transfer.", 502, {
+      reason: "plaid_processor_token_missing",
+    });
+  }
+
+  const auth = await plaidGetAuthNumbers(exchange.access_token, plaidAccountId);
+  const achRows = Array.isArray(auth?.numbers?.ach) ? auth.numbers.ach : [];
+  const achRow = achRows.find((row) =>
+    String(row?.account_id || "").trim() === plaidAccountId
+  ) || achRows[0];
+  const accountNumber = String(achRow?.account || "").replace(/\D+/g, "");
+  const routingNumber = String(achRow?.routing || "").replace(/\D+/g, "");
+  if (!accountNumber || !routingNumber) {
+    throw new HttpError("Plaid did not return account/routing details.", 400, {
+      reason: "plaid_auth_numbers_missing",
+    });
+  }
+
+  const accountSubtype = normalizePlaidAccountSubtype(selectedAccount?.subtype);
+  const accountMask = String(selectedAccount?.mask || "").trim();
+  const summaryName = String(
+    selectedAccount?.official_name || selectedAccount?.name || "Bank account",
+  ).trim();
+  const bankSummaryParts = [
+    institutionName || "Linked bank",
+    summaryName || "Account",
+    accountMask ? `****${accountMask}` : null,
+  ].filter(Boolean);
+  const bankSummary = bankSummaryParts.join(" • ").slice(0, 180);
+
+  const iavResponse = await callCheckbookApi("/v3/account/bank/iav/plaid", {
+    method: "POST",
+    body: JSON.stringify({
+      processor_token: processorToken,
+      plaid_processor_token: processorToken,
+      account_id: plaidAccountId,
+      account_type: mapCheckbookAccountType(accountSubtype),
+      account: accountNumber,
+      routing: routingNumber,
+      name: profile.fullName,
+      email: profile.email,
+    }),
+  });
+  if (!iavResponse.response.ok) {
+    throw new HttpError(
+      parseCheckbookError(
+        iavResponse.parsed,
+        iavResponse.text,
+        iavResponse.response.status || null,
+      ),
+      iavResponse.response.status || 502,
+      { reason: "checkbook_plaid_link_failed" },
+    );
+  }
+
+  const recipientId = String(
+    iavResponse.parsed?.id ||
+      getPath(iavResponse.parsed, ["bank_account", "id"]) ||
+      getPath(iavResponse.parsed, ["account", "id"]) ||
+      getPath(iavResponse.parsed, ["data", "id"]) ||
+      "",
+  ).trim() || await deriveUuidFromKey(`checkbook:${userId}:${plaidAccountId}`);
+
+  await supabase
+    .from("cashout_recipients")
+    .upsert(
+      {
+        user_id: userId,
+        provider: "checkbook",
+        recipient_provider_id: recipientId,
+        recipient_status: "linked",
+        bank_summary: bankSummary || "Linked via Plaid",
+        last_synced_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id" },
+    );
+
+  await supabase
+    .from("profiles")
+    .update({
+      stripe_cashout_plaid_item_id: exchange.item_id,
+      stripe_cashout_plaid_account_id: plaidAccountId,
+      stripe_cashout_account_label: bankSummary || "Linked via Plaid",
+      stripe_cashout_bank_synced_at: new Date().toISOString(),
+    })
+    .eq("id", userId);
+
+  return {
+    recipientId,
+    bankSummary: bankSummary || "Linked via Plaid",
+  };
 };
 
 export const createCheckbookBankLinkHandler =
@@ -476,64 +716,72 @@ export const createCheckbookBankLinkHandler =
     if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
     try {
       ensureCheckbookCredentials();
-      const { userId } = await authenticateRequest(req);
+      const { userId, body } = await authenticateRequest(req);
       const supabase = createAdminSupabase();
       const profile = await resolveProfile(supabase, userId);
-      const recipient = await getOrCreateRecipient(
-        supabase,
-        userId,
-        profile.email,
-        profile.fullName,
+      const existing = await getExistingRecipient(supabase, userId);
+      const publicToken = String(
+        body?.publicToken || body?.public_token || "",
+      ).trim();
+      const plaidAccountId = String(
+        body?.plaidAccountId || body?.plaid_account_id || body?.accountId || "",
+      ).trim() || null;
+      const forceRelink = /^(1|true|yes|on)$/i.test(
+        String(body?.forceRelink || body?.force_relink || "").trim(),
       );
+
       if (
-        ["linked", "verified", "active"].includes(recipient.recipientStatus) &&
-        recipient.bankSummary
+        !publicToken &&
+        !forceRelink &&
+        existing.recipientId &&
+        ["linked", "verified", "active"].includes(existing.recipientStatus)
       ) {
         return json({
           ok: true,
           status: "linked",
-          onboardingUrl: null,
-          recipientId: recipient.recipientId,
-          bankSummary: recipient.bankSummary,
+          linkToken: null,
+          recipientId: existing.recipientId,
+          bankSummary: existing.bankSummary,
         }, 200);
       }
-      const onboardingUrl = await createOnboardingUrl(
-        recipient.recipientId,
-        userId,
-        profile.email,
-      );
-      if (!onboardingUrl) {
-        await supabase
-          .from("cashout_recipients")
-          .update({
-            recipient_status: "linked",
-            bank_summary: recipient.bankSummary || "Checkbook transfer enabled",
-            last_synced_at: new Date().toISOString(),
-          })
-          .eq("user_id", userId)
-          .eq("provider", "checkbook");
+
+      if (!publicToken) {
+        const linkTokenPayload = await plaidCreateLinkToken({
+          userId,
+          email: profile.email,
+          fullName: profile.fullName,
+          platform: String(body?.platform || "").trim().toLowerCase() || null,
+          androidPackageName: String(
+            body?.androidPackageName || body?.android_package_name || "",
+          ).trim() || null,
+          products: ["auth"],
+          optionalProducts: ["identity"],
+        });
         return json({
           ok: true,
-          status: "linked",
-          onboardingUrl: null,
-          recipientId: recipient.recipientId,
-          bankSummary: recipient.bankSummary || "Checkbook transfer enabled",
+          status: "needs_onboarding",
+          mode: "plaid_link",
+          linkToken: String(linkTokenPayload?.link_token || "").trim() || null,
+          expiration: String(linkTokenPayload?.expiration || "").trim() || null,
+          requestId: String(linkTokenPayload?.request_id || "").trim() || null,
+          recipientId: existing.recipientId,
+          bankSummary: existing.bankSummary,
         }, 200);
       }
-      await supabase
-        .from("cashout_recipients")
-        .update({
-          recipient_status: "needs_onboarding",
-          last_synced_at: new Date().toISOString(),
-        })
-        .eq("user_id", userId)
-        .eq("provider", "checkbook");
+
+      const linked = await linkCheckbookRecipientFromPlaid(
+        supabase,
+        userId,
+        profile,
+        { publicToken, plaidAccountId },
+      );
       return json({
         ok: true,
-        status: "needs_onboarding",
-        onboardingUrl,
-        recipientId: recipient.recipientId,
-        bankSummary: recipient.bankSummary,
+        status: "linked",
+        mode: "plaid_link",
+        linkToken: null,
+        recipientId: linked.recipientId,
+        bankSummary: linked.bankSummary,
       }, 200);
     } catch (error) {
       if (error instanceof HttpError) {

@@ -144,6 +144,8 @@ export const plaidCreateLinkToken = (payload: {
   androidPackageName?: string | null;
   accessToken?: string | null;
   accountSelectionEnabled?: boolean;
+  products?: string[] | null;
+  optionalProducts?: string[] | null;
 }) => {
   const countryCodes = PLAID_COUNTRY_CODES.split(",")
     .map((v) => v.trim().toUpperCase())
@@ -158,20 +160,31 @@ export const plaidCreateLinkToken = (payload: {
       access_token: accessToken,
     }
     : (() => {
-      const products = ["transactions"];
-      const optionalProducts = ["identity"];
+      const products = Array.isArray(payload.products) && payload.products.length
+        ? payload.products.map((value) => String(value || "").trim().toLowerCase())
+          .filter(Boolean)
+        : ["transactions"];
+      const optionalProducts =
+        Array.isArray(payload.optionalProducts) && payload.optionalProducts.length
+          ? payload.optionalProducts
+            .map((value) => String(value || "").trim().toLowerCase())
+            .filter(Boolean)
+          : ["identity"];
 
-      return {
+      const request: Record<string, unknown> = {
         client_name: PLAID_CLIENT_NAME,
         country_codes: countryCodes.length ? countryCodes : ["US"],
         language: "en",
         user: { client_user_id: payload.userId },
         products,
         optional_products: optionalProducts,
-        transactions: {
-          days_requested: 30,
-        },
       };
+      if (products.includes("transactions")) {
+        request.transactions = {
+          days_requested: 30,
+        };
+      }
+      return request;
     })();
 
   if (accessToken && payload.accountSelectionEnabled) {
@@ -332,6 +345,42 @@ export const plaidCreateStripeBankAccountToken = (
   }>("/processor/stripe/bank_account_token/create", {
     access_token: accessToken,
     account_id: accountId,
+  });
+
+export const plaidCreateProcessorToken = (
+  accessToken: string,
+  accountId: string,
+  processor: string,
+) =>
+  plaidRequest<{
+    processor_token: string;
+    request_id: string;
+  }>("/processor/token/create", {
+    access_token: accessToken,
+    account_id: accountId,
+    processor: String(processor || "").trim().toLowerCase() || "checkbook",
+  });
+
+export const plaidGetAuthNumbers = (
+  accessToken: string,
+  accountId: string,
+) =>
+  plaidRequest<{
+    accounts?: Array<{ account_id?: string | null; subtype?: string | null; type?: string | null }>;
+    numbers?: {
+      ach?: Array<{
+        account_id?: string | null;
+        account?: string | null;
+        routing?: string | null;
+        wire_routing?: string | null;
+      }>;
+    };
+    request_id?: string;
+  }>("/auth/get", {
+    access_token: accessToken,
+    options: {
+      account_ids: [accountId],
+    },
   });
 
 export const plaidGetWebhookVerificationKey = (keyId: string) =>

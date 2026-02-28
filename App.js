@@ -5395,7 +5395,12 @@ export default function App() {
     });
     const { data, error } = await callAuthedEdgeFunction(
       "cashout-bank-link",
-      {},
+      {
+        platform: Platform.OS,
+        ...(Platform.OS === "android" && PLAID_ANDROID_PACKAGE_NAME
+          ? { androidPackageName: PLAID_ANDROID_PACKAGE_NAME }
+          : {}),
+      },
       { timeoutMs: 20000 },
     );
     if (error || !data?.ok) {
@@ -5417,6 +5422,7 @@ export default function App() {
       return;
     }
     const status = String(data?.status || "").trim().toLowerCase();
+    const linkToken = String(data?.linkToken || "").trim();
     setCashoutCatalogState((prev) => ({
       ...prev,
       bankTile: {
@@ -5433,13 +5439,170 @@ export default function App() {
       });
       return;
     }
-    const onboardingUrl = String(data?.onboardingUrl || "").trim();
-    const opened = openCashoutHostedFlow(onboardingUrl);
-    setCashoutActionStatus({
-      loading: false,
-      error: opened ? null : "Unable to open bank onboarding right now.",
-      success: opened ? "Complete bank setup to enable bank transfer cashout." : null,
-    });
+    if (!linkToken) {
+      const onboardingUrl = String(data?.onboardingUrl || "").trim();
+      const opened = openCashoutHostedFlow(onboardingUrl);
+      setCashoutActionStatus({
+        loading: false,
+        error: opened ? null : "Unable to open bank onboarding right now.",
+        success: opened
+          ? "Complete bank setup to enable bank transfer cashout."
+          : null,
+      });
+      return;
+    }
+
+    try {
+      await Promise.race([
+        destroyPlaidLink().catch(() => null),
+        new Promise((resolve) => setTimeout(resolve, 1200)),
+      ]);
+    } catch {
+      // best effort
+    }
+
+    let settled = false;
+    let didOpenAttempt = false;
+    let linkedSuccessfully = false;
+    const settle = (callback) => {
+      if (settled) return;
+      settled = true;
+      if (typeof callback === "function") callback();
+    };
+
+    const openLinkSheet = () => {
+      if (didOpenAttempt) return;
+      didOpenAttempt = true;
+      try {
+        openPlaidLink({
+          logLevel: LinkLogLevel.ERROR,
+          iOSPresentationStyle: LinkIOSPresentationStyle.MODAL,
+          onSuccess: async (success) => {
+            const publicToken = String(success?.publicToken || "").trim();
+            const selectedPlaidAccountId = String(
+              success?.metadata?.accounts?.[0]?.id || "",
+            ).trim();
+            if (!publicToken) {
+              settle(() => {
+                setCashoutActionStatus({
+                  loading: false,
+                  error: "Missing public token from Plaid Link.",
+                  success: null,
+                });
+              });
+              return;
+            }
+            linkedSuccessfully = true;
+            setCashoutActionStatus({
+              loading: true,
+              error: null,
+              success: null,
+            });
+            const completion = await callAuthedEdgeFunction(
+              "cashout-bank-link",
+              {
+                publicToken,
+                ...(selectedPlaidAccountId
+                  ? { plaidAccountId: selectedPlaidAccountId }
+                  : {}),
+              },
+              { timeoutMs: 30000 },
+            );
+            if (completion.error || !completion.data?.ok) {
+              settle(() => {
+                setCashoutActionStatus({
+                  loading: false,
+                  error: toUserFacingError(
+                    completion.error ||
+                      completion.data?.error ||
+                      "Unable to link bank account right now.",
+                    "Unable to link bank account right now.",
+                  ),
+                  success: null,
+                });
+              });
+              return;
+            }
+            const linkedStatus = String(completion.data?.status || "")
+              .trim()
+              .toLowerCase();
+            setCashoutCatalogState((prev) => ({
+              ...prev,
+              bankTile: {
+                ...(prev.bankTile || {}),
+                status: linkedStatus || "linked",
+                bankSummary:
+                  String(completion.data?.bankSummary || "").trim() || null,
+              },
+            }));
+            settle(() => {
+              setCashoutActionStatus({
+                loading: false,
+                error: null,
+                success:
+                  "Bank account linked. You can request a transfer now.",
+              });
+            });
+          },
+          onExit: (linkExit) => {
+            const exitMessage =
+              linkExit?.error?.displayMessage ||
+              linkExit?.error?.errorMessage ||
+              null;
+            if (linkedSuccessfully && !exitMessage) {
+              return;
+            }
+            settle(() => {
+              setCashoutActionStatus({
+                loading: false,
+                error: exitMessage || "Bank linking was closed.",
+                success: null,
+              });
+            });
+          },
+        });
+      } catch (openError) {
+        settle(() => {
+          setCashoutActionStatus({
+            loading: false,
+            error: toUserFacingError(
+              openError?.message,
+              PLAID_LINK_OPEN_FAILED_COPY,
+            ),
+            success: null,
+          });
+        });
+      }
+    };
+
+    try {
+      createPlaidLink({
+        token: linkToken,
+        noLoadingState: false,
+        ...(Platform.OS === "android" ? { logLevel: LinkLogLevel.ERROR } : {}),
+        onLoad: () => {
+          openLinkSheet();
+        },
+      });
+      setTimeout(() => {
+        if (!didOpenAttempt) openLinkSheet();
+      }, Platform.OS === "android" ? 1500 : 900);
+      setTimeout(() => {
+        settle(() => {
+          setCashoutActionStatus({
+            loading: false,
+            error: PLAID_LINK_OPEN_FAILED_COPY,
+            success: null,
+          });
+        });
+      }, 9000);
+    } catch (plaidError) {
+      setCashoutActionStatus({
+        loading: false,
+        error: toUserFacingError(plaidError?.message, PLAID_LINK_OPEN_FAILED_COPY),
+        success: null,
+      });
+    }
   }, [bankTileLinked, callAuthedEdgeFunction, isSignedIn, openCashoutHostedFlow]);
 
   useEffect(() => {
