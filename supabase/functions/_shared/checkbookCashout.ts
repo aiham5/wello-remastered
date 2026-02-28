@@ -3,6 +3,7 @@ import {
   createAdminSupabase,
   HttpError,
   json,
+  SUPABASE_SERVICE_ROLE_KEY,
 } from "./auth.ts";
 
 type CreateOptions = { endpointName: string; requireIdempotencyKey: boolean };
@@ -61,6 +62,10 @@ const CASHOUT_WEEKLY_LIMIT_MAX = Math.max(
   1,
 );
 const CASHOUT_ADMIN_DECISION_SECRET = envString("CASHOUT_ADMIN_DECISION_SECRET");
+const ADMIN_DECISION_BEARER_KEY = envString(
+  "ADMIN_SUPABASE_SECRET_KEY",
+  envString("SUPABASE_SECRET_KEY", SUPABASE_SERVICE_ROLE_KEY),
+);
 
 const normalizeEmail = (value: unknown) =>
   String(value || "")
@@ -689,13 +694,22 @@ export const createCheckbookAdminDecisionHandler =
     if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
     try {
       ensureCheckbookCredentials();
-      if (!CASHOUT_ADMIN_DECISION_SECRET) {
-        throw new HttpError("Missing admin decision secret.", 500, {
-          reason: "admin_secret_missing",
-        });
-      }
       const provided = String(req.headers.get("x-admin-decision-secret") || "").trim();
-      if (!provided || !constantTimeEqual(provided, CASHOUT_ADMIN_DECISION_SECRET)) {
+      const authHeader = String(
+        req.headers.get("authorization") || req.headers.get("Authorization") || "",
+      ).trim();
+      const bearer = authHeader.toLowerCase().startsWith("bearer ")
+        ? authHeader.slice(7).trim()
+        : "";
+      const hasHeaderSecret =
+        !!CASHOUT_ADMIN_DECISION_SECRET &&
+        !!provided &&
+        constantTimeEqual(provided, CASHOUT_ADMIN_DECISION_SECRET);
+      const hasServerBearer =
+        !!ADMIN_DECISION_BEARER_KEY &&
+        !!bearer &&
+        constantTimeEqual(bearer, ADMIN_DECISION_BEARER_KEY);
+      if (!hasHeaderSecret && !hasServerBearer) {
         throw new HttpError("Unauthorized", 401, { reason: "invalid_admin_secret" });
       }
       const body = await req.json().catch(() => ({})) as Record<string, unknown>;
@@ -708,7 +722,26 @@ export const createCheckbookAdminDecisionHandler =
       if (!["approve", "reject"].includes(action)) {
         throw new HttpError("Invalid action.", 400, { reason: "invalid_action" });
       }
+      if (!actorId) {
+        throw new HttpError("Missing actor id.", 400, { reason: "missing_actor_id" });
+      }
       const supabase = createAdminSupabase();
+      const { data: actor, error: actorError } = await supabase
+        .from("profiles")
+        .select("id, role")
+        .eq("id", actorId)
+        .maybeSingle();
+      if (actorError || !actor?.id) {
+        throw new HttpError(actorError?.message || "Actor not found.", 403, {
+          reason: "actor_not_found",
+        });
+      }
+      const actorRole = String(actor.role || "").trim().toLowerCase();
+      if (!["admin", "supervisor"].includes(actorRole)) {
+        throw new HttpError("Forbidden", 403, {
+          reason: "actor_role_forbidden",
+        });
+      }
       const { data: row, error: rowError } = await supabase
         .from("cashout_payouts")
         .select("id, user_id, amount_cents, status, approval_status, recipient_provider_id")

@@ -874,7 +874,9 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
 .global-drawer {
   position: fixed;
   inset: 0;
-  background: var(--admin-backdrop);
+  background: var(--admin-backdrop, rgba(15, 23, 42, 0.58));
+  opacity: 1;
+  backdrop-filter: blur(2px);
   display: flex;
   justify-content: flex-end;
   z-index: 90;
@@ -883,11 +885,12 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
 .drawer-card {
   width: min(620px, 100%);
   height: 100%;
-  background: var(--admin-surface-soft);
+  background: var(--admin-surface, #ffffff);
   opacity: 1;
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--admin-border);
+  box-shadow: -14px 0 28px rgba(15, 23, 42, 0.18);
 }
 
 .drawer-header {
@@ -906,6 +909,7 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
 .drawer-content {
   padding: 14px;
   overflow: auto;
+  background: var(--admin-surface, #ffffff);
 }
 
 .modal-backdrop {
@@ -916,7 +920,8 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(15, 23, 42, 0.58);
+  background: var(--admin-backdrop, rgba(15, 23, 42, 0.58));
+  opacity: 1;
   backdrop-filter: blur(2px);
 }
 
@@ -924,13 +929,20 @@ html[data-theme="dark"] .admin-table tbody tr.is-selected:hover {
   width: min(460px, calc(100vw - 24px));
   border-radius: 12px;
   border: 1px solid var(--admin-border);
-  background: var(--admin-surface);
+  background: var(--admin-surface, #ffffff);
   color: var(--admin-text);
   opacity: 1;
   box-shadow: var(--admin-shadow);
   padding: 14px;
   display: grid;
   gap: 12px;
+}
+
+.admin-sidebar.panel-card,
+.receipt-review-detail-panel.panel-card,
+.panel-card {
+  background: var(--admin-surface, #ffffff);
+  opacity: 1;
 }
 
 .modal-small {
