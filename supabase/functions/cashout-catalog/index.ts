@@ -260,12 +260,30 @@ serve(async (req: Request) => {
       Math.min(60, Math.trunc(Number(body?.pageSize ?? 20) || 20)),
     );
     const supabase = createAdminSupabase();
-    const { data: recipient } = await supabase
-      .from("cashout_recipients")
-      .select("recipient_provider_id, recipient_status, bank_summary")
-      .eq("user_id", userId)
-      .eq("provider", "checkbook")
-      .maybeSingle();
+    const [{ data: recipient }, { data: linkedPlaidAccounts }] = await Promise.all([
+      supabase
+        .from("cashout_recipients")
+        .select("recipient_provider_id, recipient_status, bank_summary")
+        .eq("user_id", userId)
+        .eq("provider", "checkbook")
+        .maybeSingle(),
+      supabase
+        .from("plaid_linked_accounts")
+        .select("plaid_account_id")
+        .eq("user_id", userId)
+        .eq("status", "active")
+        .limit(1),
+    ]);
+    const hasActivePlaidBank = Array.isArray(linkedPlaidAccounts) &&
+      linkedPlaidAccounts.length > 0;
+    const recipientStatus = String(recipient?.recipient_status || "")
+      .trim()
+      .toLowerCase();
+    const recipientLinked = Boolean(recipient?.recipient_provider_id) &&
+      ["linked", "verified", "active"].includes(recipientStatus);
+    const bankTileStatus = recipientLinked && hasActivePlaidBank
+      ? "linked"
+      : "needs_onboarding";
 
     let rows: Array<Record<string, unknown>> = [];
     let usingFallbackCatalog = false;
@@ -331,10 +349,7 @@ serve(async (req: Request) => {
           code: "bank_transfer",
           name: "Your bank account",
           icon: "business-outline",
-          status: recipient?.recipient_provider_id
-            ? String(recipient.recipient_status || "").trim().toLowerCase() ||
-              "linked"
-            : "needs_onboarding",
+          status: bankTileStatus,
           bankSummary: String(recipient?.bank_summary || "").trim() || null,
         },
       },

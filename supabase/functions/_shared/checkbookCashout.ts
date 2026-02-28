@@ -468,6 +468,49 @@ const getExistingRecipient = async (
   };
 };
 
+const getPlaidCashoutLinkState = async (
+  supabase: ReturnType<typeof createAdminSupabase>,
+  userId: string,
+) => {
+  const [{ data: profile }, { data: accounts, error: accountsError }] =
+    await Promise.all([
+      supabase
+        .from("profiles")
+        .select("stripe_cashout_plaid_account_id")
+        .eq("id", userId)
+        .maybeSingle(),
+      supabase
+        .from("plaid_linked_accounts")
+        .select("plaid_account_id")
+        .eq("user_id", userId)
+        .eq("status", "active"),
+    ]);
+  if (accountsError) {
+    throw new HttpError(
+      accountsError.message || "Unable to validate linked bank account.",
+      500,
+      { reason: "plaid_account_state_lookup_failed" },
+    );
+  }
+  const activeAccountIds = new Set(
+    (Array.isArray(accounts) ? accounts : [])
+      .map((row) => String(row?.plaid_account_id || "").trim())
+      .filter(Boolean),
+  );
+  const selectedAccountId = String(
+    profile?.stripe_cashout_plaid_account_id || "",
+  ).trim() || null;
+  const selectedActive = selectedAccountId
+    ? activeAccountIds.has(selectedAccountId)
+    : false;
+  return {
+    hasActivePlaidAccount: activeAccountIds.size > 0,
+    linkedAccountCount: activeAccountIds.size,
+    selectedPlaidAccountId: selectedAccountId,
+    selectedPlaidAccountActive: selectedActive,
+  };
+};
+
 const upsertLinkedPlaidData = async (
   supabase: ReturnType<typeof createAdminSupabase>,
   userId: string,
@@ -646,7 +689,7 @@ const linkCheckbookRecipientFromPlaid = async (
     summaryName || "Account",
     accountMask ? `****${accountMask}` : null,
   ].filter(Boolean);
-  const bankSummary = bankSummaryParts.join(" • ").slice(0, 180);
+  const bankSummary = bankSummaryParts.join(" - ").slice(0, 180);
 
   const iavResponse = await callCheckbookApi("/v3/account/bank/iav/plaid", {
     method: "POST",
@@ -720,6 +763,7 @@ export const createCheckbookBankLinkHandler =
       const supabase = createAdminSupabase();
       const profile = await resolveProfile(supabase, userId);
       const existing = await getExistingRecipient(supabase, userId);
+      const plaidState = await getPlaidCashoutLinkState(supabase, userId);
       const publicToken = String(
         body?.publicToken || body?.public_token || "",
       ).trim();
@@ -734,7 +778,8 @@ export const createCheckbookBankLinkHandler =
         !publicToken &&
         !forceRelink &&
         existing.recipientId &&
-        ["linked", "verified", "active"].includes(existing.recipientStatus)
+        ["linked", "verified", "active"].includes(existing.recipientStatus) &&
+        plaidState.hasActivePlaidAccount
       ) {
         return json({
           ok: true,
@@ -873,6 +918,20 @@ export const createCheckbookCashoutHandler =
         .trim()
         .toLowerCase();
       if (!["linked", "verified", "active"].includes(recipientStatus)) {
+        throw new HttpError("Complete bank setup before requesting bank transfer cashout.", 400, {
+          reason: "bank_setup_incomplete",
+        });
+      }
+      const plaidState = await getPlaidCashoutLinkState(supabase, userId);
+      if (!plaidState.hasActivePlaidAccount) {
+        throw new HttpError("Link a bank account with Plaid before requesting bank transfer cashout.", 400, {
+          reason: "bank_not_linked",
+        });
+      }
+      if (
+        plaidState.selectedPlaidAccountId &&
+        !plaidState.selectedPlaidAccountActive
+      ) {
         throw new HttpError("Complete bank setup before requesting bank transfer cashout.", 400, {
           reason: "bank_setup_incomplete",
         });
