@@ -4,5 +4,5 @@ import { disabledCashoutEndpoint } from "../_shared/cashoutDisabled.ts";
 export const config = { verify_jwt: false };
 
 serve(
-  disabledCashoutEndpoint("dots", "dots-create-cashout"),
+  disabledCashoutEndpoint("giftbit", "giftbit-create-cashout"),
 );

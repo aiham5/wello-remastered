@@ -30,7 +30,7 @@ export const cashoutOpsModule = {
       <section class="panel-card sticky-filters">
         <div class="filters-grid">
           <label class="field"><span>Status</span><select id="co-status"><option value="all">All</option><option value="pending">Pending</option><option value="paid">Paid</option><option value="failed">Failed</option></select></label>
-          <label class="field"><span>Provider</span><select id="co-provider"><option value="all">All</option><option value="dots">Dots</option><option value="stripe">Stripe</option><option value="tremendous">Tremendous (legacy)</option></select></label>
+          <label class="field"><span>Provider</span><select id="co-provider"><option value="all">All</option><option value="reloadly">Reloadly</option><option value="checkbook">Checkbook</option><option value="stripe">Stripe (legacy)</option><option value="tremendous">Tremendous (legacy)</option><option value="dots">Dots (legacy)</option><option value="giftbit">Giftbit (legacy)</option></select></label>
           <label class="field"><span>Search</span><input id="co-search" type="search" placeholder="Payout id, user id, order id" /></label>
         </div>
       </section>
@@ -49,7 +49,7 @@ export const cashoutOpsModule = {
       try {
         let query = runtime.client
           .from("cashout_payouts")
-          .select("id,user_id,amount_cents,status,provider,provider_status,provider_order_id,provider_reward_id,provider_claim_url,stripe_transfer_id,stripe_payout_id,created_at,updated_at")
+          .select("id,user_id,amount_cents,status,provider,method_type,approval_status,provider_status,provider_order_id,provider_reward_id,provider_claim_url,stripe_transfer_id,bank_summary,created_at,updated_at")
           .order("created_at", { ascending: false })
           .range(state.page * PAGE_SIZE, state.page * PAGE_SIZE + PAGE_SIZE - 1);
 
@@ -97,17 +97,18 @@ export const cashoutOpsModule = {
           <div class="detail-line"><span>Payout ID</span><strong>${escapeHtml(row.id)}</strong></div>
           <div class="detail-line"><span>User</span><strong>${escapeHtml(row.user_id || "--")}</strong></div>
           <div class="detail-line"><span>Amount</span><strong>${escapeHtml(formatCurrencyFromCents(row.amount_cents || 0))}</strong></div>
-          <div class="detail-line"><span>Status</span><strong>${escapeHtml(row.status || "--")}</strong></div>
           <div class="detail-line"><span>Provider</span><strong>${escapeHtml(row.provider || "--")}</strong></div>
+          <div class="detail-line"><span>Method</span><strong>${escapeHtml(String(row.method_type || "gift_card").replace("_", " "))}</strong></div>
+          <div class="detail-line"><span>Approval status</span><strong>${escapeHtml(row.approval_status || "--")}</strong></div>
           <div class="detail-line"><span>Provider status</span><strong>${escapeHtml(row.provider_status || "--")}</strong></div>
-          <div class="detail-line"><span>Provider ID</span><strong>${escapeHtml(row.provider_order_id || "--")}</strong></div>
-          <div class="detail-line"><span>Transfer / Reference ID</span><strong>${escapeHtml(row.provider_reward_id || "--")}</strong></div>
-          <div class="detail-line"><span>Stripe transfer</span><strong>${escapeHtml(row.stripe_transfer_id || "--")}</strong></div>
-          <div class="detail-line"><span>Stripe payout</span><strong>${escapeHtml(row.stripe_payout_id || "--")}</strong></div>
+          <div class="detail-line"><span>Provider order ID</span><strong>${escapeHtml(row.provider_order_id || "--")}</strong></div>
+          <div class="detail-line"><span>Provider transfer/reference ID</span><strong>${escapeHtml(row.provider_reward_id || "--")}</strong></div>
+          <div class="detail-line"><span>Bank summary</span><strong>${escapeHtml(row.bank_summary || "--")}</strong></div>
+          <div class="detail-line"><span>Legacy Stripe transfer ID</span><strong>${escapeHtml(row.stripe_transfer_id || "--")}</strong></div>
         </div>
         <div class="cta-row">
-          <button class="button secondary" id="co-copy-order">Copy provider ID</button>
-          <button class="button secondary" id="co-copy-reward">Copy transfer ID</button>
+          <button class="button secondary" id="co-copy-order">Copy provider order ID</button>
+          <button class="button secondary" id="co-copy-reward">Copy transfer/reference ID</button>
           <button class="button primary" id="co-open-claim" ${row.provider_claim_url ? "" : "disabled"}>Open claim link</button>
         </div>
       `;
@@ -116,14 +117,14 @@ export const cashoutOpsModule = {
         const text = String(row.provider_order_id || "");
         if (!text) return;
         await navigator.clipboard.writeText(text);
-        toast.success("Provider ID copied.");
+        toast.success("Provider order ID copied.");
       });
 
       node.querySelector("#co-copy-reward")?.addEventListener("click", async () => {
         const text = String(row.provider_reward_id || "");
         if (!text) return;
         await navigator.clipboard.writeText(text);
-        toast.success("Transfer ID copied.");
+        toast.success("Transfer/reference ID copied.");
       });
 
       node.querySelector("#co-open-claim")?.addEventListener("click", () => {

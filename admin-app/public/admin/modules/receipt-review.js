@@ -314,6 +314,8 @@ export const receiptReviewModule = {
       editMode: false,
       imageExpanded: false,
       imageZoomMode: "fit",
+      totalInput: "",
+      notesInput: "",
     };
 
     content.innerHTML = `
@@ -406,6 +408,8 @@ export const receiptReviewModule = {
         state.preview = null;
         state.previewError = "";
         state.previewLoading = false;
+        state.totalInput = "";
+        state.notesInput = "";
 
         renderReceiptsTable({
           container: tableContainer,
@@ -444,6 +448,8 @@ export const receiptReviewModule = {
       if (!id) {
         state.detail = null;
         state.image = null;
+        state.totalInput = "";
+        state.notesInput = "";
         return;
       }
 
@@ -454,6 +460,8 @@ export const receiptReviewModule = {
 
       state.detail = data || null;
       state.image = await resolveReceiptImage(runtime, state.detail?.storage_path || "");
+      state.totalInput = dollarsFromCents(state.detail?.receipt_total_cents || 0);
+      state.notesInput = String(state.detail?.review_notes || "");
 
       if (requestId !== state.detailRequestId) return;
 
@@ -556,8 +564,12 @@ export const receiptReviewModule = {
         const detail = state.detail;
         if (!detail?.id) return;
 
-        const totalInput = detailContainer.querySelector("#rr-total")?.value || "";
-        const notesInput = detailContainer.querySelector("#rr-notes")?.value || null;
+        const totalInput = String(
+          state.totalInput || detailContainer.querySelector("#rr-total")?.value || "",
+        );
+        const notesInput = String(
+          state.notesInput ?? detailContainer.querySelector("#rr-notes")?.value ?? "",
+        ).trim() || null;
         const totalCents = centsFromDollars(totalInput);
 
         if (["verify", "edit"].includes(action) && (!Number.isFinite(totalCents) || totalCents <= 0)) {
@@ -643,6 +655,8 @@ export const receiptReviewModule = {
       const promoMeta = getPromoMeta(detail);
       const totalEditable = isDecisionEditable();
       const preview = state.preview;
+      const totalValue = state.totalInput ?? dollarsFromCents(detail.receipt_total_cents || 0);
+      const notesValue = state.notesInput ?? String(detail.review_notes || "");
 
       const imageZoomScale = state.imageZoomMode === "actual" ? 1 : 0.78;
       const imageClass = state.imageExpanded ? "drawer-image-wrap is-expanded" : "drawer-image-wrap";
@@ -663,12 +677,12 @@ export const receiptReviewModule = {
 
           <label class="field">
             <span>Receipt total ($)</span>
-            <input id="rr-total" type="number" min="0" step="0.01" value="${escapeHtml(dollarsFromCents(detail.receipt_total_cents || 0))}" ${totalEditable ? "" : "disabled"} />
+            <input id="rr-total" type="number" min="0" step="0.01" value="${escapeHtml(totalValue)}" ${totalEditable ? "" : "disabled"} />
           </label>
 
           <label class="field">
             <span>Review notes</span>
-            <textarea id="rr-notes" rows="4" ${totalEditable ? "" : "disabled"}>${escapeHtml(detail.review_notes || "")}</textarea>
+            <textarea id="rr-notes" rows="4" ${totalEditable ? "" : "disabled"}>${escapeHtml(notesValue)}</textarea>
           </label>
 
           <div class="receipt-preview-grid">
@@ -716,7 +730,11 @@ export const receiptReviewModule = {
 
       detailContainer.querySelector("#rr-total")?.addEventListener("input", (event) => {
         if (!isDecisionEditable()) return;
-        schedulePreview(event.target.value);
+        state.totalInput = String(event.target.value || "");
+        schedulePreview(state.totalInput);
+      });
+      detailContainer.querySelector("#rr-notes")?.addEventListener("input", (event) => {
+        state.notesInput = String(event.target.value || "");
       });
 
       detailContainer.querySelector("#rr-verify")?.addEventListener("click", async () => {
@@ -743,6 +761,8 @@ export const receiptReviewModule = {
       detailContainer.querySelector("#rr-cancel-edit")?.addEventListener("click", async () => {
         state.editMode = false;
         state.previewError = "";
+        state.totalInput = dollarsFromCents(detail.receipt_total_cents || 0);
+        state.notesInput = String(detail.review_notes || "");
         await renderDetail();
       });
 
@@ -775,6 +795,8 @@ export const receiptReviewModule = {
       state.preview = null;
       state.previewError = "";
       state.previewLoading = false;
+      state.totalInput = "";
+      state.notesInput = "";
       await refresh();
     }, 220);
 
@@ -790,6 +812,8 @@ export const receiptReviewModule = {
       state.preview = null;
       state.previewError = "";
       state.previewLoading = false;
+      state.totalInput = "";
+      state.notesInput = "";
       await refresh();
     });
 

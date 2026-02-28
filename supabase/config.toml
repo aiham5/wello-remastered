@@ -84,6 +84,30 @@ verify_jwt = false
 [functions.dots-create-cashout]
 verify_jwt = false
 
+[functions.giftbit-create-cashout]
+verify_jwt = false
+
+[functions.reloadly-create-cashout]
+verify_jwt = false
+
+[functions.cashout-create]
+verify_jwt = false
+
+[functions.cashout-catalog]
+verify_jwt = false
+
+[functions.cashout-bank-link]
+verify_jwt = false
+
+[functions.cashout-bank-decision]
+verify_jwt = false
+
+[functions.checkbook-webhook]
+verify_jwt = false
+
+[functions.trolley-webhook]
+verify_jwt = false
+
 [functions.dots-webhook]
 verify_jwt = false
 

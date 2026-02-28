@@ -4,5 +4,5 @@ import { disabledWebhookEndpoint } from "../_shared/cashoutDisabled.ts";
 export const config = { verify_jwt: false };
 
 serve(
-  disabledWebhookEndpoint("tremendous", "tremendous-webhook"),
+  disabledWebhookEndpoint("trolley", "trolley-webhook"),
 );

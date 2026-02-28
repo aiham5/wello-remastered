@@ -207,6 +207,7 @@ const formatPercentLabel = (value) => {
 const DEFAULT_CASHBACK_RATE_BPS = 750;
 const CASHBACK_SETTING_KEY = "consumer_cashback_rate_bps";
 const MIN_CASHOUT_CENTS = 1000;
+const CASHOUT_CATALOG_PAGE_SIZE = 24;
 const CONSUMER_CASHOUT_ENABLED = true;
 const CONSUMER_CASHOUT_DISABLED_COPY =
   "Cashout is temporarily unavailable while we finalize a new payout provider.";
@@ -272,6 +273,34 @@ const createInitialTremendousDemoState = () => ({
   rewardId: null,
   claimUrl: null,
 });
+const createInitialCashoutCatalogState = () => ({
+  loading: false,
+  loadingMore: false,
+  error: null,
+  curated: [],
+  all: [],
+  page: 0,
+  hasMore: false,
+  total: 0,
+  bankTile: {
+    code: "bank_transfer",
+    name: "Your bank account",
+    icon: "business-outline",
+    status: "needs_onboarding",
+    bankSummary: null,
+  },
+});
+const normalizeCatalogItemCode = (value) => String(value || "").trim();
+const mergeCatalogItemsByCode = (previousItems, nextItems) => {
+  const map = new Map();
+  [...(Array.isArray(previousItems) ? previousItems : []), ...(Array.isArray(nextItems) ? nextItems : [])]
+    .forEach((item) => {
+      const code = normalizeCatalogItemCode(item?.code);
+      if (!code) return;
+      map.set(code, item);
+    });
+  return Array.from(map.values());
+};
 const GOOGLE_AUTH_CALLBACK_PREFIXES = [
   `${APP_SCHEME}://${AUTH_CALLBACK_PATH}`.toLowerCase(),
   `${APP_SCHEME}:///${AUTH_CALLBACK_PATH}`.toLowerCase(),
@@ -3999,11 +4028,65 @@ export default function App() {
     error: null,
     success: null,
   });
+  const [cashoutCatalogState, setCashoutCatalogState] = useState(
+    createInitialCashoutCatalogState,
+  );
+  const [cashoutCatalogModalVisible, setCashoutCatalogModalVisible] =
+    useState(false);
+  const [cashoutMethodType, setCashoutMethodType] = useState("gift_card");
+  const [selectedCashoutCatalogCode, setSelectedCashoutCatalogCode] =
+    useState(null);
   const [cashoutClaimUrl, setCashoutClaimUrl] = useState(null);
   const cashoutIdempotencyKeyRef = useRef(null);
   const [cashoutAmountText, setCashoutAmountText] = useState("");
   const [cashoutHistoryExpanded, setCashoutHistoryExpanded] = useState(false);
   const [cashoutPayoutHistory, setCashoutPayoutHistory] = useState([]);
+  const cashoutCatalogItems = useMemo(() => {
+    const seen = new Set();
+    const combined = [];
+    [...(cashoutCatalogState.curated || []), ...(cashoutCatalogState.all || [])]
+      .forEach((item) => {
+        const code = String(item?.code || "").trim();
+        if (!code || seen.has(code)) return;
+        seen.add(code);
+        combined.push(item);
+      });
+    return combined;
+  }, [cashoutCatalogState.all, cashoutCatalogState.curated]);
+  const selectedCashoutCatalogItem = useMemo(() => {
+    const selectedCode = String(selectedCashoutCatalogCode || "").trim();
+    if (selectedCode) {
+      const direct = cashoutCatalogItems.find(
+        (item) => String(item?.code || "").trim() === selectedCode,
+      );
+      if (direct) return direct;
+    }
+    return cashoutCatalogItems[0] || null;
+  }, [cashoutCatalogItems, selectedCashoutCatalogCode]);
+  const bankTileStatus = String(
+    cashoutCatalogState.bankTile?.status || "needs_onboarding",
+  )
+    .trim()
+    .toLowerCase();
+  const bankTileLinked = bankTileStatus === "linked";
+  const cashoutMinCents = useMemo(() => {
+    if (cashoutMethodType === "bank_transfer") return MIN_CASHOUT_CENTS;
+    const catalogMin = Math.max(
+      0,
+      Number(selectedCashoutCatalogItem?.minCents) || 0,
+    );
+    return Math.max(MIN_CASHOUT_CENTS, catalogMin || MIN_CASHOUT_CENTS);
+  }, [cashoutMethodType, selectedCashoutCatalogItem]);
+  const cashoutMaxAllowedCents = useMemo(() => {
+    const availableCents = Math.max(0, Number(cashbackBalance.availableCents) || 0);
+    if (cashoutMethodType === "bank_transfer") return availableCents;
+    const catalogMax = Math.max(
+      0,
+      Number(selectedCashoutCatalogItem?.maxCents) || 0,
+    );
+    if (!catalogMax) return availableCents;
+    return Math.min(availableCents, catalogMax);
+  }, [cashbackBalance.availableCents, cashoutMethodType, selectedCashoutCatalogItem]);
   const cashoutPreview = useMemo(() => {
     if (!CONSUMER_CASHOUT_ENABLED) {
       return {
@@ -4012,14 +4095,13 @@ export default function App() {
         label: "Cashout unavailable",
       };
     }
-    const availableCents = Number(cashbackBalance.availableCents) || 0;
+    const availableCents = cashoutMaxAllowedCents;
     const inputCents = parseCashoutAmountToCents(cashoutAmountText);
     if (inputCents === null) {
       return {
-        mode:
-          availableCents > 0 && availableCents < MIN_CASHOUT_CENTS
-            ? "below_min"
-            : "max",
+        mode: availableCents > 0 && availableCents < cashoutMinCents
+          ? "below_min"
+          : "max",
         amountCents: availableCents,
         label:
           availableCents > 0
@@ -4034,7 +4116,7 @@ export default function App() {
     if (cents <= 0 || cents > availableCents) {
       return { mode: "invalid", amountCents: 0, label: "Cash out now" };
     }
-    if (cents < MIN_CASHOUT_CENTS) {
+    if (cents < cashoutMinCents) {
       return {
         mode: "below_min",
         amountCents: cents,
@@ -4046,10 +4128,17 @@ export default function App() {
       amountCents: cents,
       label: `Cash out ${formatCurrencyFromCents(cents)}`,
     };
-  }, [cashoutAmountText, cashbackBalance.availableCents]);
+  }, [cashoutAmountText, cashoutMaxAllowedCents, cashoutMinCents]);
   useEffect(() => {
     cashoutIdempotencyKeyRef.current = null;
-  }, [cashoutAmountText]);
+  }, [cashoutAmountText, cashoutMethodType, selectedCashoutCatalogCode]);
+  useEffect(() => {
+    if (selectedCashoutCatalogItem?.code) return;
+    if (!cashoutCatalogItems.length) return;
+    const defaultCode = String(cashoutCatalogItems[0]?.code || "").trim();
+    if (!defaultCode) return;
+    setSelectedCashoutCatalogCode(defaultCode);
+  }, [cashoutCatalogItems, selectedCashoutCatalogItem?.code]);
   const tremendousDemoAvailableCents = useMemo(() => {
     const realAvailableCents = Number(cashbackBalance.availableCents) || 0;
     if (TREMENDOUS_DEMO_USE_VIRTUAL_BALANCE && realAvailableCents <= 0) {
@@ -4238,6 +4327,7 @@ export default function App() {
   const [cashoutCelebration, setCashoutCelebration] = useState({
     visible: false,
     amountCents: 0,
+    methodType: "gift_card",
   });
   const cashoutCelebrationTimerRef = useRef(null);
   const historyVerifyNoticeTimerRef = useRef(null);
@@ -5217,6 +5307,140 @@ export default function App() {
     armTremendousClaimLoading();
     setTremendousClaimModalVisible(true);
   }, [armTremendousClaimLoading, tremendousDemoState.claimUrl]);
+
+  const openCashoutHostedFlow = useCallback(
+    (url) => {
+      const nextUrl = String(url || "").trim();
+      if (!/^https:\/\//i.test(nextUrl)) return false;
+      setTremendousClaimUrl(nextUrl);
+      setTremendousClaimError(null);
+      armTremendousClaimLoading();
+      setTremendousClaimModalVisible(true);
+      return true;
+    },
+    [armTremendousClaimLoading],
+  );
+
+  const loadCashoutCatalog = useCallback(
+    async ({ page = 0, append = false } = {}) => {
+      if (!isSignedIn) {
+        setCashoutCatalogState(createInitialCashoutCatalogState());
+        return;
+      }
+      setCashoutCatalogState((prev) => ({
+        ...prev,
+        loading: append ? prev.loading : true,
+        loadingMore: append,
+        error: null,
+      }));
+      const { data, error } = await callAuthedEdgeFunction(
+        "cashout-catalog",
+        { page, pageSize: CASHOUT_CATALOG_PAGE_SIZE },
+        { timeoutMs: 20000 },
+      );
+      if (error || !data?.ok) {
+        setCashoutCatalogState((prev) => ({
+          ...prev,
+          loading: false,
+          loadingMore: false,
+          error: toUserFacingError(
+            error || data?.error || "Unable to load cashout options right now.",
+            "Unable to load cashout options right now.",
+          ),
+        }));
+        return;
+      }
+      const curated = Array.isArray(data?.curated) ? data.curated : [];
+      const pageRows = Array.isArray(data?.all) ? data.all : [];
+      setCashoutCatalogState((prev) => ({
+        ...prev,
+        loading: false,
+        loadingMore: false,
+        error: null,
+        curated: append && prev.curated.length > 0
+          ? mergeCatalogItemsByCode(prev.curated, curated)
+          : curated,
+        all: append
+          ? mergeCatalogItemsByCode(prev.all, pageRows)
+          : pageRows,
+        page: Math.max(0, Number(data?.page) || page),
+        hasMore: Boolean(data?.hasMore),
+        total: Math.max(0, Number(data?.total) || 0),
+        bankTile: {
+          ...(prev.bankTile || {}),
+          ...(data?.bankTile && typeof data.bankTile === "object"
+            ? data.bankTile
+            : {}),
+        },
+      }));
+    },
+    [callAuthedEdgeFunction, isSignedIn],
+  );
+
+  const handleCashoutBankTilePress = useCallback(async () => {
+    setCashoutMethodType("bank_transfer");
+    if (!isSignedIn) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Sign in to cash out.",
+        success: null,
+      });
+      return;
+    }
+    if (bankTileLinked) return;
+    setCashoutActionStatus({
+      loading: true,
+      error: null,
+      success: null,
+    });
+    const { data, error } = await callAuthedEdgeFunction(
+      "cashout-bank-link",
+      {},
+      { timeoutMs: 20000 },
+    );
+    if (error || !data?.ok) {
+      const rawMessage = String(
+        error || data?.error || "Unable to start bank onboarding right now.",
+      );
+      const normalized = rawMessage.toLowerCase();
+      setCashoutActionStatus({
+        loading: false,
+        error:
+          normalized.includes("api error") || normalized.includes("provider")
+            ? "Unable to start bank onboarding right now."
+            : toUserFacingError(
+                rawMessage,
+                "Unable to start bank onboarding right now.",
+              ),
+        success: null,
+      });
+      return;
+    }
+    const status = String(data?.status || "").trim().toLowerCase();
+    setCashoutCatalogState((prev) => ({
+      ...prev,
+      bankTile: {
+        ...(prev.bankTile || {}),
+        status: status || "needs_onboarding",
+        bankSummary: String(data?.bankSummary || "").trim() || null,
+      },
+    }));
+    if (status === "linked") {
+      setCashoutActionStatus({
+        loading: false,
+        error: null,
+        success: "Bank account linked. You can request a transfer now.",
+      });
+      return;
+    }
+    const onboardingUrl = String(data?.onboardingUrl || "").trim();
+    const opened = openCashoutHostedFlow(onboardingUrl);
+    setCashoutActionStatus({
+      loading: false,
+      error: opened ? null : "Unable to open bank onboarding right now.",
+      success: opened ? "Complete bank setup to enable bank transfer cashout." : null,
+    });
+  }, [bankTileLinked, callAuthedEdgeFunction, isSignedIn, openCashoutHostedFlow]);
 
   useEffect(() => {
     return () => {
@@ -6257,7 +6481,7 @@ export default function App() {
         supabase
           .from("cashout_payouts")
           .select(
-            "id, amount_cents, status, created_at, processed_at, provider_claim_url",
+            "id, amount_cents, status, provider, method_type, approval_status, catalog_item_name, created_at, processed_at, provider_claim_url",
           )
           .eq("user_id", authUserId)
           .order("created_at", { ascending: false })
@@ -6308,6 +6532,13 @@ export default function App() {
             id: String(row.id),
             amountCents: Math.max(0, Number(row.amount_cents) || 0),
             status: String(row.status || "pending").toLowerCase(),
+            provider: String(row.provider || "").trim().toLowerCase() || null,
+            methodType:
+              String(row.method_type || "").trim().toLowerCase() ||
+              "gift_card",
+            approvalStatus:
+              String(row.approval_status || "").trim().toLowerCase() || null,
+            catalogItemName: String(row.catalog_item_name || "").trim() || null,
             createdAt: row.created_at
               ? new Date(row.created_at).getTime()
               : Date.now(),
@@ -6459,7 +6690,7 @@ export default function App() {
     Linking.openURL(data.url).catch(() => null);
   }, [cashoutStatus.connected]);
 
-  const triggerCashoutCelebration = useCallback((amountCents) => {
+  const triggerCashoutCelebration = useCallback((amountCents, methodType) => {
     if (cashoutCelebrationTimerRef.current) {
       clearTimeout(cashoutCelebrationTimerRef.current);
       cashoutCelebrationTimerRef.current = null;
@@ -6467,6 +6698,7 @@ export default function App() {
     setCashoutCelebration({
       visible: true,
       amountCents: Number(amountCents) || 0,
+      methodType: String(methodType || "gift_card").trim().toLowerCase(),
     });
     cashoutCelebrationTimerRef.current = setTimeout(() => {
       setCashoutCelebration((prev) => ({ ...prev, visible: false }));
@@ -6491,6 +6723,23 @@ export default function App() {
       });
       return;
     }
+    const methodType =
+      cashoutMethodType === "bank_transfer" ? "bank_transfer" : "gift_card";
+    const selectedCatalogCode = normalizeCatalogItemCode(
+      selectedCashoutCatalogItem?.code,
+    );
+    if (methodType === "gift_card" && !selectedCatalogCode) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Select a gift card before cashing out.",
+        success: null,
+      });
+      return;
+    }
+    if (methodType === "bank_transfer" && !bankTileLinked) {
+      await handleCashoutBankTilePress();
+      return;
+    }
     if ((Number(cashbackBalance.availableCents) || 0) <= 0) {
       setCashoutActionStatus({
         loading: false,
@@ -6500,11 +6749,11 @@ export default function App() {
       return;
     }
 
-    const availableCents = Number(cashbackBalance.availableCents) || 0;
-    if (availableCents < MIN_CASHOUT_CENTS) {
+    const availableCents = cashoutMaxAllowedCents;
+    if (availableCents < cashoutMinCents) {
       setCashoutActionStatus({
         loading: false,
-        error: `Minimum cashout is ${formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.`,
+        error: `Minimum cashout is ${formatCurrencyFromCents(cashoutMinCents)}.`,
         success: null,
       });
       return;
@@ -6548,10 +6797,10 @@ export default function App() {
       });
       return;
     }
-    if (amountCentsToCashout < MIN_CASHOUT_CENTS) {
+    if (amountCentsToCashout < cashoutMinCents) {
       setCashoutActionStatus({
         loading: false,
-        error: `Minimum cashout is ${formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.`,
+        error: `Minimum cashout is ${formatCurrencyFromCents(cashoutMinCents)}.`,
         success: null,
       });
       return;
@@ -6562,14 +6811,19 @@ export default function App() {
     cashoutIdempotencyKeyRef.current = idempotencyKey;
 
     setCashoutActionStatus({ loading: true, error: null, success: null });
-    const { data, error, status, details } = await callAuthedEdgeFunction(
-      "dots-create-cashout",
+    const payoutResponse = await callAuthedEdgeFunction(
+      "cashout-create",
       {
+        methodType,
         amountCents: amountCentsToCashout,
         idempotencyKey,
+        ...(methodType === "gift_card"
+          ? { catalogItemCode: selectedCatalogCode }
+          : {}),
       },
       { timeoutMs: 20000 },
     );
+    const { data, error, status, details } = payoutResponse;
     if (error || !data?.success) {
       if (status === 429) {
         const nextEligibleAt =
@@ -6615,12 +6869,16 @@ export default function App() {
       if (!shouldRetainIdempotencyKey) {
         cashoutIdempotencyKeyRef.current = null;
       }
+      const safeMessage =
+        normalized.includes("api error") || normalized.includes("provider")
+          ? "Unable to process cashout right now."
+          : toUserFacingError(
+              rawError,
+              "Unable to process cashout right now.",
+            );
       setCashoutActionStatus({
         loading: false,
-        error: toUserFacingError(
-          rawError,
-          "Unable to process cashout right now.",
-        ),
+        error: safeMessage,
         success: null,
       });
       return;
@@ -6633,24 +6891,30 @@ export default function App() {
     setCashoutActionStatus({
       loading: false,
       error: null,
-      success: "Cashout request submitted.",
+      success: methodType === "bank_transfer"
+        ? "Bank transfer request submitted for admin approval."
+        : "Gift card cashout request submitted.",
     });
     if (claimUrl) {
-      setTremendousClaimUrl(claimUrl);
-      setTremendousClaimError(null);
-      armTremendousClaimLoading();
-      setTremendousClaimModalVisible(true);
+      openCashoutHostedFlow(claimUrl);
     }
     triggerCashoutCelebration(
       Number(data?.amountCents) || amountCentsToCashout,
+      methodType,
     );
     setCashoutAmountText("");
   }, [
-    armTremendousClaimLoading,
+    bankTileLinked,
     callAuthedEdgeFunction,
     cashbackBalance.availableCents,
+    cashoutMaxAllowedCents,
+    cashoutMethodType,
+    cashoutMinCents,
     cashoutAmountText,
+    handleCashoutBankTilePress,
     loadCashbackBalance,
+    openCashoutHostedFlow,
+    selectedCashoutCatalogItem?.code,
     showAppDialog,
     triggerCashoutCelebration,
   ]);
@@ -8525,11 +8789,13 @@ export default function App() {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
     if (activeTab === "cashout" && isSignedIn) {
       loadCashbackBalance({});
+      loadCashoutCatalog({ page: 0, append: false });
     }
   }, [
     activeTab,
     isSignedIn,
     loadCashbackBalance,
+    loadCashoutCatalog,
     SUPABASE_URL,
     SUPABASE_ANON_KEY,
   ]);
@@ -8550,6 +8816,10 @@ export default function App() {
     });
     setCashoutStatusState({ loading: false, error: null });
     setCashoutActionStatus({ loading: false, error: null, success: null });
+    setCashoutCatalogState(createInitialCashoutCatalogState());
+    setCashoutCatalogModalVisible(false);
+    setCashoutMethodType("gift_card");
+    setSelectedCashoutCatalogCode(null);
     setCashoutClaimUrl(null);
     cashoutIdempotencyKeyRef.current = null;
     setCashoutAmountText("");
@@ -18587,8 +18857,9 @@ export default function App() {
                     Cashout started
                   </Text>
                   <Text style={styles.cashoutCelebrationBody}>
-                    {formatCurrencyFromCents(cashoutCelebration.amountCents)} is
-                    on the way to your payout bank.
+                    {cashoutCelebration.methodType === "bank_transfer"
+                      ? `${formatCurrencyFromCents(cashoutCelebration.amountCents)} transfer request is pending admin approval.`
+                      : `${formatCurrencyFromCents(cashoutCelebration.amountCents)} gift card cashout is on the way.`}
                   </Text>
                 </View>
                 <ConfettiDrizzle
@@ -18704,6 +18975,116 @@ export default function App() {
                     </View>
                   ) : null}
                 </View>
+              </SafeAreaView>
+            </Modal>
+            <Modal
+              visible={cashoutCatalogModalVisible}
+              animationType="slide"
+              presentationStyle="pageSheet"
+              onRequestClose={() => setCashoutCatalogModalVisible(false)}
+            >
+              <SafeAreaView style={styles.cashoutCatalogModalScreen}>
+                <View style={styles.cashoutCatalogModalHeader}>
+                  <Text style={styles.cashoutCatalogModalTitle}>
+                    Gift card catalog
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.cashoutCatalogModalCloseButton}
+                    onPress={() => setCashoutCatalogModalVisible(false)}
+                  >
+                    <Ionicons name="close" size={18} color={COLORS.ink} />
+                  </TouchableOpacity>
+                </View>
+                <ScrollView
+                  contentContainerStyle={styles.cashoutCatalogModalList}
+                  showsVerticalScrollIndicator={false}
+                >
+                  {cashoutCatalogState.all.map((item) => {
+                    const code = normalizeCatalogItemCode(item?.code);
+                    if (!code) return null;
+                    const selected =
+                      normalizeCatalogItemCode(selectedCashoutCatalogCode) ===
+                        code && cashoutMethodType === "gift_card";
+                    return (
+                      <TouchableOpacity
+                        key={code}
+                        style={[
+                          styles.cashoutCatalogRow,
+                          selected && styles.cashoutCatalogRowSelected,
+                        ]}
+                        activeOpacity={0.9}
+                        onPress={() => {
+                          setCashoutMethodType("gift_card");
+                          setSelectedCashoutCatalogCode(code);
+                          setCashoutCatalogModalVisible(false);
+                        }}
+                      >
+                        <View style={styles.cashoutCatalogRowMedia}>
+                          {String(item?.imageUrl || "").trim() ? (
+                            <Image
+                              source={{ uri: String(item.imageUrl).trim() }}
+                              style={styles.cashoutCatalogRowImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <Ionicons
+                              name="gift-outline"
+                              size={22}
+                              color={COLORS.pine}
+                            />
+                          )}
+                        </View>
+                        <View style={styles.cashoutCatalogRowMain}>
+                          <Text
+                            style={styles.cashoutCatalogRowTitle}
+                            numberOfLines={1}
+                          >
+                            {String(item?.name || "Gift card")}
+                          </Text>
+                          <Text style={styles.cashoutCatalogRowMeta}>
+                            Min{" "}
+                            {formatCurrencyFromCents(
+                              Math.max(0, Number(item?.minCents) || 0),
+                            )}{" "}
+                            · Max{" "}
+                            {formatCurrencyFromCents(
+                              Math.max(0, Number(item?.maxCents) || 0),
+                            )}
+                          </Text>
+                        </View>
+                        <Ionicons
+                          name={selected ? "checkmark-circle" : "chevron-forward"}
+                          size={18}
+                          color={selected ? COLORS.pine : COLORS.muted}
+                        />
+                      </TouchableOpacity>
+                    );
+                  })}
+                  {cashoutCatalogState.hasMore ? (
+                    <TouchableOpacity
+                      style={[
+                        styles.cashoutCatalogLoadMoreButton,
+                        cashoutCatalogState.loadingMore &&
+                          styles.cashoutCatalogLoadMoreButtonDisabled,
+                      ]}
+                      disabled={cashoutCatalogState.loadingMore}
+                      onPress={() =>
+                        loadCashoutCatalog({
+                          page: Number(cashoutCatalogState.page || 0) + 1,
+                          append: true,
+                        })
+                      }
+                    >
+                      {cashoutCatalogState.loadingMore ? (
+                        <ActivityIndicator size="small" color={COLORS.ink} />
+                      ) : (
+                        <Text style={styles.cashoutCatalogLoadMoreText}>
+                          Load more
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  ) : null}
+                </ScrollView>
               </SafeAreaView>
             </Modal>
 
@@ -22422,23 +22803,186 @@ export default function App() {
                               </View>
                               {CONSUMER_CASHOUT_ENABLED ? (
                                 <>
+                                  {cashoutCatalogState.loading ? (
+                                    <View style={styles.cashoutStatusHint}>
+                                      <ActivityIndicator
+                                        size="small"
+                                        color={COLORS.muted}
+                                      />
+                                      <Text style={styles.cashoutStatusText}>
+                                        Loading payout options...
+                                      </Text>
+                                    </View>
+                                  ) : null}
+                                  {cashoutCatalogState.error ? (
+                                    <Text style={styles.formError}>
+                                      {cashoutCatalogState.error}
+                                    </Text>
+                                  ) : null}
+                                  <View style={styles.cashoutTileGrid}>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.cashoutMethodTile,
+                                        cashoutMethodType === "bank_transfer" &&
+                                          styles.cashoutMethodTileSelected,
+                                      ]}
+                                      activeOpacity={0.9}
+                                      onPress={handleCashoutBankTilePress}
+                                    >
+                                      <View style={styles.cashoutMethodTileMedia}>
+                                        <Ionicons
+                                          name="business-outline"
+                                          size={34}
+                                          color={COLORS.pine}
+                                        />
+                                      </View>
+                                      <Text
+                                        style={styles.cashoutMethodTileTitle}
+                                        numberOfLines={2}
+                                      >
+                                        Your bank account
+                                      </Text>
+                                      <Text
+                                        style={styles.cashoutMethodTileMeta}
+                                        numberOfLines={2}
+                                      >
+                                        {bankTileLinked
+                                          ? String(
+                                              cashoutCatalogState.bankTile
+                                                ?.bankSummary || "Linked",
+                                            ).trim() || "Linked"
+                                          : "Link bank transfer"}
+                                      </Text>
+                                    </TouchableOpacity>
+                                    {cashoutCatalogState.curated
+                                      .slice(0, 5)
+                                      .map((item) => {
+                                        const code = normalizeCatalogItemCode(
+                                          item?.code,
+                                        );
+                                        const selected =
+                                          cashoutMethodType === "gift_card" &&
+                                          normalizeCatalogItemCode(
+                                            selectedCashoutCatalogCode,
+                                          ) === code;
+                                        return (
+                                          <TouchableOpacity
+                                            key={code}
+                                            style={[
+                                              styles.cashoutMethodTile,
+                                              selected &&
+                                                styles.cashoutMethodTileSelected,
+                                            ]}
+                                            activeOpacity={0.9}
+                                            onPress={() => {
+                                              setCashoutMethodType("gift_card");
+                                              setSelectedCashoutCatalogCode(code);
+                                            }}
+                                          >
+                                            <View
+                                              style={styles.cashoutMethodTileMedia}
+                                            >
+                                              {String(
+                                                item?.imageUrl || "",
+                                              ).trim() ? (
+                                                <Image
+                                                  source={{
+                                                    uri: String(
+                                                      item.imageUrl,
+                                                    ).trim(),
+                                                  }}
+                                                  style={
+                                                    styles.cashoutMethodTileImage
+                                                  }
+                                                  resizeMode="cover"
+                                                />
+                                              ) : (
+                                                <Ionicons
+                                                  name="gift-outline"
+                                                  size={30}
+                                                  color={COLORS.pine}
+                                                />
+                                              )}
+                                            </View>
+                                            <Text
+                                              style={styles.cashoutMethodTileTitle}
+                                              numberOfLines={2}
+                                            >
+                                              {String(item?.name || "Gift card")}
+                                            </Text>
+                                            <Text
+                                              style={styles.cashoutMethodTileMeta}
+                                              numberOfLines={1}
+                                            >
+                                              {formatCurrencyFromCents(
+                                                Math.max(
+                                                  0,
+                                                  Number(item?.minCents) || 0,
+                                                ),
+                                              )}{" "}
+                                              min
+                                            </Text>
+                                          </TouchableOpacity>
+                                        );
+                                      })}
+                                    <TouchableOpacity
+                                      style={styles.cashoutMethodTile}
+                                      activeOpacity={0.9}
+                                      onPress={() => {
+                                        setCashoutCatalogModalVisible(true);
+                                        if (
+                                          cashoutCatalogState.all.length === 0 &&
+                                          !cashoutCatalogState.loading
+                                        ) {
+                                          loadCashoutCatalog({
+                                            page: 0,
+                                            append: false,
+                                          });
+                                        }
+                                      }}
+                                    >
+                                      <View style={styles.cashoutMethodTileMedia}>
+                                        <Ionicons
+                                          name="grid-outline"
+                                          size={30}
+                                          color={COLORS.pine}
+                                        />
+                                      </View>
+                                      <Text style={styles.cashoutMethodTileTitle}>
+                                        View all
+                                      </Text>
+                                      <Text style={styles.cashoutMethodTileMeta}>
+                                        Browse catalog
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
                                   <View style={styles.cashoutAmountGroup}>
                                     <View style={styles.cashoutAmountHeader}>
                                       <Text style={styles.cashoutAmountTitle}>
                                         Amount
                                       </Text>
                                       <Text style={styles.cashoutAmountMeta}>
-                                        Available:{" "}
-                                        {formatCurrencyFromCents(
-                                          cashbackBalance.availableCents,
-                                        )}
+                                        {cashoutMethodType === "bank_transfer"
+                                          ? "Bank transfer"
+                                          : String(
+                                              selectedCashoutCatalogItem?.name ||
+                                                "Gift card",
+                                            )}
                                       </Text>
                                     </View>
+                                    <Text style={styles.cashoutAmountMeta}>
+                                      Available:{" "}
+                                      {formatCurrencyFromCents(
+                                        cashoutMaxAllowedCents,
+                                      )}
+                                    </Text>
                                     <Text style={styles.cashoutAmountHint}>
                                       Minimum:{" "}
-                                      {formatCurrencyFromCents(
-                                        MIN_CASHOUT_CENTS,
-                                      )}
+                                      {formatCurrencyFromCents(cashoutMinCents)}
+                                      {cashoutMethodType === "gift_card" &&
+                                      Number(selectedCashoutCatalogItem?.maxCents)
+                                        ? ` · Max ${formatCurrencyFromCents(cashoutMaxAllowedCents)}`
+                                        : ""}
                                     </Text>
                                     <View style={styles.cashoutAmountRow}>
                                       <View style={styles.cashoutAmountField}>
@@ -22466,9 +23010,8 @@ export default function App() {
                                         onPress={() =>
                                           setCashoutAmountText(
                                             (
-                                              (Number(
-                                                cashbackBalance.availableCents,
-                                              ) || 0) / 100
+                                              (Number(cashoutMaxAllowedCents) ||
+                                                0) / 100
                                             ).toFixed(2),
                                           )
                                         }
@@ -22487,9 +23030,9 @@ export default function App() {
                                           "below_min") && (
                                         <Text style={styles.formError}>
                                           {cashoutPreview.mode === "below_min"
-                                            ? `Minimum cashout is ${formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.`
+                                            ? `Minimum cashout is ${formatCurrencyFromCents(cashoutMinCents)}.`
                                             : `Enter an amount up to ${formatCurrencyFromCents(
-                                                cashbackBalance.availableCents,
+                                                cashoutMaxAllowedCents,
                                               )}.`}
                                         </Text>
                                       )}
@@ -22500,9 +23043,12 @@ export default function App() {
                                         styles.cashoutPayoutButton,
                                         (cashoutPreview.mode === "invalid" ||
                                           cashoutPreview.mode === "below_min" ||
-                                          (Number(
-                                            cashbackBalance.availableCents,
-                                          ) || 0) <= 0 ||
+                                          (Number(cashoutMaxAllowedCents) || 0) <=
+                                            0 ||
+                                          (cashoutMethodType === "gift_card" &&
+                                            !selectedCashoutCatalogItem) ||
+                                          (cashoutMethodType === "bank_transfer" &&
+                                            !bankTileLinked) ||
                                           cashoutActionStatus.loading) &&
                                           styles.cashoutPayoutButtonDisabled,
                                       ]}
@@ -22510,28 +23056,28 @@ export default function App() {
                                       disabled={
                                         cashoutPreview.mode === "invalid" ||
                                         cashoutPreview.mode === "below_min" ||
-                                        (Number(
-                                          cashbackBalance.availableCents,
-                                        ) || 0) <= 0 ||
+                                        (Number(cashoutMaxAllowedCents) || 0) <=
+                                          0 ||
+                                        (cashoutMethodType === "gift_card" &&
+                                          !selectedCashoutCatalogItem) ||
                                         cashoutActionStatus.loading
                                       }
                                     >
                                       <Text
                                         style={styles.cashoutPayoutButtonText}
                                       >
-                                        {cashoutPreview.label}
+                                        {cashoutMethodType === "bank_transfer"
+                                          ? "Request bank transfer"
+                                          : cashoutPreview.label}
                                       </Text>
                                     </TouchableOpacity>
                                     {resumeCashoutClaimUrl ? (
                                       <TouchableOpacity
                                         style={styles.cashoutOpenPayoutButton}
                                         onPress={() => {
-                                          setTremendousClaimUrl(
+                                          openCashoutHostedFlow(
                                             resumeCashoutClaimUrl,
                                           );
-                                          setTremendousClaimError(null);
-                                          setTremendousClaimLoading(true);
-                                          setTremendousClaimModalVisible(true);
                                         }}
                                         disabled={cashoutActionStatus.loading}
                                       >
@@ -22547,10 +23093,20 @@ export default function App() {
                                   </View>
                                   {resumeCashoutClaimUrl ? (
                                     <Text style={styles.cashoutResumeHint}>
-                                      Closed payout options by mistake? Tap
-                                      above to reopen.
+                                      Closed payout options by mistake? Tap above
+                                      to reopen.
                                     </Text>
                                   ) : null}
+                                  <View style={styles.cashoutBalanceBar}>
+                                    <Text style={styles.cashoutBalanceBarLabel}>
+                                      Balance
+                                    </Text>
+                                    <Text style={styles.cashoutBalanceBarValue}>
+                                      {formatCurrencyFromCents(
+                                        cashbackBalance.availableCents,
+                                      )}
+                                    </Text>
+                                  </View>
                                 </>
                               ) : (
                                 <Text style={styles.formHint}>
@@ -22716,7 +23272,14 @@ export default function App() {
                                                 }
                                                 numberOfLines={1}
                                               >
-                                                Withdrawal
+                                                {entry.methodType ===
+                                                "bank_transfer"
+                                                  ? "Bank transfer"
+                                                  : String(
+                                                        entry.catalogItemName ||
+                                                          "",
+                                                      ).trim() ||
+                                                    "Gift card payout"}
                                               </Text>
                                               <Text
                                                 style={
@@ -32961,6 +33524,53 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     ...ELEVATION.medium,
   },
+  cashoutTileGrid: {
+    marginTop: 8,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  cashoutMethodTile: {
+    width: "48%",
+    minWidth: 96,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.12)",
+    borderRadius: 14,
+    backgroundColor: "#F8FAFD",
+    padding: 8,
+    gap: 6,
+  },
+  cashoutMethodTileSelected: {
+    borderColor: COLORS.pine,
+    backgroundColor: "#EEF4FF",
+  },
+  cashoutMethodTileMedia: {
+    width: "100%",
+    height: 72,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  cashoutMethodTileImage: {
+    width: "100%",
+    height: "100%",
+  },
+  cashoutMethodTileTitle: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    lineHeight: 16,
+  },
+  cashoutMethodTileMeta: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 14,
+  },
   cashoutEarnedHistoryCard: {
     borderRadius: 18,
     borderWidth: 1,
@@ -33285,6 +33895,123 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
+  },
+  cashoutBalanceBar: {
+    marginTop: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#1B4ED8",
+    backgroundColor: "#1D4ED8",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  cashoutBalanceBarLabel: {
+    fontSize: 14,
+    color: "rgba(255,255,255,0.88)",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutBalanceBarValue: {
+    fontSize: 28,
+    color: COLORS.white,
+    fontFamily: FONT_BOLD,
+  },
+  cashoutCatalogModalScreen: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+  },
+  cashoutCatalogModalHeader: {
+    minHeight: 56,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.sand,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  cashoutCatalogModalTitle: {
+    fontSize: 17,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutCatalogModalCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F8FAFC",
+  },
+  cashoutCatalogModalList: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  cashoutCatalogRow: {
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.1)",
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    backgroundColor: COLORS.white,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  cashoutCatalogRowSelected: {
+    borderColor: COLORS.pine,
+    backgroundColor: "#EEF4FF",
+  },
+  cashoutCatalogRowMedia: {
+    width: 52,
+    height: 36,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: "#F8FAFC",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  cashoutCatalogRowImage: {
+    width: "100%",
+    height: "100%",
+  },
+  cashoutCatalogRowMain: {
+    flex: 1,
+  },
+  cashoutCatalogRowTitle: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutCatalogRowMeta: {
+    marginTop: 2,
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutCatalogLoadMoreButton: {
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.15)",
+    borderRadius: 12,
+    minHeight: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F8FAFC",
+    marginTop: 2,
+  },
+  cashoutCatalogLoadMoreButtonDisabled: {
+    opacity: 0.7,
+  },
+  cashoutCatalogLoadMoreText: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
   },
   cashoutBankPanel: {
     borderWidth: 1,

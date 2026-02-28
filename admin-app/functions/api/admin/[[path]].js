@@ -7,6 +7,8 @@ const ALLOWED_TABLES = new Set([
   "businesses",
   "cashback_events",
   "cashout_payouts",
+  "cashout_recipients",
+  "checkbook_webhook_events",
   "commission_events",
   "dots_webhook_events",
   "offers",
@@ -20,6 +22,7 @@ const ALLOWED_TABLES = new Set([
   "redemptions",
   "stripe_webhook_events",
   "tremendous_webhook_events",
+  "trolley_webhook_events",
 ]);
 
 const ALLOWED_MUTATION_TABLES = new Set([
@@ -45,6 +48,7 @@ const ALLOWED_FUNCTIONS = new Set([
   "admin-run-monthly-invoices",
   "admin-add-commission-to-stripe",
   "admin-send-promo-push",
+  "cashout-bank-decision",
 ]);
 
 const parseJson = async (request) => {
@@ -997,6 +1001,13 @@ const handleInvokeFunction = async (ctx, fnName, body) => {
       apikey: key,
       authorization: `Bearer ${key}`,
       "content-type": "application/json",
+      ...(fnName === "cashout-bank-decision" && ctx.env.CASHOUT_ADMIN_DECISION_SECRET
+        ? {
+          "x-admin-decision-secret": String(
+            ctx.env.CASHOUT_ADMIN_DECISION_SECRET,
+          ).trim(),
+        }
+        : {}),
     },
     body: JSON.stringify(body || {}),
   });
@@ -1273,12 +1284,14 @@ const routeExplicit = async (ctx, request, segments) => {
     const searchParams = new URL(request.url).searchParams;
     const status = String(searchParams.get("status") || "all").trim().toLowerCase();
     const provider = String(searchParams.get("provider") || "all").trim().toLowerCase();
+    const approvalStatus = String(searchParams.get("approvalStatus") || "all").trim().toLowerCase();
     const search = String(searchParams.get("search") || "").trim();
     const page = Math.max(0, Number(searchParams.get("page") || 0) || 0);
     const limit = Math.max(1, Math.min(100, Number(searchParams.get("limit") || 30) || 30));
     const filters = [];
     if (status !== "all") filters.push({ column: "status", op: "eq", value: status });
     if (provider !== "all") filters.push({ column: "provider", op: "eq", value: provider });
+    if (approvalStatus !== "all") filters.push({ column: "approval_status", op: "eq", value: approvalStatus });
     if (search) {
       const safe = search.replace(/,/g, " ");
       filters.push({
@@ -1292,7 +1305,7 @@ const routeExplicit = async (ctx, request, segments) => {
       table: "cashout_payouts",
       action: "select",
       select:
-        "id,user_id,amount_cents,status,provider,provider_status,provider_order_id,provider_reward_id,provider_claim_url,stripe_transfer_id,created_at,updated_at",
+        "id,user_id,amount_cents,status,provider,method_type,approval_status,catalog_item_code,catalog_item_name,catalog_image_url,recipient_provider_id,bank_summary,provider_status,provider_order_id,provider_reward_id,provider_claim_url,stripe_transfer_id,released_by,released_at,created_at,updated_at",
       order: [{ column: "created_at", ascending: false }],
       limit,
       range: {
@@ -1300,6 +1313,26 @@ const routeExplicit = async (ctx, request, segments) => {
         to: page * limit + limit - 1,
       },
       filters,
+    });
+  }
+
+  if (segments.length === 3 && segments[0] === "cashouts" && segments[2] === "approve" && method === "POST") {
+    return handleInvokeFunction(ctx, "cashout-bank-decision", {
+      action: "approve",
+      payoutId: segments[1],
+      actorId: ctx.profile.id,
+      expectedStatus: body?.expectedStatus || "pending",
+      expectedApprovalStatus: body?.expectedApprovalStatus || "pending",
+    });
+  }
+
+  if (segments.length === 3 && segments[0] === "cashouts" && segments[2] === "reject" && method === "POST") {
+    return handleInvokeFunction(ctx, "cashout-bank-decision", {
+      action: "reject",
+      payoutId: segments[1],
+      actorId: ctx.profile.id,
+      expectedStatus: body?.expectedStatus || "pending",
+      expectedApprovalStatus: body?.expectedApprovalStatus || "pending",
     });
   }
 
@@ -1326,13 +1359,15 @@ const routeExplicit = async (ctx, request, segments) => {
   }
 
   if (segments.length === 1 && segments[0] === "events" && method === "GET") {
-    const [adminActionsRes, adminAuthRes, auditRes, stripeRes, plaidRes, dotsRes, tremendousRes, plaidEventsRes] = await Promise.all([
+    const [adminActionsRes, adminAuthRes, auditRes, stripeRes, plaidRes, dotsRes, checkbookRes, trolleyRes, tremendousRes, plaidEventsRes] = await Promise.all([
       handleQuery(ctx, { table: "admin_action_logs", action: "select", select: "id,action,entity,status,entity_id,meta,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "admin_auth_events", action: "select", select: "id,event_name,endpoint,actor_email,actor_role,outcome,reason,status_code,created_at,metadata", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "business_review_audit_log", action: "select", select: "id,previous_approval_status,next_approval_status,business_id,changed_at", order: [{ column: "changed_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "stripe_webhook_events", action: "select", select: "id,stripe_event_id,event_type,processed,processed_at,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "plaid_webhook_events", action: "select", select: "id,webhook_type,webhook_code,plaid_item_id,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "dots_webhook_events", action: "select", select: "id,event_id,event_type,processed,processed_at,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
+      handleQuery(ctx, { table: "checkbook_webhook_events", action: "select", select: "id,delivery_id,event_type,processed,processed_at,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
+      handleQuery(ctx, { table: "trolley_webhook_events", action: "select", select: "id,delivery_id,event_type,processed,processed_at,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "tremendous_webhook_events", action: "select", select: "id,event_uuid,event_type,processed,processed_at,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "plaid_event_logs", action: "select", select: "id,source_function,event_name,severity,user_id,plaid_item_id,created_at,metadata", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
     ]);
@@ -1352,6 +1387,8 @@ const routeExplicit = async (ctx, request, segments) => {
           stripeHooks: await parse(stripeRes),
           plaidHooks: await parse(plaidRes),
           dotsHooks: await parse(dotsRes),
+          checkbookHooks: await parse(checkbookRes),
+          trolleyHooks: await parse(trolleyRes),
           tremendousHooks: await parse(tremendousRes),
           plaidEvents: await parse(plaidEventsRes),
         },

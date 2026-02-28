@@ -22,15 +22,16 @@ export const cashoutOpsModule = {
     const state = {
       page: 0,
       rows: [],
-      filters: { status: "all", provider: "all", search: "" },
+      filters: { status: "all", provider: "all", approvalStatus: "all", search: "" },
     };
 
     content.innerHTML = `
-      ${createSectionHeader({ title: "Cashout operations", subtitle: "Monitor payout lifecycle and pending risk.", actions: `<button class="button secondary" id="co-refresh">Refresh</button>` })}
+      ${createSectionHeader({ title: "Cashout operations", subtitle: "Monitor payout lifecycle and bank-transfer approvals.", actions: `<button class="button secondary" id="co-refresh">Refresh</button>` })}
       <section class="panel-card sticky-filters">
         <div class="filters-grid">
           <label class="field"><span>Status</span><select id="co-status"><option value="all">All</option><option value="pending">Pending</option><option value="paid">Paid</option><option value="failed">Failed</option></select></label>
-          <label class="field"><span>Provider</span><select id="co-provider"><option value="all">All</option><option value="dots">Dots</option><option value="stripe">Stripe</option><option value="tremendous">Tremendous (legacy)</option></select></label>
+          <label class="field"><span>Provider</span><select id="co-provider"><option value="all">All</option><option value="reloadly">Reloadly</option><option value="checkbook">Checkbook</option><option value="stripe">Stripe (legacy)</option><option value="tremendous">Tremendous (legacy)</option><option value="dots">Dots (legacy)</option><option value="giftbit">Giftbit (legacy)</option></select></label>
+          <label class="field"><span>Approval</span><select id="co-approval"><option value="all">All</option><option value="pending">Pending approval</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="not_required">Not required</option></select></label>
           <label class="field"><span>Search</span><input id="co-search" type="search" placeholder="Payout id, user id, order id" /></label>
         </div>
       </section>
@@ -53,6 +54,7 @@ export const cashoutOpsModule = {
         });
         if (state.filters.status !== "all") params.set("status", state.filters.status);
         if (state.filters.provider !== "all") params.set("provider", state.filters.provider);
+        if (state.filters.approvalStatus !== "all") params.set("approvalStatus", state.filters.approvalStatus);
         if (state.filters.search) params.set("search", state.filters.search);
 
         const response = await runtime.apiRequest(`/api/admin/cashouts?${params.toString()}`);
@@ -68,6 +70,7 @@ export const cashoutOpsModule = {
             { label: "Created", render: (row) => escapeHtml(formatDateTime(row.created_at)) },
             { label: "User", render: (row) => escapeHtml(row.user_id || "--") },
             { label: "Amount", render: (row) => escapeHtml(formatCurrencyFromCents(row.amount_cents || 0)) },
+            { label: "Method", render: (row) => escapeHtml(String(row.method_type || "gift_card").replace("_", " ")) },
             { label: "Provider", render: (row) => escapeHtml(row.provider || "--") },
             { label: "Status", render: (row) => mapStatusBadge(row.status) },
           ],
@@ -83,7 +86,32 @@ export const cashoutOpsModule = {
       }
     };
 
+    const submitDecision = async (row, action) => {
+      try {
+        const endpoint = action === "approve" ? "approve" : "reject";
+        const response = await runtime.apiRequest(`/api/admin/cashouts/${encodeURIComponent(row.id)}/${endpoint}`, {
+          method: "POST",
+          body: {
+            expectedStatus: String(row.status || "pending").toLowerCase(),
+            expectedApprovalStatus: String(row.approval_status || "pending").toLowerCase(),
+          },
+        });
+        if (response.error) throw response.error;
+        toast.success(action === "approve" ? "Bank transfer approved." : "Bank transfer rejected.");
+        drawer.close();
+        await load();
+      } catch (error) {
+        toast.error(runtime.normalizeSupabaseError(error, `Unable to ${action} payout.`));
+      }
+    };
+
     const openPayout = (row) => {
+      const isPendingBankApproval =
+        String(row.provider || "").toLowerCase() === "checkbook" &&
+        String(row.method_type || "").toLowerCase() === "bank_transfer" &&
+        String(row.status || "").toLowerCase() === "pending" &&
+        String(row.approval_status || "").toLowerCase() === "pending";
+
       const node = document.createElement("div");
       node.className = "detail-form-wrapper";
       node.innerHTML = `
@@ -91,14 +119,16 @@ export const cashoutOpsModule = {
           <div class="detail-line"><span>Payout ID</span><strong>${escapeHtml(row.id)}</strong></div>
           <div class="detail-line"><span>User</span><strong>${escapeHtml(row.user_id || "--")}</strong></div>
           <div class="detail-line"><span>Amount</span><strong>${escapeHtml(formatCurrencyFromCents(row.amount_cents || 0))}</strong></div>
-          <div class="detail-line"><span>Status</span><strong>${escapeHtml(row.status || "--")}</strong></div>
+          <div class="detail-line"><span>Method</span><strong>${escapeHtml(String(row.method_type || "gift_card").replace("_", " "))}</strong></div>
+          <div class="detail-line"><span>Approval status</span><strong>${escapeHtml(row.approval_status || "--")}</strong></div>
           <div class="detail-line"><span>Provider</span><strong>${escapeHtml(row.provider || "--")}</strong></div>
           <div class="detail-line"><span>Provider status</span><strong>${escapeHtml(row.provider_status || "--")}</strong></div>
           <div class="detail-line"><span>Provider order ID</span><strong>${escapeHtml(row.provider_order_id || "--")}</strong></div>
           <div class="detail-line"><span>Provider transfer/reference ID</span><strong>${escapeHtml(row.provider_reward_id || "--")}</strong></div>
+          <div class="detail-line"><span>Bank summary</span><strong>${escapeHtml(row.bank_summary || "--")}</strong></div>
           <div class="detail-line"><span>Legacy Stripe transfer ID</span><strong>${escapeHtml(row.stripe_transfer_id || "--")}</strong></div>
         </div>
-        <div class="cta-row">
+        <div class="cta-row" id="co-actions">
           <button class="button secondary" id="co-copy-order">Copy provider order ID</button>
           <button class="button secondary" id="co-copy-reward">Copy transfer/reference ID</button>
           <button class="button primary" id="co-open-claim" ${row.provider_claim_url ? "" : "disabled"}>Open claim link</button>
@@ -124,6 +154,22 @@ export const cashoutOpsModule = {
         window.open(row.provider_claim_url, "_blank", "noopener,noreferrer");
       });
 
+      if (isPendingBankApproval) {
+        const actions = node.querySelector("#co-actions");
+        const approveBtn = document.createElement("button");
+        approveBtn.className = "button primary";
+        approveBtn.textContent = "Approve bank transfer";
+        approveBtn.addEventListener("click", () => submitDecision(row, "approve"));
+
+        const rejectBtn = document.createElement("button");
+        rejectBtn.className = "button secondary";
+        rejectBtn.textContent = "Reject";
+        rejectBtn.addEventListener("click", () => submitDecision(row, "reject"));
+
+        actions?.appendChild(approveBtn);
+        actions?.appendChild(rejectBtn);
+      }
+
       drawer.open({ title: "Cashout payout detail", content: node });
     };
 
@@ -131,11 +177,12 @@ export const cashoutOpsModule = {
       state.page = 0;
       state.filters.status = content.querySelector("#co-status")?.value || "all";
       state.filters.provider = content.querySelector("#co-provider")?.value || "all";
+      state.filters.approvalStatus = content.querySelector("#co-approval")?.value || "all";
       state.filters.search = content.querySelector("#co-search")?.value || "";
       await load();
     }, 220);
 
-    ["#co-status", "#co-provider", "#co-search"].forEach((selector) => {
+    ["#co-status", "#co-provider", "#co-approval", "#co-search"].forEach((selector) => {
       content.querySelector(selector)?.addEventListener("change", onFilter);
       content.querySelector(selector)?.addEventListener("input", onFilter);
     });

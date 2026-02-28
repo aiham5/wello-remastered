@@ -1,12 +1,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createDotsCashoutHandler } from "../_shared/dotsCashout.ts";
+import { disabledCashoutEndpoint } from "../_shared/cashoutDisabled.ts";
 
 export const config = { verify_jwt: false };
 
 serve(
-  createDotsCashoutHandler({
-    endpointName: "tremendous-create-cashout",
-    requireIdempotencyKey: true,
-    enableDeprecationLog: true,
-  }),
+  disabledCashoutEndpoint("tremendous", "tremendous-create-cashout"),
 );
