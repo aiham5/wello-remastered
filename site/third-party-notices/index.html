@@ -6,11 +6,11 @@
     <title>Third-Party Notices | Wello Partners</title>
     <meta
       name="description"
-      content="Third-party provider and open-source notices for Wello Partners LLC."
+      content="Third-party provider disclosures and open-source notices for Wello Partners LLC."
     />
     <link rel="icon" type="image/png" href="/assets/wello-mark.png" />
     <link rel="apple-touch-icon" href="/assets/wello-mark.png" />
-    <link rel="stylesheet" href="/styles.css?v=20260227f" />
+    <link rel="stylesheet" href="/styles.css?v=20260301a" />
   </head>
   <body class="legal-v2">
     <div class="legal-shell">
@@ -34,36 +34,84 @@
           <article class="legal-card legal-prose">
             <p class="legal-kicker">Legal</p>
             <h1>Third-Party Notices</h1>
-            <p class="legal-meta">Updated: February 27, 2026</p>
+            <p class="legal-meta">Updated: March 1, 2026</p>
 
             <section>
-              <h2>1. Third-Party Service Providers</h2>
+              <h2>1. Required Third-Party Service Disclosures</h2>
               <p>
-                Wello Partners LLC relies on third-party service providers to operate and secure
-                the platform.
+                Wello uses third-party providers to deliver infrastructure, verification, payouts,
+                communications, and map features.
               </p>
-              <ul>
-                <li><strong>Supabase</strong>: backend, auth, database, and storage services.</li>
-                <li><strong>Stripe</strong>: business billing, invoicing, and payment method operations.</li>
-                <li><strong>Plaid</strong>: bank-link and transaction verification services.</li>
-                <li><strong>Brevo</strong>: contact form and support email infrastructure.</li>
-                <li><strong>Cloudflare Turnstile</strong>: abuse prevention for contact submissions.</li>
-                <li><strong>Cloudflare R2</strong>: object storage and signed upload flows for certain media assets.</li>
-                <li><strong>Expo Push Services</strong>: push-notification delivery pipeline.</li>
-                <li><strong>Apple Maps</strong>: directions and map integrations on supported Apple devices.</li>
-                <li><strong>Google Maps / Places APIs</strong>: place lookup and related mapping features.</li>
-              </ul>
+              <div class="legal-table-wrap" role="region" aria-label="Third-party provider table">
+                <table class="legal-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Provider</th>
+                      <th scope="col">Purpose</th>
+                      <th scope="col">Typical Data Processed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Supabase</td>
+                      <td>Backend infrastructure, auth, database, storage, edge functions.</td>
+                      <td>Account, profile, offer, redemption, operational metadata.</td>
+                    </tr>
+                    <tr>
+                      <td>Stripe</td>
+                      <td>Business billing and invoicing operations.</td>
+                      <td>Business billing metadata and invoice/payment artifacts.</td>
+                    </tr>
+                    <tr>
+                      <td>Plaid</td>
+                      <td>Bank-link and purchase verification support.</td>
+                      <td>Linked account metadata and transaction-matching metadata.</td>
+                    </tr>
+                    <tr>
+                      <td>Checkbook</td>
+                      <td>Bank-transfer payout operations.</td>
+                      <td>Payout recipient metadata and payout status references.</td>
+                    </tr>
+                    <tr>
+                      <td>Reloadly</td>
+                      <td>Gift card payout and claim fulfillment.</td>
+                      <td>Gift card order/reward references and claim-link metadata.</td>
+                    </tr>
+                    <tr>
+                      <td>Cloudflare (Turnstile and R2)</td>
+                      <td>Abuse prevention, security, and object storage flows.</td>
+                      <td>Request metadata, anti-abuse tokens, uploaded file metadata.</td>
+                    </tr>
+                    <tr>
+                      <td>Brevo</td>
+                      <td>Contact and support email delivery.</td>
+                      <td>Contact form details and email delivery metadata.</td>
+                    </tr>
+                    <tr>
+                      <td>Expo Push</td>
+                      <td>Push notification delivery pipeline.</td>
+                      <td>Push tokens and notification delivery metadata.</td>
+                    </tr>
+                    <tr>
+                      <td>Apple Maps / Google Maps APIs</td>
+                      <td>Map views, geocoding, and place lookup.</td>
+                      <td>Address search requests, map and location feature metadata.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </section>
 
             <section>
               <h2>2. Open-Source Software Notices</h2>
               <p>
-                Wello uses open-source packages. Their licenses and repository links are listed in
-                the downloadable manifest.
+                Wello uses open-source packages. Package names, license types, and repository links
+                are published in our machine-readable manifest.
               </p>
               <div class="legal-note">
                 <p>
-                  Manifest: <a href="/third-party-notices/licenses.json" download>Download licenses.json</a>
+                  Manifest:
+                  <a href="/third-party-notices/licenses.json" download>Download licenses.json</a>
                 </p>
                 <p id="licenses-generated-at">Generated: loading...</p>
               </div>
@@ -84,6 +132,14 @@
                   </tbody>
                 </table>
               </div>
+            </section>
+
+            <section>
+              <h2>3. Additional Legal References</h2>
+              <ul>
+                <li><a href="/privacy">Privacy Policy</a></li>
+                <li><a href="/terms">Terms of Service</a></li>
+              </ul>
             </section>
           </article>
         </div>
@@ -157,5 +213,3 @@
     </script>
   </body>
 </html>
-
-

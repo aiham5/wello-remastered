@@ -3802,3 +3802,81 @@ body.legal-v2 .legal-table th {
     gap: 8px;
   }
 }
+
+/* Flat legal page refresh (no pop shadows / pill circles) */
+body.legal-v2 {
+  --bg: #f7f7f7;
+  --surface: #ffffff;
+  --surface-alt: #f3f3f3;
+  --text: #101215;
+  --muted: #3f4650;
+  --line: rgba(16, 18, 21, 0.16);
+  --line-strong: rgba(16, 18, 21, 0.24);
+  --radius-card: 0;
+  --radius-pill: 0;
+  --shadow-soft: none;
+  background: var(--bg);
+}
+
+body.legal-v2 .legal-header {
+  padding-top: 0;
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+}
+
+body.legal-v2 .legal-nav {
+  padding: 12px 0;
+}
+
+body.legal-v2 .legal-brand img {
+  border-radius: 2px;
+}
+
+body.legal-v2 .legal-nav-link {
+  border-radius: 0;
+  padding: 0 4px;
+}
+
+body.legal-v2 .legal-main {
+  padding: 28px 0 38px;
+}
+
+body.legal-v2 .legal-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 28px;
+}
+
+body.legal-v2 .legal-note {
+  border-radius: 0;
+  background: var(--surface-alt);
+  border: 1px solid var(--line);
+}
+
+body.legal-v2 .legal-table-wrap {
+  border-radius: 0;
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+
+body.legal-v2 .legal-table th {
+  background: #efefef;
+}
+
+body.legal-v2 .legal-prose p,
+body.legal-v2 .legal-prose li {
+  color: #1d2127;
+}
+
+body.legal-v2 .legal-footer {
+  border-top: 1px solid var(--line);
+  background: #ffffff;
+  padding: 14px 0 22px;
+}
+
+body.legal-v2 a:focus-visible {
+  border-radius: 0;
+  outline: 2px solid #111111;
+}
