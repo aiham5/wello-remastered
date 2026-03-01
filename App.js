@@ -204,7 +204,7 @@ const formatPercentLabel = (value) => {
     ? String(rounded)
     : rounded.toFixed(1).replace(/\.0$/, "");
 };
-const DEFAULT_CASHBACK_RATE_BPS = 750;
+const DEFAULT_CASHBACK_RATE_BPS = 1000;
 const CASHBACK_SETTING_KEY = "consumer_cashback_rate_bps";
 const MIN_CASHOUT_CENTS = 1000;
 const CASHOUT_CATALOG_PAGE_SIZE = 24;
@@ -213,9 +213,29 @@ const CONSUMER_CASHOUT_DISABLED_COPY =
   "Cashout is temporarily unavailable while we finalize a new payout provider.";
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
-const GOOGLE_PLACES_KEY = getEnv("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY");
+const GOOGLE_PLACES_KEY = getEnv(
+  "EXPO_PUBLIC_GOOGLE_PLACES_API_KEY",
+  getEnv("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY"),
+);
+const GOOGLE_PLACES_AUTOCOMPLETE_NEW_URL =
+  "https://places.googleapis.com/v1/places:autocomplete";
+const GOOGLE_PLACES_DETAILS_NEW_URL = "https://places.googleapis.com/v1/places";
+const GOOGLE_PLACES_AUTOCOMPLETE_FIELDMASK =
+  "suggestions.placePrediction.placeId,suggestions.placePrediction.place,suggestions.placePrediction.text.text,suggestions.placePrediction.structuredFormat.mainText.text,suggestions.placePrediction.structuredFormat.secondaryText.text";
+const GOOGLE_PLACES_DETAILS_FIELDMASK =
+  "formattedAddress,addressComponents,location";
 const SUPABASE_URL = getEnv("EXPO_PUBLIC_SUPABASE_URL");
 const SUPABASE_ANON_KEY = getEnv("EXPO_PUBLIC_SUPABASE_ANON_KEY");
+const SUPABASE_FUNCTIONS_BASE_URL = SUPABASE_URL
+  ? `${SUPABASE_URL.replace(/\/+$/, "")}/functions/v1`
+  : "";
+const PLACES_PROXY_URL = SUPABASE_FUNCTIONS_BASE_URL
+  ? `${SUPABASE_FUNCTIONS_BASE_URL}/places-proxy`
+  : "";
+const PLACES_PROXY_ENABLED = Boolean(PLACES_PROXY_URL && SUPABASE_ANON_KEY);
+const ADDRESS_LOOKUP_ENABLED = PLACES_PROXY_ENABLED || Boolean(GOOGLE_PLACES_KEY);
+const ADDRESS_LOOKUP_UNAVAILABLE_COPY =
+  "Address autocomplete is temporarily unavailable.";
 const APP_SCHEME_RAW = Constants.expoConfig?.scheme;
 const APP_SCHEME = Array.isArray(APP_SCHEME_RAW)
   ? String(APP_SCHEME_RAW[0] || "wello").trim() || "wello"
@@ -242,6 +262,7 @@ const SUPPORT_EMAIL_ADDRESS = "support@wellopartners.com";
 const OFFER_HONOR_POLICY_VERSION = "2026-02-17";
 const REFERRAL_REWARD_CENTS = 500;
 const REFERRAL_MONTHLY_CAP_CENTS = 50000;
+const GIFT_CARD_MIN_CASHOUT_CENTS = 1000;
 const TREMENDOUS_DEMO_MIN_AMOUNT_CENTS = 1000;
 const TREMENDOUS_DEMO_DEFAULT_AMOUNT = "";
 const TREMENDOUS_DEMO_VIRTUAL_BALANCE_CENTS = 5000;
@@ -290,6 +311,146 @@ const createInitialCashoutCatalogState = () => ({
     bankSummary: null,
   },
 });
+const createInitialCashoutVoucherState = () => ({
+  visible: false,
+  brandName: "Gift card",
+  amountCents: 0,
+  imageUrl: null,
+  code: null,
+  pin: null,
+  serialNumber: null,
+  instructions: null,
+  expiresAt: null,
+  cardNumber: null,
+  cvc: null,
+  expirationDate: null,
+  cardholderName: null,
+  claimUrl: null,
+});
+const normalizeCashoutVoucherValue = (value, maxLength = 320) => {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  return text.slice(0, Math.max(1, maxLength));
+};
+const parseCashoutVoucherPayload = (value) => {
+  const payload = value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+  const code = normalizeCashoutVoucherValue(payload?.code, 160);
+  const pin = normalizeCashoutVoucherValue(payload?.pin, 80);
+  const serialNumber = normalizeCashoutVoucherValue(
+    payload?.serialNumber || payload?.serial_number,
+    120,
+  );
+  const instructions = normalizeCashoutVoucherValue(payload?.instructions, 500);
+  const expiresAt = normalizeCashoutVoucherValue(payload?.expiresAt, 80);
+  const cardNumber = normalizeCashoutVoucherValue(
+    payload?.cardNumber ||
+      payload?.card_number ||
+      payload?.pan,
+    160,
+  );
+  const cvc = normalizeCashoutVoucherValue(
+    payload?.cvc ||
+      payload?.cvv ||
+      payload?.securityCode ||
+      payload?.security_code,
+    80,
+  );
+  const expirationDate = normalizeCashoutVoucherValue(
+    payload?.expirationDate ||
+      payload?.expiration_date ||
+      payload?.expiryDate ||
+      payload?.expiry_date ||
+      payload?.expiry ||
+      payload?.exp,
+    80,
+  );
+  const cardholderName = normalizeCashoutVoucherValue(
+    payload?.cardholderName ||
+      payload?.cardholder_name ||
+      payload?.nameOnCard ||
+      payload?.name_on_card ||
+      payload?.holderName ||
+      payload?.holder_name ||
+      payload?.name,
+    120,
+  );
+  const available = Boolean(
+    payload?.available ||
+      code ||
+      pin ||
+      serialNumber ||
+      instructions ||
+      expiresAt ||
+      cardNumber ||
+      cvc ||
+      expirationDate ||
+      cardholderName,
+  );
+  return {
+    available,
+    code,
+    pin,
+    serialNumber,
+    instructions,
+    expiresAt,
+    cardNumber,
+    cvc,
+    expirationDate,
+    cardholderName,
+  };
+};
+const formatCashoutCardNumber = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const compact = raw.replace(/\s+/g, "");
+  if (/^[A-Za-z0-9]+$/.test(compact) && compact.length >= 12) {
+    return compact.match(/.{1,4}/g)?.join(" ") || raw;
+  }
+  return raw;
+};
+const formatCashoutCardExpiry = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const compact = raw.replace(/\D/g, "");
+  if (compact.length === 4) {
+    return `${compact.slice(0, 2)}/${compact.slice(2)}`;
+  }
+  return raw.toUpperCase();
+};
+const normalizeCashoutProvider = (value) =>
+  String(value || "").trim().toLowerCase();
+const normalizeCashoutMethodType = (value) =>
+  String(value || "").trim().toLowerCase();
+const isActiveCashoutClaimEntry = (entry) => {
+  const claimUrl = String(entry?.claimUrl || entry?.provider_claim_url || "")
+    .trim();
+  if (!/^https:\/\//i.test(claimUrl)) return false;
+  const provider = normalizeCashoutProvider(entry?.provider);
+  const methodType = normalizeCashoutMethodType(
+    entry?.methodType || entry?.method_type,
+  );
+  if (methodType === "gift_card") {
+    return provider === "reloadly";
+  }
+  if (methodType === "bank_transfer") {
+    return provider === "checkbook" || provider === "trolley";
+  }
+  return false;
+};
+const isCashoutBankLinkError = (message) => {
+  const normalized = String(message || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("bank linking") ||
+    normalized.includes("bank onboarding") ||
+    normalized.includes("link bank") ||
+    normalized.includes("link bank account") ||
+    normalized.includes("plaid") ||
+    normalized.includes("missing public token")
+  );
+};
 const normalizeCatalogItemCode = (value) => String(value || "").trim();
 const mergeCatalogItemsByCode = (previousItems, nextItems) => {
   const map = new Map();
@@ -427,6 +588,19 @@ const RECEIPT_REPORT_REASONS = [
   { value: "illegible_receipt", label: "Illegible receipt" },
   { value: "other", label: "Other issue" },
 ];
+const RECEIPT_REPORT_STATUS_LABELS = {
+  open: "Open",
+  reviewing: "In review",
+  resolved: "Resolved",
+  dismissed: "Dismissed",
+};
+const formatReceiptReportReasonLabel = (reason) => {
+  const normalized = String(reason || "").trim().toLowerCase();
+  const matched = RECEIPT_REPORT_REASONS.find(
+    (item) => item.value === normalized,
+  );
+  return matched?.label || "Other issue";
+};
 
 const FONT_REGULAR = "Rubik-Regular";
 const FONT_MEDIUM = "Rubik-Medium";
@@ -925,6 +1099,7 @@ const mapSupabaseRedemption = (row) => ({
       verificationSource: receipt.verification_source || "receipt",
       verificationReference: receipt.verification_reference || null,
       reviewStatus: receipt.review_status || null,
+      reviewNotes: String(receipt.review_notes || "").trim() || null,
       uploadedAt: receipt.uploaded_at
         ? new Date(receipt.uploaded_at).getTime()
         : Date.now(),
@@ -2273,7 +2448,7 @@ const sanitizeCashoutDigits = (value) =>
 
 const formatCashoutAmountInput = (value) => {
   const digits = sanitizeCashoutDigits(value);
-  if (!digits) return "";
+  if (!digits) return "0.00";
   const padded = digits.padStart(3, "0");
   const dollars = padded.slice(0, -2).replace(/^0+(?=\d)/, "") || "0";
   const cents = padded.slice(-2);
@@ -2402,6 +2577,263 @@ const parseClockMinutes = (time, meridiem) => {
   return (normalizedHours + (isPm ? 12 : 0)) * 60 + minutes;
 };
 
+const createPlacesSessionToken = () => {
+  if (typeof globalThis?.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `wello-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+};
+
+const normalizePlaceId = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("places/")) return raw.slice("places/".length).trim();
+  return raw;
+};
+
+const normalizeAutocompletePrediction = (prediction = {}) => {
+  const placeId = normalizePlaceId(prediction.placeId || prediction.place);
+  if (!placeId) return null;
+  const mainText =
+    prediction?.structuredFormat?.mainText?.text ||
+    prediction?.text?.text ||
+    "";
+  const secondaryText = prediction?.structuredFormat?.secondaryText?.text || "";
+  const description = [mainText, secondaryText].filter(Boolean).join(", ");
+  return {
+    place_id: placeId,
+    description: description || mainText || secondaryText || "",
+    structured_formatting: {
+      main_text: mainText || description || "",
+      secondary_text: secondaryText || "",
+    },
+  };
+};
+
+const normalizePlacesAutocompletePayload = (payload) => {
+  if (Array.isArray(payload?.predictions)) {
+    return payload.predictions;
+  }
+  if (!Array.isArray(payload?.suggestions)) return [];
+  return payload.suggestions
+    .map((entry) => normalizeAutocompletePrediction(entry?.placePrediction))
+    .filter(Boolean);
+};
+
+const normalizePlaceDetailsPayload = (payload) => {
+  const place = payload?.result || payload;
+  if (!place || typeof place !== "object") return null;
+  const formattedAddress = String(
+    place.formatted_address || place.formattedAddress || "",
+  ).trim();
+  const addressComponents = Array.isArray(place.address_components)
+    ? place.address_components
+    : Array.isArray(place.addressComponents)
+      ? place.addressComponents
+      : [];
+  const rawLocation = place?.geometry?.location || place?.location || null;
+  const latitude = Number(rawLocation?.lat ?? rawLocation?.latitude);
+  const longitude = Number(rawLocation?.lng ?? rawLocation?.longitude);
+  const hasCoords = Number.isFinite(latitude) && Number.isFinite(longitude);
+  return {
+    formatted_address: formattedAddress,
+    address_components: addressComponents,
+    geometry: {
+      location: hasCoords ? { lat: latitude, lng: longitude } : null,
+    },
+  };
+};
+
+const callPlacesProxy = async (payload) => {
+  if (!PLACES_PROXY_ENABLED || !PLACES_PROXY_URL) return null;
+  const response = await withTimeout(
+    fetch(PLACES_PROXY_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify(payload || {}),
+    }),
+    9000,
+    "places_proxy",
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      data?.error || data?.message || "Address lookup is unavailable right now.",
+    );
+  }
+  return data;
+};
+
+const fetchPlacesAutocompleteSuggestions = async (query, sessionToken) => {
+  const input = String(query || "").trim();
+  if (!input) return [];
+
+  if (PLACES_PROXY_ENABLED) {
+    try {
+      const payload = await callPlacesProxy({
+        action: "autocomplete",
+        input,
+        sessionToken: sessionToken || undefined,
+      });
+      return normalizePlacesAutocompletePayload(payload || {});
+    } catch (proxyError) {
+      if (!GOOGLE_PLACES_KEY) {
+        throw proxyError;
+      }
+    }
+  }
+  if (!GOOGLE_PLACES_KEY) return [];
+
+  try {
+    const response = await fetch(GOOGLE_PLACES_AUTOCOMPLETE_NEW_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_PLACES_KEY,
+        "X-Goog-FieldMask": GOOGLE_PLACES_AUTOCOMPLETE_FIELDMASK,
+      },
+      body: JSON.stringify({
+        input,
+        sessionToken,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(
+        payload?.error?.message || "Unable to load suggestions.",
+      );
+    }
+    return normalizePlacesAutocompletePayload(payload);
+  } catch (newApiError) {
+    const legacyResponse = await fetch(
+      `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
+        input,
+      )}&types=address&key=${GOOGLE_PLACES_KEY}`,
+    );
+    const legacyPayload = await legacyResponse.json().catch(() => ({}));
+    if (
+      legacyPayload.status &&
+      legacyPayload.status !== "OK" &&
+      legacyPayload.status !== "ZERO_RESULTS"
+    ) {
+      throw new Error(
+        legacyPayload.error_message ||
+          newApiError?.message ||
+          "Unable to load suggestions.",
+      );
+    }
+    return normalizePlacesAutocompletePayload(legacyPayload);
+  }
+};
+
+const fetchPlaceDetailsResult = async (placeId, sessionToken) => {
+  const normalizedPlaceId = normalizePlaceId(placeId);
+  if (!normalizedPlaceId) return null;
+
+  if (PLACES_PROXY_ENABLED) {
+    try {
+      const payload = await callPlacesProxy({
+        action: "details",
+        placeId: normalizedPlaceId,
+        sessionToken: sessionToken || undefined,
+      });
+      const normalized = normalizePlaceDetailsPayload(payload || {});
+      if (!normalized) {
+        throw new Error("Unable to load place details.");
+      }
+      return normalized;
+    } catch (proxyError) {
+      if (!GOOGLE_PLACES_KEY) {
+        throw proxyError;
+      }
+    }
+  }
+  if (!GOOGLE_PLACES_KEY) return null;
+
+  try {
+    const detailsUrl =
+      `${GOOGLE_PLACES_DETAILS_NEW_URL}/${encodeURIComponent(normalizedPlaceId)}` +
+      (sessionToken
+        ? `?sessionToken=${encodeURIComponent(sessionToken)}`
+        : "");
+    const response = await fetch(detailsUrl, {
+      method: "GET",
+      headers: {
+        "X-Goog-Api-Key": GOOGLE_PLACES_KEY,
+        "X-Goog-FieldMask": GOOGLE_PLACES_DETAILS_FIELDMASK,
+      },
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(
+        payload?.error?.message || "Unable to load place details.",
+      );
+    }
+    const normalized = normalizePlaceDetailsPayload(payload);
+    if (!normalized) {
+      throw new Error("Unable to load place details.");
+    }
+    return normalized;
+  } catch (newApiError) {
+    const legacyResponse = await fetch(
+      `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(
+        normalizedPlaceId,
+      )}&fields=formatted_address,address_components,geometry&key=${GOOGLE_PLACES_KEY}`,
+    );
+    const legacyPayload = await legacyResponse.json().catch(() => ({}));
+    if (legacyPayload.status && legacyPayload.status !== "OK") {
+      throw new Error(
+        legacyPayload.error_message ||
+          newApiError?.message ||
+          "Unable to load place details.",
+      );
+    }
+    const normalized = normalizePlaceDetailsPayload(legacyPayload?.result || {});
+    if (!normalized) {
+      throw new Error("Unable to load place details.");
+    }
+    return normalized;
+  }
+};
+
+const fetchGeocodeResult = async (address) => {
+  const normalizedAddress = String(address || "").trim();
+  if (!normalizedAddress) return null;
+
+  if (PLACES_PROXY_ENABLED) {
+    try {
+      const payload = await callPlacesProxy({
+        action: "geocode",
+        address: normalizedAddress,
+      });
+      const location = payload?.results?.[0]?.geometry?.location;
+      if (!location) return null;
+      const latitude = Number(location?.lat);
+      const longitude = Number(location?.lng);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+      return { latitude, longitude };
+    } catch (proxyError) {
+      if (!GOOGLE_PLACES_KEY) {
+        throw proxyError;
+      }
+    }
+  }
+  if (!GOOGLE_PLACES_KEY) return null;
+
+  const response = await fetch(
+    `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+      normalizedAddress,
+    )}&key=${GOOGLE_PLACES_KEY}`,
+  );
+  const data = await response.json().catch(() => ({}));
+  const location = data.results?.[0]?.geometry?.location;
+  if (!location) return null;
+  return { latitude: location.lat, longitude: location.lng };
+};
+
 const isBusinessOpenNow = (value) => {
   const parsed = parseBusinessHours(value);
   if (!parsed) return null;
@@ -2418,9 +2850,21 @@ const isBusinessOpenNow = (value) => {
 };
 
 const parseAddressComponents = (components = []) => {
+  const readComponentText = (component) =>
+    String(
+      component?.long_name ||
+        component?.longText ||
+        component?.short_name ||
+        component?.shortText ||
+        "",
+    ).trim();
   const get = (type) =>
-    components.find((component) => component.types.includes(type))?.long_name ||
-    "";
+    readComponentText(
+      components.find(
+        (component) =>
+          Array.isArray(component?.types) && component.types.includes(type),
+      ),
+    );
   const streetNumber = get("street_number");
   const route = get("route");
   const street = [streetNumber, route].filter(Boolean).join(" ").trim();
@@ -3607,6 +4051,7 @@ export default function App() {
   const [businessAddressLoading, setBusinessAddressLoading] = useState(false);
   const [businessAddressError, setBusinessAddressError] = useState(null);
   const businessAddressRequestRef = useRef(0);
+  const businessAddressSessionTokenRef = useRef(createPlacesSessionToken());
   const businessAddressSelectionRef = useRef(false);
   const [authView, setAuthView] = useState("menu");
   const googleAuthInFlight = googleAuthState !== "idle";
@@ -3804,6 +4249,19 @@ export default function App() {
     error: null,
     success: null,
   });
+  const [receiptReportOtherDraft, setReceiptReportOtherDraft] = useState({
+    visible: false,
+    receipt: null,
+    text: "",
+    error: null,
+    submitting: false,
+  });
+  const [businessReceiptReports, setBusinessReceiptReports] = useState([]);
+  const [businessReceiptReportsStatus, setBusinessReceiptReportsStatus] =
+    useState({
+      loading: false,
+      error: null,
+    });
   const [receiptNoticeOpen, setReceiptNoticeOpen] = useState(false);
   const receiptNoticeShownRef = useRef(false);
   const [expandedAdminEdits, setExpandedAdminEdits] = useState({});
@@ -3919,6 +4377,7 @@ export default function App() {
   const [createAddressLoading, setCreateAddressLoading] = useState(false);
   const [createAddressError, setCreateAddressError] = useState(null);
   const createAddressRequestRef = useRef(0);
+  const createAddressSessionTokenRef = useRef(createPlacesSessionToken());
   const createAddressSelectionRef = useRef(false);
   const [offerForm, setOfferForm] = useState({
     title: "",
@@ -4037,10 +4496,15 @@ export default function App() {
   const [selectedCashoutCatalogCode, setSelectedCashoutCatalogCode] =
     useState(null);
   const [cashoutClaimUrl, setCashoutClaimUrl] = useState(null);
+  const [cashoutVoucherReveal, setCashoutVoucherReveal] = useState(
+    createInitialCashoutVoucherState,
+  );
   const cashoutIdempotencyKeyRef = useRef(null);
-  const [cashoutAmountText, setCashoutAmountText] = useState("");
+  const [cashoutAmountText, setCashoutAmountText] = useState("0.00");
   const [cashoutHistoryExpanded, setCashoutHistoryExpanded] = useState(false);
   const [cashoutPayoutHistory, setCashoutPayoutHistory] = useState([]);
+  const [cashoutShowAllLinkedAccounts, setCashoutShowAllLinkedAccounts] =
+    useState(false);
   const cashoutCatalogItems = useMemo(() => {
     const seen = new Set();
     const combined = [];
@@ -4363,6 +4827,7 @@ export default function App() {
   const [addressLoading, setAddressLoading] = useState(false);
   const [addressError, setAddressError] = useState(null);
   const addressRequestRef = useRef(0);
+  const addressSessionTokenRef = useRef(createPlacesSessionToken());
   const addressSelectionRef = useRef(false);
   const reachTooltipTimerRef = useRef(null);
   const viewedOfferIdsRef = useRef(new Set());
@@ -5221,54 +5686,15 @@ export default function App() {
 
     setTremendousDemoState((prev) => ({
       ...prev,
-      loading: true,
-      error: null,
+      loading: false,
+      error:
+        "Legacy Tremendous demo is disabled. Use Cash out for Reloadly gift cards or Checkbook bank transfers.",
       success: null,
     }));
-    const { data, error } = await callAuthedEdgeFunction(
-      "tremendous-demo-create-reward",
-      {
-        amountCents,
-        useVirtualBalance: tremendousDemoUsingVirtualBalance,
-      },
-      { timeoutMs: 20000 },
-    );
-
-    if (error) {
-      setTremendousDemoState((prev) => ({
-        ...prev,
-        loading: false,
-        error,
-        success: null,
-      }));
-      return;
-    }
-
-    const claimUrl = String(data?.claimUrl || "").trim() || null;
-    setTremendousDemoState({
-      loading: false,
-      error: null,
-      success: "Tremendous cashout created.",
-      orderId: String(data?.orderId || "").trim() || null,
-      rewardId: String(data?.rewardId || "").trim() || null,
-      claimUrl,
-    });
-    setTremendousDemoAmountText("");
-    loadCashbackBalance({ silent: true }).catch(() => null);
-    if (claimUrl) {
-      setTremendousClaimUrl(claimUrl);
-      setTremendousClaimError(null);
-      armTremendousClaimLoading();
-      setTremendousClaimModalVisible(true);
-    }
   }, [
-    armTremendousClaimLoading,
-    callAuthedEdgeFunction,
     isSignedIn,
-    loadCashbackBalance,
     tremendousDemoAvailableCents,
     tremendousDemoAmountText,
-    tremendousDemoUsingVirtualBalance,
   ]);
 
   const closeTremendousClaimModal = useCallback(() => {
@@ -5320,6 +5746,28 @@ export default function App() {
     },
     [armTremendousClaimLoading],
   );
+
+  const closeCashoutVoucherReveal = useCallback(() => {
+    setCashoutVoucherReveal(createInitialCashoutVoucherState());
+  }, []);
+
+  const handleCopyCashoutVoucherValue = useCallback(async (value, label) => {
+    const text = String(value || "").trim();
+    if (!text) return;
+    try {
+      await Clipboard.setStringAsync(text);
+      setCashoutActionStatus((prev) => ({
+        ...prev,
+        error: null,
+        success: `${label} copied.`,
+      }));
+    } catch {
+      setCashoutActionStatus((prev) => ({
+        ...prev,
+        error: "Unable to copy right now.",
+      }));
+    }
+  }, []);
 
   const loadCashoutCatalog = useCallback(
     async ({ page = 0, append = false } = {}) => {
@@ -6644,7 +7092,7 @@ export default function App() {
         supabase
           .from("cashout_payouts")
           .select(
-            "id, amount_cents, status, provider, method_type, approval_status, catalog_item_name, created_at, processed_at, provider_claim_url",
+            "id, amount_cents, status, provider, method_type, approval_status, catalog_item_name, catalog_image_url, created_at, processed_at, provider_claim_url",
           )
           .eq("user_id", authUserId)
           .order("created_at", { ascending: false })
@@ -6702,6 +7150,7 @@ export default function App() {
             approvalStatus:
               String(row.approval_status || "").trim().toLowerCase() || null,
             catalogItemName: String(row.catalog_item_name || "").trim() || null,
+            catalogImageUrl: String(row.catalog_image_url || "").trim() || null,
             createdAt: row.created_at
               ? new Date(row.created_at).getTime()
               : Date.now(),
@@ -6715,11 +7164,10 @@ export default function App() {
           payoutRows.find(
             (row) =>
               String(row?.status || "").toLowerCase() === "pending" &&
-              String(row?.provider_claim_url || "").trim(),
+              isActiveCashoutClaimEntry(row),
           )?.provider_claim_url ||
-            payoutRows.find((row) =>
-              String(row?.provider_claim_url || "").trim(),
-            )?.provider_claim_url ||
+            payoutRows.find((row) => isActiveCashoutClaimEntry(row))
+              ?.provider_claim_url ||
             "",
         ).trim();
         setCashoutClaimUrl(latestClaimUrl || null);
@@ -7050,22 +7498,56 @@ export default function App() {
     await loadCashbackBalance({ silent: true });
     cashoutIdempotencyKeyRef.current = null;
     const claimUrl = String(data?.claimUrl || "").trim() || null;
+    const voucher = parseCashoutVoucherPayload(data?.voucher);
+    const selectedBrandName = String(
+      selectedCashoutCatalogItem?.name || "Gift card",
+    ).trim() || "Gift card";
     setCashoutClaimUrl(claimUrl);
     setCashoutActionStatus({
       loading: false,
       error: null,
-      success: methodType === "bank_transfer"
-        ? "Bank transfer request submitted for admin approval."
-        : "Gift card cashout request submitted.",
+      success: null,
     });
-    if (claimUrl) {
+    if (methodType === "gift_card") {
+      setCashoutVoucherReveal({
+        visible: true,
+        brandName: selectedBrandName,
+        amountCents: Number(data?.amountCents) || amountCentsToCashout,
+        imageUrl: String(selectedCashoutCatalogItem?.imageUrl || "").trim() || null,
+        code: voucher.code,
+        pin: voucher.pin,
+        serialNumber: voucher.serialNumber,
+        instructions: voucher.instructions,
+        expiresAt: voucher.expiresAt,
+        cardNumber: voucher.cardNumber,
+        cvc: voucher.cvc,
+        expirationDate: voucher.expirationDate,
+        cardholderName: voucher.cardholderName,
+        claimUrl,
+      });
+      if (!voucher.available && !claimUrl) {
+        showAppDialog({
+          title: "Gift card processing",
+          message:
+            "Your redemption was submitted, but provider details are not available yet.",
+          options: [{ label: "OK", variant: "primary" }],
+        });
+      }
+    } else if (claimUrl) {
       openCashoutHostedFlow(claimUrl);
+    }
+    if (methodType === "bank_transfer") {
+      showAppDialog({
+        title: "Transfer requested",
+        message: "Bank transfer request submitted for admin approval.",
+        options: [{ label: "OK", variant: "primary" }],
+      });
     }
     triggerCashoutCelebration(
       Number(data?.amountCents) || amountCentsToCashout,
       methodType,
     );
-    setCashoutAmountText("");
+    setCashoutAmountText("0.00");
   }, [
     bankTileLinked,
     callAuthedEdgeFunction,
@@ -7078,6 +7560,8 @@ export default function App() {
     loadCashbackBalance,
     openCashoutHostedFlow,
     selectedCashoutCatalogItem?.code,
+    selectedCashoutCatalogItem?.imageUrl,
+    selectedCashoutCatalogItem?.name,
     showAppDialog,
     triggerCashoutCelebration,
   ]);
@@ -7618,12 +8102,25 @@ export default function App() {
     if (!ownerBusiness?.id) return;
     loadBusinessReceipts(ownerBusiness.id, { silent: true });
     loadBusinessRedemptions(ownerBusiness.id, { silent: true });
+    loadBusinessReceiptReports(ownerBusiness.id, { silent: true });
   }, [
     receiptsModalOpen,
     ownerBusiness?.id,
     loadBusinessReceipts,
     loadBusinessRedemptions,
+    loadBusinessReceiptReports,
   ]);
+
+  useEffect(() => {
+    if (receiptsModalOpen) return;
+    setReceiptReportOtherDraft({
+      visible: false,
+      receipt: null,
+      text: "",
+      error: null,
+      submitting: false,
+    });
+  }, [receiptsModalOpen]);
 
   useEffect(() => {
     if (!ownerOffersModalOpen) return;
@@ -7787,7 +8284,8 @@ export default function App() {
   // sheet state in refs and only update them when committing a snap.
 
   useEffect(() => {
-    if (!GOOGLE_PLACES_KEY) {
+    if (!ADDRESS_LOOKUP_ENABLED) {
+      addressSessionTokenRef.current = createPlacesSessionToken();
       setAddressResults([]);
       setAddressLoading(false);
       return;
@@ -7799,6 +8297,7 @@ export default function App() {
       return;
     }
     if (query.length < 3) {
+      addressSessionTokenRef.current = createPlacesSessionToken();
       setAddressResults([]);
       setAddressLoading(false);
       return;
@@ -7806,33 +8305,20 @@ export default function App() {
 
     setAddressLoading(true);
     const requestId = ++addressRequestRef.current;
+    const sessionToken =
+      addressSessionTokenRef.current || createPlacesSessionToken();
+    addressSessionTokenRef.current = sessionToken;
     const timeout = setTimeout(() => {
-      fetch(
-        `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
-          query,
-        )}&types=address&key=${GOOGLE_PLACES_KEY}`,
-      )
-        .then((response) => response.json())
-        .then((data) => {
+      fetchPlacesAutocompleteSuggestions(query, sessionToken)
+        .then((predictions) => {
           if (addressRequestRef.current !== requestId) return;
-          if (
-            data.status &&
-            data.status !== "OK" &&
-            data.status !== "ZERO_RESULTS"
-          ) {
-            setAddressError(
-              data.error_message || "Unable to load suggestions.",
-            );
-            setAddressResults([]);
-          } else {
-            setAddressError(null);
-            setAddressResults(data.predictions || []);
-          }
+          setAddressError(null);
+          setAddressResults(predictions || []);
           setAddressLoading(false);
         })
-        .catch(() => {
+        .catch((error) => {
           if (addressRequestRef.current !== requestId) return;
-          setAddressError("Unable to load suggestions.");
+          setAddressError(error?.message || "Unable to load suggestions.");
           setAddressResults([]);
           setAddressLoading(false);
         });
@@ -7842,7 +8328,8 @@ export default function App() {
   }, [formData.address]);
 
   useEffect(() => {
-    if (!GOOGLE_PLACES_KEY) {
+    if (!ADDRESS_LOOKUP_ENABLED) {
+      businessAddressSessionTokenRef.current = createPlacesSessionToken();
       setBusinessAddressResults([]);
       setBusinessAddressLoading(false);
       return;
@@ -7854,6 +8341,7 @@ export default function App() {
       return;
     }
     if (query.length < 3) {
+      businessAddressSessionTokenRef.current = createPlacesSessionToken();
       setBusinessAddressResults([]);
       setBusinessAddressLoading(false);
       return;
@@ -7861,33 +8349,22 @@ export default function App() {
 
     setBusinessAddressLoading(true);
     const requestId = ++businessAddressRequestRef.current;
+    const sessionToken =
+      businessAddressSessionTokenRef.current || createPlacesSessionToken();
+    businessAddressSessionTokenRef.current = sessionToken;
     const timeout = setTimeout(() => {
-      fetch(
-        `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
-          query,
-        )}&types=address&key=${GOOGLE_PLACES_KEY}`,
-      )
-        .then((response) => response.json())
-        .then((data) => {
+      fetchPlacesAutocompleteSuggestions(query, sessionToken)
+        .then((predictions) => {
           if (businessAddressRequestRef.current !== requestId) return;
-          if (
-            data.status &&
-            data.status !== "OK" &&
-            data.status !== "ZERO_RESULTS"
-          ) {
-            setBusinessAddressError(
-              data.error_message || "Unable to load suggestions.",
-            );
-            setBusinessAddressResults([]);
-          } else {
-            setBusinessAddressError(null);
-            setBusinessAddressResults(data.predictions || []);
-          }
+          setBusinessAddressError(null);
+          setBusinessAddressResults(predictions || []);
           setBusinessAddressLoading(false);
         })
-        .catch(() => {
+        .catch((error) => {
           if (businessAddressRequestRef.current !== requestId) return;
-          setBusinessAddressError("Unable to load suggestions.");
+          setBusinessAddressError(
+            error?.message || "Unable to load suggestions.",
+          );
           setBusinessAddressResults([]);
           setBusinessAddressLoading(false);
         });
@@ -8721,10 +9198,7 @@ export default function App() {
       group.pendingCount = hasReview ? 0 : group.pendingEntries.length;
       group.receiptPendingCount = group.entries.reduce((total, entry) => {
         const hasReceipt = Boolean(entry.receipt?.id);
-        const verificationStatus = entry.purchaseVerification?.status || null;
-        const canFallback =
-          verificationStatus === "pending" || verificationStatus === "rejected";
-        if (!hasReceipt && (isReceiptWindowOpen(entry) || canFallback)) {
+        if (!hasReceipt && isReceiptWindowOpen(entry)) {
           return total + 1;
         }
         return total;
@@ -8779,6 +9253,15 @@ export default function App() {
       uploaded: groupByOffer(uploadedReceipts, "uploaded"),
     };
   }, [businessReceipts]);
+  const businessReceiptById = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(businessReceipts) ? businessReceipts : []).forEach((receipt) => {
+      const id = String(receipt?.id || "").trim();
+      if (!id) return;
+      map.set(id, receipt);
+    });
+    return map;
+  }, [businessReceipts]);
 
   const pendingRedemptionGroups = useMemo(() => {
     const grouped = new Map();
@@ -8819,10 +9302,7 @@ export default function App() {
     () =>
       redemptionHistory.reduce((total, entry) => {
         const hasReceipt = Boolean(entry.receipt?.id);
-        const verificationStatus = entry.purchaseVerification?.status || null;
-        const canFallback =
-          verificationStatus === "pending" || verificationStatus === "rejected";
-        if (!hasReceipt && (isReceiptWindowOpen(entry) || canFallback)) {
+        if (!hasReceipt && isReceiptWindowOpen(entry)) {
           return total + 1;
         }
         return total;
@@ -8864,26 +9344,179 @@ export default function App() {
       cashoutWithdrawalEntries.find(
         (entry) =>
           String(entry?.status || "").toLowerCase() === "pending" &&
-          String(entry?.claimUrl || "").trim(),
+          isActiveCashoutClaimEntry(entry),
       )?.claimUrl || "",
     ).trim();
     if (pendingClaimUrl) return pendingClaimUrl;
     const cachedClaimUrl = String(cashoutClaimUrl || "").trim();
-    if (cachedClaimUrl) return cachedClaimUrl;
+    if (/^https:\/\//i.test(cachedClaimUrl)) return cachedClaimUrl;
     return String(
-      cashoutWithdrawalEntries.find((entry) =>
-        String(entry?.claimUrl || "").trim(),
-      )?.claimUrl || "",
+      cashoutWithdrawalEntries.find((entry) => isActiveCashoutClaimEntry(entry))
+        ?.claimUrl || "",
     ).trim();
   }, [cashoutClaimUrl, cashoutWithdrawalEntries]);
+  const latestRedeemedGiftCard = useMemo(
+    () =>
+      cashoutWithdrawalEntries.find(
+        (entry) =>
+          String(entry?.methodType || "").toLowerCase() === "gift_card" &&
+          String(entry?.provider || "").toLowerCase() === "reloadly" &&
+          (String(entry?.catalogItemName || "").trim() ||
+            String(entry?.catalogImageUrl || "").trim()),
+      ) || null,
+    [cashoutWithdrawalEntries],
+  );
+  const lastRedeemedGiftCardName = useMemo(() => {
+    const historyName = String(latestRedeemedGiftCard?.catalogItemName || "")
+      .trim();
+    if (historyName) return historyName;
+    const revealName = String(cashoutVoucherReveal.brandName || "").trim();
+    if (
+      cashoutVoucherReveal.visible &&
+      revealName &&
+      revealName.toLowerCase() !== "gift card"
+    ) {
+      return revealName;
+    }
+    return "";
+  }, [
+    cashoutVoucherReveal.brandName,
+    cashoutVoucherReveal.visible,
+    latestRedeemedGiftCard,
+  ]);
+  const lastRedeemedGiftCardImageUrl = useMemo(() => {
+    const historyImage = String(latestRedeemedGiftCard?.catalogImageUrl || "")
+      .trim();
+    if (historyImage) return historyImage;
+    if (cashoutVoucherReveal.visible) {
+      return String(cashoutVoucherReveal.imageUrl || "").trim();
+    }
+    return "";
+  }, [
+    cashoutVoucherReveal.imageUrl,
+    cashoutVoucherReveal.visible,
+    latestRedeemedGiftCard,
+  ]);
   const resumeCashoutClaimLabel = useMemo(() => {
     const hasPending = cashoutWithdrawalEntries.some(
       (entry) =>
         String(entry?.status || "").toLowerCase() === "pending" &&
-        String(entry?.claimUrl || "").trim(),
+        isActiveCashoutClaimEntry(entry),
     );
     return hasPending ? "Resume payout options" : "Open payout options";
   }, [cashoutWithdrawalEntries]);
+  const cashoutActionErrorText = String(cashoutActionStatus.error || "").trim();
+  const cashoutBankLinkInlineError =
+    cashoutMethodType === "bank_transfer" &&
+      isCashoutBankLinkError(cashoutActionErrorText)
+      ? cashoutActionErrorText
+      : "";
+  const cashoutGeneralActionError =
+    isCashoutBankLinkError(cashoutActionErrorText)
+      ? ""
+      : cashoutActionErrorText;
+  const cashoutLinkedPayoutAccounts = useMemo(() => {
+    const selectedAccountId = String(
+      plaidLinkState.selectedPayoutAccountId || "",
+    ).trim();
+    const rows = Array.isArray(plaidLinkState.linkedAccounts)
+      ? plaidLinkState.linkedAccounts
+      : [];
+    return rows
+      .map((account, index) => {
+        const accountId = String(account?.accountId || "").trim();
+        if (!accountId) return null;
+        const institutionName = String(
+          account?.institutionName || "",
+        ).trim();
+        const name = String(account?.name || "").trim() || "Bank account";
+        const mask = String(account?.mask || "").trim();
+        const isSelected = selectedAccountId
+          ? selectedAccountId === accountId
+          : Boolean(account?.selectedForPayout);
+        return {
+          accountId,
+          institutionName: institutionName || null,
+          name,
+          mask: mask || null,
+          selectedForPayout: isSelected,
+          index,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        if (a.selectedForPayout && !b.selectedForPayout) return -1;
+        if (!a.selectedForPayout && b.selectedForPayout) return 1;
+        return a.index - b.index;
+      });
+  }, [plaidLinkState.linkedAccounts, plaidLinkState.selectedPayoutAccountId]);
+  const visibleCashoutLinkedPayoutAccounts = useMemo(() => {
+    if (cashoutShowAllLinkedAccounts) return cashoutLinkedPayoutAccounts;
+    return cashoutLinkedPayoutAccounts.slice(0, 3);
+  }, [cashoutLinkedPayoutAccounts, cashoutShowAllLinkedAccounts]);
+  const hiddenCashoutLinkedAccountCount = Math.max(
+    0,
+    cashoutLinkedPayoutAccounts.length - visibleCashoutLinkedPayoutAccounts.length,
+  );
+  const cashoutPayoutSwitchCopy = useMemo(() => {
+    const policy = plaidLinkState.payoutSwitchPolicy || {};
+    const monthlyLimit = Math.max(Number(policy.monthlyLimit) || 0, 0);
+    const switchesRemaining = Math.max(Number(policy.switchesRemaining) || 0, 0);
+    if (!monthlyLimit) return "";
+    if (switchesRemaining <= 0) {
+      return "Payout bank switch limit reached for this month.";
+    }
+    if (monthlyLimit >= 9999) {
+      return "Payout bank switching is available.";
+    }
+    return `${switchesRemaining}/${monthlyLimit} payout bank switches remaining this month.`;
+  }, [plaidLinkState.payoutSwitchPolicy]);
+  const cashoutVoucherCardPreview = useMemo(() => {
+    const cardNumberRaw = String(
+      cashoutVoucherReveal.cardNumber || "",
+    ).trim();
+    const cvcRaw = String(
+      cashoutVoucherReveal.cvc || "",
+    ).trim();
+    const expiryRaw = String(
+      cashoutVoucherReveal.expirationDate || "",
+    ).trim();
+    const nameRaw = String(cashoutVoucherReveal.cardholderName || "").trim();
+    return {
+      cardNumberRaw,
+      cardNumberDisplay: formatCashoutCardNumber(cardNumberRaw),
+      cvcRaw,
+      cvcDisplay: cvcRaw,
+      expiryRaw,
+      expiryDisplay: formatCashoutCardExpiry(expiryRaw),
+      nameRaw,
+    };
+  }, [cashoutVoucherReveal]);
+  const cashoutVoucherHasCardDetails = useMemo(
+    () => Boolean(cashoutVoucherCardPreview.cardNumberRaw),
+    [cashoutVoucherCardPreview.cardNumberRaw],
+  );
+  const cashoutVoucherHasAnyRedeemInfo = useMemo(
+    () =>
+      Boolean(
+        cashoutVoucherCardPreview.cardNumberRaw ||
+          cashoutVoucherReveal.code ||
+          cashoutVoucherReveal.pin ||
+          cashoutVoucherReveal.serialNumber ||
+          cashoutVoucherReveal.expiresAt ||
+          cashoutVoucherReveal.instructions ||
+          cashoutVoucherReveal.claimUrl,
+      ),
+    [cashoutVoucherCardPreview.cardNumberRaw, cashoutVoucherReveal],
+  );
+  useEffect(() => {
+    if (
+      cashoutShowAllLinkedAccounts &&
+      cashoutLinkedPayoutAccounts.length <= 3
+    ) {
+      setCashoutShowAllLinkedAccounts(false);
+    }
+  }, [cashoutLinkedPayoutAccounts.length, cashoutShowAllLinkedAccounts]);
   useEffect(() => {
     if (!businesses.length) return;
     if (authUserId) {
@@ -8937,6 +9570,7 @@ export default function App() {
     if (activeTab === "business" && isOwner && ownerBusiness?.id) {
       loadBusinessReceipts(ownerBusiness.id);
       loadBusinessRedemptions(ownerBusiness.id);
+      loadBusinessReceiptReports(ownerBusiness.id, { silent: true });
     }
   }, [
     activeTab,
@@ -8944,6 +9578,7 @@ export default function App() {
     ownerBusiness?.id,
     loadBusinessReceipts,
     loadBusinessRedemptions,
+    loadBusinessReceiptReports,
     SUPABASE_URL,
     SUPABASE_ANON_KEY,
   ]);
@@ -8984,8 +9619,10 @@ export default function App() {
     setCashoutMethodType("gift_card");
     setSelectedCashoutCatalogCode(null);
     setCashoutClaimUrl(null);
+    setCashoutVoucherReveal(createInitialCashoutVoucherState());
     cashoutIdempotencyKeyRef.current = null;
-    setCashoutAmountText("");
+    setCashoutAmountText("0.00");
+    setCashoutShowAllLinkedAccounts(false);
     setCashbackBalance({
       availableCents: 0,
       paidCents: 0,
@@ -8995,6 +9632,8 @@ export default function App() {
     setCashoutPayoutHistory([]);
     setCashbackBalanceState({ loading: false, error: null });
     setPlaidLinkState(createInitialPlaidLinkState());
+    setBusinessReceiptReports([]);
+    setBusinessReceiptReportsStatus({ loading: false, error: null });
     setTremendousDemoAmountText(TREMENDOUS_DEMO_DEFAULT_AMOUNT);
     setTremendousDemoState(createInitialTremendousDemoState());
     setTremendousClaimModalVisible(false);
@@ -9162,7 +9801,8 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!GOOGLE_PLACES_KEY) {
+    if (!ADDRESS_LOOKUP_ENABLED) {
+      createAddressSessionTokenRef.current = createPlacesSessionToken();
       setCreateAddressResults([]);
       setCreateAddressLoading(false);
       return;
@@ -9174,6 +9814,7 @@ export default function App() {
       return;
     }
     if (query.length < 3) {
+      createAddressSessionTokenRef.current = createPlacesSessionToken();
       setCreateAddressResults([]);
       setCreateAddressLoading(false);
       return;
@@ -9181,33 +9822,20 @@ export default function App() {
 
     setCreateAddressLoading(true);
     const requestId = ++createAddressRequestRef.current;
+    const sessionToken =
+      createAddressSessionTokenRef.current || createPlacesSessionToken();
+    createAddressSessionTokenRef.current = sessionToken;
     const timeout = setTimeout(() => {
-      fetch(
-        `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
-          query,
-        )}&types=address&key=${GOOGLE_PLACES_KEY}`,
-      )
-        .then((response) => response.json())
-        .then((data) => {
+      fetchPlacesAutocompleteSuggestions(query, sessionToken)
+        .then((predictions) => {
           if (createAddressRequestRef.current !== requestId) return;
-          if (
-            data.status &&
-            data.status !== "OK" &&
-            data.status !== "ZERO_RESULTS"
-          ) {
-            setCreateAddressError(
-              data.error_message || "Unable to load suggestions.",
-            );
-            setCreateAddressResults([]);
-          } else {
-            setCreateAddressError(null);
-            setCreateAddressResults(data.predictions || []);
-          }
+          setCreateAddressError(null);
+          setCreateAddressResults(predictions || []);
           setCreateAddressLoading(false);
         })
-        .catch(() => {
+        .catch((error) => {
           if (createAddressRequestRef.current !== requestId) return;
-          setCreateAddressError("Unable to load suggestions.");
+          setCreateAddressError(error?.message || "Unable to load suggestions.");
           setCreateAddressResults([]);
           setCreateAddressLoading(false);
         });
@@ -11518,17 +12146,9 @@ export default function App() {
   };
 
   const geocodeAddress = useCallback(async (address) => {
-    if (!GOOGLE_PLACES_KEY || !address) return null;
+    if (!ADDRESS_LOOKUP_ENABLED || !address) return null;
     try {
-      const response = await fetch(
-        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
-          address,
-        )}&key=${GOOGLE_PLACES_KEY}`,
-      );
-      const data = await response.json();
-      const location = data.results?.[0]?.geometry?.location;
-      if (!location) return null;
-      return { latitude: location.lat, longitude: location.lng };
+      return await fetchGeocodeResult(address);
     } catch (error) {
       console.warn("Wello geocode failed:", error?.message || error);
       return null;
@@ -11537,7 +12157,7 @@ export default function App() {
 
   const hydrateBusinessCoordinates = useCallback(
     async (list) => {
-      if (!GOOGLE_PLACES_KEY || !Array.isArray(list) || list.length === 0) {
+      if (!ADDRESS_LOOKUP_ENABLED || !Array.isArray(list) || list.length === 0) {
         return;
       }
       const missing = list.filter(
@@ -11661,6 +12281,7 @@ export default function App() {
 
   const handleAddressChange = (value) => {
     addressSelectionRef.current = false;
+    addressSessionTokenRef.current = createPlacesSessionToken();
     setAddressError(null);
     setFormData((prev) => ({
       ...prev,
@@ -11675,6 +12296,7 @@ export default function App() {
 
   const handleBusinessAddressChange = (value) => {
     businessAddressSelectionRef.current = false;
+    businessAddressSessionTokenRef.current = createPlacesSessionToken();
     setBusinessAddressError(null);
     setBusinessAddressCoords(null);
     setBusinessAddressCity("");
@@ -11691,26 +12313,24 @@ export default function App() {
     setBusinessAddressError(null);
     setBusinessAddress(suggestion.description);
 
-    if (!GOOGLE_PLACES_KEY) return;
+    if (!ADDRESS_LOOKUP_ENABLED) return;
     try {
       setBusinessAddressLoading(true);
-      const response = await fetch(
-        `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(
-          suggestion.place_id,
-        )}&fields=formatted_address,address_components,geometry&key=${GOOGLE_PLACES_KEY}`,
+      const sessionToken =
+        businessAddressSessionTokenRef.current || createPlacesSessionToken();
+      businessAddressSessionTokenRef.current = sessionToken;
+      const details = await fetchPlaceDetailsResult(
+        suggestion.place_id,
+        sessionToken,
       );
-      const data = await response.json();
-      if (data.status && data.status !== "OK") {
-        throw new Error(data.error_message || "Unable to load place details.");
+      if (details?.formatted_address) {
+        setBusinessAddress(details.formatted_address);
       }
-      if (data.result?.formatted_address) {
-        setBusinessAddress(data.result.formatted_address);
-      }
-      const parsed = parseAddressComponents(data.result?.address_components);
+      const parsed = parseAddressComponents(details?.address_components);
       setBusinessAddressCity(parsed.city || "");
       setBusinessAddressState(parsed.state || "");
       setBusinessAddressPostal(parsed.postalCode || "");
-      const location = data.result?.geometry?.location;
+      const location = details?.geometry?.location;
       if (location) {
         setBusinessAddressCoords({
           latitude: location.lat,
@@ -11720,6 +12340,7 @@ export default function App() {
     } catch (error) {
       setBusinessAddressError(error.message || "Unable to load place details.");
     } finally {
+      businessAddressSessionTokenRef.current = createPlacesSessionToken();
       setBusinessAddressLoading(false);
     }
   };
@@ -11736,24 +12357,22 @@ export default function App() {
       addressPlaceId: suggestion.place_id,
     }));
 
-    if (!GOOGLE_PLACES_KEY) return;
+    if (!ADDRESS_LOOKUP_ENABLED) return;
     try {
       setAddressLoading(true);
-      const response = await fetch(
-        `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(
-          suggestion.place_id,
-        )}&fields=geometry,formatted_address,address_components&key=${GOOGLE_PLACES_KEY}`,
+      const sessionToken =
+        addressSessionTokenRef.current || createPlacesSessionToken();
+      addressSessionTokenRef.current = sessionToken;
+      const details = await fetchPlaceDetailsResult(
+        suggestion.place_id,
+        sessionToken,
       );
-      const data = await response.json();
-      if (data.status && data.status !== "OK") {
-        throw new Error(data.error_message || "Unable to load place details.");
-      }
-      const location = data.result?.geometry?.location;
+      const location = details?.geometry?.location;
       if (location) {
-        const parsed = parseAddressComponents(data.result?.address_components);
+        const parsed = parseAddressComponents(details?.address_components);
         setFormData((prev) => ({
           ...prev,
-          address: data.result.formatted_address || prev.address,
+          address: details?.formatted_address || prev.address,
           addressCoords: { latitude: location.lat, longitude: location.lng },
           city: parsed.city || prev.city,
           state: parsed.state || prev.state,
@@ -11772,6 +12391,7 @@ export default function App() {
     } catch (error) {
       setAddressError(error.message || "Unable to load place details.");
     } finally {
+      addressSessionTokenRef.current = createPlacesSessionToken();
       setAddressLoading(false);
     }
   };
@@ -13448,6 +14068,12 @@ export default function App() {
           ? Math.max(Number(data.payoutSwitchPolicy.switchesRemaining) || 0, 0)
           : Math.max(monthlyLimit - switchesUsed, 0);
       const updateMode = data?.updateMode || {};
+      const selectedPayoutAccountId = String(
+        data?.payoutSelection?.selectedAccountId || "",
+      ).trim() || null;
+      const selectedPayoutLabel = String(
+        data?.payoutSelection?.label || "",
+      ).trim() || null;
       setPlaidLinkState({
         initialized: true,
         loading: false,
@@ -13477,10 +14103,8 @@ export default function App() {
               })
               .filter(Boolean)
           : [],
-        selectedPayoutAccountId:
-          String(data?.payoutSelection?.selectedAccountId || "").trim() || null,
-        selectedPayoutLabel:
-          String(data?.payoutSelection?.label || "").trim() || null,
+        selectedPayoutAccountId,
+        selectedPayoutLabel,
         selectedPayoutSyncedAt: data?.payoutSelection?.syncedAt
           ? new Date(data.payoutSelection.syncedAt).getTime()
           : null,
@@ -13507,8 +14131,128 @@ export default function App() {
         },
         error: null,
       });
+      setCashoutCatalogState((prev) => {
+        const nextBankSummary = selectedPayoutLabel ||
+          String(prev.bankTile?.bankSummary || "").trim() ||
+          null;
+        return {
+          ...prev,
+          bankTile: {
+            ...(prev.bankTile || {}),
+            status: selectedPayoutAccountId ? "linked" : "needs_onboarding",
+            bankSummary: nextBankSummary,
+          },
+        };
+      });
     },
     [isSignedIn],
+  );
+
+  const handleSelectCashoutPayoutAccount = useCallback(
+    async (accountId) => {
+      const nextAccountId = String(accountId || "").trim();
+      if (!nextAccountId) return;
+      if (!isSignedIn) {
+        setCashoutActionStatus({
+          loading: false,
+          error: "Sign in to choose a payout bank.",
+          success: null,
+        });
+        return;
+      }
+      const selectedAccountId = String(
+        plaidLinkState.selectedPayoutAccountId || "",
+      ).trim();
+      if (selectedAccountId && selectedAccountId === nextAccountId) {
+        setCashoutActionStatus({
+          loading: false,
+          error: null,
+          success: "This bank is already selected for cashout.",
+        });
+        return;
+      }
+      if (
+        selectedAccountId &&
+        selectedAccountId !== nextAccountId &&
+        !plaidLinkState.payoutSwitchPolicy?.canSwitch
+      ) {
+        setCashoutActionStatus({
+          loading: false,
+          error: "Payout bank switch limit reached for this month.",
+          success: null,
+        });
+        return;
+      }
+
+      setCashoutActionStatus({
+        loading: true,
+        error: null,
+        success: null,
+      });
+      const { data, error } = await callPlaidFunction(
+        "plaid-set-cashout-account",
+        { plaidAccountId: nextAccountId },
+      );
+      if (error || !data?.selected) {
+        setCashoutActionStatus({
+          loading: false,
+          error: toUserFacingError(
+            error || data?.error || "Unable to update payout bank right now.",
+            "Unable to update payout bank right now.",
+          ),
+          success: null,
+        });
+        return;
+      }
+
+      const selectedAccountLabel = String(
+        data?.selectedAccountLabel || "",
+      ).trim() || null;
+      setPlaidLinkState((prev) => ({
+        ...prev,
+        selectedPayoutAccountId: nextAccountId,
+        selectedPayoutLabel: selectedAccountLabel,
+        linkedAccounts: (Array.isArray(prev.linkedAccounts)
+          ? prev.linkedAccounts
+          : []
+        ).map((account) => ({
+          ...account,
+          selectedForPayout:
+            String(account?.accountId || "").trim() === nextAccountId,
+        })),
+      }));
+      setCashoutCatalogState((prev) => ({
+        ...prev,
+        bankTile: {
+          ...(prev.bankTile || {}),
+          status: "linked",
+          bankSummary:
+            selectedAccountLabel ||
+            String(prev.bankTile?.bankSummary || "").trim() ||
+            null,
+        },
+      }));
+      setCashoutMethodType("bank_transfer");
+      setCashoutActionStatus({
+        loading: false,
+        error: null,
+        success:
+          String(data?.copy?.primary || "").trim() ||
+          "Payout bank updated.",
+      });
+
+      await Promise.all([
+        loadPlaidLinkState({ silent: true }),
+        loadCashoutCatalog({ page: 0, append: false }),
+      ]);
+    },
+    [
+      isSignedIn,
+      plaidLinkState.selectedPayoutAccountId,
+      plaidLinkState.payoutSwitchPolicy?.canSwitch,
+      loadCashoutCatalog,
+      loadPlaidLinkState,
+    ],
   );
 
   const setHistoryVerificationNotice = useCallback(
@@ -14102,13 +14846,9 @@ export default function App() {
       });
       return;
     }
-    const allowFallbackReceipt =
-      entry?.purchaseVerification?.status === "pending" ||
-      entry?.purchaseVerification?.status === "rejected";
-    if (!isReceiptWindowOpen(entry) && !allowFallbackReceipt) {
+    if (!isReceiptWindowOpen(entry)) {
       logReceiptUploadDebug("blockedWindowExpired", {
         entryId: entry.id,
-        allowFallbackReceipt,
       });
       setReceiptUploadStatus({
         uploading: false,
@@ -14569,11 +15309,32 @@ export default function App() {
     }
   };
 
+  const closeReceiptReportOtherModal = useCallback(() => {
+    setReceiptReportOtherDraft({
+      visible: false,
+      receipt: null,
+      text: "",
+      error: null,
+      submitting: false,
+    });
+  }, []);
+
+  const openReceiptReportOtherModal = useCallback((receipt) => {
+    if (!receipt) return;
+    setReceiptReportOtherDraft({
+      visible: true,
+      receipt,
+      text: "",
+      error: null,
+      submitting: false,
+    });
+  }, []);
+
   const submitReceiptReport = useCallback(
-    async (receipt, reasonValue, reasonLabel) => {
+    async (receipt, reasonValue, reasonLabel, customReasonText = null) => {
       const receiptId = receipt?.receiptId || receipt?.id || null;
       const businessId = receipt?.businessId || null;
-      if (!receiptId || !businessId) return;
+      if (!receiptId || !businessId) return false;
       if (!isSignedIn || !authUserId) {
         setReceiptReportStatus({
           loading: false,
@@ -14581,8 +15342,13 @@ export default function App() {
           error: "Sign in to report a receipt.",
           success: null,
         });
-        return;
+        return false;
       }
+      const customReason = String(customReasonText || "").trim();
+      const detailsBase = `Reported from owner receipts screen (${reasonLabel}).`;
+      const detailsPayload = customReason
+        ? `${detailsBase} Reason: ${customReason}`
+        : detailsBase;
       setReceiptReportStatus({
         loading: true,
         targetId: receiptId,
@@ -14596,11 +15362,12 @@ export default function App() {
           business_id: businessId,
           reporter_id: authUserId,
           reason: reasonValue,
-          details: `Reported from owner receipts screen (${reasonLabel}).`,
+          details: detailsPayload,
           metadata: {
             source: "owner_receipts_modal",
             review_status:
               String(receipt?.reviewStatus || "").toLowerCase() || null,
+            custom_reason: customReason || null,
           },
         })
         .select("id")
@@ -14624,10 +15391,10 @@ export default function App() {
         });
         showAppDialog({
           title: "Unable to report receipt",
-          message,
-          options: [{ label: "OK", variant: "primary" }],
-        });
-        return;
+            message,
+            options: [{ label: "OK", variant: "primary" }],
+          });
+        return false;
       }
       setReceiptReportStatus({
         loading: false,
@@ -14635,14 +15402,65 @@ export default function App() {
         error: null,
         success: "Receipt reported. Our team will review it.",
       });
+      setBusinessReceiptReports((prev) => [
+        {
+          id: String(data.id),
+          receiptUploadId: String(receiptId),
+          reason: String(reasonValue || "").trim() || "other",
+          details: detailsPayload,
+          status: "open",
+          resolutionNotes: null,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          resolvedAt: null,
+        },
+        ...(Array.isArray(prev) ? prev : []),
+      ]);
       showAppDialog({
         title: "Report sent",
         message: "Thanks. Our team will review this receipt.",
         options: [{ label: "Done", variant: "primary" }],
       });
+      return true;
     },
     [authUserId, isSignedIn, showAppDialog],
   );
+
+  const handleSubmitOtherReceiptReportReason = useCallback(async () => {
+    const reasonText = String(receiptReportOtherDraft.text || "").trim();
+    if (reasonText.length < 3) {
+      setReceiptReportOtherDraft((prev) => ({
+        ...prev,
+        error: "Please enter at least 3 characters.",
+      }));
+      return;
+    }
+    setReceiptReportOtherDraft((prev) => ({
+      ...prev,
+      submitting: true,
+      error: null,
+    }));
+    const ok = await submitReceiptReport(
+      receiptReportOtherDraft.receipt,
+      "other",
+      "Other issue",
+      reasonText,
+    );
+    if (ok) {
+      closeReceiptReportOtherModal();
+      return;
+    }
+    setReceiptReportOtherDraft((prev) => ({
+      ...prev,
+      submitting: false,
+      error: "Unable to submit this report right now.",
+    }));
+  }, [
+    closeReceiptReportOtherModal,
+    receiptReportOtherDraft.receipt,
+    receiptReportOtherDraft.text,
+    submitReceiptReport,
+  ]);
 
   const promptReportReceipt = useCallback(
     (receipt) => {
@@ -14656,7 +15474,13 @@ export default function App() {
             label: item.label,
             icon: "flag-outline",
             variant: "secondary",
-            onPress: () => submitReceiptReport(receipt, item.value, item.label),
+            onPress: () => {
+              if (item.value === "other") {
+                openReceiptReportOtherModal(receipt);
+                return;
+              }
+              void submitReceiptReport(receipt, item.value, item.label);
+            },
           })),
           {
             label: "Cancel",
@@ -14666,7 +15490,7 @@ export default function App() {
         ],
       });
     },
-    [showAppDialog, submitReceiptReport],
+    [openReceiptReportOtherModal, showAppDialog, submitReceiptReport],
   );
 
   const handleOpenReceiptPreview = async (receipt, offerTitle) => {
@@ -15643,7 +16467,7 @@ export default function App() {
         "created_at",
         "offer:offers (id, title, description, offer_type, image_url)",
         "business:businesses (id, name, category_key, category_label)",
-        "receipt_uploads (id, uploaded_at, storage_path, review_status, verification_source, verification_reference, cashback_events (amount_cents, status))",
+        "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, verification_source, verification_reference, cashback_events (amount_cents, status))",
         "purchase_verifications (id, source, status, reason_code, reason_detail, last_checked_at, confirmed_at, rejected_at)",
       ].join(",");
       const selectBasic = [
@@ -15653,7 +16477,7 @@ export default function App() {
         "created_at",
         "offer:offers (id, title, description, offer_type, image_url)",
         "business:businesses (id, name, category_key, category_label)",
-        "receipt_uploads (id, uploaded_at, storage_path, review_status, verification_source, verification_reference)",
+        "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, verification_source, verification_reference)",
         "purchase_verifications (id, source, status, reason_code, reason_detail, last_checked_at, confirmed_at, rejected_at)",
       ].join(",");
       const selectLegacy = [
@@ -15663,7 +16487,7 @@ export default function App() {
         "created_at",
         "offer:offers (id, title, description, offer_type, image_url)",
         "business:businesses (id, name, category_key, category_label)",
-        "receipt_uploads (id, uploaded_at, storage_path, review_status, verification_source, verification_reference)",
+        "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, verification_source, verification_reference)",
       ].join(",");
 
       let { data, error } = await supabase
@@ -15780,6 +16604,7 @@ export default function App() {
             loadOwnerAnalytics(targetBusinessId, { silent: true }),
             loadBillingMetrics(targetBusinessId, { silent: true }),
             loadBusinessReceipts(targetBusinessId, { silent: true }),
+            loadBusinessReceiptReports(targetBusinessId, { silent: true }),
             loadBusinessRedemptions(targetBusinessId, { silent: true }),
             loadOwnerOffers(targetBusinessId, { silent: true }),
           ]);
@@ -15800,6 +16625,7 @@ export default function App() {
       loadOwnerAnalytics,
       loadBillingMetrics,
       loadBusinessReceipts,
+      loadBusinessReceiptReports,
       loadBusinessRedemptions,
       loadOwnerOffers,
     ],
@@ -16139,6 +16965,63 @@ export default function App() {
     [],
   );
 
+  const loadBusinessReceiptReports = useCallback(
+    async (businessId, { silent } = {}) => {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setBusinessReceiptReports([]);
+        setBusinessReceiptReportsStatus({
+          loading: false,
+          error: "Supabase is not configured for receipt reports.",
+        });
+        return;
+      }
+      if (!businessId || !authUserId) {
+        setBusinessReceiptReports([]);
+        setBusinessReceiptReportsStatus({ loading: false, error: null });
+        return;
+      }
+      if (!silent) {
+        setBusinessReceiptReportsStatus({ loading: true, error: null });
+      }
+      const { data, error } = await supabase
+        .from("receipt_reports")
+        .select(
+          "id, receipt_upload_id, reason, details, status, resolution_notes, created_at, updated_at, resolved_at",
+        )
+        .eq("business_id", businessId)
+        .eq("reporter_id", authUserId)
+        .order("created_at", { ascending: false })
+        .limit(40);
+      if (error) {
+        if (!silent) {
+          setBusinessReceiptReportsStatus({
+            loading: false,
+            error: error.message || "Unable to load receipt reports.",
+          });
+        }
+        return;
+      }
+      const rows = Array.isArray(data) ? data : [];
+      setBusinessReceiptReports(
+        rows.map((row) => ({
+          id: String(row.id),
+          receiptUploadId: String(row.receipt_upload_id || "").trim() || null,
+          reason: String(row.reason || "").trim() || "other",
+          details: String(row.details || "").trim() || null,
+          status: String(row.status || "").trim().toLowerCase() || "open",
+          resolutionNotes: String(row.resolution_notes || "").trim() || null,
+          createdAt: row.created_at ? new Date(row.created_at).getTime() : 0,
+          updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : 0,
+          resolvedAt: row.resolved_at ? new Date(row.resolved_at).getTime() : null,
+        })),
+      );
+      if (!silent) {
+        setBusinessReceiptReportsStatus({ loading: false, error: null });
+      }
+    },
+    [authUserId],
+  );
+
   const loadBusinessRedemptions = useCallback(
     async (businessId, { silent } = {}) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -16204,6 +17087,13 @@ export default function App() {
 
   useEffect(() => {
     if (activeTab !== "discover") return;
+    if (!isSignedIn) return;
+    if (accountRole !== "consumer") return;
+    loadPlaidLinkState({ silent: true });
+  }, [activeTab, isSignedIn, accountRole, loadPlaidLinkState]);
+
+  useEffect(() => {
+    if (activeTab !== "cashout") return;
     if (!isSignedIn) return;
     if (accountRole !== "consumer") return;
     loadPlaidLinkState({ silent: true });
@@ -16394,6 +17284,7 @@ export default function App() {
 
   const handleCreateAddressChange = (value) => {
     createAddressSelectionRef.current = false;
+    createAddressSessionTokenRef.current = createPlacesSessionToken();
     setCreateAddressError(null);
     setCreateBusinessForm((prev) => ({
       ...prev,
@@ -16416,24 +17307,22 @@ export default function App() {
       address: suggestion.description,
     }));
 
-    if (!GOOGLE_PLACES_KEY) return;
+    if (!ADDRESS_LOOKUP_ENABLED) return;
     try {
       setCreateAddressLoading(true);
-      const response = await fetch(
-        `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(
-          suggestion.place_id,
-        )}&fields=formatted_address,address_components,geometry&key=${GOOGLE_PLACES_KEY}`,
+      const sessionToken =
+        createAddressSessionTokenRef.current || createPlacesSessionToken();
+      createAddressSessionTokenRef.current = sessionToken;
+      const details = await fetchPlaceDetailsResult(
+        suggestion.place_id,
+        sessionToken,
       );
-      const data = await response.json();
-      if (data.status && data.status !== "OK") {
-        throw new Error(data.error_message || "Unable to load place details.");
-      }
-      const parsed = parseAddressComponents(data.result?.address_components);
-      const location = data.result?.geometry?.location;
+      const parsed = parseAddressComponents(details?.address_components);
+      const location = details?.geometry?.location;
       setCreateBusinessForm((prev) => ({
         ...prev,
         address:
-          parsed.street || data.result?.formatted_address || prev.address,
+          parsed.street || details?.formatted_address || prev.address,
         city: parsed.city || prev.city,
         state: parsed.state || prev.state,
         postalCode: parsed.postalCode || prev.postalCode,
@@ -16444,6 +17333,7 @@ export default function App() {
     } catch (error) {
       setCreateAddressError(error.message || "Unable to load place details.");
     } finally {
+      createAddressSessionTokenRef.current = createPlacesSessionToken();
       setCreateAddressLoading(false);
     }
   };
@@ -17023,6 +17913,80 @@ export default function App() {
                         </TouchableOpacity>
                       );
                     })}
+                  </View>
+                </Pressable>
+              </Pressable>
+            </Modal>
+
+            <Modal
+              transparent
+              visible={receiptReportOtherDraft.visible}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={closeReceiptReportOtherModal}
+            >
+              <Pressable
+                style={styles.appDialogOverlay}
+                onPress={closeReceiptReportOtherModal}
+              >
+                <Pressable style={styles.appDialogCard} onPress={() => {}}>
+                  <Text style={styles.appDialogTitle}>Other report reason</Text>
+                  <Text style={styles.appDialogMessage}>
+                    Enter the exact reason so admin can review it faster.
+                  </Text>
+                  <TextInput
+                    style={styles.receiptReportOtherInput}
+                    value={receiptReportOtherDraft.text}
+                    onChangeText={(value) =>
+                      setReceiptReportOtherDraft((prev) => ({
+                        ...prev,
+                        text: value,
+                        error: null,
+                      }))}
+                    placeholder="Type reason..."
+                    placeholderTextColor={COLORS.muted}
+                    multiline
+                    maxLength={280}
+                    autoFocus
+                    textAlignVertical="top"
+                  />
+                  {receiptReportOtherDraft.error ? (
+                    <Text style={styles.formError}>
+                      {receiptReportOtherDraft.error}
+                    </Text>
+                  ) : null}
+                  <View style={styles.appDialogActions}>
+                    <TouchableOpacity
+                      style={[styles.appDialogButton, styles.appDialogButtonGhost]}
+                      onPress={closeReceiptReportOtherModal}
+                      disabled={receiptReportOtherDraft.submitting}
+                    >
+                      <Text style={styles.appDialogButtonText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.appDialogButton,
+                        styles.appDialogButtonPrimary,
+                        receiptReportOtherDraft.submitting &&
+                          styles.appDialogButtonDisabled,
+                      ]}
+                      onPress={handleSubmitOtherReceiptReportReason}
+                      disabled={receiptReportOtherDraft.submitting}
+                    >
+                      {receiptReportOtherDraft.submitting ? (
+                        <ActivityIndicator size="small" color={COLORS.white} />
+                      ) : (
+                        <Text
+                          style={[
+                            styles.appDialogButtonText,
+                            styles.appDialogButtonTextPrimary,
+                          ]}
+                        >
+                          Submit report
+                        </Text>
+                      )}
+                    </TouchableOpacity>
                   </View>
                 </Pressable>
               </Pressable>
@@ -17654,6 +18618,86 @@ export default function App() {
                           {businessRedemptionStatus.error}
                         </Text>
                       )}
+                      {businessReceiptReportsStatus.error && (
+                        <Text style={styles.formError}>
+                          {businessReceiptReportsStatus.error}
+                        </Text>
+                      )}
+                      {businessReceiptReportsStatus.loading ? (
+                        <Text style={styles.formHint}>
+                          Loading reported receipt statuses...
+                        </Text>
+                      ) : businessReceiptReports.length > 0 ? (
+                        <View style={styles.receiptReportStatusCard}>
+                          <Text style={styles.receiptSectionTitle}>
+                            Reported receipt status
+                          </Text>
+                          {businessReceiptReports.slice(0, 8).map((report) => {
+                            const linkedReceipt = report.receiptUploadId
+                              ? businessReceiptById.get(report.receiptUploadId)
+                              : null;
+                            const status = String(report.status || "open")
+                              .trim()
+                              .toLowerCase();
+                            const statusLabel =
+                              RECEIPT_REPORT_STATUS_LABELS[status] || "Open";
+                            const isResolved =
+                              status === "resolved" || status === "dismissed";
+                            return (
+                              <View
+                                key={`owner-receipt-report-${report.id}`}
+                                style={styles.receiptReportStatusRow}
+                              >
+                                <View style={styles.receiptReportStatusMain}>
+                                  <Text
+                                    style={styles.receiptReportStatusTitle}
+                                    numberOfLines={1}
+                                  >
+                                    {formatReceiptReportReasonLabel(report.reason)}
+                                  </Text>
+                                  <Text
+                                    style={styles.receiptReportStatusMeta}
+                                    numberOfLines={2}
+                                  >
+                                    {linkedReceipt?.offerTitle
+                                      ? `${linkedReceipt.offerTitle} · `
+                                      : ""}
+                                    Submitted{" "}
+                                    {formatHistoryTimestamp(
+                                      report.createdAt || report.updatedAt,
+                                    )}
+                                  </Text>
+                                  {report.resolutionNotes ? (
+                                    <Text
+                                      style={styles.receiptReportStatusNotes}
+                                      numberOfLines={3}
+                                    >
+                                      {report.resolutionNotes}
+                                    </Text>
+                                  ) : null}
+                                </View>
+                                <View
+                                  style={[
+                                    styles.receiptReportStatusPill,
+                                    isResolved &&
+                                      styles.receiptReportStatusPillResolved,
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.receiptReportStatusPillText,
+                                      isResolved &&
+                                        styles.receiptReportStatusPillTextResolved,
+                                    ]}
+                                  >
+                                    {statusLabel}
+                                  </Text>
+                                </View>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      ) : null}
 
                       {businessReceiptStatus.loading ||
                       businessRedemptionStatus.loading ? (
@@ -19035,6 +20079,301 @@ export default function App() {
             </Modal>
 
             <Modal
+              visible={cashoutVoucherReveal.visible}
+              animationType="slide"
+              presentationStyle="fullScreen"
+              statusBarTranslucent={Platform.OS === "android"}
+              onRequestClose={closeCashoutVoucherReveal}
+            >
+              <SafeAreaView style={styles.cashoutVoucherScreen}>
+                <View
+                  style={[
+                    styles.cashoutVoucherHeader,
+                    modalTopInset > 0 && {
+                      paddingTop: modalTopInset,
+                      minHeight: 56 + modalTopInset,
+                    },
+                  ]}
+                >
+                  <Text style={styles.cashoutVoucherTitle}>Gift card details</Text>
+                  <TouchableOpacity
+                    style={styles.cashoutVoucherCloseButton}
+                    onPress={closeCashoutVoucherReveal}
+                  >
+                    <Ionicons name="close" size={18} color={COLORS.ink} />
+                  </TouchableOpacity>
+                </View>
+                <ScrollView
+                  style={styles.cashoutVoucherScroll}
+                  contentContainerStyle={styles.cashoutVoucherContent}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <View style={styles.cashoutVoucherSummaryCard}>
+                    <Text style={styles.cashoutVoucherBrand}>
+                      {cashoutVoucherReveal.brandName}
+                    </Text>
+                    <Text style={styles.cashoutVoucherAmount}>
+                      {formatCurrencyFromCents(cashoutVoucherReveal.amountCents)}
+                    </Text>
+                    <Text style={styles.cashoutVoucherSummaryHint}>
+                      Save these details now. For security, they may not be shown
+                      again.
+                    </Text>
+                  </View>
+                  {cashoutVoucherHasCardDetails ? (
+                    <>
+                      <View style={styles.cashoutVoucherCardVisual}>
+                        <LinearGradient
+                          colors={["#102A4C", "#17457C", "#0E6B93"]}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.cashoutVoucherCardVisualGradient}
+                        >
+                          {cashoutVoucherReveal.imageUrl ? (
+                            <Image
+                              source={{ uri: cashoutVoucherReveal.imageUrl }}
+                              style={styles.cashoutVoucherCardVisualImage}
+                              resizeMode="cover"
+                            />
+                          ) : null}
+                          <View style={styles.cashoutVoucherCardVisualShade} />
+                          <View style={styles.cashoutVoucherCardVisualTopRow}>
+                            <Text
+                              style={styles.cashoutVoucherCardVisualBrand}
+                              numberOfLines={1}
+                            >
+                              {cashoutVoucherReveal.brandName}
+                            </Text>
+                            <Text style={styles.cashoutVoucherCardVisualAmount}>
+                              {formatCurrencyFromCents(cashoutVoucherReveal.amountCents)}
+                            </Text>
+                          </View>
+                          <Text
+                            selectable
+                            style={styles.cashoutVoucherCardVisualNumber}
+                          >
+                            {cashoutVoucherCardPreview.cardNumberDisplay}
+                          </Text>
+                          {cashoutVoucherCardPreview.cvcRaw ||
+                          cashoutVoucherCardPreview.expiryRaw ? (
+                            <View style={styles.cashoutVoucherCardVisualBottomRow}>
+                              {cashoutVoucherCardPreview.cvcRaw ? (
+                                <View>
+                                  <Text style={styles.cashoutVoucherCardVisualMetaLabel}>
+                                    CVC
+                                  </Text>
+                                  <Text
+                                    selectable
+                                    style={styles.cashoutVoucherCardVisualMetaValue}
+                                  >
+                                    {cashoutVoucherCardPreview.cvcDisplay}
+                                  </Text>
+                                </View>
+                              ) : null}
+                              {cashoutVoucherCardPreview.expiryRaw ? (
+                                <View>
+                                  <Text style={styles.cashoutVoucherCardVisualMetaLabel}>
+                                    EXP
+                                  </Text>
+                                  <Text
+                                    selectable
+                                    style={styles.cashoutVoucherCardVisualMetaValue}
+                                  >
+                                    {cashoutVoucherCardPreview.expiryDisplay}
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                          ) : null}
+                          {cashoutVoucherCardPreview.nameRaw ? (
+                            <Text
+                              selectable
+                              style={styles.cashoutVoucherCardVisualName}
+                              numberOfLines={1}
+                            >
+                              {cashoutVoucherCardPreview.nameRaw}
+                            </Text>
+                          ) : null}
+                        </LinearGradient>
+                      </View>
+                      <View style={styles.cashoutVoucherField}>
+                        <Text style={styles.cashoutVoucherFieldLabel}>Card number</Text>
+                        <Text selectable style={styles.cashoutVoucherFieldValue}>
+                          {cashoutVoucherCardPreview.cardNumberDisplay}
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.cashoutVoucherCopyButton}
+                          onPress={() =>
+                            handleCopyCashoutVoucherValue(
+                              cashoutVoucherCardPreview.cardNumberRaw,
+                              "Card number",
+                            )}
+                        >
+                          <Text style={styles.cashoutVoucherCopyButtonText}>Copy</Text>
+                        </TouchableOpacity>
+                      </View>
+                      {cashoutVoucherCardPreview.cvcRaw ? (
+                        <View style={styles.cashoutVoucherField}>
+                          <Text style={styles.cashoutVoucherFieldLabel}>CVC</Text>
+                          <Text selectable style={styles.cashoutVoucherFieldValue}>
+                            {cashoutVoucherCardPreview.cvcDisplay}
+                          </Text>
+                          <TouchableOpacity
+                            style={styles.cashoutVoucherCopyButton}
+                            onPress={() =>
+                              handleCopyCashoutVoucherValue(
+                                cashoutVoucherCardPreview.cvcRaw,
+                                "Card security code",
+                              )}
+                          >
+                            <Text style={styles.cashoutVoucherCopyButtonText}>
+                              Copy
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : null}
+                      {cashoutVoucherCardPreview.expiryRaw ? (
+                        <View style={styles.cashoutVoucherField}>
+                          <Text style={styles.cashoutVoucherFieldLabel}>
+                            Expiration date
+                          </Text>
+                          <Text selectable style={styles.cashoutVoucherFieldValue}>
+                            {cashoutVoucherCardPreview.expiryDisplay}
+                          </Text>
+                        </View>
+                      ) : null}
+                      {cashoutVoucherCardPreview.nameRaw ? (
+                        <View style={styles.cashoutVoucherField}>
+                          <Text style={styles.cashoutVoucherFieldLabel}>
+                            Name on card
+                          </Text>
+                          <Text selectable style={styles.cashoutVoucherFieldValue}>
+                            {cashoutVoucherCardPreview.nameRaw}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </>
+                  ) : (
+                    <View style={styles.cashoutVoucherRedeemHintCard}>
+                      <Text style={styles.cashoutVoucherRedeemHintText}>
+                        This gift card uses a redeem code or provider link instead
+                        of card-number details.
+                      </Text>
+                    </View>
+                  )}
+                  {!cashoutVoucherHasAnyRedeemInfo ? (
+                    <View style={styles.cashoutVoucherField}>
+                      <Text style={styles.cashoutVoucherFieldLabel}>
+                        Provider details
+                      </Text>
+                      <Text style={styles.cashoutVoucherFieldValue}>
+                        Redeem details are not available yet. Please check again
+                        soon.
+                      </Text>
+                    </View>
+                  ) : null}
+                  {cashoutVoucherReveal.code ? (
+                    <View style={styles.cashoutVoucherField}>
+                      <Text style={styles.cashoutVoucherFieldLabel}>
+                        {cashoutVoucherHasCardDetails
+                          ? "Redemption code"
+                          : "Redeem code"}
+                      </Text>
+                      <Text selectable style={styles.cashoutVoucherFieldValue}>
+                        {cashoutVoucherReveal.code}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.cashoutVoucherCopyButton}
+                        onPress={() =>
+                          handleCopyCashoutVoucherValue(
+                            cashoutVoucherReveal.code,
+                            "Redeem code",
+                          )}
+                      >
+                        <Text style={styles.cashoutVoucherCopyButtonText}>Copy</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+                  {cashoutVoucherReveal.pin ? (
+                    <View style={styles.cashoutVoucherField}>
+                      <Text style={styles.cashoutVoucherFieldLabel}>PIN</Text>
+                      <Text selectable style={styles.cashoutVoucherFieldValue}>
+                        {cashoutVoucherReveal.pin}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.cashoutVoucherCopyButton}
+                        onPress={() =>
+                          handleCopyCashoutVoucherValue(
+                            cashoutVoucherReveal.pin,
+                            "PIN",
+                          )}
+                      >
+                        <Text style={styles.cashoutVoucherCopyButtonText}>Copy</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+                  {cashoutVoucherReveal.serialNumber ? (
+                    <View style={styles.cashoutVoucherField}>
+                      <Text style={styles.cashoutVoucherFieldLabel}>Reference</Text>
+                      <Text selectable style={styles.cashoutVoucherFieldValue}>
+                        {cashoutVoucherReveal.serialNumber}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {cashoutVoucherReveal.expiresAt &&
+                  !cashoutVoucherCardPreview.expiryRaw ? (
+                    <View style={styles.cashoutVoucherField}>
+                      <Text style={styles.cashoutVoucherFieldLabel}>Expires</Text>
+                      <Text selectable style={styles.cashoutVoucherFieldValue}>
+                        {cashoutVoucherReveal.expiresAt}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {cashoutVoucherReveal.instructions ? (
+                    <View style={styles.cashoutVoucherField}>
+                      <Text style={styles.cashoutVoucherFieldLabel}>How to redeem</Text>
+                      <Text style={styles.cashoutVoucherFieldValue}>
+                        {cashoutVoucherReveal.instructions}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {cashoutVoucherReveal.claimUrl ? (
+                    <View style={styles.cashoutVoucherField}>
+                      <Text style={styles.cashoutVoucherFieldLabel}>Redeem link</Text>
+                      <Text selectable style={styles.cashoutVoucherFieldValue}>
+                        {cashoutVoucherReveal.claimUrl}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.cashoutVoucherCopyButton}
+                        onPress={() =>
+                          handleCopyCashoutVoucherValue(
+                            cashoutVoucherReveal.claimUrl,
+                            "Redeem link",
+                          )}
+                      >
+                        <Text style={styles.cashoutVoucherCopyButtonText}>Copy</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+                  {cashoutVoucherReveal.claimUrl ? (
+                    <TouchableOpacity
+                      style={styles.cashoutVoucherOpenButton}
+                      onPress={() => {
+                        if (openCashoutHostedFlow(cashoutVoucherReveal.claimUrl)) {
+                          closeCashoutVoucherReveal();
+                        }
+                      }}
+                    >
+                      <Text style={styles.cashoutVoucherOpenButtonText}>
+                        Open redeem page
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </ScrollView>
+              </SafeAreaView>
+            </Modal>
+
+            <Modal
               visible={tremendousClaimModalVisible}
               animationType="slide"
               presentationStyle="fullScreen"
@@ -19207,7 +20546,10 @@ export default function App() {
                           <Text style={styles.cashoutCatalogRowMeta}>
                             Min{" "}
                             {formatCurrencyFromCents(
-                              Math.max(0, Number(item?.minCents) || 0),
+                              Math.max(
+                                GIFT_CARD_MIN_CASHOUT_CENTS,
+                                Number(item?.minCents) || 0,
+                              ),
                             )}{" "}
                             · Max{" "}
                             {formatCurrencyFromCents(
@@ -21144,10 +22486,9 @@ export default function App() {
                                   editable={canEditBusiness}
                                   onChangeText={handleAddressChange}
                                 />
-                                {!GOOGLE_PLACES_KEY && canEditBusiness && (
+                                {!ADDRESS_LOOKUP_ENABLED && canEditBusiness && (
                                   <Text style={styles.formHint}>
-                                    Add your Google Places key in `.env` to
-                                    enable address autocomplete.
+                                    {ADDRESS_LOOKUP_UNAVAILABLE_COPY}
                                   </Text>
                                 )}
                                 {addressLoading && canEditBusiness && (
@@ -21658,10 +22999,9 @@ export default function App() {
                                   value={createBusinessForm.address}
                                   onChangeText={handleCreateAddressChange}
                                 />
-                                {!GOOGLE_PLACES_KEY && (
+                                {!ADDRESS_LOOKUP_ENABLED && (
                                   <Text style={styles.formHint}>
-                                    Add your Google Places key in `.env` to
-                                    enable address autocomplete.
+                                    {ADDRESS_LOOKUP_UNAVAILABLE_COPY}
                                   </Text>
                                 )}
                                 {createAddressLoading && (
@@ -22515,10 +23855,7 @@ export default function App() {
                                     const verificationStatus =
                                       purchaseVerification?.status || null;
                                     const canUploadReceipt =
-                                      needsReceipt &&
-                                      (receiptWindowOpen ||
-                                        verificationStatus === "pending" ||
-                                        verificationStatus === "rejected");
+                                      needsReceipt && receiptWindowOpen;
                                     const canRetryAutoVerify =
                                       hasLinkedPlaidBank &&
                                       needsReceipt &&
@@ -22538,6 +23875,18 @@ export default function App() {
                                     const receiptReviewStatus = String(
                                       entry.receipt?.reviewStatus || "",
                                     ).toLowerCase();
+                                    const receiptRejectionReason =
+                                      receiptReviewStatus === "rejected"
+                                        ? String(
+                                            purchaseVerification?.reasonDetail ||
+                                              entry?.receipt?.reviewNotes ||
+                                              formatPurchaseVerificationReason(
+                                                purchaseVerification?.reasonCode,
+                                                purchaseVerification?.reasonDetail,
+                                              ) ||
+                                              "",
+                                          ).trim()
+                                        : "";
                                     const statusCopy = (() => {
                                       if (needsReceipt) {
                                         if (verificationStatus === "pending") {
@@ -22680,6 +24029,14 @@ export default function App() {
                                             </Text>
                                           </View>
                                         )}
+                                        {!hideStatusForUploadAction &&
+                                        receiptRejectionReason ? (
+                                          <Text
+                                            style={styles.historyStatusReasonText}
+                                          >
+                                            {receiptRejectionReason}
+                                          </Text>
+                                        ) : null}
                                         {isReceiptActionable && (
                                           <View
                                             style={styles.historyEntryTapHint}
@@ -22982,143 +24339,6 @@ export default function App() {
                                       {cashoutCatalogState.error}
                                     </Text>
                                   ) : null}
-                                  <View style={styles.cashoutTileGrid}>
-                                    <TouchableOpacity
-                                      style={[
-                                        styles.cashoutMethodTile,
-                                        cashoutMethodType === "bank_transfer" &&
-                                          styles.cashoutMethodTileSelected,
-                                      ]}
-                                      activeOpacity={0.9}
-                                      onPress={handleCashoutBankTilePress}
-                                    >
-                                      <View style={styles.cashoutMethodTileMedia}>
-                                        <Ionicons
-                                          name="business-outline"
-                                          size={34}
-                                          color={COLORS.pine}
-                                        />
-                                      </View>
-                                      <Text
-                                        style={styles.cashoutMethodTileTitle}
-                                        numberOfLines={2}
-                                      >
-                                        Your bank account
-                                      </Text>
-                                      <Text
-                                        style={styles.cashoutMethodTileMeta}
-                                        numberOfLines={2}
-                                      >
-                                        {bankTileLinked
-                                          ? String(
-                                              cashoutCatalogState.bankTile
-                                                ?.bankSummary || "Linked",
-                                            ).trim() || "Linked"
-                                          : "Link bank transfer"}
-                                      </Text>
-                                    </TouchableOpacity>
-                                    {cashoutCatalogState.curated
-                                      .slice(0, 5)
-                                      .map((item) => {
-                                        const code = normalizeCatalogItemCode(
-                                          item?.code,
-                                        );
-                                        const selected =
-                                          cashoutMethodType === "gift_card" &&
-                                          normalizeCatalogItemCode(
-                                            selectedCashoutCatalogCode,
-                                          ) === code;
-                                        return (
-                                          <TouchableOpacity
-                                            key={code}
-                                            style={[
-                                              styles.cashoutMethodTile,
-                                              selected &&
-                                                styles.cashoutMethodTileSelected,
-                                            ]}
-                                            activeOpacity={0.9}
-                                            onPress={() => {
-                                              setCashoutMethodType("gift_card");
-                                              setSelectedCashoutCatalogCode(code);
-                                            }}
-                                          >
-                                            <View
-                                              style={styles.cashoutMethodTileMedia}
-                                            >
-                                              {String(
-                                                item?.imageUrl || "",
-                                              ).trim() ? (
-                                                <Image
-                                                  source={{
-                                                    uri: String(
-                                                      item.imageUrl,
-                                                    ).trim(),
-                                                  }}
-                                                  style={
-                                                    styles.cashoutMethodTileImage
-                                                  }
-                                                  resizeMode="cover"
-                                                />
-                                              ) : (
-                                                <Ionicons
-                                                  name="gift-outline"
-                                                  size={30}
-                                                  color={COLORS.pine}
-                                                />
-                                              )}
-                                            </View>
-                                            <Text
-                                              style={styles.cashoutMethodTileTitle}
-                                              numberOfLines={2}
-                                            >
-                                              {String(item?.name || "Gift card")}
-                                            </Text>
-                                            <Text
-                                              style={styles.cashoutMethodTileMeta}
-                                              numberOfLines={1}
-                                            >
-                                              {formatCurrencyFromCents(
-                                                Math.max(
-                                                  0,
-                                                  Number(item?.minCents) || 0,
-                                                ),
-                                              )}{" "}
-                                              min
-                                            </Text>
-                                          </TouchableOpacity>
-                                        );
-                                      })}
-                                    <TouchableOpacity
-                                      style={styles.cashoutMethodTile}
-                                      activeOpacity={0.9}
-                                      onPress={() => {
-                                        setCashoutCatalogModalVisible(true);
-                                        if (
-                                          cashoutCatalogState.all.length === 0 &&
-                                          !cashoutCatalogState.loading
-                                        ) {
-                                          loadCashoutCatalog({
-                                            page: 0,
-                                            append: false,
-                                          });
-                                        }
-                                      }}
-                                    >
-                                      <View style={styles.cashoutMethodTileMedia}>
-                                        <Ionicons
-                                          name="grid-outline"
-                                          size={30}
-                                          color={COLORS.pine}
-                                        />
-                                      </View>
-                                      <Text style={styles.cashoutMethodTileTitle}>
-                                        View all
-                                      </Text>
-                                      <Text style={styles.cashoutMethodTileMeta}>
-                                        Browse catalog
-                                      </Text>
-                                    </TouchableOpacity>
-                                  </View>
                                   <View style={styles.cashoutAmountGroup}>
                                     <View style={styles.cashoutAmountHeader}>
                                       <Text style={styles.cashoutAmountTitle}>
@@ -23164,7 +24384,8 @@ export default function App() {
                                           }
                                           placeholder="0.00"
                                           placeholderTextColor={COLORS.muted}
-                                          keyboardType="number-pad"
+                                          keyboardType="decimal-pad"
+                                          selectTextOnFocus
                                           returnKeyType="done"
                                         />
                                       </View>
@@ -23187,7 +24408,11 @@ export default function App() {
                                         </Text>
                                       </TouchableOpacity>
                                     </View>
-                                    {String(cashoutAmountText || "").trim() &&
+                                    {(Number(
+                                      parseCashoutAmountToCents(
+                                        cashoutAmountText,
+                                      ) || 0,
+                                    ) > 0) &&
                                       (cashoutPreview.mode === "invalid" ||
                                         cashoutPreview.mode ===
                                           "below_min") && (
@@ -23223,6 +24448,8 @@ export default function App() {
                                           0 ||
                                         (cashoutMethodType === "gift_card" &&
                                           !selectedCashoutCatalogItem) ||
+                                        (cashoutMethodType === "bank_transfer" &&
+                                          !bankTileLinked) ||
                                         cashoutActionStatus.loading
                                       }
                                     >
@@ -23251,15 +24478,362 @@ export default function App() {
                                         >
                                           {resumeCashoutClaimLabel}
                                         </Text>
+                                        {lastRedeemedGiftCardName ? (
+                                          <View
+                                            style={
+                                              styles.cashoutOpenPayoutButtonLastGiftCardRow
+                                            }
+                                          >
+                                            {lastRedeemedGiftCardImageUrl ? (
+                                              <Image
+                                                source={{
+                                                  uri: lastRedeemedGiftCardImageUrl,
+                                                }}
+                                                style={
+                                                  styles.cashoutOpenPayoutButtonLastGiftCardImage
+                                                }
+                                                resizeMode="cover"
+                                              />
+                                            ) : (
+                                              <View
+                                                style={
+                                                  styles.cashoutOpenPayoutButtonLastGiftCardFallback
+                                                }
+                                              >
+                                                <Ionicons
+                                                  name="gift-outline"
+                                                  size={12}
+                                                  color={COLORS.pine}
+                                                />
+                                              </View>
+                                            )}
+                                            <Text
+                                              style={
+                                                styles.cashoutOpenPayoutButtonLastGiftCardText
+                                              }
+                                              numberOfLines={1}
+                                            >
+                                              Last redeemed: {lastRedeemedGiftCardName}
+                                            </Text>
+                                          </View>
+                                        ) : null}
                                       </TouchableOpacity>
                                     ) : null}
                                   </View>
+                                  {cashoutBankLinkInlineError ? (
+                                    <Text style={styles.formError}>
+                                      {cashoutBankLinkInlineError}
+                                    </Text>
+                                  ) : null}
                                   {resumeCashoutClaimUrl ? (
                                     <Text style={styles.cashoutResumeHint}>
                                       Closed payout options by mistake? Tap above
                                       to reopen.
                                     </Text>
                                   ) : null}
+                                  <View style={styles.cashoutOptionSection}>
+                                    <Text style={styles.cashoutOptionSectionTitle}>
+                                      Bank transfer
+                                    </Text>
+                                    <View style={styles.cashoutTileGrid}>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.cashoutMethodTile,
+                                          cashoutMethodType === "bank_transfer" &&
+                                            styles.cashoutMethodTileSelected,
+                                        ]}
+                                        activeOpacity={0.9}
+                                        onPress={handleCashoutBankTilePress}
+                                      >
+                                        <View style={styles.cashoutMethodTileMedia}>
+                                          <Ionicons
+                                            name="business-outline"
+                                            size={34}
+                                            color={COLORS.pine}
+                                          />
+                                        </View>
+                                        <Text
+                                          style={styles.cashoutMethodTileTitle}
+                                          numberOfLines={2}
+                                        >
+                                          Your bank account
+                                        </Text>
+                                        <Text
+                                          style={styles.cashoutMethodTileMeta}
+                                          numberOfLines={2}
+                                        >
+                                          {bankTileLinked
+                                            ? String(
+                                                cashoutCatalogState.bankTile
+                                                  ?.bankSummary || "Linked",
+                                              ).trim() || "Linked"
+                                            : "Link bank transfer"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    </View>
+                                    {cashoutPayoutSwitchCopy ? (
+                                      <Text style={styles.formHint}>
+                                        {cashoutPayoutSwitchCopy}
+                                      </Text>
+                                    ) : null}
+                                    {cashoutLinkedPayoutAccounts.length > 0 ? (
+                                      <View style={styles.cashoutLinkedAccountOptions}>
+                                        {visibleCashoutLinkedPayoutAccounts.map(
+                                          (account) => {
+                                            const canSelect =
+                                              account.selectedForPayout ||
+                                              Boolean(
+                                                plaidLinkState.payoutSwitchPolicy
+                                                  ?.canSwitch,
+                                              );
+                                            return (
+                                              <TouchableOpacity
+                                                key={`cashout-payout-account-${account.accountId}`}
+                                                style={[
+                                                  styles.cashoutLinkedAccountRow,
+                                                  !canSelect &&
+                                                    styles.cashoutLinkedAccountRowDisabled,
+                                                ]}
+                                                disabled={
+                                                  !canSelect ||
+                                                  cashoutActionStatus.loading
+                                                }
+                                                onPress={() => {
+                                                  setCashoutMethodType(
+                                                    "bank_transfer",
+                                                  );
+                                                  handleSelectCashoutPayoutAccount(
+                                                    account.accountId,
+                                                  );
+                                                }}
+                                              >
+                                                <Ionicons
+                                                  name={
+                                                    account.selectedForPayout
+                                                      ? "radio-button-on"
+                                                      : "radio-button-off"
+                                                  }
+                                                  size={16}
+                                                  color={
+                                                    account.selectedForPayout
+                                                      ? COLORS.pine
+                                                      : COLORS.muted
+                                                  }
+                                                />
+                                                <View
+                                                  style={styles.cashoutLinkedAccountMain}
+                                                >
+                                                  <Text
+                                                    style={
+                                                      styles.cashoutLinkedAccountTitle
+                                                    }
+                                                    numberOfLines={1}
+                                                  >
+                                                    {account.name}
+                                                  </Text>
+                                                  <Text
+                                                    style={
+                                                      styles.cashoutLinkedAccountMeta
+                                                    }
+                                                    numberOfLines={1}
+                                                  >
+                                                    {[
+                                                      account.institutionName,
+                                                      account.mask
+                                                        ? `****${account.mask}`
+                                                        : null,
+                                                    ]
+                                                      .filter(Boolean)
+                                                      .join(" · ") || "Linked bank account"}
+                                                  </Text>
+                                                </View>
+                                                {account.selectedForPayout ? (
+                                                  <Text
+                                                    style={styles.cashoutSelectedAccountTag}
+                                                  >
+                                                    Selected
+                                                  </Text>
+                                                ) : null}
+                                              </TouchableOpacity>
+                                            );
+                                          },
+                                        )}
+                                        {hiddenCashoutLinkedAccountCount > 0 ? (
+                                          <TouchableOpacity
+                                            style={styles.cashoutShowMoreButton}
+                                            onPress={() =>
+                                              setCashoutShowAllLinkedAccounts(
+                                                true,
+                                              )
+                                            }
+                                          >
+                                            <Text
+                                              style={
+                                                styles.cashoutShowMoreButtonText
+                                              }
+                                            >
+                                              Show {hiddenCashoutLinkedAccountCount} more
+                                            </Text>
+                                          </TouchableOpacity>
+                                        ) : null}
+                                        {cashoutShowAllLinkedAccounts &&
+                                        cashoutLinkedPayoutAccounts.length > 3 ? (
+                                          <TouchableOpacity
+                                            style={styles.cashoutShowMoreButton}
+                                            onPress={() =>
+                                              setCashoutShowAllLinkedAccounts(
+                                                false,
+                                              )
+                                            }
+                                          >
+                                            <Text
+                                              style={
+                                                styles.cashoutShowMoreButtonText
+                                              }
+                                            >
+                                              Show fewer
+                                            </Text>
+                                          </TouchableOpacity>
+                                        ) : null}
+                                      </View>
+                                    ) : null}
+                                    <TouchableOpacity
+                                      style={styles.cashoutChangeBankButton}
+                                      onPress={() =>
+                                        handleLinkPurchaseVerificationBank()
+                                      }
+                                      disabled={
+                                        plaidLinkState.loading ||
+                                        plaidLinkAction !== "idle"
+                                      }
+                                    >
+                                      <Text style={styles.cashoutChangeBankButtonText}>
+                                        {plaidLinkAction === "linking"
+                                          ? "Opening Plaid Link..."
+                                          : "Add or reconnect bank"}
+                                      </Text>
+                                      <Ionicons
+                                        name="chevron-forward"
+                                        size={14}
+                                        color={COLORS.ink}
+                                      />
+                                    </TouchableOpacity>
+                                  </View>
+                                  <View style={styles.cashoutOptionSection}>
+                                    <Text style={styles.cashoutOptionSectionTitle}>
+                                      Gift card redemptions
+                                    </Text>
+                                    <View style={styles.cashoutTileGrid}>
+                                      {cashoutCatalogState.curated
+                                        .slice(0, 5)
+                                        .map((item) => {
+                                          const code = normalizeCatalogItemCode(
+                                            item?.code,
+                                          );
+                                          const selected =
+                                            cashoutMethodType === "gift_card" &&
+                                            normalizeCatalogItemCode(
+                                              selectedCashoutCatalogCode,
+                                            ) === code;
+                                          return (
+                                            <TouchableOpacity
+                                              key={code}
+                                              style={[
+                                                styles.cashoutMethodTile,
+                                                selected &&
+                                                  styles.cashoutMethodTileSelected,
+                                              ]}
+                                              activeOpacity={0.9}
+                                              onPress={() => {
+                                                setCashoutMethodType("gift_card");
+                                                setSelectedCashoutCatalogCode(
+                                                  code,
+                                                );
+                                              }}
+                                            >
+                                              <View
+                                                style={styles.cashoutMethodTileMedia}
+                                              >
+                                                {String(
+                                                  item?.imageUrl || "",
+                                                ).trim() ? (
+                                                  <Image
+                                                    source={{
+                                                      uri: String(
+                                                        item.imageUrl,
+                                                      ).trim(),
+                                                    }}
+                                                    style={
+                                                      styles.cashoutMethodTileImage
+                                                    }
+                                                    resizeMode="cover"
+                                                  />
+                                                ) : (
+                                                  <Ionicons
+                                                    name="gift-outline"
+                                                    size={30}
+                                                    color={COLORS.pine}
+                                                  />
+                                                )}
+                                              </View>
+                                              <Text
+                                                style={styles.cashoutMethodTileTitle}
+                                                numberOfLines={2}
+                                              >
+                                                {String(item?.name || "Gift card")}
+                                              </Text>
+                                              <Text
+                                                style={styles.cashoutMethodTileMeta}
+                                                numberOfLines={1}
+                                              >
+                                                {formatCurrencyFromCents(
+                                                  Math.max(
+                                                    GIFT_CARD_MIN_CASHOUT_CENTS,
+                                                    Number(item?.minCents) || 0,
+                                                  ),
+                                                )}{" "}
+                                                min
+                                              </Text>
+                                            </TouchableOpacity>
+                                          );
+                                        })}
+                                      <TouchableOpacity
+                                        style={styles.cashoutMethodTile}
+                                        activeOpacity={0.9}
+                                        onPress={() => {
+                                          setCashoutCatalogModalVisible(true);
+                                          if (
+                                            cashoutCatalogState.all.length ===
+                                              0 &&
+                                            !cashoutCatalogState.loading
+                                          ) {
+                                            loadCashoutCatalog({
+                                              page: 0,
+                                              append: false,
+                                            });
+                                          }
+                                        }}
+                                      >
+                                        <View
+                                          style={styles.cashoutMethodTileMedia}
+                                        >
+                                          <Ionicons
+                                            name="grid-outline"
+                                            size={30}
+                                            color={COLORS.pine}
+                                          />
+                                        </View>
+                                        <Text
+                                          style={styles.cashoutMethodTileTitle}
+                                        >
+                                          View all
+                                        </Text>
+                                        <Text style={styles.cashoutMethodTileMeta}>
+                                          Browse catalog
+                                        </Text>
+                                      </TouchableOpacity>
+                                    </View>
+                                  </View>
                                   <View style={styles.cashoutBalanceBar}>
                                     <Text style={styles.cashoutBalanceBarLabel}>
                                       Balance
@@ -23276,14 +24850,9 @@ export default function App() {
                                   {CONSUMER_CASHOUT_DISABLED_COPY}
                                 </Text>
                               )}
-                              {cashoutActionStatus.error && (
+                              {cashoutGeneralActionError && (
                                 <Text style={styles.formError}>
-                                  {cashoutActionStatus.error}
-                                </Text>
-                              )}
-                              {cashoutActionStatus.success && (
-                                <Text style={styles.formSuccess}>
-                                  {cashoutActionStatus.success}
+                                  {cashoutGeneralActionError}
                                 </Text>
                               )}
                               {cashbackBalanceState.loading && (
@@ -23598,11 +25167,6 @@ export default function App() {
                                 {cashoutActionStatus.error && (
                                   <Text style={styles.cashoutErrorText}>
                                     {cashoutActionStatus.error}
-                                  </Text>
-                                )}
-                                {cashoutActionStatus.success && (
-                                  <Text style={styles.cashoutSuccessText}>
-                                    {cashoutActionStatus.success}
                                   </Text>
                                 )}
                                 <View style={styles.cashoutButtonStack}>
@@ -24550,10 +26114,9 @@ export default function App() {
                                   value={businessAddress}
                                   onChangeText={handleBusinessAddressChange}
                                 />
-                                {!GOOGLE_PLACES_KEY && (
+                                {!ADDRESS_LOOKUP_ENABLED && (
                                   <Text style={styles.formHint}>
-                                    Add your Google Places key in `.env` to
-                                    enable address autocomplete.
+                                    {ADDRESS_LOOKUP_UNAVAILABLE_COPY}
                                   </Text>
                                 )}
                                 {businessAddressLoading && (
@@ -29855,6 +31418,202 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontFamily: FONT_TEXT,
   },
+  cashoutVoucherScreen: {
+    flex: 1,
+    backgroundColor: "#F3F6FC",
+  },
+  cashoutVoucherHeader: {
+    minHeight: 56,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+  },
+  cashoutVoucherTitle: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutVoucherCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.mint,
+  },
+  cashoutVoucherScroll: {
+    flex: 1,
+  },
+  cashoutVoucherContent: {
+    padding: 14,
+    gap: 10,
+    paddingBottom: 24,
+  },
+  cashoutVoucherSummaryCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+    padding: 14,
+    ...ELEVATION.soft,
+  },
+  cashoutVoucherBrand: {
+    fontSize: 18,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutVoucherAmount: {
+    marginTop: 6,
+    fontSize: 24,
+    color: COLORS.pine,
+    fontFamily: FONT_BOLD,
+  },
+  cashoutVoucherSummaryHint: {
+    marginTop: 8,
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 17,
+  },
+  cashoutVoucherRedeemHintCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: "#EEF3FB",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  cashoutVoucherRedeemHintText: {
+    fontSize: 13,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 18,
+  },
+  cashoutVoucherCardVisual: {
+    borderRadius: 18,
+    overflow: "hidden",
+    ...ELEVATION.medium,
+  },
+  cashoutVoucherCardVisualGradient: {
+    minHeight: 220,
+    padding: 16,
+    justifyContent: "space-between",
+  },
+  cashoutVoucherCardVisualImage: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.28,
+  },
+  cashoutVoucherCardVisualShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(8, 20, 43, 0.34)",
+  },
+  cashoutVoucherCardVisualTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  cashoutVoucherCardVisualBrand: {
+    flex: 1,
+    fontSize: 16,
+    color: "rgba(255, 255, 255, 0.96)",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutVoucherCardVisualAmount: {
+    fontSize: 16,
+    color: "rgba(255, 255, 255, 0.96)",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutVoucherCardVisualNumber: {
+    marginTop: 14,
+    fontSize: 22,
+    letterSpacing: 1.4,
+    color: COLORS.white,
+    fontFamily: FONT_BOLD,
+  },
+  cashoutVoucherCardVisualBottomRow: {
+    marginTop: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 24,
+  },
+  cashoutVoucherCardVisualMetaLabel: {
+    fontSize: 10,
+    letterSpacing: 0.9,
+    textTransform: "uppercase",
+    color: "rgba(255, 255, 255, 0.72)",
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutVoucherCardVisualMetaValue: {
+    marginTop: 2,
+    fontSize: 14,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutVoucherCardVisualName: {
+    marginTop: 10,
+    fontSize: 15,
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  cashoutVoucherField: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  cashoutVoucherFieldLabel: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+  },
+  cashoutVoucherFieldValue: {
+    fontSize: 15,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    lineHeight: 20,
+  },
+  cashoutVoucherCopyButton: {
+    alignSelf: "flex-start",
+    minHeight: 34,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.14)",
+    backgroundColor: "#F8FAFD",
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cashoutVoucherCopyButtonText: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutVoucherOpenButton: {
+    minHeight: 42,
+    borderRadius: 11,
+    backgroundColor: COLORS.pine,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    marginTop: 4,
+  },
+  cashoutVoucherOpenButtonText: {
+    fontSize: 14,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
   demoIntroCard: {
     borderRadius: 18,
     borderWidth: 1,
@@ -32725,6 +34484,64 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 16,
   },
+  receiptReportStatusCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 12,
+    gap: 10,
+    marginBottom: 12,
+  },
+  receiptReportStatusRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(211, 221, 234, 0.7)",
+  },
+  receiptReportStatusMain: {
+    flex: 1,
+    gap: 2,
+  },
+  receiptReportStatusTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  receiptReportStatusMeta: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  receiptReportStatusNotes: {
+    marginTop: 2,
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+  },
+  receiptReportStatusPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#F3C2C7",
+    backgroundColor: "#FFF1F2",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  receiptReportStatusPillResolved: {
+    borderColor: "#BEE4C8",
+    backgroundColor: "#EAF8EE",
+  },
+  receiptReportStatusPillText: {
+    fontSize: 11,
+    color: "#B42318",
+    fontFamily: FONT_MEDIUM,
+  },
+  receiptReportStatusPillTextResolved: {
+    color: "#166534",
+  },
   receiptOfferCard: {
     backgroundColor: COLORS.white,
     borderRadius: 18,
@@ -32854,13 +34671,12 @@ const styles = StyleSheet.create({
     borderColor: COLORS.sand,
   },
   receiptTileReportAction: {
-    position: "absolute",
-    top: 8,
-    left: 8,
+    alignSelf: "flex-start",
     minHeight: 20,
     borderRadius: 999,
     paddingHorizontal: 6,
     paddingVertical: 3,
+    marginBottom: 6,
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
@@ -33373,6 +35189,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#F6F8FC",
     borderColor: "#E2E8F0",
   },
+  appDialogButtonDisabled: {
+    opacity: 0.6,
+  },
   appDialogButtonText: {
     fontSize: 15,
     color: COLORS.pine,
@@ -33380,6 +35199,21 @@ const styles = StyleSheet.create({
   },
   appDialogButtonTextPrimary: {
     color: COLORS.white,
+  },
+  receiptReportOtherInput: {
+    marginTop: 12,
+    minHeight: 92,
+    maxHeight: 160,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    fontSize: 14,
+    lineHeight: 19,
   },
   noticeCard: {
     backgroundColor: COLORS.white,
@@ -33692,6 +35526,14 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
+  },
+  cashoutOptionSection: {
+    marginTop: 10,
+  },
+  cashoutOptionSectionTitle: {
+    fontSize: 13,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
   },
   cashoutMethodTile: {
     width: "48%",
@@ -34044,14 +35886,46 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(11, 33, 71, 0.2)",
     backgroundColor: "#F8F9FD",
+    paddingHorizontal: 12,
     paddingVertical: 12,
     alignItems: "center",
     justifyContent: "center",
+    gap: 6,
   },
   cashoutOpenPayoutButtonText: {
     fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
+    textAlign: "center",
+  },
+  cashoutOpenPayoutButtonLastGiftCardRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    maxWidth: "100%",
+  },
+  cashoutOpenPayoutButtonLastGiftCardImage: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "rgba(11, 33, 71, 0.15)",
+  },
+  cashoutOpenPayoutButtonLastGiftCardFallback: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "rgba(11, 33, 71, 0.15)",
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cashoutOpenPayoutButtonLastGiftCardText: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+    flexShrink: 1,
   },
   cashoutResumeHint: {
     marginTop: 6,
@@ -34521,6 +36395,13 @@ const styles = StyleSheet.create({
   },
   historyStatusTextPending: {
     color: "#92400E",
+  },
+  historyStatusReasonText: {
+    marginTop: 6,
+    fontSize: 12,
+    color: "#9A3412",
+    fontFamily: FONT_TEXT,
+    lineHeight: 17,
   },
   historyEntryTapHint: {
     marginTop: 10,

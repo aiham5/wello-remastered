@@ -27,11 +27,17 @@ export class HttpError extends Error {
   }
 }
 
-export const json = (payload: unknown, status = 200) =>
+export const json = (
+  payload: unknown,
+  status = 200,
+  headers: Record<string, string> = {},
+) =>
   new Response(JSON.stringify(payload), {
     status,
     headers: {
       "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      ...headers,
     },
   });
 
@@ -56,6 +62,21 @@ export const createAuthSupabase = () =>
   createClient(SUPABASE_URL, SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+
+export const extractClientIp = (req: Request) => {
+  const candidates = [
+    req.headers.get("cf-connecting-ip"),
+    req.headers.get("x-real-ip"),
+    req.headers.get("x-forwarded-for"),
+  ];
+  for (const raw of candidates) {
+    const first = String(raw || "")
+      .split(",")[0]
+      ?.trim();
+    if (first) return first;
+  }
+  return "unknown";
+};
 
 const extractToken = async (req: Request) => {
   const authHeader =

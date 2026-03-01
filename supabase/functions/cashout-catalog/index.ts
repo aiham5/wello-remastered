@@ -5,6 +5,7 @@ import {
   HttpError,
   json,
 } from "../_shared/auth.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 
@@ -132,12 +133,16 @@ const toCatalogItem = (row: Record<string, unknown>) => {
       row.maxRecipientDenomination ?? row.maxSenderDenomination ?? 0,
     );
   }
+  const normalizedMinCents = Math.max(1000, minCents > 0 ? minCents : 100);
+  const normalizedMaxCents = maxCents > 0
+    ? Math.max(maxCents, normalizedMinCents)
+    : Math.max(normalizedMinCents, 100000);
   return {
     code: `product:${productId}`,
     name: name || `Gift card ${productId}`,
     imageUrl: logo,
-    minCents: minCents > 0 ? minCents : 100,
-    maxCents: maxCents >= minCents ? maxCents : Math.max(minCents, 100000),
+    minCents: normalizedMinCents,
+    maxCents: normalizedMaxCents,
     currencyCode: String(
       row.recipientCurrencyCode || row.senderCurrencyCode ||
         RELOADLY_CASHOUT_CURRENCY_CODE,
@@ -254,12 +259,20 @@ serve(async (req: Request) => {
   }
   try {
     const { userId, body } = await authenticateRequest(req);
+    const supabase = createAdminSupabase();
+    await enforceRateLimit({
+      req,
+      scope: "cashout:catalog",
+      userId,
+      maxRequests: 120,
+      windowSeconds: 5 * 60,
+      supabase,
+    });
     const page = Math.max(0, Math.trunc(Number(body?.page ?? 0) || 0));
     const pageSize = Math.max(
       1,
       Math.min(60, Math.trunc(Number(body?.pageSize ?? 20) || 20)),
     );
-    const supabase = createAdminSupabase();
     const [{ data: recipient }, { data: linkedPlaidAccounts }] = await Promise.all([
       supabase
         .from("cashout_recipients")

@@ -22,7 +22,7 @@ export const auditEventsModule = {
       ${createSectionHeader({ title: "Audit and event logs", subtitle: "Unified timeline across admin actions and webhook/event streams.", actions: `<button class="button secondary" id="audit-refresh">Refresh</button>` })}
       <section class="panel-card sticky-filters">
         <div class="filters-grid">
-          <label class="field"><span>Source</span><select id="audit-source"><option value="all">All</option><option value="admin_action_logs">Admin actions</option><option value="business_review_audit_log">Business review audit</option><option value="stripe_webhook_events">Stripe webhooks</option><option value="plaid_webhook_events">Plaid webhooks</option><option value="dots_webhook_events">Dots webhooks</option><option value="tremendous_webhook_events">Tremendous webhooks</option><option value="plaid_event_logs">Plaid event logs</option></select></label>
+          <label class="field"><span>Source</span><select id="audit-source"><option value="all">All</option><option value="admin_action_logs">Admin actions</option><option value="business_review_audit_log">Business review audit</option><option value="stripe_webhook_events">Stripe webhooks</option><option value="plaid_webhook_events">Plaid webhooks</option><option value="plaid_event_logs">Plaid event logs</option></select></label>
         </div>
       </section>
       <section class="panel-card"><div class="panel-card-header"><h3>Events</h3><p class="notice" id="audit-meta"></p></div><div id="audit-table"></div></section>
@@ -66,13 +66,11 @@ export const auditEventsModule = {
     };
 
     const load = async () => {
-      const [adminActions, businessAudit, stripeHooks, plaidHooks, dotsHooks, tremendousHooks, plaidEvents] = await Promise.all([
+      const [adminActions, businessAudit, stripeHooks, plaidHooks, plaidEvents] = await Promise.all([
         safeLoad(() => runtime.client.from("admin_action_logs").select("id,action,entity,status,entity_id,meta,created_at").order("created_at", { ascending: false }).limit(100)),
         safeLoad(() => runtime.client.from("business_review_audit_log").select("id,previous_approval_status,next_approval_status,business_id,changed_at").order("changed_at", { ascending: false }).limit(100)),
         safeLoad(() => runtime.client.from("stripe_webhook_events").select("id,stripe_event_id,event_type,processed,processed_at,created_at").order("created_at", { ascending: false }).limit(100)),
         safeLoad(() => runtime.client.from("plaid_webhook_events").select("id,webhook_type,webhook_code,plaid_item_id,created_at").order("created_at", { ascending: false }).limit(100)),
-        safeLoad(() => runtime.client.from("dots_webhook_events").select("id,event_id,event_type,processed,processed_at,created_at").order("created_at", { ascending: false }).limit(100)),
-        safeLoad(() => runtime.client.from("tremendous_webhook_events").select("id,event_uuid,event_type,processed,processed_at,created_at").order("created_at", { ascending: false }).limit(100)),
         safeLoad(() => runtime.client.from("plaid_event_logs").select("id,source_function,event_name,severity,user_id,plaid_item_id,created_at,metadata").order("created_at", { ascending: false }).limit(100)),
       ]);
 
@@ -81,8 +79,6 @@ export const auditEventsModule = {
         ...businessAudit.map((row) => ({ id: `b:${row.id}`, source: "business_review_audit_log", created_at: row.changed_at, type: "business_review_change", detail: `${row.previous_approval_status || "--"} -> ${row.next_approval_status || "--"}`, raw: row })),
         ...stripeHooks.map((row) => ({ id: `s:${row.id}`, source: "stripe_webhook_events", created_at: row.created_at, type: row.event_type, detail: `${row.stripe_event_id} (${row.processed ? "processed" : "pending"})`, raw: row })),
         ...plaidHooks.map((row) => ({ id: `p:${row.id}`, source: "plaid_webhook_events", created_at: row.created_at, type: `${row.webhook_type || "PLAID"}.${row.webhook_code || "UNKNOWN"}`, detail: row.plaid_item_id || "--", raw: row })),
-        ...dotsHooks.map((row) => ({ id: `d:${row.id}`, source: "dots_webhook_events", created_at: row.created_at, type: row.event_type, detail: `${row.event_id} (${row.processed ? "processed" : "pending"})`, raw: row })),
-        ...tremendousHooks.map((row) => ({ id: `t:${row.id}`, source: "tremendous_webhook_events", created_at: row.created_at, type: row.event_type, detail: `${row.event_uuid} (${row.processed ? "processed" : "pending"})`, raw: row })),
         ...plaidEvents.map((row) => ({ id: `l:${row.id}`, source: "plaid_event_logs", created_at: row.created_at, type: `${row.source_function}:${row.event_name}`, detail: row.severity, raw: row })),
       ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 

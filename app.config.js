@@ -3,12 +3,30 @@ import dotenv from "dotenv";
 dotenv.config();
 dotenv.config({ path: ".env.local", override: true });
 
-const googleMapsApiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
+const googlePlacesApiKey =
+  process.env.EXPO_PUBLIC_GOOGLE_PLACES_API_KEY ||
+  process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
+const googleMapsApiKey =
+  process.env.GOOGLE_MAPS_API_KEY ||
+  process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ||
+  googlePlacesApiKey;
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 const APP_LOGO_PATH = "./assets/logo/logo.png";
 const DEFAULT_BRAND_BACKGROUND = "#FFF03B";
 const DEFAULT_NOTIFICATION_COLOR = "#0B2147";
+const ANDROID_REQUIRED_PERMISSIONS = [
+  "android.permission.ACCESS_FINE_LOCATION",
+  "android.permission.ACCESS_COARSE_LOCATION",
+  "android.permission.CAMERA",
+  "android.permission.READ_MEDIA_IMAGES",
+  "android.permission.READ_EXTERNAL_STORAGE",
+];
+const ANDROID_BLOCKED_PERMISSIONS = [
+  "android.permission.RECORD_AUDIO",
+  "android.permission.SYSTEM_ALERT_WINDOW",
+  "android.permission.WRITE_EXTERNAL_STORAGE",
+];
 const plaidRedirectUri =
   process.env.PLAID_REDIRECT_URI ||
   process.env.EXPO_PUBLIC_PLAID_REDIRECT_URI ||
@@ -65,12 +83,6 @@ const mergePlugins = (plugins) => {
   return output;
 };
 
-if (!googleMapsApiKey) {
-  throw new Error(
-    "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY is required for EAS builds."
-  );
-}
-
 export default ({ config }) => ({
   ...config,
   icon: APP_LOGO_PATH,
@@ -87,12 +99,20 @@ export default ({ config }) => ({
   plugins: mergePlugins(config.plugins),
   extra: {
     ...(config.extra ?? {}),
-    EXPO_PUBLIC_GOOGLE_MAPS_API_KEY: googleMapsApiKey,
     EXPO_PUBLIC_SUPABASE_URL: supabaseUrl,
     EXPO_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey,
+    ...(googlePlacesApiKey
+      ? {
+          EXPO_PUBLIC_GOOGLE_PLACES_API_KEY: googlePlacesApiKey,
+          // Keep backward compatibility with existing runtime lookups.
+          EXPO_PUBLIC_GOOGLE_MAPS_API_KEY: googlePlacesApiKey,
+        }
+      : {}),
   },
   android: {
     ...config.android,
+    permissions: ANDROID_REQUIRED_PERMISSIONS,
+    blockedPermissions: ANDROID_BLOCKED_PERMISSIONS,
     icon: APP_LOGO_PATH,
     notification: {
       ...(config.android?.notification ?? {}),
@@ -109,7 +129,8 @@ export default ({ config }) => ({
     config: {
       ...(config.android?.config ?? {}),
       googleMaps: {
-        apiKey: googleMapsApiKey,
+        ...(config.android?.config?.googleMaps ?? {}),
+        ...(googleMapsApiKey ? { apiKey: googleMapsApiKey } : {}),
       },
     },
   },
@@ -125,7 +146,7 @@ export default ({ config }) => ({
     ]),
     config: {
       ...(config.ios?.config ?? {}),
-      googleMapsApiKey,
+      ...(googleMapsApiKey ? { googleMapsApiKey } : {}),
     },
   },
 });

@@ -3,12 +3,17 @@
 This app is the dedicated admin surface, separated from the main website.
 
 ## What Changed
-- Admin UI runs from `admin-app/public`.
+- Admin UI source is now in `admin-app/frontend` (Figma-generated React/Vite app).
+- Admin UI build output runs from `admin-app/public`.
 - Admin API runs on Cloudflare Pages Functions under `admin-app/functions/api/admin/[[path]].js`.
 - Browser no longer uses Supabase auth/session for admin operations.
 - Every API call is authorized by:
   1. Cloudflare Access JWT (`Cf-Access-Jwt-Assertion`)
   2. Supabase role check (`profiles.role in ('admin','supervisor')`)
+
+Legacy fallback:
+- Previous admin UI is preserved in `admin-app/public/admin-legacy`.
+- Previous root shell is preserved as `admin-app/public/index.legacy.html`.
 
 ## Required Cloudflare Access Setup
 1. Create Access application for `https://ADMIN_HOST/*`.
@@ -35,9 +40,18 @@ Backward compatibility:
 - `SUPABASE_SERVICE_ROLE_KEY` is still accepted as a fallback.
 
 ## Deploy
+Build frontend first:
+```bash
+cd frontend
+npm i
+npm run build
+```
+
+Then publish the output in `public/`.
+
 From `admin-app/`:
 ```bash
-wrangler pages deploy public --project-name wello-admin-app
+wrangler pages deploy public --project-name admin-panel
 ```
 
 If you use direct Git-based Pages deploy, keep:

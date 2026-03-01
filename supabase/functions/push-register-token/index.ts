@@ -11,6 +11,8 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
+import { HttpError } from "../_shared/auth.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 
@@ -53,6 +55,8 @@ type RegisterBody = {
   deviceInfo?: string;
 };
 
+const EXPO_PUSH_TOKEN_REGEX = /^(ExponentPushToken|ExpoPushToken)\[[A-Za-z0-9_-]{8,200}\]$/;
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { status: 200, headers: corsHeaders });
   if (req.method !== "POST") return json(405, { error: "Method not allowed" });
@@ -66,15 +70,37 @@ Deno.serve(async (req) => {
 
   const body = (await req.json().catch(() => ({}))) as RegisterBody;
   const expoPushToken = String(body.expoPushToken || "").trim();
-  const platform = String(body.platform || "").trim();
-  const deviceInfo = String(body.deviceInfo || "").trim();
+  const platform = String(body.platform || "").trim().slice(0, 40);
+  const deviceInfo = String(body.deviceInfo || "").trim().slice(0, 200);
   if (!expoPushToken) return json(400, { error: "Missing expoPushToken." });
+  if (!EXPO_PUSH_TOKEN_REGEX.test(expoPushToken)) {
+    return json(400, { error: "Invalid expoPushToken." });
+  }
 
   const auth = createAuthClient();
   const { data: authData, error: authError } = await auth.auth.getUser(token);
   if (authError || !authData?.user?.id) return json(401, { error: "Invalid JWT." });
 
   const admin = createAdminClient();
+  try {
+    await enforceRateLimit({
+      req,
+      scope: "push:register-token",
+      userId: authData.user.id,
+      identifier: `${authData.user.id}|token:${expoPushToken.slice(0, 40)}`,
+      maxRequests: 24,
+      windowSeconds: 60 * 60,
+      supabase: admin,
+    });
+  } catch (error) {
+    if (error instanceof HttpError) {
+      return json(error.status, {
+        error: error.message,
+        ...(error.details || {}),
+      });
+    }
+    throw error;
+  }
   const now = new Date().toISOString();
 
   // Upsert by token (unique constraint). This lets a device token move between users.

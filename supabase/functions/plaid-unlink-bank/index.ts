@@ -7,8 +7,10 @@ import {
 } from "../_shared/auth.ts";
 import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import { plaidRemoveItem } from "../_shared/plaid.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
+const PLAID_ITEM_ID_REGEX = /^[A-Za-z0-9_-]{8,128}$/;
 
 serve(async (req) => {
   if (req.method !== "POST") {
@@ -24,8 +26,21 @@ serve(async (req) => {
     userIdForLog = userId;
     const targetItemId = String(body?.itemId || body?.item_id || "").trim();
     targetItemIdForLog = targetItemId || null;
+    if (targetItemId && !PLAID_ITEM_ID_REGEX.test(targetItemId)) {
+      throw new HttpError("Invalid linked bank id.", 400, {
+        reason: "invalid_item_id",
+      });
+    }
     const supabase = createAdminSupabase();
     supabaseForLog = supabase;
+    await enforceRateLimit({
+      req,
+      scope: "plaid:unlink-bank",
+      userId,
+      maxRequests: 10,
+      windowSeconds: 60 * 60,
+      supabase,
+    });
 
     let query = supabase
       .from("plaid_linked_items")

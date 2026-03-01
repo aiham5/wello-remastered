@@ -5,6 +5,7 @@ import {
   json,
   SUPABASE_SERVICE_ROLE_KEY,
 } from "./auth.ts";
+import { enforceRateLimit } from "./rateLimit.ts";
 import {
   plaidCreateLinkToken,
   plaidCreateProcessorToken,
@@ -761,6 +762,14 @@ export const createCheckbookBankLinkHandler =
       ensureCheckbookCredentials();
       const { userId, body } = await authenticateRequest(req);
       const supabase = createAdminSupabase();
+      await enforceRateLimit({
+        req,
+        scope: "cashout:checkbook-bank-link",
+        userId,
+        maxRequests: 12,
+        windowSeconds: 30 * 60,
+        supabase,
+      });
       const profile = await resolveProfile(supabase, userId);
       const existing = await getExistingRecipient(supabase, userId);
       const plaidState = await getPlaidCashoutLinkState(supabase, userId);
@@ -844,6 +853,14 @@ export const createCheckbookCashoutHandler =
     try {
       ensureCheckbookCredentials();
       const { userId, body } = await authenticateRequest(req);
+      await enforceRateLimit({
+        req,
+        scope: "cashout:checkbook-create",
+        userId,
+        maxRequests: 18,
+        windowSeconds: 60 * 60,
+        supabase,
+      });
       const methodType = String(body?.methodType || body?.method_type || "")
         .trim()
         .toLowerCase();

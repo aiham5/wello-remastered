@@ -1,4 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
+import { HttpError } from "../_shared/auth.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 
@@ -41,7 +43,7 @@ const createAuthClient = () =>
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-const DEFAULT_CASHBACK_RATE_BPS = 750;
+const DEFAULT_CASHBACK_RATE_BPS = 1000;
 const CASHBACK_SETTING_KEY = "consumer_cashback_rate_bps";
 
 const resolveBaseCashbackRateBps = async (adminClient: any) => {
@@ -93,6 +95,24 @@ Deno.serve(async (req) => {
   }
 
   const adminClient = createAdminClient();
+  try {
+    await enforceRateLimit({
+      req,
+      scope: "promo:get",
+      userId,
+      maxRequests: 90,
+      windowSeconds: 5 * 60,
+      supabase: adminClient,
+    });
+  } catch (error) {
+    if (error instanceof HttpError) {
+      return json(req, error.status, {
+        error: error.message,
+        ...(error.details || {}),
+      });
+    }
+    throw error;
+  }
   const baseCashbackRateBps = await resolveBaseCashbackRateBps(adminClient);
   const { data: profile, error: profileError } = await adminClient
     .from("profiles")

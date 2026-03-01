@@ -236,6 +236,39 @@ async function countNewOffers(admin: ReturnType<typeof createAdminClient>, since
   return Number(count) || 0;
 }
 
+async function getNewOfferDigestSince(
+  admin: ReturnType<typeof createAdminClient>,
+  since: Date,
+  sinceCol: string,
+): Promise<{ offerTitle: string | null; businessName: string | null; offerId: string | null; businessId: string | null }> {
+  const { data, error } = await admin
+    .from("offers")
+    .select("id, title, business:businesses(id, name)")
+    .eq("approval_status", "approved")
+    .eq("active", true)
+    .gte(sinceCol, since.toISOString())
+    .order(sinceCol, { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) {
+    return {
+      offerTitle: null,
+      businessName: null,
+      offerId: null,
+      businessId: null,
+    };
+  }
+  const business = Array.isArray((data as any)?.business)
+    ? (data as any).business[0]
+    : (data as any)?.business;
+  return {
+    offerTitle: (data as any)?.title ? String((data as any).title) : null,
+    businessName: business?.name ? String(business.name) : null,
+    offerId: (data as any)?.id ? String((data as any).id) : null,
+    businessId: business?.id ? String(business.id) : null,
+  };
+}
+
 async function countExpiringOffers(
   admin: ReturnType<typeof createAdminClient>,
   expiresCol: string,
@@ -252,6 +285,42 @@ async function countExpiringOffers(
     .lt(expiresCol, end.toISOString());
   if (error) throw new Error(error.message || "Failed to count expiring offers.");
   return Number(count) || 0;
+}
+
+async function getExpiringOfferDigest(
+  admin: ReturnType<typeof createAdminClient>,
+  expiresCol: string,
+  now: Date,
+  horizonHours: number,
+): Promise<{ offerTitle: string | null; businessName: string | null; offerId: string | null; businessId: string | null }> {
+  const end = new Date(now.getTime() + horizonHours * 60 * 60 * 1000);
+  const { data, error } = await admin
+    .from("offers")
+    .select("id, title, business:businesses(id, name)")
+    .eq("approval_status", "approved")
+    .eq("active", true)
+    .gte(expiresCol, now.toISOString())
+    .lt(expiresCol, end.toISOString())
+    .order(expiresCol, { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) {
+    return {
+      offerTitle: null,
+      businessName: null,
+      offerId: null,
+      businessId: null,
+    };
+  }
+  const business = Array.isArray((data as any)?.business)
+    ? (data as any).business[0]
+    : (data as any)?.business;
+  return {
+    offerTitle: (data as any)?.title ? String((data as any).title) : null,
+    businessName: business?.name ? String(business.name) : null,
+    offerId: (data as any)?.id ? String((data as any).id) : null,
+    businessId: business?.id ? String(business.id) : null,
+  };
 }
 
 async function countNearbyOffers(
@@ -355,8 +424,17 @@ Deno.serve(async (req) => {
         : new Date(now.getTime() - 60 * 60 * 1000);
 
       let globalCount = 0;
+      let digest: {
+        offerTitle: string | null;
+        businessName: string | null;
+        offerId: string | null;
+        businessId: string | null;
+      } | null = null;
       if (kind === "new_offer") {
         globalCount = await countNewOffers(admin, since, offerSinceCol);
+        if (globalCount > 0) {
+          digest = await getNewOfferDigestSince(admin, since, offerSinceCol);
+        }
       } else if (kind === "expiring_offer") {
         if (!expiresCol) {
           summary.results.push({ kind, skipped: true, reason: "missing_expiration_column" });
@@ -364,6 +442,9 @@ Deno.serve(async (req) => {
           continue;
         }
         globalCount = await countExpiringOffers(admin, expiresCol, now, 24);
+        if (globalCount > 0) {
+          digest = await getExpiringOfferDigest(admin, expiresCol, now, 24);
+        }
       }
 
       const toSend: any[] = [];
@@ -419,9 +500,17 @@ Deno.serve(async (req) => {
               : "New offers near you";
         const bodyText =
           kind === "new_offer"
-            ? `${count} new offer${count === 1 ? "" : "s"} available.`
+            ? digest?.offerTitle && digest?.businessName
+              ? count === 1
+                ? `${digest.offerTitle} at ${digest.businessName} is live now.`
+                : `${count} new offers. Latest: ${digest.offerTitle} at ${digest.businessName}.`
+              : `${count} new offer${count === 1 ? "" : "s"} available.`
             : kind === "expiring_offer"
-              ? `${count} offer${count === 1 ? "" : "s"} expiring in the next 24 hours.`
+              ? digest?.offerTitle && digest?.businessName
+                ? count === 1
+                  ? `${digest.offerTitle} at ${digest.businessName} ends soon.`
+                  : `${count} offers expiring soon. Earliest: ${digest.offerTitle} at ${digest.businessName}.`
+                : `${count} offer${count === 1 ? "" : "s"} expiring in the next 24 hours.`
               : `${count} new nearby offer${count === 1 ? "" : "s"}.`;
 
         toSend.push({
@@ -429,7 +518,12 @@ Deno.serve(async (req) => {
           title,
           body: bodyText,
           sound: "default",
-          data: { kind, count },
+          data: {
+            kind,
+            count,
+            ...(digest?.offerId ? { offerId: digest.offerId } : {}),
+            ...(digest?.businessId ? { businessId: digest.businessId } : {}),
+          },
         });
       }
 

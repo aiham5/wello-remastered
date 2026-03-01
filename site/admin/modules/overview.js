@@ -46,7 +46,7 @@ export const overviewModule = {
 
     const load = async () => {
       try {
-        const [pendingReceipts, openReports, pendingBusinesses, pendingOffers, pendingCashouts, adminActions, businessAudit, tremendousHooks, dotsHooks] = await Promise.all([
+        const [pendingReceipts, openReports, pendingBusinesses, pendingOffers, pendingCashouts, adminActions, businessAudit] = await Promise.all([
           safeLoad(() => runtime.client.from("receipt_uploads").select("id", { count: "exact", head: true }).eq("review_status", "pending")),
           safeLoad(() => runtime.client.from("receipt_reports").select("id", { count: "exact", head: true }).in("status", ["open", "reviewing"])),
           safeLoad(() => runtime.client.from("businesses").select("id", { count: "exact", head: true }).eq("approval_status", "pending")),
@@ -54,8 +54,6 @@ export const overviewModule = {
           safeLoad(() => runtime.client.from("cashout_payouts").select("id", { count: "exact", head: true }).eq("status", "pending")),
           safeLoad(() => runtime.client.from("admin_action_logs").select("id, action, entity, status, created_at").order("created_at", { ascending: false }).limit(20)),
           safeLoad(() => runtime.client.from("business_review_audit_log").select("id, next_approval_status, business_id, changed_at").order("changed_at", { ascending: false }).limit(10)),
-          safeLoad(() => runtime.client.from("tremendous_webhook_events").select("id, event_type, processed, created_at").order("created_at", { ascending: false }).limit(10)),
-          safeLoad(() => runtime.client.from("dots_webhook_events").select("id, event_type, processed, created_at").order("created_at", { ascending: false }).limit(10)),
         ]);
 
         kpis.innerHTML = [
@@ -69,8 +67,6 @@ export const overviewModule = {
         const rows = [];
         adminActions.data.forEach((row) => rows.push({ id: `a:${row.id}`, created_at: row.created_at, source: "admin_action_logs", summary: `${row.action} - ${row.entity} (${row.status})` }));
         businessAudit.data.forEach((row) => rows.push({ id: `b:${row.id}`, created_at: row.changed_at, source: "business_review_audit_log", summary: `business review -> ${row.next_approval_status}` }));
-        tremendousHooks.data.forEach((row) => rows.push({ id: `t:${row.id}`, created_at: row.created_at, source: "tremendous_webhook_events", summary: `${row.event_type} (${row.processed ? "processed" : "pending"})` }));
-        dotsHooks.data.forEach((row) => rows.push({ id: `d:${row.id}`, created_at: row.created_at, source: "dots_webhook_events", summary: `${row.event_type} (${row.processed ? "processed" : "pending"})` }));
 
         rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 

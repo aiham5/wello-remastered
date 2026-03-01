@@ -7,6 +7,7 @@ import {
 } from "../_shared/auth.ts";
 import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import { plaidCreateLinkToken } from "../_shared/plaid.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 
@@ -23,6 +24,14 @@ serve(async (req) => {
     userIdForLog = userId;
     const supabase = createAdminSupabase();
     supabaseForLog = supabase;
+    await enforceRateLimit({
+      req,
+      scope: "plaid:create-link-token",
+      userId,
+      maxRequests: 12,
+      windowSeconds: 5 * 60,
+      supabase,
+    });
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("full_name, email")
@@ -54,11 +63,17 @@ serve(async (req) => {
     const platform = typeof body?.platform === "string"
       ? body.platform.toLowerCase()
       : "";
+    const normalizedPlatform = ["ios", "android", "web"].includes(platform)
+      ? platform
+      : "";
     const androidPackageName = typeof body?.androidPackageName === "string"
       ? body.androidPackageName
       : typeof body?.android_package_name === "string"
       ? body.android_package_name
       : null;
+    const normalizedAndroidPackageName = String(androidPackageName || "")
+      .trim()
+      .slice(0, 200) || null;
 
     const items = Array.isArray(itemRows) ? itemRows : [];
     const updateRequiredItem = items.find((row) =>
@@ -83,8 +98,8 @@ serve(async (req) => {
       userId,
       email: profile?.email || null,
       fullName: profile?.full_name || null,
-      platform,
-      androidPackageName,
+      platform: normalizedPlatform,
+      androidPackageName: normalizedAndroidPackageName,
       accessToken: updateItem?.plaid_access_token || null,
       accountSelectionEnabled,
     });
@@ -105,7 +120,7 @@ serve(async (req) => {
         mode,
         accountSelectionEnabled,
         updateModeRequired,
-        platform,
+        platform: normalizedPlatform,
       },
     });
 

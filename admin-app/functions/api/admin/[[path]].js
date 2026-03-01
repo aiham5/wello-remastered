@@ -1,4 +1,4 @@
-﻿import { getAdminContext, json, logAuthEvent } from "../../_lib/auth.js";
+import { enforceAdminRateLimit, getAdminContext, json, logAuthEvent } from "../../_lib/auth.js";
 
 const ALLOWED_TABLES = new Set([
   "admin_action_logs",
@@ -10,7 +10,6 @@ const ALLOWED_TABLES = new Set([
   "cashout_recipients",
   "checkbook_webhook_events",
   "commission_events",
-  "dots_webhook_events",
   "offers",
   "plaid_event_logs",
   "plaid_webhook_events",
@@ -21,8 +20,6 @@ const ALLOWED_TABLES = new Set([
   "receipt_uploads",
   "redemptions",
   "stripe_webhook_events",
-  "tremendous_webhook_events",
-  "trolley_webhook_events",
 ]);
 
 const ALLOWED_MUTATION_TABLES = new Set([
@@ -528,7 +525,7 @@ const handleRpc = async (ctx, body) => {
     }
     const commissionRateBps = commissionRateCents * 10;
 
-    let defaultCashbackRateBps = 750;
+    let defaultCashbackRateBps = 1000;
     const settingsRes = await selectOne({
       table: "app_settings",
       select: "key,value_json",
@@ -1359,16 +1356,13 @@ const routeExplicit = async (ctx, request, segments) => {
   }
 
   if (segments.length === 1 && segments[0] === "events" && method === "GET") {
-    const [adminActionsRes, adminAuthRes, auditRes, stripeRes, plaidRes, dotsRes, checkbookRes, trolleyRes, tremendousRes, plaidEventsRes] = await Promise.all([
+    const [adminActionsRes, adminAuthRes, auditRes, stripeRes, plaidRes, checkbookRes, plaidEventsRes] = await Promise.all([
       handleQuery(ctx, { table: "admin_action_logs", action: "select", select: "id,action,entity,status,entity_id,meta,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "admin_auth_events", action: "select", select: "id,event_name,endpoint,actor_email,actor_role,outcome,reason,status_code,created_at,metadata", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "business_review_audit_log", action: "select", select: "id,previous_approval_status,next_approval_status,business_id,changed_at", order: [{ column: "changed_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "stripe_webhook_events", action: "select", select: "id,stripe_event_id,event_type,processed,processed_at,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "plaid_webhook_events", action: "select", select: "id,webhook_type,webhook_code,plaid_item_id,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
-      handleQuery(ctx, { table: "dots_webhook_events", action: "select", select: "id,event_id,event_type,processed,processed_at,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "checkbook_webhook_events", action: "select", select: "id,delivery_id,event_type,processed,processed_at,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
-      handleQuery(ctx, { table: "trolley_webhook_events", action: "select", select: "id,delivery_id,event_type,processed,processed_at,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
-      handleQuery(ctx, { table: "tremendous_webhook_events", action: "select", select: "id,event_uuid,event_type,processed,processed_at,created_at", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
       handleQuery(ctx, { table: "plaid_event_logs", action: "select", select: "id,source_function,event_name,severity,user_id,plaid_item_id,created_at,metadata", order: [{ column: "created_at", ascending: false }], limit: 100, filters: [] }),
     ]);
 
@@ -1386,10 +1380,7 @@ const routeExplicit = async (ctx, request, segments) => {
           businessAudit: await parse(auditRes),
           stripeHooks: await parse(stripeRes),
           plaidHooks: await parse(plaidRes),
-          dotsHooks: await parse(dotsRes),
           checkbookHooks: await parse(checkbookRes),
-          trolleyHooks: await parse(trolleyRes),
-          tremendousHooks: await parse(tremendousRes),
           plaidEvents: await parse(plaidEventsRes),
         },
       },
@@ -1472,8 +1463,15 @@ export const onRequest = async (context) => {
     .filter(Boolean);
 
   try {
+    await enforceAdminRateLimit(request, env, {
+      route: url.pathname,
+    });
     ctx = await getAdminContext(request, env);
     ctx.env = env;
+    await enforceAdminRateLimit(request, env, {
+      email: ctx.email,
+      route: url.pathname,
+    });
     const response = await routeExplicit(ctx, request, segments);
     await logAuthEvent(ctx, {
       outcome: response.status >= 400 ? "failure" : "success",
@@ -1485,7 +1483,8 @@ export const onRequest = async (context) => {
     return response;
   } catch (error) {
     const message = String(error?.message || "Unauthorized");
-    const status = message.toLowerCase().includes("access denied") ? 403 : 401;
+    const status = Number(error?.statusCode) ||
+      (message.toLowerCase().includes("access denied") ? 403 : 401);
     const publicMessage = status === 403 ? "Access denied." : "Unauthorized.";
 
     if (ctx) {
@@ -1499,15 +1498,27 @@ export const onRequest = async (context) => {
       });
     }
 
-    return json(
+    const response = json(
       {
         ok: false,
         error: {
-          code: status === 403 ? "forbidden" : "unauthorized",
-          message: publicMessage,
+          code: status === 429
+            ? "rate_limited"
+            : status === 403
+            ? "forbidden"
+            : "unauthorized",
+          message: status === 429 ? "Too many requests. Please try again shortly." : publicMessage,
         },
       },
       status,
     );
+    if (status === 429 && Number(error?.retryAfter) > 0) {
+      response.headers.set("Retry-After", String(Math.max(1, Number(error.retryAfter))));
+    }
+    return response;
   }
 };
+
+
+
+

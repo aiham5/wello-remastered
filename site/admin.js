@@ -434,7 +434,7 @@ const getActiveDetailDraft = (receiptId) => {
 
 const AUTO_REFRESH_MS = 30000;
 const LIVE_DEBOUNCE_MS = 1200;
-const CASHBACK_BASE_RATE_BPS = 750; // 7.5% of receipt total (base cashback)
+const CASHBACK_BASE_RATE_BPS = 1000; // 10% of receipt total (base cashback)
 const DEFAULT_MERCHANT_COMMISSION_RATE_BPS = 1500; // default 15% of receipt total
 const ALLOWED_BUSINESS_COMMISSION_RATE_CENTS = new Set([100, 150]);
 const normalizeBusinessCommissionRateCents = (value) => {

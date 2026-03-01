@@ -5,6 +5,7 @@ import {
   HttpError,
   json,
 } from "../_shared/auth.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 const DEFAULT_MONTHLY_SWITCH_LIMIT = Math.max(
@@ -24,6 +25,14 @@ serve(async (req) => {
   try {
     const { userId } = await authenticateRequest(req);
     const supabase = createAdminSupabase();
+    await enforceRateLimit({
+      req,
+      scope: "plaid:get-link-status",
+      userId,
+      maxRequests: 120,
+      windowSeconds: 5 * 60,
+      supabase,
+    });
     const { data, error } = await supabase
       .from("plaid_linked_items")
       .select(

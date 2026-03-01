@@ -78,15 +78,6 @@ verify_jwt = false
 [functions.stripe-webhook]
 verify_jwt = false
 
-[functions.tremendous-demo-create-reward]
-verify_jwt = false
-
-[functions.dots-create-cashout]
-verify_jwt = false
-
-[functions.giftbit-create-cashout]
-verify_jwt = false
-
 [functions.reloadly-create-cashout]
 verify_jwt = false
 
@@ -105,14 +96,5 @@ verify_jwt = false
 [functions.checkbook-webhook]
 verify_jwt = false
 
-[functions.trolley-webhook]
-verify_jwt = false
-
-[functions.dots-webhook]
-verify_jwt = false
-
-[functions.tremendous-create-cashout]
-verify_jwt = false
-
-[functions.tremendous-webhook]
+[functions.places-proxy]
 verify_jwt = false

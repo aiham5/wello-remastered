@@ -1,4 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
+import { HttpError } from "../_shared/auth.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 
@@ -40,36 +42,6 @@ const createAdminClient = () =>
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-const authUserExists = async (adminClient: any, email: string) => {
-  const normalized = String(email || "").trim().toLowerCase();
-  if (!normalized) return { exists: false, error: null };
-
-  let page = 1;
-  const perPage = 200;
-  const maxPages = 50;
-
-  while (page <= maxPages) {
-    const { data, error } = await adminClient.auth.admin.listUsers({
-      page,
-      perPage,
-    });
-    if (error) {
-      return { exists: false, error: "Unable to verify email availability" };
-    }
-
-    const users = Array.isArray(data?.users) ? data.users : [];
-    const found = users.some(
-      (user: any) => String(user?.email || "").trim().toLowerCase() === normalized,
-    );
-    if (found) return { exists: true, error: null };
-
-    if (users.length < perPage) break;
-    page += 1;
-  }
-
-  return { exists: false, error: null };
-};
-
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { status: 200, headers: corsHeaders(req) });
@@ -90,6 +62,24 @@ Deno.serve(async (req) => {
   }
 
   const adminClient = createAdminClient();
+  try {
+    await enforceRateLimit({
+      req,
+      scope: "auth:email-availability",
+      identifier: email,
+      maxRequests: 25,
+      windowSeconds: 10 * 60,
+      supabase: adminClient,
+    });
+  } catch (error) {
+    if (error instanceof HttpError) {
+      return json(req, error.status, {
+        error: error.message,
+        ...(error.details || {}),
+      });
+    }
+    throw error;
+  }
 
   const { data: profileRows, error: profileError } = await adminClient
     .from("profiles")
@@ -107,11 +97,14 @@ Deno.serve(async (req) => {
     });
   }
 
-  const authExists = await authUserExists(adminClient, email);
-  if (authExists.error) {
-    return json(req, 500, { error: authExists.error });
+  const { data: authExistsData, error: authExistsError } = await adminClient.rpc(
+    "auth_user_email_exists",
+    { p_email: email },
+  );
+  if (authExistsError) {
+    return json(req, 500, { error: "Unable to verify email availability" });
   }
-  if (authExists.exists) {
+  if (Boolean(authExistsData)) {
     return json(req, 200, {
       ok: true,
       available: false,

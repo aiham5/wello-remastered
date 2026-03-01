@@ -174,6 +174,50 @@ const supabaseRequest = async (env, path, init = {}) => {
   return response;
 };
 
+const getClientIp = (request) => {
+  const direct = String(request.headers.get("cf-connecting-ip") || "").trim();
+  if (direct) return direct;
+  const forwarded = String(request.headers.get("x-forwarded-for") || "").trim();
+  if (!forwarded) return "unknown";
+  return String(forwarded.split(",")[0] || "").trim() || "unknown";
+};
+
+const consumeEdgeRateLimit = async (
+  env,
+  {
+    scope,
+    identifier,
+    maxRequests = 60,
+    windowSeconds = 60,
+  },
+) => {
+  const response = await supabaseRequest(env, "/rest/v1/rpc/consume_edge_rate_limit", {
+    method: "POST",
+    headers: {
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify({
+      p_scope: String(scope || "").trim().toLowerCase().slice(0, 80),
+      p_identifier: String(identifier || "").trim().toLowerCase().slice(0, 180),
+      p_max_requests: Math.max(1, Math.trunc(Number(maxRequests) || 60)),
+      p_window_seconds: Math.max(1, Math.trunc(Number(windowSeconds) || 60)),
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Rate limiting unavailable.");
+  }
+  const payload = await response.json().catch(() => null);
+  const row = Array.isArray(payload) ? payload[0] : payload;
+  if (row?.allowed === false) {
+    const retryAfter = Math.max(1, Number(row?.retry_after_seconds) || 60);
+    const error = new Error("Too many requests.");
+    error.statusCode = 429;
+    error.retryAfter = retryAfter;
+    throw error;
+  }
+};
+
 export const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -228,6 +272,31 @@ export const getAdminContext = async (request, env) => {
     supabaseRequest: (path, init = {}) => supabaseRequest(env, path, init),
     toPostgrestFilter,
   };
+};
+
+export const enforceAdminRateLimit = async (
+  request,
+  env,
+  { email = null, route = "" } = {},
+) => {
+  const ip = getClientIp(request);
+  const safeRoute = String(route || "").trim().toLowerCase().slice(0, 120);
+
+  await consumeEdgeRateLimit(env, {
+    scope: "admin:api:ip",
+    identifier: `ip:${ip}|route:${safeRoute}`,
+    maxRequests: 180,
+    windowSeconds: 60,
+  });
+
+  if (email) {
+    await consumeEdgeRateLimit(env, {
+      scope: "admin:api:staff",
+      identifier: `email:${String(email).trim().toLowerCase()}|route:${safeRoute}`,
+      maxRequests: 900,
+      windowSeconds: 5 * 60,
+    });
+  }
 };
 
 export const logAuthEvent = async (

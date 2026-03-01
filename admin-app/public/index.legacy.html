@@ -1,0 +1,92 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wello Admin Panel</title>
+    <link rel="icon" type="image/png" href="/assets/wello-mark.png" />
+    <script src="/admin/theme-init.js"></script>
+    <link rel="stylesheet" href="/admin/admin-panel.css?v=admin-20260227d" />
+  </head>
+  <body class="admin">
+    <div class="admin-root">
+      <header class="admin-topbar">
+        <a class="brand" href="/">
+          <img src="/assets/wello-mark.png" alt="Wello logo" />
+          <span>Wello Operations</span>
+        </a>
+        <div class="topbar-actions">
+          <div class="identity-chip">
+            <span id="admin-user">Authenticating…</span>
+            <span class="dot">•</span>
+            <span id="admin-role">--</span>
+          </div>
+          <button
+            id="admin-theme-toggle"
+            class="theme-toggle"
+            type="button"
+            aria-label="Toggle dark mode"
+            aria-pressed="false"
+          >
+            <span id="admin-theme-toggle-text">Dark mode</span>
+          </button>
+          <button class="button secondary" id="refresh-session">Refresh access</button>
+          <a class="button secondary" href="/cdn-cgi/access/logout" id="sign-out">Sign out</a>
+        </div>
+      </header>
+
+      <main class="admin-main">
+        <section id="access-panel" class="card-simple admin-auth">
+          <span class="pill">Zero Trust access</span>
+          <h2>Checking admin access</h2>
+          <p id="access-message">Validating your Cloudflare Access session and staff role…</p>
+          <div class="cta-row">
+            <button class="button secondary" id="access-retry" type="button">Retry</button>
+          </div>
+        </section>
+
+        <section id="app-shell" class="admin-shell is-hidden">
+          <aside class="admin-sidebar panel-card">
+            <div class="sidebar-head">
+              <h3>Admin Console</h3>
+              <p>Moderation, payouts, billing, and security controls.</p>
+            </div>
+            <ul id="admin-nav-list" class="admin-nav-list"></ul>
+          </aside>
+          <section class="admin-workspace">
+            <div class="workspace-heading panel-card">
+              <h1 id="module-title">Overview</h1>
+              <p id="module-subtitle" class="notice"></p>
+            </div>
+            <div id="module-content" class="workspace-content"></div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div id="global-drawer" class="global-drawer is-hidden" role="dialog" aria-modal="true">
+      <div class="drawer-card">
+        <div class="drawer-header">
+          <h3 id="global-drawer-title">Details</h3>
+          <button id="global-drawer-close" class="button secondary" type="button">Close</button>
+        </div>
+        <div id="global-drawer-content" class="drawer-content"></div>
+      </div>
+    </div>
+
+    <div id="confirm-modal" class="modal-backdrop is-hidden" role="dialog" aria-modal="true">
+      <div class="modal-card modal-small">
+        <div class="modal-header"><h3 id="confirm-modal-title">Confirm</h3></div>
+        <div class="modal-body"><p id="confirm-modal-body">Are you sure?</p></div>
+        <div class="cta-row">
+          <button id="confirm-modal-cancel" class="button secondary" type="button">Cancel</button>
+          <button id="confirm-modal-confirm" class="button primary" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+    <script type="module" src="/admin/app.js?v=admin-20260227d"></script>
+  </body>
+</html>

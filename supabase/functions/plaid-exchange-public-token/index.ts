@@ -12,6 +12,7 @@ import {
   plaidGetInstitutionById,
   plaidGetItem,
 } from "../_shared/plaid.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 
@@ -26,11 +27,26 @@ serve(async (req) => {
   try {
     const { userId, body } = await authenticateRequest(req);
     userIdForLog = userId;
+    const supabase = createAdminSupabase();
+    supabaseForLog = supabase;
+    await enforceRateLimit({
+      req,
+      scope: "plaid:exchange-public-token",
+      userId,
+      maxRequests: 8,
+      windowSeconds: 10 * 60,
+      supabase,
+    });
     const publicToken = String(body?.publicToken || body?.public_token || "")
       .trim();
     if (!publicToken) {
       throw new HttpError("Missing public token.", 400, {
         reason: "missing_public_token",
+      });
+    }
+    if (publicToken.length > 512) {
+      throw new HttpError("Invalid public token.", 400, {
+        reason: "invalid_public_token",
       });
     }
 
@@ -51,8 +67,6 @@ serve(async (req) => {
       }
     }
 
-    const supabase = createAdminSupabase();
-    supabaseForLog = supabase;
     const { data: existingItem, error: existingItemError } = await supabase
       .from("plaid_linked_items")
       .select("user_id")

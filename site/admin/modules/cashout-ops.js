@@ -30,7 +30,7 @@ export const cashoutOpsModule = {
       <section class="panel-card sticky-filters">
         <div class="filters-grid">
           <label class="field"><span>Status</span><select id="co-status"><option value="all">All</option><option value="pending">Pending</option><option value="paid">Paid</option><option value="failed">Failed</option></select></label>
-          <label class="field"><span>Provider</span><select id="co-provider"><option value="all">All</option><option value="reloadly">Reloadly</option><option value="checkbook">Checkbook</option><option value="stripe">Stripe (legacy)</option><option value="tremendous">Tremendous (legacy)</option><option value="dots">Dots (legacy)</option><option value="giftbit">Giftbit (legacy)</option></select></label>
+          <label class="field"><span>Provider</span><select id="co-provider"><option value="all">All</option><option value="reloadly">Reloadly</option><option value="checkbook">Checkbook</option><option value="stripe">Stripe (legacy)</option></select></label>
           <label class="field"><span>Search</span><input id="co-search" type="search" placeholder="Payout id, user id, order id" /></label>
         </div>
       </section>

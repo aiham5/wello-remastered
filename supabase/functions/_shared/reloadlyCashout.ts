@@ -4,6 +4,7 @@ import {
   HttpError,
   json,
 } from "./auth.ts";
+import { enforceRateLimit } from "./rateLimit.ts";
 
 type ReloadlyCashoutHandlerOptions = {
   endpointName: string;
@@ -109,7 +110,7 @@ const RELOADLY_CASHOUT_MIN_CENTS = Math.max(
   Math.trunc(
     envNumber("RELOADLY_CASHOUT_MIN_CENTS", "DOTS_CASHOUT_MIN_CENTS", 1000),
   ),
-  100,
+  1000,
 );
 const RELOADLY_CASHOUT_MAX_CENTS = Math.max(
   Math.trunc(
@@ -504,6 +505,187 @@ const extractReloadlyRewardId = (payload: Record<string, unknown>) =>
       "",
   ).trim() || null;
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const normalizeVoucherString = (value: unknown, maxLength = 320) => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  return text.slice(0, Math.max(1, maxLength));
+};
+
+const collectMatchesByKey = (
+  root: unknown,
+  keyPatterns: RegExp[],
+  maxDepth = 5,
+  maxResults = 8,
+) => {
+  const results: string[] = [];
+  const seen = new WeakSet<object>();
+
+  const visit = (node: unknown, depth: number) => {
+    if (depth > maxDepth || results.length >= maxResults) return;
+    if (Array.isArray(node)) {
+      for (const entry of node.slice(0, 40)) visit(entry, depth + 1);
+      return;
+    }
+    if (!isRecord(node)) return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    for (const [rawKey, rawValue] of Object.entries(node)) {
+      const key = String(rawKey || "").trim().toLowerCase();
+      if (!key) continue;
+      const value = normalizeVoucherString(rawValue);
+      if (
+        value &&
+        keyPatterns.some((pattern) => pattern.test(key))
+      ) {
+        results.push(value);
+        if (results.length >= maxResults) return;
+      }
+      if (isRecord(rawValue) || Array.isArray(rawValue)) {
+        visit(rawValue, depth + 1);
+      }
+    }
+  };
+
+  visit(root, 0);
+  return results;
+};
+
+const extractLabeledVoucherFields = (root: unknown) => {
+  const fields = {
+    code: [] as string[],
+    pin: [] as string[],
+    serial: [] as string[],
+  };
+  const seen = new WeakSet<object>();
+
+  const visit = (node: unknown, depth: number) => {
+    if (depth > 5) return;
+    if (Array.isArray(node)) {
+      for (const entry of node.slice(0, 40)) visit(entry, depth + 1);
+      return;
+    }
+    if (!isRecord(node)) return;
+    if (seen.has(node)) return;
+    seen.add(node);
+
+    const label = normalizeVoucherString(
+      node.label || node.name || node.key || node.title,
+      120,
+    )?.toLowerCase() || "";
+    const value = normalizeVoucherString(
+      node.value ?? node.data ?? node.content,
+      320,
+    );
+    if (label && value) {
+      if (/pin/.test(label)) {
+        fields.pin.push(value);
+      } else if (/serial|reference|ref|transaction/.test(label)) {
+        fields.serial.push(value);
+      } else if (/code|card number|gift card|voucher|redemption/.test(label)) {
+        fields.code.push(value);
+      }
+    }
+
+    for (const next of Object.values(node)) {
+      if (isRecord(next) || Array.isArray(next)) visit(next, depth + 1);
+    }
+  };
+
+  visit(root, 0);
+  return fields;
+};
+
+const pickFirstNonUrl = (values: string[]) =>
+  values.find((entry) => !/^https?:\/\//i.test(entry)) || null;
+
+const pickFirst = (values: string[]) => values.find(Boolean) || null;
+
+const sanitizeVoucherToken = (value: string | null, maxLength = 120) => {
+  const normalized = normalizeVoucherString(value, maxLength);
+  if (!normalized) return null;
+  return normalized.replace(/\s+/g, " ").trim();
+};
+
+const extractReloadlyVoucherDetails = (payload: Record<string, unknown>) => {
+  const root = extractReloadlyOrderObject(payload);
+  const labeled = extractLabeledVoucherFields(root);
+  const codeCandidates = [
+    ...collectMatchesByKey(root, [
+      /^code$/,
+      /claim.*code/,
+      /redemption.*code/,
+      /voucher.*code/,
+      /gift.*card.*number/,
+      /^card.*number$/,
+      /barcode/,
+    ]),
+    ...labeled.code,
+  ];
+  const pinCandidates = [
+    ...collectMatchesByKey(root, [
+      /^pin$/,
+      /pin.*code/,
+      /security.*code/,
+      /card.*pin/,
+      /passcode/,
+      /password/,
+    ]),
+    ...labeled.pin,
+  ];
+  const serialCandidates = [
+    ...collectMatchesByKey(root, [
+      /serial/,
+      /reference/,
+      /transaction.*id/,
+      /^uuid$/,
+      /^id$/,
+      /gift.*id/,
+      /reward.*id/,
+    ]),
+    ...labeled.serial,
+  ];
+  const instructions = pickFirst(
+    collectMatchesByKey(root, [
+      /instruction/,
+      /redeem/,
+      /how.*to/,
+      /terms/,
+      /message/,
+      /note/,
+    ], 4, 4),
+  );
+  const expiresAt = pickFirst(
+    collectMatchesByKey(root, [
+      /expiry/,
+      /expiration/,
+      /expires/,
+      /valid.*until/,
+    ], 4, 4),
+  );
+
+  const code = sanitizeVoucherToken(pickFirstNonUrl(codeCandidates), 160);
+  const pin = sanitizeVoucherToken(pickFirstNonUrl(pinCandidates), 80);
+  const serialNumber = sanitizeVoucherToken(pickFirstNonUrl(serialCandidates), 120);
+  const instructionText = normalizeVoucherString(instructions, 500);
+  const expiresText = normalizeVoucherString(expiresAt, 80);
+  const available = Boolean(code || pin || serialNumber || instructionText);
+
+  return {
+    available,
+    code,
+    pin,
+    serialNumber,
+    instructions: instructionText,
+    expiresAt: expiresText,
+  };
+};
+
 const toPayoutResponse = (row: Record<string, unknown>) => ({
   success: true,
   provider: "reloadly",
@@ -576,6 +758,14 @@ async (req: Request) => {
 
     const { userId: authedUserId, body } = await authenticateRequest(req);
     userId = authedUserId;
+    await enforceRateLimit({
+      req,
+      scope: "cashout:reloadly-create",
+      userId,
+      maxRequests: 24,
+      windowSeconds: 60 * 60,
+      supabase,
+    });
 
     const methodType = normalizeMethodType(
       body?.methodType ?? body?.method_type ?? "gift_card",
@@ -988,6 +1178,7 @@ async (req: Request) => {
     reloadlyCampaignId = parsedOrderId || reloadlyRequestId;
     const claimUrl = extractReloadlyClaimUrl(orderObject);
     const providerRewardId = extractReloadlyRewardId(orderObject);
+    const voucher = extractReloadlyVoucherDetails(orderObject);
 
     const providerStatus = String(
       orderObject?.status || "order_created",
@@ -1073,6 +1264,7 @@ async (req: Request) => {
       weeklyLimit: CASHOUT_WEEKLY_LIMIT_ENABLED
         ? CASHOUT_WEEKLY_LIMIT_MAX
         : null,
+      voucher,
     });
   } catch (error) {
     if (payoutId && !reloadlyCampaignId) {

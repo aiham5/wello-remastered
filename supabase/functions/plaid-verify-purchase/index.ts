@@ -12,6 +12,7 @@ import {
   plaidGetTransactions,
 } from "../_shared/plaid.ts";
 import { syncStripeCustomerIdentity } from "../_shared/stripeCustomer.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 
@@ -22,7 +23,16 @@ const PENDING_COPY =
 const AUTO_COPY =
   "Cashback is automatically verified when purchases are visible through your linked bank.";
 const IDENTITY_ENFORCED = true;
+const PLAID_PURCHASE_TO_REDEEM_WINDOW_MS = 1000 * 60 * 60 * 5;
+const PLAID_REDEEM_FUTURE_SKEW_MS = 1000 * 60 * 5;
+const PLAID_MANUAL_REVIEW_THRESHOLD_CENTS = 10000;
+const PURCHASE_WINDOW_EXPIRED_COPY =
+  "This purchase was not redeemed within 5 hours. Redeem in-app within 5 hours of purchase.";
+const MANUAL_REVIEW_REQUIRED_COPY =
+  "This receipt is pending manual review because the amount is over $100.";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const stripe = STRIPE_SECRET_KEY
   ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" })
   : null;
@@ -36,6 +46,7 @@ type Candidate = {
   expectedMerchantMatch: string;
   amountCents: number;
   postedOn: string;
+  occurredAtMs: number | null;
   pending: boolean;
   score: number;
   merchantScore: number;
@@ -128,6 +139,15 @@ const addDays = (dateOnly: string, delta: number) => {
   if (Number.isNaN(date.getTime())) return dateOnly;
   date.setUTCDate(date.getUTCDate() + delta);
   return date.toISOString().slice(0, 10);
+};
+
+const parseTransactionOccurredAtMs = (txn: PlaidTransaction) => {
+  const timestamp = String(
+    txn.authorized_datetime || txn.datetime || "",
+  ).trim();
+  if (!timestamp) return null;
+  const ms = Date.parse(timestamp);
+  return Number.isFinite(ms) ? ms : null;
 };
 
 const reasonMessage = (reasonCode: string) => {
@@ -338,12 +358,25 @@ serve(async (req) => {
   const supabase = createAdminSupabase();
   try {
     const { userId, body } = await authenticateRequest(req);
+    await enforceRateLimit({
+      req,
+      scope: "plaid:verify-purchase",
+      userId,
+      maxRequests: 18,
+      windowSeconds: 10 * 60,
+      supabase,
+    });
     const redemptionId = String(
       body?.redemptionId || body?.redemption_id || "",
     ).trim();
     if (!redemptionId) {
       throw new HttpError("Missing redemption id.", 400, {
         reason: "missing_redemption_id",
+      });
+    }
+    if (!UUID_REGEX.test(redemptionId)) {
+      throw new HttpError("Invalid redemption id.", 400, {
+        reason: "invalid_redemption_id",
       });
     }
 
@@ -356,6 +389,7 @@ serve(async (req) => {
       toDateOnly(body?.purchaseDate) || toDateOnly(body?.purchase_date);
     const requestedMerchant = String(body?.merchantName || body?.merchant_name || "")
       .trim();
+    const normalizedRequestedMerchant = requestedMerchant.slice(0, 160);
 
     const { data: redemption, error: redemptionError } = await supabase
       .from("redemptions")
@@ -383,16 +417,17 @@ serve(async (req) => {
       ? businessRelation.merchant_descriptor_aliases
       : [];
     const expectedMerchantCandidates = uniqueNonEmptyStrings([
-      requestedMerchant,
+      normalizedRequestedMerchant,
       businessName,
       ...descriptorAliases,
     ]);
     const expectedMerchant =
-      expectedMerchantCandidates[0] || requestedMerchant || businessName;
+      expectedMerchantCandidates[0] || normalizedRequestedMerchant || businessName;
     const expectedDate =
       requestedPurchaseDate ||
       toDateOnly(redemption.created_at) ||
       toDateOnly(new Date().toISOString());
+    const redemptionCreatedAtMs = Date.parse(String(redemption.created_at || ""));
 
     const receipt = Array.isArray(redemption.receipt_uploads)
       ? redemption.receipt_uploads[0]
@@ -637,6 +672,7 @@ serve(async (req) => {
               ? Math.abs(amountCents - expectedAmountCents)
               : null;
           const postedOn = toDateOnly(txn.date);
+          const occurredAtMs = parseTransactionOccurredAtMs(txn);
           const daysDiff = daysBetween(expectedDate, postedOn);
 
           let score = merchantScore;
@@ -668,6 +704,7 @@ serve(async (req) => {
             expectedMerchantMatch,
             amountCents,
             postedOn: postedOn || expectedDate || "",
+            occurredAtMs,
             pending: Boolean(txn.pending),
             score,
             merchantScore,
@@ -880,6 +917,50 @@ serve(async (req) => {
       });
     }
 
+    if (
+      Number.isFinite(redemptionCreatedAtMs) &&
+      selected.occurredAtMs !== null
+    ) {
+      const elapsedMs = redemptionCreatedAtMs - selected.occurredAtMs;
+      const outsideRedeemWindow =
+        elapsedMs > PLAID_PURCHASE_TO_REDEEM_WINDOW_MS ||
+        elapsedMs < -PLAID_REDEEM_FUTURE_SKEW_MS;
+      if (outsideRedeemWindow) {
+        const nowIso = new Date().toISOString();
+        const verification = await createOrUpdateVerification({
+          source: "plaid",
+          status: "rejected",
+          reason_code: "transaction_not_found",
+          reason_detail: PURCHASE_WINDOW_EXPIRED_COPY,
+          receipt_upload_id: existingReceiptId,
+          expected_amount_cents: expectedAmountCents,
+          matched_amount_cents: selected.amountCents,
+          expected_merchant: expectedMerchant || null,
+          matched_merchant: selected.merchant || null,
+          expected_posted_on: expectedDate || null,
+          matched_posted_on: selected.postedOn || null,
+          matched_plaid_item_id: selected.plaidItemId,
+          matched_plaid_transaction_id: selected.transactionId,
+          last_checked_at: nowIso,
+          rejected_at: nowIso,
+        });
+        await insertAttempt("no_match", "transaction_not_found", {
+          verificationId: verification?.id || null,
+          candidateCount: allCandidates.length,
+          postedCandidateCount: postedCandidates.length,
+          bestScore: selected.score,
+          matched: selected,
+        });
+        return json({
+          verificationStatus: "rejected",
+          reasonCode: "transaction_not_found",
+          message: PURCHASE_WINDOW_EXPIRED_COPY,
+          fallbackRequired: true,
+          fallbackMessage: FALLBACK_COPY,
+        });
+      }
+    }
+
     const nowIso = new Date().toISOString();
     const { data: existingClaim, error: existingClaimError } = await supabase
       .from("purchase_verifications")
@@ -954,6 +1035,58 @@ serve(async (req) => {
         receiptUpsertError?.message || "Unable to create verification record.",
         500,
       );
+    }
+    const requiresManualReview =
+      (Number(selected.amountCents) || 0) > PLAID_MANUAL_REVIEW_THRESHOLD_CENTS;
+
+    if (requiresManualReview) {
+      await supabase
+        .from("receipt_uploads")
+        .update({
+          review_notes:
+            "Plaid match found. Amount is over $100 and requires manual review.",
+          receipt_total_cents: selected.amountCents,
+          verification_source: "plaid",
+          verification_reference: selected.transactionId,
+        })
+        .eq("id", receiptUpsert.id);
+
+      const verification = await createOrUpdateVerification({
+        source: "plaid",
+        status: "pending",
+        reason_code: "receipt_under_review",
+        reason_detail: MANUAL_REVIEW_REQUIRED_COPY,
+        receipt_upload_id: receiptUpsert.id,
+        expected_amount_cents: expectedAmountCents,
+        matched_amount_cents: selected.amountCents,
+        expected_merchant: expectedMerchant || null,
+        matched_merchant: selected.merchant || null,
+        expected_posted_on: expectedDate || null,
+        matched_posted_on: selected.postedOn || null,
+        matched_plaid_item_id: selected.plaidItemId,
+        matched_plaid_transaction_id: selected.transactionId,
+        last_checked_at: nowIso,
+      });
+      await insertAttempt("manual_review_required", "receipt_under_review", {
+        verificationId: verification?.id || null,
+        candidateCount: allCandidates.length,
+        postedCandidateCount: postedCandidates.length,
+        bestScore: selected.score,
+        matched: selected,
+      });
+
+      return json({
+        verificationStatus: "pending",
+        reasonCode: "receipt_under_review",
+        message: MANUAL_REVIEW_REQUIRED_COPY,
+        fallbackRequired: false,
+        receiptUploadId: receiptUpsert.id,
+        requestId: selected.requestId || lastRequestId || null,
+        copy: {
+          primary: AUTO_COPY,
+          secondary: MANUAL_REVIEW_REQUIRED_COPY,
+        },
+      });
     }
 
     await supabase

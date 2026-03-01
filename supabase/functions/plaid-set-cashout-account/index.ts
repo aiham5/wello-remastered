@@ -8,6 +8,7 @@ import {
 } from "../_shared/auth.ts";
 import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import { plaidCreateStripeBankAccountToken } from "../_shared/plaid.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 
@@ -20,6 +21,7 @@ const CASHOUT_SWITCH_LIMIT_DISABLED = /^(1|true|yes|on)$/i.test(
   String(Deno.env.get("CASHOUT_BANK_SWITCH_LIMIT_DISABLED") || "").trim(),
 );
 const TEST_UNLIMITED_SWITCH_LIMIT = 9999;
+const PLAID_ACCOUNT_ID_REGEX = /^[A-Za-z0-9_-]{8,128}$/;
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -187,6 +189,15 @@ serve(async (req) => {
 
     const { userId, body } = await authenticateRequest(req);
     userIdForLog = userId;
+    supabase = createAdminSupabase();
+    await enforceRateLimit({
+      req,
+      scope: "plaid:set-cashout-account",
+      userId,
+      maxRequests: 20,
+      windowSeconds: 60 * 60,
+      supabase,
+    });
     const plaidAccountId = String(
       body?.plaidAccountId || body?.plaid_account_id || body?.accountId || "",
     ).trim();
@@ -196,8 +207,12 @@ serve(async (req) => {
         reason: "missing_plaid_account_id",
       });
     }
+    if (!PLAID_ACCOUNT_ID_REGEX.test(plaidAccountId)) {
+      throw new HttpError("Invalid bank account selection.", 400, {
+        reason: "invalid_plaid_account_id",
+      });
+    }
 
-    supabase = createAdminSupabase();
     const { data: linkedAccount, error: linkedAccountError } = await supabase
       .from("plaid_linked_accounts")
       .select(

@@ -1,4 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
+import { HttpError } from "../_shared/auth.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 
@@ -16,6 +18,7 @@ const SUPABASE_SERVICE_ROLE_KEY =
   Deno.env.get("EDGE_SUPABASE_SERVICE_ROLE_KEY") ??
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
   "";
+const RECEIPT_UPLOAD_WINDOW_MS = 1000 * 60 * 60 * 24;
 
 const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
   .split(",")
@@ -46,9 +49,13 @@ const sha256Hex = async (value: string) =>
   toHex(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
 
 const hmacRaw = async (key: Uint8Array, value: string) => {
+  const keyBuffer = key.buffer.slice(
+    key.byteOffset,
+    key.byteOffset + key.byteLength,
+  ) as ArrayBuffer;
   const cryptoKey = await crypto.subtle.importKey(
     "raw",
-    key,
+    keyBuffer,
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
@@ -176,7 +183,12 @@ const fetchWithTimeout = async (
 
 const parseReceiptKey = (key: string) => {
   const normalized = String(key || "").trim();
-  if (!normalized || normalized.includes("..") || normalized.startsWith("/")) {
+  if (
+    !normalized ||
+    normalized.length > 260 ||
+    normalized.includes("..") ||
+    normalized.startsWith("/")
+  ) {
     return null;
   }
   const segments = normalized.split("/").filter(Boolean);
@@ -186,6 +198,7 @@ const parseReceiptKey = (key: string) => {
   const redemptionId = segments[2];
   const fileName = segments[3];
   if (!businessId || !redemptionId || !fileName) return null;
+  if (!/^[A-Za-z0-9._-]{1,160}$/.test(fileName)) return null;
   return { key: normalized, businessId, redemptionId, fileName };
 };
 
@@ -303,6 +316,22 @@ Deno.serve(async (req) => {
     }
 
     const action = String(body?.action || "").toLowerCase();
+    const supabaseAdminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    });
+    await enforceRateLimit({
+      req,
+      scope: "r2:presign",
+      userId,
+      identifier: `${userId}|action:${action || "unknown"}`,
+      maxRequests: action === "download" ? 80 : 35,
+      windowSeconds: 10 * 60,
+      supabase: supabaseAdminClient,
+    });
     const key = String(body?.key || "").trim();
     const parsedReceiptKey = parseReceiptKey(key);
     if (!parsedReceiptKey) {
@@ -324,14 +353,6 @@ Deno.serve(async (req) => {
         { status: 400, headers: corsHeaders },
       );
     }
-
-    const supabaseAdminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-        detectSessionInUrl: false,
-      },
-    });
 
     if (action === "upload") {
       const bodyBusinessId = getBodyId(body, "businessId", "business_id");
@@ -360,7 +381,7 @@ Deno.serve(async (req) => {
 
       const { data: redemption, error: redemptionError } = await supabaseAdminClient
         .from("redemptions")
-        .select("id, business_id, scanned_by")
+        .select("id, business_id, scanned_by, created_at")
         .eq("id", bodyRedemptionId)
         .eq("business_id", bodyBusinessId)
         .eq("scanned_by", userId)
@@ -370,6 +391,21 @@ Deno.serve(async (req) => {
           JSON.stringify({
             error: "Not allowed to upload for this redemption.",
             reason: "redemption_not_owned",
+          }),
+          { status: 403, headers: corsHeaders },
+        );
+      }
+      const redemptionCreatedAtMs = redemption?.created_at
+        ? Date.parse(String(redemption.created_at))
+        : Number.NaN;
+      if (
+        Number.isFinite(redemptionCreatedAtMs) &&
+        Date.now() - redemptionCreatedAtMs > RECEIPT_UPLOAD_WINDOW_MS
+      ) {
+        return new Response(
+          JSON.stringify({
+            error: "Receipt window expired.",
+            reason: "receipt_window_expired",
           }),
           { status: 403, headers: corsHeaders },
         );
@@ -434,6 +470,15 @@ Deno.serve(async (req) => {
       },
     );
   } catch (error) {
+    if (error instanceof HttpError) {
+      return new Response(
+        JSON.stringify({
+          error: error.message,
+          ...(error.details || {}),
+        }),
+        { status: error.status, headers: corsHeaders },
+      );
+    }
     return new Response(
       JSON.stringify({ error: error?.message || "Unable to sign URL." }),
       { status: 500, headers: corsHeaders },

@@ -1,4 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
+import { HttpError } from "../_shared/auth.ts";
+import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 
@@ -114,6 +116,25 @@ Deno.serve(async (req) => {
   }
 
   const adminClient = createAdminClient();
+  try {
+    await enforceRateLimit({
+      req,
+      scope: "referral:claim",
+      userId,
+      identifier: `${userId}|ref:${ref}`,
+      maxRequests: 10,
+      windowSeconds: 60 * 60,
+      supabase: adminClient,
+    });
+  } catch (error) {
+    if (error instanceof HttpError) {
+      return json(req, error.status, {
+        error: error.message,
+        ...(error.details || {}),
+      });
+    }
+    throw error;
+  }
   const { data: profile, error: profileError } = await adminClient
     .from("profiles")
     .select("role")

@@ -122,6 +122,9 @@ export type PlaidTransaction = {
   account_id: string;
   amount: number;
   date: string;
+  datetime?: string | null;
+  authorized_date?: string | null;
+  authorized_datetime?: string | null;
   pending: boolean;
   merchant_name?: string | null;
   name?: string | null;
