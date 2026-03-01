@@ -10,6 +10,7 @@ import {
   Edit,
   Copy,
   Pause,
+  Play,
   CheckCircle,
   XCircle,
   X,
@@ -17,6 +18,7 @@ import {
 } from "lucide-react";
 import { StatusBadge } from "../components/StatusBadge";
 import { apiRequest, formatDateTime, summarizeError } from "../lib/adminApi";
+import { downloadCsv, type CsvColumn } from "../lib/csv";
 
 interface OfferRow {
   id: string;
@@ -34,7 +36,22 @@ interface OfferRow {
   } | null;
 }
 
-type DrawerMode = "view" | "edit";
+type DrawerMode = "view" | "edit" | "create";
+
+const offerCsvColumns: CsvColumn<OfferRow>[] = [
+  { key: "id", label: "Offer ID" },
+  { key: "business_id", label: "Business ID" },
+  { key: "title", label: "Title", format: (value) => String(value || "") },
+  { key: "description", label: "Description", format: (value) => String(value || "") },
+  { key: "offer_type", label: "Type", format: (value) => String(value || "") },
+  {
+    key: "active",
+    label: "Active",
+    format: (value) => (Boolean(value) ? "true" : "false"),
+  },
+  { key: "approval_status", label: "Approval", format: (value) => String(value || "") },
+  { key: "created_at", label: "Created At", format: (value) => String(value || "") },
+];
 
 const normalizeStatus = (offer: OfferRow) => {
   const approval = String(offer.approval_status || "").toLowerCase();
@@ -54,6 +71,7 @@ export function Offers() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState<DrawerMode>("view");
   const [selectedOffer, setSelectedOffer] = useState<OfferRow | null>(null);
+  const [editBusinessId, setEditBusinessId] = useState("");
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editType, setEditType] = useState("");
@@ -149,10 +167,22 @@ export function Offers() {
   const openDrawer = (offer: OfferRow, mode: DrawerMode) => {
     setSelectedOffer(offer);
     setDrawerMode(mode);
+    setEditBusinessId(String(offer.business_id || ""));
     setEditTitle(String(offer.title || ""));
     setEditDescription(String(offer.description || ""));
     setEditType(String(offer.offer_type || "cashback"));
     setEditActive(Boolean(offer.active));
+    setDrawerOpen(true);
+  };
+
+  const openCreateDrawer = () => {
+    setSelectedOffer(null);
+    setDrawerMode("create");
+    setEditBusinessId("");
+    setEditTitle("");
+    setEditDescription("");
+    setEditType("cashback");
+    setEditActive(false);
     setDrawerOpen(true);
   };
 
@@ -214,6 +244,34 @@ export function Offers() {
     setWorkingId(null);
   };
 
+  const createOffer = async () => {
+    const title = editTitle.trim();
+    const businessId = editBusinessId.trim();
+    if (!title || !businessId) {
+      setMessage("Business ID and title are required.");
+      return;
+    }
+    setWorkingId("create");
+    const res = await apiRequest<OfferRow>("/api/admin/offers/create", {
+      method: "POST",
+      body: {
+        businessId,
+        title,
+        description: editDescription.trim() || null,
+        offerType: editType.trim() || "cashback",
+      },
+    });
+    if (res.error || !res.data) {
+      setMessage(summarizeError(res.error, "Unable to create offer."));
+      setWorkingId(null);
+      return;
+    }
+    setRows((prev) => [res.data as OfferRow, ...prev]);
+    setDrawerOpen(false);
+    setMessage("Offer created as pending.");
+    setWorkingId(null);
+  };
+
   const duplicateOffer = async (offer: OfferRow) => {
     setWorkingId(offer.id);
     const res = await apiRequest<OfferRow>("/api/admin/query", {
@@ -240,6 +298,34 @@ export function Offers() {
       setMessage("Offer duplicated as pending.");
     }
     setWorkingId(null);
+  };
+
+  const toggleOffer = async (offer: OfferRow, action: "pause" | "resume") => {
+    setWorkingId(offer.id);
+    const res = await apiRequest<OfferRow>(
+      `/api/admin/offers/${encodeURIComponent(offer.id)}/${action}`,
+      { method: "POST" },
+    );
+    if (res.error || !res.data) {
+      setMessage(summarizeError(res.error, `Unable to ${action} offer.`));
+    } else {
+      const updated = res.data;
+      setRows((prev) =>
+        prev.map((row) =>
+          row.id === offer.id ? { ...row, ...updated, business: row.business } : row,
+        ),
+      );
+      setSelectedOffer((prev) =>
+        prev?.id === offer.id ? { ...prev, ...updated, business: prev.business } : prev,
+      );
+      setMessage(`Offer ${action === "pause" ? "paused" : "resumed"}.`);
+    }
+    setWorkingId(null);
+  };
+
+  const exportOffers = () => {
+    downloadCsv("offers-export.csv", filteredOffers, offerCsvColumns);
+    setMessage(`Exported ${filteredOffers.length} offers.`);
   };
 
   return (
@@ -280,15 +366,19 @@ export function Offers() {
             <span className="hidden sm:inline">Refresh</span>
           </button>
 
-          <button className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+          <button
+            type="button"
+            onClick={exportOffers}
+            className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
             <Download className="w-4 h-4" />
             <span className="hidden sm:inline">Export</span>
           </button>
 
           <button
-            disabled
-            className="flex items-center gap-2 px-4 py-2.5 bg-amber-500/60 text-white rounded-lg cursor-not-allowed"
-            title="Offer creation is handled by business app workflow."
+            type="button"
+            onClick={openCreateDrawer}
+            className="flex items-center gap-2 px-4 py-2.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors"
           >
             <Plus className="w-4 h-4" />
             <span className="hidden sm:inline">Create Offer</span>
@@ -345,6 +435,7 @@ export function Offers() {
               ) : filteredOffers.length ? (
                 filteredOffers.map((offer) => {
                   const status = normalizeStatus(offer);
+                  const canPauseResume = status === "Active" || status === "Inactive";
                   return (
                     <tr key={offer.id} className="hover:bg-gray-50 transition-colors">
                       <td className="px-6 py-4">
@@ -389,6 +480,7 @@ export function Offers() {
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center gap-1">
                           <button
+                            type="button"
                             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
                             title="View"
                             onClick={() => openDrawer(offer, "view")}
@@ -396,6 +488,7 @@ export function Offers() {
                             <Eye className="w-4 h-4 text-gray-600" />
                           </button>
                           <button
+                            type="button"
                             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
                             title="Edit"
                             onClick={() => openDrawer(offer, "edit")}
@@ -403,6 +496,7 @@ export function Offers() {
                             <Edit className="w-4 h-4 text-gray-600" />
                           </button>
                           <button
+                            type="button"
                             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
                             title="Duplicate"
                             onClick={() => void duplicateOffer(offer)}
@@ -429,11 +523,23 @@ export function Offers() {
                                 <XCircle className="w-4 h-4 text-red-600" />
                               </button>
                             </>
-                          ) : (
-                            <button className="p-2 hover:bg-gray-100 rounded-lg transition-colors" title="Pause">
-                              <Pause className="w-4 h-4 text-gray-600" />
+                          ) : canPauseResume ? (
+                            <button
+                              type="button"
+                              className="p-2 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-60"
+                              title={status === "Active" ? "Pause" : "Resume"}
+                              disabled={workingId === offer.id}
+                              onClick={() =>
+                                void toggleOffer(offer, status === "Active" ? "pause" : "resume")
+                              }
+                            >
+                              {status === "Active" ? (
+                                <Pause className="w-4 h-4 text-gray-600" />
+                              ) : (
+                                <Play className="w-4 h-4 text-gray-600" />
+                              )}
                             </button>
-                          )}
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -458,14 +564,19 @@ export function Offers() {
         </p>
       </div>
 
-      {drawerOpen && selectedOffer ? (
+      {drawerOpen ? (
         <div className="fixed inset-0 z-40 bg-black/30 flex justify-end">
           <div className="w-full max-w-xl h-full bg-white shadow-xl border-l border-gray-200 flex flex-col">
             <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-gray-900">
-                {drawerMode === "edit" ? "Edit Offer" : "Offer Details"}
+                {drawerMode === "create"
+                  ? "Create Offer"
+                  : drawerMode === "edit"
+                    ? "Edit Offer"
+                    : "Offer Details"}
               </h3>
               <button
+                type="button"
                 className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
                 onClick={() => setDrawerOpen(false)}
               >
@@ -474,7 +585,7 @@ export function Offers() {
             </div>
 
             <div className="p-6 overflow-y-auto space-y-5">
-              {drawerMode === "view" ? (
+              {drawerMode === "view" && selectedOffer ? (
                 <>
                   <div className="space-y-2">
                     <p className="text-sm text-gray-500">Title</p>
@@ -512,6 +623,7 @@ export function Offers() {
                   </div>
 
                   <button
+                    type="button"
                     className="w-full px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
                     onClick={() => setDrawerMode("edit")}
                   >
@@ -520,6 +632,14 @@ export function Offers() {
                 </>
               ) : (
                 <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Business ID</label>
+                    <input
+                      value={editBusinessId}
+                      onChange={(e) => setEditBusinessId(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">Title</label>
                     <input
@@ -548,31 +668,42 @@ export function Offers() {
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
                       />
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Active</label>
-                      <select
-                        value={editActive ? "true" : "false"}
-                        onChange={(e) => setEditActive(e.target.value === "true")}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
-                      >
-                        <option value="true">True</option>
-                        <option value="false">False</option>
-                      </select>
-                    </div>
+                    {drawerMode !== "create" ? (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Active</label>
+                        <select
+                          value={editActive ? "true" : "false"}
+                          onChange={(e) => setEditActive(e.target.value === "true")}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                        >
+                          <option value="true">True</option>
+                          <option value="false">False</option>
+                        </select>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="flex gap-3">
                     <button
+                      type="button"
                       className="flex-1 px-4 py-2.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
-                      onClick={() => void saveOfferEdit()}
-                      disabled={workingId === selectedOffer.id}
+                      onClick={() =>
+                        void (drawerMode === "create" ? createOffer() : saveOfferEdit())
+                      }
+                      disabled={
+                        workingId === "create" ||
+                        (selectedOffer ? workingId === selectedOffer.id : false)
+                      }
                     >
                       <Save className="w-4 h-4" />
-                      Save
+                      {drawerMode === "create" ? "Create" : "Save"}
                     </button>
                     <button
+                      type="button"
                       className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-                      onClick={() => setDrawerMode("view")}
+                      onClick={() =>
+                        drawerMode === "create" ? setDrawerOpen(false) : setDrawerMode("view")
+                      }
                     >
                       Cancel
                     </button>

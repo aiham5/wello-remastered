@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Shield, User, Store, X } from "lucide-react";
+import { Shield, User, Store, X, ImageIcon } from "lucide-react";
 import { StatusBadge } from "../components/StatusBadge";
 import {
   apiRequest,
@@ -8,6 +8,7 @@ import {
   summarizeError,
 } from "../lib/adminApi";
 import { resolveReceiptImage, type SignedReceiptImage } from "../lib/receiptImage";
+import { ImageLightbox } from "../components/ImageLightbox";
 
 interface ReceiptReport {
   id: string;
@@ -50,6 +51,8 @@ export function FraudDisputes() {
   const [selectedReport, setSelectedReport] = useState<ReceiptReport | null>(null);
   const [receiptDetail, setReceiptDetail] = useState<ReceiptDetail | null>(null);
   const [receiptImage, setReceiptImage] = useState<SignedReceiptImage | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerUrl, setViewerUrl] = useState("");
 
   const load = async () => {
     const res = await apiRequest<ReceiptReport[]>("/api/admin/receipt-reports?limit=120");
@@ -134,6 +137,15 @@ export function FraudDisputes() {
     setReceiptDetail(res.data);
     const signed = await resolveReceiptImage(String(res.data.storage_path || ""));
     setReceiptImage(signed);
+  };
+
+  const openFullSize = () => {
+    if (!receiptImage?.signedUrl) {
+      setMessage("Unable to open image: no signed receipt URL available.");
+      return;
+    }
+    setViewerUrl(receiptImage.signedUrl);
+    setViewerOpen(true);
   };
 
   return (
@@ -327,11 +339,21 @@ export function FraudDisputes() {
                   </div>
                   <div className="border border-gray-200 rounded-lg p-2 bg-gray-50">
                     {receiptImage?.signedUrl ? (
-                      <img
-                        src={receiptImage.signedUrl}
-                        alt="Reported receipt"
-                        className="w-full max-h-[420px] object-contain rounded"
-                      />
+                      <div className="space-y-2">
+                        <img
+                          src={receiptImage.signedUrl}
+                          alt="Reported receipt"
+                          className="w-full max-h-[420px] object-contain rounded"
+                        />
+                        <button
+                          type="button"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors text-sm inline-flex items-center justify-center gap-2"
+                          onClick={openFullSize}
+                        >
+                          <ImageIcon className="w-4 h-4" />
+                          Open image
+                        </button>
+                      </div>
                     ) : (
                       <p className="text-xs text-gray-500">
                         Unable to load receipt image. {receiptImage?.errorReason || ""}
@@ -348,6 +370,12 @@ export function FraudDisputes() {
           </div>
         </div>
       ) : null}
+      <ImageLightbox
+        open={viewerOpen}
+        imageUrl={viewerUrl}
+        title="Reported receipt"
+        onClose={() => setViewerOpen(false)}
+      />
     </div>
   );
 }

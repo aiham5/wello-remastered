@@ -11,6 +11,7 @@ import {
   Pause,
   Check,
   X,
+  Save,
 } from "lucide-react";
 import { StatusBadge } from "../components/StatusBadge";
 import {
@@ -18,6 +19,7 @@ import {
   formatDateTime,
   summarizeError,
 } from "../lib/adminApi";
+import { downloadCsv, type CsvColumn } from "../lib/csv";
 
 interface BusinessRow {
   id: string;
@@ -29,6 +31,18 @@ interface BusinessRow {
   updated_at?: string | null;
 }
 
+type DrawerMode = "view" | "edit";
+
+const businessCsvColumns: CsvColumn<BusinessRow>[] = [
+  { key: "id", label: "Business ID" },
+  { key: "name", label: "Name" },
+  { key: "category_label", label: "Category", format: (value) => String(value || "") },
+  { key: "approval_status", label: "Approval Status", format: (value) => String(value || "") },
+  { key: "status", label: "Status", format: (value) => String(value || "") },
+  { key: "created_at", label: "Created At", format: (value) => String(value || "") },
+  { key: "updated_at", label: "Updated At", format: (value) => String(value || "") },
+];
+
 const formatApproval = (value?: string | null) => String(value || "pending").toLowerCase();
 
 export function Businesses() {
@@ -39,6 +53,12 @@ export function Businesses() {
   const [loading, setLoading] = useState(true);
   const [workingId, setWorkingId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerMode, setDrawerMode] = useState<DrawerMode>("view");
+  const [selectedBusiness, setSelectedBusiness] = useState<BusinessRow | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editCategory, setEditCategory] = useState("");
 
   const loadBusinesses = async () => {
     setLoading(true);
@@ -118,9 +138,88 @@ export function Businesses() {
             : row,
         ),
       );
+      setSelectedBusiness((prev) =>
+        prev?.id === business.id
+          ? {
+              ...prev,
+              approval_status: nextStatus,
+              status: nextStatus === "approved" ? "active" : "inactive",
+            }
+          : prev,
+      );
       setMessage(`Business ${nextStatus}.`);
     }
     setWorkingId(null);
+  };
+
+  const openDrawer = (business: BusinessRow, mode: DrawerMode) => {
+    setSelectedBusiness(business);
+    setDrawerMode(mode);
+    setEditName(String(business.name || ""));
+    setEditCategory(String(business.category_label || ""));
+    setDrawerOpen(true);
+  };
+
+  const saveBusiness = async () => {
+    if (!selectedBusiness) return;
+    const name = editName.trim();
+    if (!name) {
+      setMessage("Business name is required.");
+      return;
+    }
+    setWorkingId(selectedBusiness.id);
+    const res = await apiRequest<BusinessRow>(
+      `/api/admin/businesses/${encodeURIComponent(selectedBusiness.id)}/update`,
+      {
+        method: "POST",
+        body: {
+          name,
+          categoryLabel: editCategory.trim() || null,
+        },
+      },
+    );
+    if (res.error || !res.data) {
+      setMessage(summarizeError(res.error, "Unable to update business."));
+      setWorkingId(null);
+      return;
+    }
+
+    setRows((prev) =>
+      prev.map((row) => (row.id === selectedBusiness.id ? { ...row, ...res.data } : row)),
+    );
+    setSelectedBusiness((prev) => (prev ? { ...prev, ...res.data } : prev));
+    setDrawerMode("view");
+    setMessage("Business updated.");
+    setWorkingId(null);
+  };
+
+  const archiveBusiness = async (business: BusinessRow) => {
+    const confirmed = window.confirm(`Archive business "${business.name}"?`);
+    if (!confirmed) return;
+    setWorkingId(business.id);
+    const res = await apiRequest<BusinessRow>(
+      `/api/admin/businesses/${encodeURIComponent(business.id)}/archive`,
+      { method: "POST" },
+    );
+    if (res.error || !res.data) {
+      setMessage(summarizeError(res.error, "Unable to archive business."));
+    } else {
+      setRows((prev) =>
+        prev.map((row) =>
+          row.id === business.id ? { ...row, ...res.data, status: "inactive" } : row,
+        ),
+      );
+      setSelectedBusiness((prev) =>
+        prev?.id === business.id ? { ...prev, ...res.data, status: "inactive" } : prev,
+      );
+      setMessage("Business archived.");
+    }
+    setWorkingId(null);
+  };
+
+  const exportBusinesses = () => {
+    downloadCsv("businesses-export.csv", filteredBusinesses, businessCsvColumns);
+    setMessage(`Exported ${filteredBusinesses.length} businesses.`);
   };
 
   const statusBadge = (approval?: string | null) => {
@@ -171,7 +270,11 @@ export function Businesses() {
             <option value="rejected">Rejected</option>
           </select>
 
-          <button className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+          <button
+            type="button"
+            onClick={exportBusinesses}
+            className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
             <Download className="w-4 h-4" />
             <span className="hidden sm:inline">Export</span>
           </button>
@@ -281,11 +384,19 @@ export function Businesses() {
 
               <div className="flex items-center justify-between pt-4 border-t border-gray-200">
                 <div className="flex gap-2 flex-wrap">
-                  <button className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+                  <button
+                    type="button"
+                    onClick={() => openDrawer(business, "view")}
+                    className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
                     <Eye className="w-4 h-4" />
                     View
                   </button>
-                  <button className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+                  <button
+                    type="button"
+                    onClick={() => openDrawer(business, "edit")}
+                    className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
                     <Edit className="w-4 h-4" />
                     Edit
                   </button>
@@ -309,7 +420,12 @@ export function Businesses() {
                       </button>
                     </>
                   ) : (
-                    <button className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+                    <button
+                      type="button"
+                      onClick={() => void archiveBusiness(business)}
+                      disabled={workingId === business.id}
+                      className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-60"
+                    >
                       <Pause className="w-4 h-4" />
                       Archive
                     </button>
@@ -334,6 +450,108 @@ export function Businesses() {
           <span className="font-medium">{rows.length}</span> businesses
         </p>
       </div>
+
+      {drawerOpen && selectedBusiness ? (
+        <div className="fixed inset-0 z-40 bg-black/30 flex justify-end">
+          <div className="w-full max-w-xl h-full bg-white shadow-xl border-l border-gray-200 flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900">
+                {drawerMode === "edit" ? "Edit Business" : "Business Details"}
+              </h3>
+              <button
+                type="button"
+                className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                onClick={() => setDrawerOpen(false)}
+              >
+                <X className="w-5 h-5 text-gray-600" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-5">
+              {drawerMode === "view" ? (
+                <>
+                  <div>
+                    <p className="text-sm text-gray-500">Name</p>
+                    <p className="font-semibold text-gray-900">{selectedBusiness.name}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Category</p>
+                    <p className="font-medium text-gray-900">
+                      {selectedBusiness.category_label || "Uncategorized"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Business ID</p>
+                    <p className="font-medium text-gray-900 break-all">{selectedBusiness.id}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-gray-500">Approval</p>
+                      <p className="font-medium text-gray-900">{selectedBusiness.approval_status}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">Status</p>
+                      <p className="font-medium text-gray-900">{selectedBusiness.status || "--"}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">Created</p>
+                      <p className="font-medium text-gray-900">{formatDateTime(selectedBusiness.created_at)}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">Updated</p>
+                      <p className="font-medium text-gray-900">{formatDateTime(selectedBusiness.updated_at)}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                    onClick={() => setDrawerMode("edit")}
+                  >
+                    Switch to Edit
+                  </button>
+                </>
+              ) : (
+                <>
+                  <label className="block">
+                    <span className="text-sm font-medium text-gray-700">Name</span>
+                    <input
+                      value={editName}
+                      onChange={(event) => setEditName(event.target.value)}
+                      className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-sm font-medium text-gray-700">Category</span>
+                    <input
+                      value={editCategory}
+                      onChange={(event) => setEditCategory(event.target.value)}
+                      className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </label>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void saveBusiness()}
+                      disabled={workingId === selectedBusiness.id}
+                      className="flex-1 px-4 py-2.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-2"
+                    >
+                      <Save className="w-4 h-4" />
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDrawerMode("view")}
+                      className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

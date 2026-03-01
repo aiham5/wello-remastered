@@ -1,4 +1,4 @@
-import { NavLink } from "react-router";
+import { NavLink, useNavigate } from "react-router";
 import { 
   LayoutDashboard, 
   Users, 
@@ -13,7 +13,8 @@ import {
   MessageSquare,
   BarChart3,
   Settings,
-  UserCog
+  UserCog,
+  LifeBuoy
 } from "lucide-react";
 
 const navItems = [
@@ -31,9 +32,11 @@ const navItems = [
   { to: "/reports", icon: BarChart3, label: "Reports" },
   { to: "/settings", icon: Settings, label: "Settings" },
   { to: "/admin-roles", icon: UserCog, label: "Admin Roles" },
+  { to: "/help", icon: LifeBuoy, label: "Help" },
 ];
 
 export function Sidebar() {
+  const navigate = useNavigate();
   return (
     <aside className="w-64 bg-white border-r border-gray-200 flex flex-col">
       <div className="p-6 border-b border-gray-200">
@@ -70,7 +73,11 @@ export function Sidebar() {
         <div className="bg-gradient-to-br from-yellow-50 to-amber-50 rounded-lg p-4 border border-amber-200">
           <p className="text-xs font-medium text-gray-900 mb-1">Need help?</p>
           <p className="text-xs text-gray-600 mb-3">Check our documentation</p>
-          <button className="w-full px-3 py-1.5 bg-amber-500 text-white rounded-md text-xs hover:bg-amber-600 transition-colors">
+          <button
+            type="button"
+            onClick={() => navigate("/help")}
+            className="w-full px-3 py-1.5 bg-amber-500 text-white rounded-md text-xs hover:bg-amber-600 transition-colors"
+          >
             View Docs
           </button>
         </div>

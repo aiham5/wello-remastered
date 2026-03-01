@@ -1048,6 +1048,28 @@ const handleLogAction = async (ctx, body) => {
   return json({ ok: true, data: { logged: Boolean(row?.id), id: row?.id || null } }, 200);
 };
 
+const logAdminActionInternal = async (ctx, body) => {
+  const payload = {
+    actor_id: String(ctx.profile?.id || ""),
+    actor_role: String(ctx.profile?.role || ""),
+    action: String(body?.action || "unknown"),
+    entity: String(body?.entity || "unknown"),
+    entity_id: body?.entityId || null,
+    status: String(body?.status || "success") === "failed" ? "failed" : "success",
+    before_state: body?.before ?? null,
+    after_state: body?.after ?? null,
+    meta: body?.meta && typeof body.meta === "object" ? body.meta : {},
+  };
+
+  await ctx.supabaseRequest(`/rest/v1/admin_action_logs`, {
+    method: "POST",
+    headers: {
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify(payload),
+  });
+};
+
 const handleOverview = async (ctx) => {
   const queries = [
     { key: "pendingReceipts", table: "receipt_uploads", filter: ["review_status", "eq.pending"] },
@@ -1074,6 +1096,15 @@ const handleOverview = async (ctx) => {
 const routeExplicit = async (ctx, request, segments) => {
   const method = request.method.toUpperCase();
   const body = method === "GET" ? {} : await parseJson(request);
+  const runQuery = async (spec) => {
+    const response = await handleQuery(ctx, spec);
+    const payload = await response.json();
+    return {
+      status: response.status,
+      ok: payload?.ok === true,
+      payload,
+    };
+  };
 
   if (segments.length === 1 && segments[0] === "me" && method === "GET") {
     return json({ ok: true, data: { user: { id: ctx.profile.id, email: ctx.profile.email }, profile: ctx.profile } }, 200);
@@ -1231,6 +1262,96 @@ const routeExplicit = async (ctx, request, segments) => {
     });
   }
 
+  if (segments.length === 3 && segments[0] === "businesses" && segments[2] === "update" && method === "POST") {
+    const businessId = String(segments[1] || "").trim();
+    const name = String(body?.name || "").trim();
+    const categoryLabelRaw = body?.categoryLabel;
+    if (!businessId) {
+      return json({ ok: false, error: { code: "invalid_business_id", message: "Business id is required." } }, 400);
+    }
+    if (!name) {
+      return json({ ok: false, error: { code: "invalid_business_name", message: "Business name is required." } }, 400);
+    }
+    if (name.length > 160) {
+      return json({ ok: false, error: { code: "invalid_business_name", message: "Business name is too long." } }, 400);
+    }
+    const updates = {
+      name,
+      category_label: categoryLabelRaw == null ? null : String(categoryLabelRaw || "").trim() || null,
+      updated_at: new Date().toISOString(),
+    };
+    const updateResult = await runQuery({
+      table: "businesses",
+      action: "update",
+      body: updates,
+      select: "id,name,owner_id,category_label,approval_status,status,created_at,updated_at",
+      filters: [{ column: "id", op: "eq", value: businessId }],
+      single: "maybe",
+    });
+    if (!updateResult.ok) {
+      return json(updateResult.payload, updateResult.status || 400);
+    }
+    if (!updateResult.payload?.data) {
+      return json({ ok: false, error: { code: "business_not_found", message: "Business not found." } }, 404);
+    }
+    await logAdminActionInternal(ctx, {
+      action: "business_updated",
+      entity: "businesses",
+      entityId: businessId,
+      status: "success",
+      after: updateResult.payload.data,
+      meta: { fields: ["name", "category_label"] },
+    });
+    return json({ ok: true, data: updateResult.payload.data }, 200);
+  }
+
+  if (segments.length === 3 && segments[0] === "businesses" && segments[2] === "archive" && method === "POST") {
+    const businessId = String(segments[1] || "").trim();
+    if (!businessId) {
+      return json({ ok: false, error: { code: "invalid_business_id", message: "Business id is required." } }, 400);
+    }
+    const beforeResult = await runQuery({
+      table: "businesses",
+      action: "select",
+      select: "id,name,approval_status,status,created_at,updated_at",
+      filters: [{ column: "id", op: "eq", value: businessId }],
+      single: "maybe",
+    });
+    if (!beforeResult.ok) {
+      return json(beforeResult.payload, beforeResult.status || 400);
+    }
+    if (!beforeResult.payload?.data) {
+      return json({ ok: false, error: { code: "business_not_found", message: "Business not found." } }, 404);
+    }
+    const currentStatus = String(beforeResult.payload.data.status || "").toLowerCase();
+    if (["inactive", "archived"].includes(currentStatus)) {
+      return json({ ok: false, error: { code: "already_archived", message: "Business already archived." } }, 409);
+    }
+    const archiveResult = await runQuery({
+      table: "businesses",
+      action: "update",
+      body: {
+        status: "inactive",
+        updated_at: new Date().toISOString(),
+      },
+      select: "id,name,owner_id,category_label,approval_status,status,created_at,updated_at",
+      filters: [{ column: "id", op: "eq", value: businessId }],
+      single: "maybe",
+    });
+    if (!archiveResult.ok) {
+      return json(archiveResult.payload, archiveResult.status || 400);
+    }
+    await logAdminActionInternal(ctx, {
+      action: "business_archived",
+      entity: "businesses",
+      entityId: businessId,
+      status: "success",
+      before: beforeResult.payload.data,
+      after: archiveResult.payload.data,
+    });
+    return json({ ok: true, data: archiveResult.payload.data }, 200);
+  }
+
   if (segments.length === 3 && segments[0] === "businesses" && segments[2] === "review" && method === "POST") {
     return handleRpc(ctx, {
       name: "admin_review_business",
@@ -1252,6 +1373,64 @@ const routeExplicit = async (ctx, request, segments) => {
     });
   }
 
+  if (segments.length === 2 && segments[0] === "offers" && segments[1] === "create" && method === "POST") {
+    const businessId = String(body?.businessId || "").trim();
+    const title = String(body?.title || "").trim();
+    const description = body?.description == null ? null : String(body.description || "").trim() || null;
+    const offerType = String(body?.offerType || "cashback").trim() || "cashback";
+
+    if (!businessId) {
+      return json({ ok: false, error: { code: "invalid_business_id", message: "Business ID is required." } }, 400);
+    }
+    if (!title) {
+      return json({ ok: false, error: { code: "invalid_title", message: "Offer title is required." } }, 400);
+    }
+
+    const businessLookup = await runQuery({
+      table: "businesses",
+      action: "select",
+      select: "id,name",
+      filters: [{ column: "id", op: "eq", value: businessId }],
+      single: "maybe",
+    });
+    if (!businessLookup.ok) {
+      return json(businessLookup.payload, businessLookup.status || 400);
+    }
+    if (!businessLookup.payload?.data?.id) {
+      return json({ ok: false, error: { code: "business_not_found", message: "Business not found." } }, 404);
+    }
+
+    const createResult = await runQuery({
+      table: "offers",
+      action: "insert",
+      body: {
+        business_id: businessId,
+        title,
+        description,
+        offer_type: offerType,
+        active: false,
+        approval_status: "pending",
+      },
+      select: "id,business_id,title,description,offer_type,active,approval_status,created_at,updated_at",
+      single: "maybe",
+    });
+    if (!createResult.ok || !createResult.payload?.data) {
+      return json(createResult.payload, createResult.status || 400);
+    }
+    const data = {
+      ...createResult.payload.data,
+      business: businessLookup.payload.data,
+    };
+    await logAdminActionInternal(ctx, {
+      action: "offer_created",
+      entity: "offers",
+      entityId: createResult.payload.data.id,
+      status: "success",
+      after: data,
+    });
+    return json({ ok: true, data }, 200);
+  }
+
   if (segments.length === 3 && segments[0] === "offers" && segments[2] === "review" && method === "POST") {
     return handleRpc(ctx, {
       name: "admin_review_offer",
@@ -1260,6 +1439,56 @@ const routeExplicit = async (ctx, request, segments) => {
         p_next_approval_status: body?.nextApprovalStatus,
       },
     });
+  }
+
+  if (
+    segments.length === 3 &&
+    segments[0] === "offers" &&
+    ["pause", "resume"].includes(String(segments[2] || "").toLowerCase()) &&
+    method === "POST"
+  ) {
+    const offerId = String(segments[1] || "").trim();
+    const action = String(segments[2] || "").toLowerCase();
+    const nextActive = action === "resume";
+    if (!offerId) {
+      return json({ ok: false, error: { code: "invalid_offer_id", message: "Offer id is required." } }, 400);
+    }
+    const beforeResult = await runQuery({
+      table: "offers",
+      action: "select",
+      select: "id,business_id,title,description,offer_type,active,approval_status,created_at,updated_at",
+      filters: [{ column: "id", op: "eq", value: offerId }],
+      single: "maybe",
+    });
+    if (!beforeResult.ok) {
+      return json(beforeResult.payload, beforeResult.status || 400);
+    }
+    if (!beforeResult.payload?.data?.id) {
+      return json({ ok: false, error: { code: "offer_not_found", message: "Offer not found." } }, 404);
+    }
+    const updateResult = await runQuery({
+      table: "offers",
+      action: "update",
+      body: {
+        active: nextActive,
+        updated_at: new Date().toISOString(),
+      },
+      select: "id,business_id,title,description,offer_type,active,approval_status,created_at,updated_at",
+      filters: [{ column: "id", op: "eq", value: offerId }],
+      single: "maybe",
+    });
+    if (!updateResult.ok) {
+      return json(updateResult.payload, updateResult.status || 400);
+    }
+    await logAdminActionInternal(ctx, {
+      action: action === "pause" ? "offer_paused" : "offer_resumed",
+      entity: "offers",
+      entityId: offerId,
+      status: "success",
+      before: beforeResult.payload.data,
+      after: updateResult.payload.data,
+    });
+    return json({ ok: true, data: updateResult.payload.data }, 200);
   }
 
   if (segments.length === 2 && segments[0] === "offers" && segments[1] === "review-bulk" && method === "POST") {
@@ -1311,6 +1540,248 @@ const routeExplicit = async (ctx, request, segments) => {
       },
       filters,
     });
+  }
+
+  if (
+    segments.length === 3 &&
+    segments[0] === "cashouts" &&
+    segments[1] === "batch" &&
+    segments[2] === "decision" &&
+    method === "POST"
+  ) {
+    const action = String(body?.action || "").trim().toLowerCase();
+    const payoutIds = Array.isArray(body?.payoutIds)
+      ? Array.from(new Set(body.payoutIds.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [];
+    if (!["approve", "reject"].includes(action)) {
+      return json({ ok: false, error: { code: "invalid_action", message: "Action must be approve or reject." } }, 400);
+    }
+    if (!payoutIds.length) {
+      return json({ ok: false, error: { code: "invalid_batch", message: "At least one payout id is required." } }, 400);
+    }
+    const results = [];
+    for (const payoutId of payoutIds.slice(0, 100)) {
+      const payoutLookup = await runQuery({
+        table: "cashout_payouts",
+        action: "select",
+        select: "id,status,approval_status,provider,method_type",
+        filters: [{ column: "id", op: "eq", value: payoutId }],
+        single: "maybe",
+      });
+      if (!payoutLookup.ok || !payoutLookup.payload?.data?.id) {
+        results.push({
+          id: payoutId,
+          ok: false,
+          errorCode: "payout_not_found",
+          message: "Payout not found.",
+        });
+        continue;
+      }
+      const row = payoutLookup.payload.data;
+      const provider = String(row.provider || "").toLowerCase();
+      const methodType = String(row.method_type || "").toLowerCase();
+      const status = String(row.status || "").toLowerCase();
+      const approvalStatus = String(row.approval_status || "").toLowerCase();
+      const eligible =
+        ["checkbook", "trolley"].includes(provider) &&
+        methodType === "bank_transfer" &&
+        status === "pending" &&
+        approvalStatus === "pending";
+      if (!eligible) {
+        results.push({
+          id: payoutId,
+          ok: false,
+          errorCode: "not_eligible",
+          message: "Only pending bank-transfer payouts are eligible.",
+        });
+        continue;
+      }
+      const decisionResponse = await handleInvokeFunction(ctx, "cashout-bank-decision", {
+        action,
+        payoutId,
+        actorId: ctx.profile.id,
+        expectedStatus: status,
+        expectedApprovalStatus: approvalStatus,
+      });
+      const decisionPayload = await decisionResponse.json();
+      if (decisionResponse.status >= 400 || decisionPayload?.ok === false) {
+        results.push({
+          id: payoutId,
+          ok: false,
+          errorCode: decisionPayload?.error?.code || decisionPayload?.reason || "decision_failed",
+          message:
+            decisionPayload?.error?.message ||
+            decisionPayload?.message ||
+            decisionPayload?.error ||
+            "Unable to process payout decision.",
+        });
+        continue;
+      }
+
+      const refreshed = await runQuery({
+        table: "cashout_payouts",
+        action: "select",
+        select: "id,status,approval_status,provider_status,updated_at",
+        filters: [{ column: "id", op: "eq", value: payoutId }],
+        single: "maybe",
+      });
+      results.push({
+        id: payoutId,
+        ok: true,
+        status: refreshed.payload?.data?.status || null,
+        message: `${action} applied`,
+      });
+    }
+    const successCount = results.filter((item) => item.ok).length;
+    const failureCount = results.length - successCount;
+    await logAdminActionInternal(ctx, {
+      action: "cashout_batch_decision",
+      entity: "cashout_payouts",
+      status: failureCount > 0 ? "failed" : "success",
+      meta: {
+        action,
+        total: results.length,
+        successCount,
+        failureCount,
+      },
+    });
+    return json({ ok: true, data: { results } }, 200);
+  }
+
+  if (segments.length === 3 && segments[0] === "cashouts" && segments[2] === "retry" && method === "POST") {
+    const payoutId = String(segments[1] || "").trim();
+    if (!payoutId) {
+      return json({ ok: false, error: { code: "invalid_payout_id", message: "Payout id is required." } }, 400);
+    }
+    const beforeResult = await runQuery({
+      table: "cashout_payouts",
+      action: "select",
+      select: "id,status,approval_status,provider,method_type,failure_reason,provider_status",
+      filters: [{ column: "id", op: "eq", value: payoutId }],
+      single: "maybe",
+    });
+    if (!beforeResult.ok || !beforeResult.payload?.data?.id) {
+      return json({ ok: false, error: { code: "payout_not_found", message: "Payout not found." } }, 404);
+    }
+    const row = beforeResult.payload.data;
+    const provider = String(row.provider || "").toLowerCase();
+    const methodType = String(row.method_type || "").toLowerCase();
+    const status = String(row.status || "").toLowerCase();
+    const approvalStatus = String(row.approval_status || "").toLowerCase();
+    if (status !== "failed" || methodType !== "bank_transfer" || !["checkbook", "trolley"].includes(provider)) {
+      return json(
+        {
+          ok: false,
+          error: {
+            code: "not_retryable",
+            message: "Only failed bank-transfer payouts for supported providers can be retried.",
+          },
+        },
+        400,
+      );
+    }
+    if (provider !== "checkbook") {
+      return json(
+        {
+          ok: false,
+          error: {
+            code: "provider_not_supported",
+            message: "Retry is currently supported for Checkbook payouts.",
+          },
+        },
+        400,
+      );
+    }
+
+    const resetResult = await runQuery({
+      table: "cashout_payouts",
+      action: "update",
+      body: {
+        status: "pending",
+        approval_status: "pending",
+        failure_reason: null,
+        provider_status: "admin_retry_requested",
+        updated_at: new Date().toISOString(),
+      },
+      select: "id,status,approval_status,provider,method_type,provider_status,updated_at",
+      filters: [
+        { column: "id", op: "eq", value: payoutId },
+        { column: "status", op: "eq", value: "failed" },
+      ],
+      single: "maybe",
+    });
+    if (!resetResult.ok || !resetResult.payload?.data?.id) {
+      return json(
+        {
+          ok: false,
+          error: {
+            code: "concurrency_conflict",
+            message: "Payout state changed. Refresh and retry.",
+          },
+        },
+        409,
+      );
+    }
+
+    const decisionResponse = await handleInvokeFunction(ctx, "cashout-bank-decision", {
+      action: "approve",
+      payoutId,
+      actorId: ctx.profile.id,
+      expectedStatus: "pending",
+      expectedApprovalStatus: "pending",
+    });
+    const decisionPayload = await decisionResponse.json();
+    if (decisionResponse.status >= 400 || decisionPayload?.ok === false) {
+      await runQuery({
+        table: "cashout_payouts",
+        action: "update",
+        body: {
+          status: "failed",
+          approval_status: approvalStatus === "approved" ? "approved" : "rejected",
+          failure_reason:
+            decisionPayload?.error?.message ||
+            decisionPayload?.message ||
+            "Retry attempt failed.",
+          provider_status: "retry_failed",
+          updated_at: new Date().toISOString(),
+        },
+        select: "id",
+        filters: [{ column: "id", op: "eq", value: payoutId }],
+        single: "maybe",
+      });
+      return json(
+        {
+          ok: false,
+          error: {
+            code: decisionPayload?.error?.code || decisionPayload?.reason || "retry_failed",
+            message:
+              decisionPayload?.error?.message ||
+              decisionPayload?.message ||
+              decisionPayload?.error ||
+              "Retry failed.",
+          },
+        },
+        decisionResponse.status || 400,
+      );
+    }
+
+    const refreshed = await runQuery({
+      table: "cashout_payouts",
+      action: "select",
+      select: "id,user_id,amount_cents,status,provider,method_type,approval_status,bank_summary,provider_claim_url,provider_status,created_at,updated_at",
+      filters: [{ column: "id", op: "eq", value: payoutId }],
+      single: "maybe",
+    });
+    await logAdminActionInternal(ctx, {
+      action: "cashout_retry",
+      entity: "cashout_payouts",
+      entityId: payoutId,
+      status: "success",
+      before: beforeResult.payload.data,
+      after: refreshed.payload?.data || null,
+      meta: { provider },
+    });
+    return json({ ok: true, data: refreshed.payload?.data || null }, 200);
   }
 
   if (segments.length === 3 && segments[0] === "cashouts" && segments[2] === "approve" && method === "POST") {

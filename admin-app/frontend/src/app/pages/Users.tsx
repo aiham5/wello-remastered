@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
 import {
   Search,
   UserPlus,
@@ -12,8 +13,12 @@ import {
   CheckCircle,
   Eye,
   MoreVertical,
+  X,
+  Copy,
+  Link2,
 } from "lucide-react";
 import { StatusBadge } from "../components/StatusBadge";
+import { downloadCsv, type CsvColumn } from "../lib/csv";
 import {
   apiRequest,
   formatDateTime,
@@ -39,13 +44,37 @@ const roleBadge = (role: string): { label: string; variant: "success" | "info" |
   return { label: "Consumer", variant: "default" };
 };
 
+const userCsvColumns: CsvColumn<UserProfile>[] = [
+  { key: "id", label: "User ID" },
+  { key: "full_name", label: "Full Name", format: (value) => String(value || "") },
+  { key: "email", label: "Email", format: (value) => String(value || "") },
+  { key: "role", label: "Role" },
+  { key: "created_at", label: "Created At", format: (value) => String(value || "") },
+  { key: "updated_at", label: "Updated At", format: (value) => String(value || "") },
+];
+
+const makeInviteLink = (email: string) => {
+  const token = `inv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const url = new URL("https://www.wellopartners.com/referral");
+  url.searchParams.set("invite", token);
+  if (email.trim()) url.searchParams.set("email", email.trim());
+  return url.toString();
+};
+
 export function Users() {
+  const navigate = useNavigate();
   const [rows, setRows] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedStatus, setSelectedStatus] = useState("all");
   const [message, setMessage] = useState("");
+
+  const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null);
+  const [menuOpenUserId, setMenuOpenUserId] = useState<string | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteLink, setInviteLink] = useState("");
 
   const loadUsers = async () => {
     setLoading(true);
@@ -110,9 +139,35 @@ export function Users() {
       setRows((prev) =>
         prev.map((row) => (row.id === user.id ? { ...row, role: nextRole } : row)),
       );
+      setSelectedUser((prev) => (prev?.id === user.id ? { ...prev, role: nextRole } : prev));
       setMessage("Role updated.");
     }
     setUpdatingUserId(null);
+  };
+
+  const exportUsers = () => {
+    downloadCsv("users-export.csv", filteredUsers, userCsvColumns);
+    setMessage(`Exported ${filteredUsers.length} users.`);
+  };
+
+  const openInviteModal = () => {
+    setInviteEmail("");
+    setInviteLink(makeInviteLink(""));
+    setInviteOpen(true);
+  };
+
+  const generateInviteLink = () => {
+    setInviteLink(makeInviteLink(inviteEmail));
+  };
+
+  const copyText = async (value: string, successMessage: string) => {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setMessage(successMessage);
+    } catch {
+      setMessage("Unable to copy. Clipboard permission denied.");
+    }
   };
 
   return (
@@ -153,15 +208,19 @@ export function Users() {
             <span className="hidden sm:inline">Refresh</span>
           </button>
 
-          <button className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+          <button
+            type="button"
+            onClick={exportUsers}
+            className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
             <Download className="w-4 h-4" />
             <span className="hidden sm:inline">Export</span>
           </button>
 
           <button
-            disabled
-            className="flex items-center gap-2 px-4 py-2.5 bg-amber-500/60 text-white rounded-lg cursor-not-allowed"
-            title="Creation is handled by auth sign-up flows."
+            type="button"
+            onClick={openInviteModal}
+            className="flex items-center gap-2 px-4 py-2.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors"
           >
             <UserPlus className="w-4 h-4" />
             <span className="hidden sm:inline">Add User</span>
@@ -273,14 +332,20 @@ export function Users() {
                         )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center gap-1">
+                        <div className="relative flex items-center gap-1">
                           <button
+                            type="button"
                             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
                             title="View Details"
+                            onClick={() => {
+                              setSelectedUser(user);
+                              setMenuOpenUserId(null);
+                            }}
                           >
                             <Eye className="w-4 h-4 text-gray-600" />
                           </button>
                           <button
+                            type="button"
                             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
                             title="Promote to Supervisor"
                             disabled={updatingUserId === user.id}
@@ -289,6 +354,7 @@ export function Users() {
                             <CheckCircle className="w-4 h-4 text-green-600" />
                           </button>
                           <button
+                            type="button"
                             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
                             title="Set Consumer Role"
                             disabled={updatingUserId === user.id}
@@ -297,11 +363,54 @@ export function Users() {
                             <Ban className="w-4 h-4 text-red-600" />
                           </button>
                           <button
+                            type="button"
                             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
                             title="More"
+                            onClick={() =>
+                              setMenuOpenUserId((prev) => (prev === user.id ? null : user.id))
+                            }
                           >
                             <MoreVertical className="w-4 h-4 text-gray-600" />
                           </button>
+                          {menuOpenUserId === user.id ? (
+                            <div className="absolute right-0 top-10 z-20 w-52 bg-white border border-gray-200 rounded-lg shadow-lg p-1">
+                              <button
+                                type="button"
+                                className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 rounded-md"
+                                onClick={() => void copyText(user.id, "User ID copied.")}
+                              >
+                                <span className="inline-flex items-center gap-2">
+                                  <Copy className="w-4 h-4" />
+                                  Copy User ID
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 rounded-md"
+                                onClick={() =>
+                                  void copyText(String(user.email || ""), "User email copied.")
+                                }
+                              >
+                                <span className="inline-flex items-center gap-2">
+                                  <Mail className="w-4 h-4" />
+                                  Copy Email
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 rounded-md"
+                                onClick={() => {
+                                  setMenuOpenUserId(null);
+                                  navigate("/admin-roles");
+                                }}
+                              >
+                                <span className="inline-flex items-center gap-2">
+                                  <Link2 className="w-4 h-4" />
+                                  Open Admin Roles
+                                </span>
+                              </button>
+                            </div>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -334,6 +443,97 @@ export function Users() {
           </button>
         </div>
       </div>
+
+      {inviteOpen ? (
+        <div className="fixed inset-0 z-40 bg-black/30 flex items-center justify-center p-4">
+          <div className="w-full max-w-xl bg-white rounded-lg border border-gray-200 shadow-xl">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900">Invite User</h3>
+              <button
+                type="button"
+                onClick={() => setInviteOpen(false)}
+                className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-600" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <label className="block">
+                <span className="text-sm text-gray-700">Optional email</span>
+                <input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(event) => setInviteEmail(event.target.value)}
+                  placeholder="user@example.com"
+                  className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={generateInviteLink}
+                  className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                >
+                  Generate Link
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copyText(inviteLink, "Invite link copied.")}
+                  className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors"
+                >
+                  Copy Link
+                </button>
+              </div>
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm text-gray-700 break-all">
+                {inviteLink}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {selectedUser ? (
+        <div className="fixed inset-0 z-40 bg-black/30 flex justify-end">
+          <div className="w-full max-w-lg h-full bg-white shadow-xl border-l border-gray-200 flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900">User Details</h3>
+              <button
+                type="button"
+                className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                onClick={() => setSelectedUser(null)}
+              >
+                <X className="w-5 h-5 text-gray-600" />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto space-y-4 text-sm">
+              <div>
+                <p className="text-gray-500">Full name</p>
+                <p className="font-medium text-gray-900">{selectedUser.full_name || "Unnamed user"}</p>
+              </div>
+              <div>
+                <p className="text-gray-500">Email</p>
+                <p className="font-medium text-gray-900">{selectedUser.email || "--"}</p>
+              </div>
+              <div>
+                <p className="text-gray-500">User ID</p>
+                <p className="font-medium text-gray-900 break-all">{selectedUser.id}</p>
+              </div>
+              <div>
+                <p className="text-gray-500">Role</p>
+                <p className="font-medium text-gray-900">{selectedUser.role}</p>
+              </div>
+              <div>
+                <p className="text-gray-500">Created</p>
+                <p className="font-medium text-gray-900">{formatDateTime(selectedUser.created_at)}</p>
+              </div>
+              <div>
+                <p className="text-gray-500">Updated</p>
+                <p className="font-medium text-gray-900">{formatDateTime(selectedUser.updated_at)}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

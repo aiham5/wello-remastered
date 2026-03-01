@@ -15,6 +15,7 @@ import {
   formatDateTime,
   summarizeError,
 } from "../lib/adminApi";
+import { downloadCsv, type CsvColumn } from "../lib/csv";
 
 interface CashoutRow {
   id: string;
@@ -31,16 +32,51 @@ interface CashoutRow {
   updated_at?: string | null;
 }
 
+interface BatchDecisionResult {
+  id: string;
+  ok: boolean;
+  status?: string | null;
+  errorCode?: string | null;
+  message?: string | null;
+}
+
+const cashoutCsvColumns: CsvColumn<CashoutRow>[] = [
+  { key: "id", label: "Payout ID" },
+  { key: "user_id", label: "User ID" },
+  { key: "amount_cents", label: "Amount Cents", format: (value) => String(value || 0) },
+  { key: "provider", label: "Provider", format: (value) => String(value || "") },
+  { key: "method_type", label: "Method", format: (value) => String(value || "") },
+  { key: "status", label: "Status", format: (value) => String(value || "") },
+  { key: "approval_status", label: "Approval", format: (value) => String(value || "") },
+  { key: "bank_summary", label: "Bank Summary", format: (value) => String(value || "") },
+  { key: "created_at", label: "Created At", format: (value) => String(value || "") },
+];
+
 const normalizeStatus = (row: CashoutRow) => String(row.status || "pending").toLowerCase();
 const normalizeApproval = (row: CashoutRow) =>
   String(row.approval_status || "not_required").toLowerCase();
+const normalizeProvider = (row: CashoutRow) => String(row.provider || "").toLowerCase();
+const normalizeMethod = (row: CashoutRow) => String(row.method_type || "gift_card").toLowerCase();
+
+const isPendingBankApproval = (row: CashoutRow) =>
+  ["checkbook", "trolley"].includes(normalizeProvider(row)) &&
+  normalizeMethod(row) === "bank_transfer" &&
+  normalizeStatus(row) === "pending" &&
+  normalizeApproval(row) === "pending";
+
+const isRetryableBankFailure = (row: CashoutRow) =>
+  ["checkbook", "trolley"].includes(normalizeProvider(row)) &&
+  normalizeMethod(row) === "bank_transfer" &&
+  normalizeStatus(row) === "failed";
 
 export function CashbackPayouts() {
   const [rows, setRows] = useState<CashoutRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [workingId, setWorkingId] = useState<string | null>(null);
+  const [batchLoading, setBatchLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedStatus, setSelectedStatus] = useState("all");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [message, setMessage] = useState("");
 
   const loadCashouts = async () => {
@@ -56,7 +92,9 @@ export function CashbackPayouts() {
       setMessage(summarizeError(res.error, "Unable to load payouts."));
       setRows([]);
     } else {
-      setRows(Array.isArray(res.data) ? res.data : []);
+      const data = Array.isArray(res.data) ? res.data : [];
+      setRows(data);
+      setSelectedIds((prev) => prev.filter((id) => data.some((row) => row.id === id)));
       setMessage("");
     }
     setLoading(false);
@@ -99,12 +137,32 @@ export function CashbackPayouts() {
     };
   }, [rows]);
 
+  const selectedRows = useMemo(
+    () => rows.filter((row) => selectedIds.includes(row.id)),
+    [rows, selectedIds],
+  );
+
+  const selectedAllVisible =
+    filteredPayouts.length > 0 && filteredPayouts.every((row) => selectedIds.includes(row.id));
+
+  const toggleSelectAllVisible = () => {
+    if (selectedAllVisible) {
+      setSelectedIds((prev) => prev.filter((id) => !filteredPayouts.some((row) => row.id === id)));
+      return;
+    }
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      filteredPayouts.forEach((row) => next.add(row.id));
+      return Array.from(next);
+    });
+  };
+
+  const toggleSelectOne = (id: string) => {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((value) => value !== id) : [...prev, id]));
+  };
+
   const decideBankTransfer = async (row: CashoutRow, action: "approve" | "reject") => {
-    const isPendingBankApproval =
-      String(row.method_type || "").toLowerCase() === "bank_transfer" &&
-      String(row.approval_status || "").toLowerCase() === "pending" &&
-      String(row.status || "").toLowerCase() === "pending";
-    if (!isPendingBankApproval) {
+    if (!isPendingBankApproval(row)) {
       setMessage("Only pending bank transfers can be approved/rejected.");
       return;
     }
@@ -128,25 +186,84 @@ export function CashbackPayouts() {
     if (res.error) {
       setMessage(summarizeError(res.error, `Unable to ${action} payout.`));
     } else {
-      setRows((prev) =>
-        prev.map((item) =>
-          item.id === row.id
-            ? {
-                ...item,
-                approval_status: action === "approve" ? "approved" : "rejected",
-                status: action === "reject" ? "failed" : item.status,
-              }
-            : item,
-        ),
-      );
       setMessage(
         action === "approve"
-          ? "Bank transfer approved. Status can remain pending until Checkbook settles it."
+          ? "Bank transfer approved. Status can remain pending until processor settles it."
           : "Bank transfer rejected.",
       );
-      void loadCashouts();
+      await loadCashouts();
     }
     setWorkingId(null);
+  };
+
+  const processBatch = async () => {
+    if (!selectedRows.length) {
+      setMessage("Select one or more payouts first.");
+      return;
+    }
+    const actionRaw = window.prompt(
+      "Batch action: type 'approve' or 'reject'",
+      "approve",
+    );
+    const action = String(actionRaw || "").trim().toLowerCase();
+    if (!["approve", "reject"].includes(action)) {
+      setMessage("Batch action canceled.");
+      return;
+    }
+    const eligibleIds = selectedRows.filter(isPendingBankApproval).map((row) => row.id);
+    if (!eligibleIds.length) {
+      setMessage("No selected rows are eligible pending bank transfers.");
+      return;
+    }
+    setBatchLoading(true);
+    const res = await apiRequest<{ results?: BatchDecisionResult[] }>(
+      "/api/admin/cashouts/batch/decision",
+      {
+        method: "POST",
+        body: {
+          action,
+          payoutIds: eligibleIds,
+        },
+      },
+    );
+    if (res.error) {
+      setMessage(summarizeError(res.error, "Unable to process batch decision."));
+    } else {
+      const results = Array.isArray(res.data?.results) ? res.data.results : [];
+      const successCount = results.filter((item) => item.ok).length;
+      const failureCount = results.length - successCount;
+      setMessage(
+        `Batch ${action} finished. Success: ${successCount}. Failed: ${failureCount}.`,
+      );
+      setSelectedIds([]);
+      await loadCashouts();
+    }
+    setBatchLoading(false);
+  };
+
+  const retryFailedPayout = async (row: CashoutRow) => {
+    if (!isRetryableBankFailure(row)) return;
+    const confirmed = window.confirm(
+      `Retry failed bank transfer payout ${row.id.slice(0, 8)}?`,
+    );
+    if (!confirmed) return;
+    setWorkingId(row.id);
+    const res = await apiRequest<CashoutRow>(
+      `/api/admin/cashouts/${encodeURIComponent(row.id)}/retry`,
+      { method: "POST" },
+    );
+    if (res.error) {
+      setMessage(summarizeError(res.error, "Unable to retry payout."));
+    } else {
+      setMessage("Retry request submitted.");
+      await loadCashouts();
+    }
+    setWorkingId(null);
+  };
+
+  const exportPayouts = () => {
+    downloadCsv("cashback-payouts-export.csv", filteredPayouts, cashoutCsvColumns);
+    setMessage(`Exported ${filteredPayouts.length} payouts.`);
   };
 
   return (
@@ -179,6 +296,7 @@ export function CashbackPayouts() {
           </select>
 
           <button
+            type="button"
             onClick={() => void loadCashouts()}
             className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
           >
@@ -186,17 +304,25 @@ export function CashbackPayouts() {
             <span className="hidden sm:inline">Refresh</span>
           </button>
 
-          <button className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+          <button
+            type="button"
+            onClick={exportPayouts}
+            className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
             <Download className="w-4 h-4" />
             <span className="hidden sm:inline">Export</span>
           </button>
 
           <button
-            disabled
-            className="flex items-center gap-2 px-4 py-2.5 bg-amber-500/60 text-white rounded-lg cursor-not-allowed"
+            type="button"
+            disabled={batchLoading || !selectedRows.length}
+            onClick={() => void processBatch()}
+            className="flex items-center gap-2 px-4 py-2.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-60"
           >
             <CheckCircle className="w-4 h-4" />
-            <span className="hidden sm:inline">Process Batch</span>
+            <span className="hidden sm:inline">
+              {batchLoading ? "Processing..." : "Process Batch"}
+            </span>
           </button>
         </div>
       </div>
@@ -244,7 +370,12 @@ export function CashbackPayouts() {
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                  <input type="checkbox" className="rounded" />
+                  <input
+                    type="checkbox"
+                    checked={selectedAllVisible}
+                    onChange={toggleSelectAllVisible}
+                    className="rounded"
+                  />
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payout ID</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
@@ -265,18 +396,17 @@ export function CashbackPayouts() {
                 </tr>
               ) : filteredPayouts.length ? (
                 filteredPayouts.map((payout) => {
-                  const isPendingBankApproval =
-                    ["checkbook", "trolley"].includes(
-                      String(payout.provider || "").toLowerCase(),
-                    ) &&
-                    String(payout.method_type || "").toLowerCase() === "bank_transfer" &&
-                    String(payout.status || "").toLowerCase() === "pending" &&
-                    String(payout.approval_status || "").toLowerCase() === "pending";
-
+                  const canApproveReject = isPendingBankApproval(payout);
+                  const canRetry = isRetryableBankFailure(payout);
                   return (
                     <tr key={payout.id} className="hover:bg-gray-50 transition-colors">
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <input type="checkbox" className="rounded" />
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.includes(payout.id)}
+                          onChange={() => toggleSelectOne(payout.id)}
+                          className="rounded"
+                        />
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <p className="font-medium text-gray-900">#{payout.id.slice(0, 8)}</p>
@@ -356,7 +486,7 @@ export function CashbackPayouts() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center gap-2">
-                          {isPendingBankApproval && (
+                          {canApproveReject && (
                             <>
                               <button
                                 disabled={workingId === payout.id}
@@ -376,16 +506,27 @@ export function CashbackPayouts() {
                               </button>
                             </>
                           )}
-                          {normalizeStatus(payout) === "failed" && (
-                            <button className="flex items-center gap-1 px-3 py-1.5 text-sm bg-blue-50 text-blue-700 rounded hover:bg-blue-100 transition-colors">
+                          {canRetry ? (
+                            <button
+                              type="button"
+                              disabled={workingId === payout.id}
+                              onClick={() => void retryFailedPayout(payout)}
+                              className="flex items-center gap-1 px-3 py-1.5 text-sm bg-blue-50 text-blue-700 rounded hover:bg-blue-100 transition-colors disabled:opacity-60"
+                            >
                               <Clock className="w-4 h-4" />
                               Retry
                             </button>
-                          )}
+                          ) : null}
                           {payout.provider_claim_url ? (
                             <button
                               className="flex items-center gap-1 px-3 py-1.5 text-sm bg-gray-50 text-gray-700 rounded hover:bg-gray-100 transition-colors"
-                              onClick={() => window.open(payout.provider_claim_url || "", "_blank", "noopener,noreferrer")}
+                              onClick={() =>
+                                window.open(
+                                  payout.provider_claim_url || "",
+                                  "_blank",
+                                  "noopener,noreferrer",
+                                )
+                              }
                             >
                               Claim
                             </button>

@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Eye,
   RefreshCw,
+  ImageIcon,
 } from "lucide-react";
 import { StatusBadge } from "../components/StatusBadge";
 import {
@@ -13,6 +14,7 @@ import {
   summarizeError,
 } from "../lib/adminApi";
 import { resolveReceiptImage, type SignedReceiptImage } from "../lib/receiptImage";
+import { ImageLightbox } from "../components/ImageLightbox";
 
 type ReviewStatus = "pending" | "verified" | "rejected";
 
@@ -62,6 +64,9 @@ export function ReceiptReviews() {
   const [previewError, setPreviewError] = useState("");
   const [totalInput, setTotalInput] = useState("0.00");
   const [notesInput, setNotesInput] = useState("");
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerUrl, setViewerUrl] = useState("");
+  const [viewerTitle, setViewerTitle] = useState("Receipt Image");
 
   const loadReceipts = async () => {
     setLoading(true);
@@ -235,6 +240,17 @@ export function ReceiptReviews() {
     setWorking(false);
   };
 
+  const openReceiptImage = async (row: ReceiptListRow) => {
+    const signed = await resolveReceiptImage(String(row.storage_path || ""));
+    if (!signed.signedUrl) {
+      setMessage(`Unable to open image. ${signed.errorReason || "No image available."}`);
+      return;
+    }
+    setViewerTitle(`Receipt ${row.id.slice(0, 8)}`);
+    setViewerUrl(signed.signedUrl);
+    setViewerOpen(true);
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
@@ -363,6 +379,20 @@ export function ReceiptReviews() {
                               <Eye className="w-4 h-4" />
                               Review
                             </button>
+                            <button
+                              type="button"
+                              className="flex items-center gap-1 px-3 py-1.5 text-sm bg-gray-50 text-gray-700 rounded hover:bg-gray-100 transition-colors"
+                              onClick={() => void openReceiptImage(receipt)}
+                              disabled={!String(receipt.storage_path || "").trim()}
+                              title={
+                                String(receipt.storage_path || "").trim()
+                                  ? "Open full-size image"
+                                  : "Image unavailable"
+                              }
+                            >
+                              <ImageIcon className="w-4 h-4" />
+                              Open image
+                            </button>
                             {status === "pending" && (
                               <span className="text-xs text-gray-500">Use sidebar actions</span>
                             )}
@@ -480,11 +510,24 @@ export function ReceiptReviews() {
 
               <div className="border border-gray-200 rounded-lg p-2 bg-gray-50">
                 {image?.signedUrl ? (
-                  <img
-                    src={image.signedUrl}
-                    alt="Receipt"
-                    className="w-full max-h-64 object-contain rounded"
-                  />
+                  <div className="space-y-2">
+                    <img
+                      src={image.signedUrl}
+                      alt="Receipt"
+                      className="w-full max-h-64 object-contain rounded"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setViewerTitle(`Receipt ${detail.id.slice(0, 8)}`);
+                        setViewerUrl(image.signedUrl);
+                        setViewerOpen(true);
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors text-sm"
+                    >
+                      Open full size
+                    </button>
+                  </div>
                 ) : (
                   <p className="text-xs text-gray-500">
                     Unable to load image. {image?.errorReason || "No image path available."}
@@ -528,6 +571,12 @@ export function ReceiptReviews() {
           )}
         </aside>
       </div>
+      <ImageLightbox
+        open={viewerOpen}
+        imageUrl={viewerUrl}
+        title={viewerTitle}
+        onClose={() => setViewerOpen(false)}
+      />
     </div>
   );
 }

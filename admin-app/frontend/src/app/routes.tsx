@@ -14,6 +14,7 @@ import { SupportTickets } from "./pages/SupportTickets";
 import { Reports } from "./pages/Reports";
 import { Settings } from "./pages/Settings";
 import { AdminRoles } from "./pages/AdminRoles";
+import { Help } from "./pages/Help";
 
 export const router = createHashRouter([
   {
@@ -34,6 +35,7 @@ export const router = createHashRouter([
       { path: "reports", Component: Reports },
       { path: "settings", Component: Settings },
       { path: "admin-roles", Component: AdminRoles },
+      { path: "help", Component: Help },
     ],
   },
 ]);

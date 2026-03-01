@@ -11,6 +11,7 @@ import {
   Legend,
 } from "recharts";
 import { apiRequest, formatCurrencyFromCents, summarizeError } from "../lib/adminApi";
+import { downloadCsv, type CsvColumn } from "../lib/csv";
 
 interface ReceiptRow {
   uploaded_at?: string | null;
@@ -34,6 +35,13 @@ interface ChartRow {
   cashback: number;
   activity: number;
 }
+
+const reportCsvColumns: CsvColumn<ChartRow>[] = [
+  { key: "month", label: "Month" },
+  { key: "revenue", label: "Revenue ($)" },
+  { key: "cashback", label: "Cashback ($)" },
+  { key: "activity", label: "Admin Actions" },
+];
 
 const monthKey = (date: Date) =>
   `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
@@ -177,6 +185,11 @@ export function Reports() {
     [chartData],
   );
 
+  const exportReport = () => {
+    downloadCsv("reports-export.csv", chartData, reportCsvColumns);
+    setMessage(`Exported ${chartData.length} report rows.`);
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -189,7 +202,11 @@ export function Reports() {
             Refresh Data
           </button>
         </div>
-        <button className="flex items-center gap-2 px-4 py-2.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors">
+        <button
+          type="button"
+          onClick={exportReport}
+          className="flex items-center gap-2 px-4 py-2.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors"
+        >
           <Download className="w-4 h-4" />
           Export Report
         </button>
