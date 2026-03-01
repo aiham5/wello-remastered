@@ -26,11 +26,14 @@ interface CashoutRow {
   approval_status?: string | null;
   bank_summary?: string | null;
   provider_claim_url?: string | null;
+  provider_status?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 }
 
 const normalizeStatus = (row: CashoutRow) => String(row.status || "pending").toLowerCase();
+const normalizeApproval = (row: CashoutRow) =>
+  String(row.approval_status || "not_required").toLowerCase();
 
 export function CashbackPayouts() {
   const [rows, setRows] = useState<CashoutRow[]>([]);
@@ -125,7 +128,22 @@ export function CashbackPayouts() {
     if (res.error) {
       setMessage(summarizeError(res.error, `Unable to ${action} payout.`));
     } else {
-      setMessage(`Bank transfer ${action}d.`);
+      setRows((prev) =>
+        prev.map((item) =>
+          item.id === row.id
+            ? {
+                ...item,
+                approval_status: action === "approve" ? "approved" : "rejected",
+                status: action === "reject" ? "failed" : item.status,
+              }
+            : item,
+        ),
+      );
+      setMessage(
+        action === "approve"
+          ? "Bank transfer approved. Status can remain pending until Checkbook settles it."
+          : "Bank transfer rejected.",
+      );
       void loadCashouts();
     }
     setWorkingId(null);
@@ -234,20 +252,23 @@ export function CashbackPayouts() {
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Method</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Requested</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Approval</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-10 text-center text-gray-500">
+                  <td colSpan={9} className="px-6 py-10 text-center text-gray-500">
                     Loading payouts...
                   </td>
                 </tr>
               ) : filteredPayouts.length ? (
                 filteredPayouts.map((payout) => {
                   const isPendingBankApproval =
-                    String(payout.provider || "").toLowerCase() === "checkbook" &&
+                    ["checkbook", "trolley"].includes(
+                      String(payout.provider || "").toLowerCase(),
+                    ) &&
                     String(payout.method_type || "").toLowerCase() === "bank_transfer" &&
                     String(payout.status || "").toLowerCase() === "pending" &&
                     String(payout.approval_status || "").toLowerCase() === "pending";
@@ -296,7 +317,18 @@ export function CashbackPayouts() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         {normalizeStatus(payout) === "pending" && (
-                          <StatusBadge status="Pending" variant="warning" />
+                          <StatusBadge
+                            status={
+                              normalizeApproval(payout) === "approved"
+                                ? "Pending release"
+                                : "Pending"
+                            }
+                            variant={
+                              normalizeApproval(payout) === "approved"
+                                ? "info"
+                                : "warning"
+                            }
+                          />
                         )}
                         {normalizeStatus(payout) === "processing" && (
                           <StatusBadge status="Processing" variant="info" />
@@ -306,6 +338,20 @@ export function CashbackPayouts() {
                         )}
                         {normalizeStatus(payout) === "failed" && (
                           <StatusBadge status="Failed" variant="danger" />
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {normalizeApproval(payout) === "pending" && (
+                          <StatusBadge status="Pending" variant="warning" />
+                        )}
+                        {normalizeApproval(payout) === "approved" && (
+                          <StatusBadge status="Approved" variant="success" />
+                        )}
+                        {normalizeApproval(payout) === "rejected" && (
+                          <StatusBadge status="Rejected" variant="danger" />
+                        )}
+                        {normalizeApproval(payout) === "not_required" && (
+                          <StatusBadge status="Not required" variant="default" />
                         )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -351,7 +397,7 @@ export function CashbackPayouts() {
                 })
               ) : (
                 <tr>
-                  <td colSpan={8} className="px-6 py-10 text-center text-gray-500">
+                  <td colSpan={9} className="px-6 py-10 text-center text-gray-500">
                     No payouts match current filters.
                   </td>
                 </tr>

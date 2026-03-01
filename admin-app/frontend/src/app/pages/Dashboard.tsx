@@ -52,37 +52,74 @@ interface EventPayload {
   }>;
 }
 
-const redemptionsData = [
-  { month: "Jan", redemptions: 8240, revenue: 18200 },
-  { month: "Feb", redemptions: 9180, revenue: 21400 },
-  { month: "Mar", redemptions: 11250, revenue: 24800 },
-  { month: "Apr", redemptions: 13420, revenue: 28300 },
-  { month: "May", redemptions: 15680, revenue: 32100 },
-  { month: "Jun", redemptions: 18290, revenue: 38500 },
-  { month: "Jul", redemptions: 21450, revenue: 42800 },
-];
+interface ReceiptAggRow {
+  uploaded_at?: string | null;
+  receipt_total_cents?: number | null;
+  review_status?: string | null;
+}
 
-const userGrowthData = [
-  { month: "Jan", users: 28400 },
-  { month: "Feb", users: 31200 },
-  { month: "Mar", users: 34800 },
-  { month: "Apr", users: 38200 },
-  { month: "May", users: 41600 },
-  { month: "Jun", users: 44900 },
-  { month: "Jul", users: 48293 },
-];
+interface ProfileAggRow {
+  created_at?: string | null;
+}
+
+const monthKey = (date: Date) =>
+  `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+
+const monthLabel = (date: Date) =>
+  date.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+
+const getLastMonths = (count: number) => {
+  const now = new Date();
+  const months: Array<{ key: string; label: string; start: Date }> = [];
+  for (let i = count - 1; i >= 0; i -= 1) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1, 0, 0, 0));
+    months.push({ key: monthKey(d), label: monthLabel(d), start: d });
+  }
+  return months;
+};
 
 export function Dashboard() {
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [events, setEvents] = useState<EventPayload>({});
   const [error, setError] = useState("");
+  const [redemptionsData, setRedemptionsData] = useState<
+    Array<{ month: string; redemptions: number; revenue: number }>
+  >([]);
+  const [userGrowthData, setUserGrowthData] = useState<Array<{ month: string; users: number }>>(
+    [],
+  );
 
   useEffect(() => {
     let mounted = true;
     const run = async () => {
-      const [overviewRes, eventsRes] = await Promise.all([
+      const months = getLastMonths(7);
+      const startIso = months[0].start.toISOString();
+
+      const [overviewRes, eventsRes, receiptsRes, usersRes] = await Promise.all([
         apiRequest<OverviewData>("/api/admin/overview"),
         apiRequest<EventPayload>("/api/admin/events"),
+        apiRequest<ReceiptAggRow[]>("/api/admin/query", {
+          method: "POST",
+          body: {
+            table: "receipt_uploads",
+            action: "select",
+            select: "uploaded_at,receipt_total_cents,review_status",
+            filters: [{ column: "uploaded_at", op: "gte", value: startIso }],
+            order: [{ column: "uploaded_at", ascending: true }],
+            limit: 5000,
+          },
+        }),
+        apiRequest<ProfileAggRow[]>("/api/admin/query", {
+          method: "POST",
+          body: {
+            table: "profiles",
+            action: "select",
+            select: "created_at",
+            filters: [{ column: "created_at", op: "gte", value: startIso }],
+            order: [{ column: "created_at", ascending: true }],
+            limit: 5000,
+          },
+        }),
       ]);
 
       if (!mounted) return;
@@ -100,6 +137,43 @@ export function Dashboard() {
 
       if (!eventsRes.error && eventsRes.data) {
         setEvents(eventsRes.data);
+      }
+
+      if (!receiptsRes.error) {
+        const map = new Map(
+          months.map((m) => [m.key, { month: m.label, redemptions: 0, revenue: 0 }]),
+        );
+        (receiptsRes.data || []).forEach((row) => {
+          const iso = String(row.uploaded_at || "");
+          const date = new Date(iso);
+          if (Number.isNaN(date.getTime())) return;
+          const key = monthKey(date);
+          const entry = map.get(key);
+          if (!entry) return;
+          if (String(row.review_status || "").toLowerCase() === "verified") {
+            entry.redemptions += 1;
+            entry.revenue += Math.round((Number(row.receipt_total_cents || 0) / 100) * 100) / 100;
+          }
+        });
+        setRedemptionsData(months.map((m) => map.get(m.key) || { month: m.label, redemptions: 0, revenue: 0 }));
+      }
+
+      if (!usersRes.error) {
+        const increments = new Map(months.map((m) => [m.key, 0]));
+        (usersRes.data || []).forEach((row) => {
+          const date = new Date(String(row.created_at || ""));
+          if (Number.isNaN(date.getTime())) return;
+          const key = monthKey(date);
+          if (!increments.has(key)) return;
+          increments.set(key, Number(increments.get(key) || 0) + 1);
+        });
+
+        let running = 0;
+        const growth = months.map((m) => {
+          running += Number(increments.get(m.key) || 0);
+          return { month: m.label, users: running };
+        });
+        setUserGrowthData(growth);
       }
     };
 
@@ -221,7 +295,7 @@ export function Dashboard() {
             Redemptions & Revenue
           </h3>
           <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={redemptionsData}>
+            <LineChart data={redemptionsData.length ? redemptionsData : [{ month: "N/A", redemptions: 0, revenue: 0 }]}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
               <XAxis dataKey="month" stroke="#9ca3af" />
               <YAxis stroke="#9ca3af" />
@@ -245,7 +319,7 @@ export function Dashboard() {
                 dataKey="revenue"
                 stroke="#3b82f6"
                 strokeWidth={3}
-                name="Revenue"
+                name="Revenue ($)"
               />
             </LineChart>
           </ResponsiveContainer>
@@ -254,7 +328,7 @@ export function Dashboard() {
         <div className="bg-white rounded-lg p-6 border border-gray-200">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">User Growth</h3>
           <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={userGrowthData}>
+            <BarChart data={userGrowthData.length ? userGrowthData : [{ month: "N/A", users: 0 }]}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
               <XAxis dataKey="month" stroke="#9ca3af" />
               <YAxis stroke="#9ca3af" />

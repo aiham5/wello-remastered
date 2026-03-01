@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Search,
-  Filter,
-  CheckCircle,
-  XCircle,
   AlertTriangle,
   Eye,
+  RefreshCw,
 } from "lucide-react";
 import { StatusBadge } from "../components/StatusBadge";
 import {
@@ -14,13 +12,15 @@ import {
   formatRelativeTime,
   summarizeError,
 } from "../lib/adminApi";
+import { resolveReceiptImage, type SignedReceiptImage } from "../lib/receiptImage";
 
 type ReviewStatus = "pending" | "verified" | "rejected";
 
-interface ReceiptRow {
+interface ReceiptListRow {
   id: string;
   user_id?: string | null;
   business_id?: string | null;
+  storage_path?: string | null;
   receipt_total_cents?: number | null;
   review_status?: ReviewStatus | null;
   review_notes?: string | null;
@@ -29,20 +29,39 @@ interface ReceiptRow {
   business?: { id: string; name?: string | null } | null;
 }
 
-const toStatusLabel = (status?: string | null) => {
-  const normalized = String(status || "pending").toLowerCase();
-  if (normalized === "verified") return "Approved";
-  if (normalized === "rejected") return "Rejected";
-  return "Pending";
-};
+interface ReceiptDetail extends ReceiptListRow {
+  commission_due_cents?: number | null;
+  promo_code_id?: string | null;
+}
+
+interface PreviewData {
+  commission_cents?: number;
+  commission_rate_bps?: number;
+  cashback_cents?: number;
+  effective_cashback_rate_bps?: number;
+  applied_promo_code?: string | null;
+  applied_promo_rate_bps?: number | null;
+  platform_subsidy_cents?: number;
+}
+
+const asDollarsString = (cents?: number | null) => ((Number(cents || 0) / 100).toFixed(2));
 
 export function ReceiptReviews() {
-  const [rows, setRows] = useState<ReceiptRow[]>([]);
+  const [rows, setRows] = useState<ReceiptListRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [workingId, setWorkingId] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedStatus, setSelectedStatus] = useState("pending");
+  const [selectedStatus, setSelectedStatus] = useState<ReviewStatus>("pending");
   const [message, setMessage] = useState("");
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<ReceiptDetail | null>(null);
+  const [image, setImage] = useState<SignedReceiptImage | null>(null);
+  const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const [totalInput, setTotalInput] = useState("0.00");
+  const [notesInput, setNotesInput] = useState("");
 
   const loadReceipts = async () => {
     setLoading(true);
@@ -53,21 +72,88 @@ export function ReceiptReviews() {
     });
     if (searchQuery.trim()) params.set("search", searchQuery.trim());
 
-    const res = await apiRequest<ReceiptRow[]>(`/api/admin/receipts?${params.toString()}`);
+    const res = await apiRequest<ReceiptListRow[]>(`/api/admin/receipts?${params.toString()}`);
     if (res.error) {
       setMessage(summarizeError(res.error, "Unable to load receipts."));
       setRows([]);
     } else {
-      setRows(Array.isArray(res.data) ? res.data : []);
+      const list = Array.isArray(res.data) ? res.data : [];
+      setRows(list);
       setMessage("");
+      if (list.length && !list.some((row) => row.id === selectedId)) {
+        setSelectedId(list[0].id);
+      }
+      if (!list.length) {
+        setSelectedId(null);
+        setDetail(null);
+        setImage(null);
+      }
     }
     setLoading(false);
+  };
+
+  const loadDetail = async (receiptId: string) => {
+    const res = await apiRequest<ReceiptDetail>(
+      `/api/admin/receipts/${encodeURIComponent(receiptId)}/detail`,
+    );
+    if (res.error || !res.data) {
+      setMessage(summarizeError(res.error, "Unable to load receipt detail."));
+      return;
+    }
+    setDetail(res.data);
+    setTotalInput(asDollarsString(res.data.receipt_total_cents));
+    setNotesInput(String(res.data.review_notes || ""));
+    setPreview(null);
+    setPreviewError("");
+
+    const signed = await resolveReceiptImage(String(res.data.storage_path || ""));
+    setImage(signed);
   };
 
   useEffect(() => {
     void loadReceipts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStatus]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    void loadDetail(selectedId);
+  }, [selectedId]);
+
+  useEffect(() => {
+    const current = detail;
+    if (!current?.id) return;
+    const status = String(current.review_status || "").toLowerCase();
+    if (status !== "pending" && status !== "verified") return;
+
+    const parsed = Number(totalInput);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setPreview(null);
+      setPreviewError("");
+      return;
+    }
+
+    const timeout = setTimeout(async () => {
+      setPreviewLoading(true);
+      const res = await apiRequest<PreviewData>(
+        `/api/admin/receipts/${encodeURIComponent(current.id)}/preview`,
+        {
+          method: "POST",
+          body: { receiptTotalCents: Math.round(parsed * 100) },
+        },
+      );
+      if (res.error) {
+        setPreview(null);
+        setPreviewError(summarizeError(res.error, "Unable to calculate preview."));
+      } else {
+        setPreview(res.data || null);
+        setPreviewError("");
+      }
+      setPreviewLoading(false);
+    }, 250);
+
+    return () => clearTimeout(timeout);
+  }, [totalInput, detail?.id, detail?.review_status]);
 
   const filteredReceipts = useMemo(() => {
     if (!searchQuery.trim()) return rows;
@@ -83,9 +169,8 @@ export function ReceiptReviews() {
   const stats = useMemo(
     () => ({
       pending: rows.filter((row) => String(row.review_status) === "pending").length,
-      flagged: rows.filter((row) =>
-        (Number(row.receipt_total_cents || 0) > 10000) ||
-        String(row.review_notes || "").trim().length > 0,
+      flagged: rows.filter(
+        (row) => Number(row.receipt_total_cents || 0) > 10000 || !!String(row.review_notes || "").trim(),
       ).length,
       approved: rows.filter((row) => String(row.review_status) === "verified").length,
       avgReviewText: "Live queue",
@@ -93,83 +178,61 @@ export function ReceiptReviews() {
     [rows],
   );
 
-  const applyDecision = async (receipt: ReceiptRow, action: "verify" | "reject") => {
-    const expectedStatus = String(receipt.review_status || "pending");
-    if (expectedStatus !== "pending") return;
+  const submitDecision = async (action: "verify" | "reject" | "edit") => {
+    if (!detail?.id) return;
 
-    let receiptTotalCents = Number(receipt.receipt_total_cents || 0);
-    const defaultDollars = (receiptTotalCents / 100).toFixed(2);
-    if (action === "verify") {
-      const amount = window.prompt("Receipt total (USD)", defaultDollars);
-      if (amount == null) return;
-      const parsed = Number(amount);
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        setMessage("Enter a valid receipt amount.");
-        return;
-      }
-      receiptTotalCents = Math.round(parsed * 100);
+    const parsed = Number(totalInput);
+    const receiptTotalCents = Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed * 100) : 0;
+    if ((action === "verify" || action === "edit") && receiptTotalCents <= 0) {
+      setMessage("Enter a valid receipt total before approving.");
+      return;
     }
-    const reviewNotes = window.prompt(
-      action === "reject" ? "Rejection reason" : "Review notes (optional)",
-      String(receipt.review_notes || ""),
-    );
-    if (reviewNotes === null && action === "reject") return;
 
-    setWorkingId(receipt.id);
-    const res = await apiRequest<ReceiptRow>(
-      `/api/admin/receipts/${encodeURIComponent(receipt.id)}/decision`,
+    const expectedStatus = String(detail.review_status || "pending");
+    const expectedReviewedAt = detail.reviewed_at || null;
+    setWorking(true);
+    const res = await apiRequest<ReceiptDetail>(
+      `/api/admin/receipts/${encodeURIComponent(detail.id)}/decision`,
       {
         method: "POST",
         body: {
           action,
           receiptTotalCents,
-          reviewNotes: reviewNotes || null,
+          reviewNotes: notesInput.trim() || null,
           expectedStatus,
-          expectedReviewedAt: receipt.reviewed_at || null,
+          expectedReviewedAt,
         },
       },
     );
-    if (res.error) {
-      setMessage(summarizeError(res.error, "Unable to update receipt."));
-    } else {
-      const nextStatus: ReviewStatus = action === "verify" ? "verified" : "rejected";
-      setRows((prev) =>
-        prev.map((row) =>
-          row.id === receipt.id
-            ? {
-                ...row,
-                review_status: nextStatus,
-                receipt_total_cents: receiptTotalCents,
-                review_notes: reviewNotes || null,
-                reviewed_at: new Date().toISOString(),
-              }
-            : row,
-        ),
-      );
-      setMessage(`Receipt ${action === "verify" ? "approved" : "rejected"}.`);
-    }
-    setWorkingId(null);
-  };
-
-  const openDetail = async (receiptId: string) => {
-    const res = await apiRequest<ReceiptRow>(
-      `/api/admin/receipts/${encodeURIComponent(receiptId)}/detail`,
-    );
     if (res.error || !res.data) {
-      setMessage(summarizeError(res.error, "Unable to load receipt detail."));
+      setMessage(summarizeError(res.error, "Unable to update receipt decision."));
+      setWorking(false);
       return;
     }
-    const row = res.data;
-    window.alert(
-      [
-        `Receipt: ${row.id}`,
-        `Business: ${row.business?.name || row.business_id || "--"}`,
-        `User: ${row.user_id || "--"}`,
-        `Status: ${row.review_status || "pending"}`,
-        `Amount: ${formatCurrencyFromCents(Number(row.receipt_total_cents || 0))}`,
-        `Notes: ${row.review_notes || "None"}`,
-      ].join("\n"),
+
+    const updated = res.data;
+    setRows((prev) =>
+      prev.map((row) =>
+        row.id === updated.id
+          ? {
+              ...row,
+              review_status: updated.review_status,
+              review_notes: updated.review_notes,
+              reviewed_at: updated.reviewed_at,
+              receipt_total_cents: updated.receipt_total_cents,
+            }
+          : row,
+      ),
     );
+    setDetail(updated);
+    setMessage(
+      action === "verify"
+        ? "Receipt verified."
+        : action === "reject"
+          ? "Receipt rejected."
+          : "Receipt updated.",
+    );
+    setWorking(false);
   };
 
   return (
@@ -191,7 +254,7 @@ export function ReceiptReviews() {
         <div className="flex gap-3 w-full sm:w-auto">
           <select
             value={selectedStatus}
-            onChange={(e) => setSelectedStatus(e.target.value)}
+            onChange={(e) => setSelectedStatus(e.target.value as ReviewStatus)}
             className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
           >
             <option value="pending">Pending</option>
@@ -203,7 +266,7 @@ export function ReceiptReviews() {
             onClick={() => void loadReceipts()}
             className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
           >
-            <Filter className="w-4 h-4" />
+            <RefreshCw className="w-4 h-4" />
             <span className="hidden sm:inline">Refresh</span>
           </button>
         </div>
@@ -234,123 +297,236 @@ export function ReceiptReviews() {
         </div>
       </div>
 
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Receipt ID</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Business</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cashback</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Method</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {loading ? (
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="xl:col-span-2 bg-white rounded-lg border border-gray-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  <td colSpan={8} className="px-6 py-10 text-center text-gray-500">
-                    Loading receipts...
-                  </td>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Receipt ID</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Business</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
-              ) : filteredReceipts.length ? (
-                filteredReceipts.map((receipt) => {
-                  const status = String(receipt.review_status || "pending");
-                  const amountCents = Number(receipt.receipt_total_cents || 0);
-                  const expectedCashback = Math.floor(amountCents * 0.1);
-                  return (
-                    <tr key={receipt.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div>
-                          <p className="font-medium text-gray-900">#{receipt.id.slice(0, 8)}</p>
-                          <p className="text-xs text-gray-500">{formatRelativeTime(receipt.uploaded_at)}</p>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <p className="text-sm text-gray-900">{receipt.user_id || "--"}</p>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <p className="text-sm text-gray-900">
-                          {receipt.business?.name || receipt.business_id || "--"}
-                        </p>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <p className="font-medium text-gray-900">{formatCurrencyFromCents(amountCents)}</p>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <p className="font-medium text-green-600">
-                          {formatCurrencyFromCents(expectedCashback)}
-                        </p>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <StatusBadge status="Receipt Upload" variant="default" />
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="space-y-1">
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {loading ? (
+                  <tr>
+                    <td colSpan={6} className="px-6 py-10 text-center text-gray-500">
+                      Loading receipts...
+                    </td>
+                  </tr>
+                ) : filteredReceipts.length ? (
+                  filteredReceipts.map((receipt) => {
+                    const status = String(receipt.review_status || "pending");
+                    const amountCents = Number(receipt.receipt_total_cents || 0);
+                    const isSelected = selectedId === receipt.id;
+                    return (
+                      <tr
+                        key={receipt.id}
+                        className={`transition-colors ${
+                          isSelected ? "bg-amber-50" : "hover:bg-gray-50"
+                        }`}
+                      >
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div>
+                            <p className="font-medium text-gray-900">#{receipt.id.slice(0, 8)}</p>
+                            <p className="text-xs text-gray-500">{formatRelativeTime(receipt.uploaded_at)}</p>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <p className="text-sm text-gray-900">{receipt.user_id || "--"}</p>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <p className="text-sm text-gray-900">
+                            {receipt.business?.name || receipt.business_id || "--"}
+                          </p>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <p className="font-medium text-gray-900">
+                            {formatCurrencyFromCents(amountCents)}
+                          </p>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
                           {status === "pending" && <StatusBadge status="Pending" variant="warning" />}
                           {status === "verified" && <StatusBadge status="Approved" variant="success" />}
                           {status === "rejected" && <StatusBadge status="Rejected" variant="danger" />}
-                          {Number(amountCents) > 10000 && (
-                            <div className="flex items-center gap-1 text-xs text-red-600 mt-1">
-                              <AlertTriangle className="w-3 h-3" />
-                              <span>High amount</span>
-                            </div>
-                          )}
-                          {receipt.review_notes ? (
-                            <div className="flex items-center gap-1 text-xs text-amber-700 mt-1">
-                              <AlertTriangle className="w-3 h-3" />
-                              <span>{receipt.review_notes}</span>
-                            </div>
-                          ) : null}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center gap-2">
-                          <button
-                            className="flex items-center gap-1 px-3 py-1.5 text-sm bg-blue-50 text-blue-700 rounded hover:bg-blue-100 transition-colors"
-                            onClick={() => void openDetail(receipt.id)}
-                          >
-                            <Eye className="w-4 h-4" />
-                            Review
-                          </button>
-                          {status === "pending" && (
-                            <>
-                              <button
-                                disabled={workingId === receipt.id}
-                                onClick={() => void applyDecision(receipt, "verify")}
-                                className="p-1.5 bg-green-50 text-green-700 rounded hover:bg-green-100 transition-colors disabled:opacity-60"
-                                title="Approve"
-                              >
-                                <CheckCircle className="w-4 h-4" />
-                              </button>
-                              <button
-                                disabled={workingId === receipt.id}
-                                onClick={() => void applyDecision(receipt, "reject")}
-                                className="p-1.5 bg-red-50 text-red-700 rounded hover:bg-red-100 transition-colors disabled:opacity-60"
-                                title="Reject"
-                              >
-                                <XCircle className="w-4 h-4" />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              ) : (
-                <tr>
-                  <td colSpan={8} className="px-6 py-10 text-center text-gray-500">
-                    No receipts match current filters.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center gap-2">
+                            <button
+                              className="flex items-center gap-1 px-3 py-1.5 text-sm bg-blue-50 text-blue-700 rounded hover:bg-blue-100 transition-colors"
+                              onClick={() => setSelectedId(receipt.id)}
+                            >
+                              <Eye className="w-4 h-4" />
+                              Review
+                            </button>
+                            {status === "pending" && (
+                              <span className="text-xs text-gray-500">Use sidebar actions</span>
+                            )}
+                            {amountCents > 10000 && (
+                              <span className="inline-flex items-center gap-1 text-xs text-red-600">
+                                <AlertTriangle className="w-3 h-3" />
+                                High
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="px-6 py-10 text-center text-gray-500">
+                      No receipts match current filters.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
+
+        <aside className="bg-white rounded-lg border border-gray-200 p-4 flex flex-col gap-4 min-h-[540px]">
+          <h3 className="text-lg font-semibold text-gray-900">Receipt Verification</h3>
+          {!detail ? (
+            <p className="text-sm text-gray-500">Select a receipt to review details.</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <p className="text-gray-500">Receipt</p>
+                  <p className="font-medium text-gray-900">{detail.id}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">Status</p>
+                  <p className="font-medium text-gray-900">{detail.review_status || "pending"}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">Business</p>
+                  <p className="font-medium text-gray-900">
+                    {detail.business?.name || detail.business_id || "--"}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-gray-500">User</p>
+                  <p className="font-medium text-gray-900">{detail.user_id || "--"}</p>
+                </div>
+              </div>
+
+              <label className="block">
+                <span className="text-sm text-gray-700">Receipt total (USD)</span>
+                <input
+                  value={totalInput}
+                  onChange={(e) => setTotalInput(e.target.value)}
+                  className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-sm text-gray-700">Review notes</span>
+                <textarea
+                  rows={3}
+                  value={notesInput}
+                  onChange={(e) => setNotesInput(e.target.value)}
+                  className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </label>
+
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-2">
+                  <p className="text-gray-500">Commission</p>
+                  <p className="font-semibold text-gray-900">
+                    {preview ? formatCurrencyFromCents(Number(preview.commission_cents || 0)) : "--"}
+                  </p>
+                  <p className="text-gray-500">
+                    {preview?.commission_rate_bps
+                      ? `${(Number(preview.commission_rate_bps) / 100).toFixed(2)}%`
+                      : ""}
+                  </p>
+                </div>
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-2">
+                  <p className="text-gray-500">Cashback</p>
+                  <p className="font-semibold text-gray-900">
+                    {preview ? formatCurrencyFromCents(Number(preview.cashback_cents || 0)) : "--"}
+                  </p>
+                  <p className="text-gray-500">
+                    {preview?.effective_cashback_rate_bps
+                      ? `${(Number(preview.effective_cashback_rate_bps) / 100).toFixed(2)}%`
+                      : ""}
+                  </p>
+                </div>
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-2">
+                  <p className="text-gray-500">Promo</p>
+                  <p className="font-semibold text-gray-900">{preview?.applied_promo_code || "None"}</p>
+                </div>
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-2">
+                  <p className="text-gray-500">Platform Subsidy</p>
+                  <p className="font-semibold text-gray-900">
+                    {preview
+                      ? formatCurrencyFromCents(Number(preview.platform_subsidy_cents || 0))
+                      : "--"}
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-500">
+                {previewLoading
+                  ? "Calculating preview..."
+                  : previewError || "Preview updates as you edit totals."}
+              </p>
+
+              <div className="border border-gray-200 rounded-lg p-2 bg-gray-50">
+                {image?.signedUrl ? (
+                  <img
+                    src={image.signedUrl}
+                    alt="Receipt"
+                    className="w-full max-h-64 object-contain rounded"
+                  />
+                ) : (
+                  <p className="text-xs text-gray-500">
+                    Unable to load image. {image?.errorReason || "No image path available."}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                {String(detail.review_status || "").toLowerCase() === "pending" ? (
+                  <>
+                    <button
+                      disabled={working}
+                      onClick={() => void submitDecision("verify")}
+                      className="flex-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-60"
+                    >
+                      Verify
+                    </button>
+                    <button
+                      disabled={working}
+                      onClick={() => void submitDecision("reject")}
+                      className="flex-1 px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-60"
+                    >
+                      Reject
+                    </button>
+                  </>
+                ) : String(detail.review_status || "").toLowerCase() === "verified" ? (
+                  <button
+                    disabled={working}
+                    onClick={() => void submitDecision("edit")}
+                    className="w-full px-3 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-60"
+                  >
+                    Save Correction
+                  </button>
+                ) : (
+                  <p className="text-xs text-gray-500">
+                    Rejected receipts are read-only here.
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+        </aside>
       </div>
     </div>
   );
