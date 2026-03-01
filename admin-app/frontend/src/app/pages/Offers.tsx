@@ -26,14 +26,23 @@ interface OfferRow {
   title?: string | null;
   description?: string | null;
   offer_type?: string | null;
+  image_url?: string | null;
   active?: boolean | null;
   approval_status?: string | null;
+  redemption_limit_period?: string | null;
+  redemption_limit_count?: number | null;
+  approved_at?: string | null;
+  offer_honor_commitment_accepted?: boolean | null;
+  offer_honor_commitment_version?: string | null;
+  offer_honor_commitment_accepted_at?: string | null;
+  offer_honor_commitment_accepted_by?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   business?: {
     id: string;
     name?: string | null;
   } | null;
+  [key: string]: unknown;
 }
 
 type DrawerMode = "view" | "edit" | "create";
@@ -71,11 +80,11 @@ export function Offers() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState<DrawerMode>("view");
   const [selectedOffer, setSelectedOffer] = useState<OfferRow | null>(null);
+  const [editPayload, setEditPayload] = useState("");
   const [editBusinessId, setEditBusinessId] = useState("");
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editType, setEditType] = useState("");
-  const [editActive, setEditActive] = useState(false);
 
   const loadOffers = async () => {
     setLoading(true);
@@ -167,50 +176,51 @@ export function Offers() {
   const openDrawer = (offer: OfferRow, mode: DrawerMode) => {
     setSelectedOffer(offer);
     setDrawerMode(mode);
+    const editable = { ...offer };
+    delete editable.id;
+    delete editable.created_at;
+    delete editable.updated_at;
+    delete editable.business;
+    setEditPayload(JSON.stringify(editable, null, 2));
     setEditBusinessId(String(offer.business_id || ""));
     setEditTitle(String(offer.title || ""));
     setEditDescription(String(offer.description || ""));
     setEditType(String(offer.offer_type || "cashback"));
-    setEditActive(Boolean(offer.active));
     setDrawerOpen(true);
   };
 
   const openCreateDrawer = () => {
     setSelectedOffer(null);
     setDrawerMode("create");
+    setEditPayload("");
     setEditBusinessId("");
     setEditTitle("");
     setEditDescription("");
     setEditType("cashback");
-    setEditActive(false);
     setDrawerOpen(true);
   };
 
   const saveOfferEdit = async () => {
     if (!selectedOffer) return;
-    const title = editTitle.trim();
-    if (!title) {
-      setMessage("Offer title is required.");
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = JSON.parse(editPayload || "{}");
+    } catch {
+      setMessage("Invalid JSON in offer editor.");
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      setMessage("Offer editor must be a JSON object.");
       return;
     }
     setWorkingId(selectedOffer.id);
-    const res = await apiRequest<OfferRow>("/api/admin/query", {
-      method: "POST",
-      body: {
-        table: "offers",
-        action: "update",
-        body: {
-          title,
-          description: editDescription.trim() || null,
-          offer_type: editType.trim() || "cashback",
-          active: editActive,
-          updated_at: new Date().toISOString(),
-        },
-        filters: [{ column: "id", op: "eq", value: selectedOffer.id }],
-        select: "id,business_id,title,description,offer_type,active,approval_status,created_at,updated_at",
-        single: "maybe",
+    const res = await apiRequest<OfferRow>(
+      `/api/admin/offers/${encodeURIComponent(selectedOffer.id)}/update`,
+      {
+        method: "POST",
+        body: parsed,
       },
-    });
+    );
 
     if (res.error || !res.data) {
       setMessage(summarizeError(res.error, "Unable to save offer changes."));
@@ -225,7 +235,7 @@ export function Offers() {
           ? {
               ...row,
               ...updated,
-              business: row.business,
+              business: (updated.business as OfferRow["business"]) || row.business,
             }
           : row,
       ),
@@ -235,13 +245,28 @@ export function Offers() {
         ? {
             ...prev,
             ...updated,
-            business: prev.business,
+            business: (updated.business as OfferRow["business"]) || prev.business,
           }
         : prev,
     );
     setDrawerMode("view");
     setMessage("Offer updated.");
     setWorkingId(null);
+  };
+
+  const removeOfferPhotoFromDraft = () => {
+    try {
+      const parsed = JSON.parse(editPayload || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setMessage("Offer editor must be a JSON object.");
+        return;
+      }
+      const next = { ...parsed, image_url: null };
+      setEditPayload(JSON.stringify(next, null, 2));
+      setMessage("Offer photo marked for removal. Save to apply.");
+    } catch {
+      setMessage("Invalid JSON in offer editor.");
+    }
   };
 
   const createOffer = async () => {
@@ -274,21 +299,16 @@ export function Offers() {
 
   const duplicateOffer = async (offer: OfferRow) => {
     setWorkingId(offer.id);
-    const res = await apiRequest<OfferRow>("/api/admin/query", {
+    const res = await apiRequest<OfferRow>("/api/admin/offers/create", {
       method: "POST",
       body: {
-        table: "offers",
-        action: "insert",
-        body: {
-          business_id: offer.business_id,
-          title: `${offer.title || "Offer"} (Copy)`,
-          description: offer.description || null,
-          offer_type: offer.offer_type || "cashback",
-          active: false,
-          approval_status: "pending",
-        },
-        select: "id,business_id,title,description,offer_type,active,approval_status,created_at,updated_at",
-        single: "maybe",
+        businessId: offer.business_id,
+        title: `${offer.title || "Offer"} (Copy)`,
+        description: offer.description || null,
+        offerType: offer.offer_type || "cashback",
+        imageUrl: offer.image_url || null,
+        redemptionLimitPeriod: offer.redemption_limit_period || null,
+        redemptionLimitCount: offer.redemption_limit_count ?? null,
       },
     });
     if (res.error || !res.data) {
@@ -312,11 +332,23 @@ export function Offers() {
       const updated = res.data;
       setRows((prev) =>
         prev.map((row) =>
-          row.id === offer.id ? { ...row, ...updated, business: row.business } : row,
+          row.id === offer.id
+            ? {
+                ...row,
+                ...updated,
+                business: (updated.business as OfferRow["business"]) || row.business,
+              }
+            : row,
         ),
       );
       setSelectedOffer((prev) =>
-        prev?.id === offer.id ? { ...prev, ...updated, business: prev.business } : prev,
+        prev?.id === offer.id
+          ? {
+              ...prev,
+              ...updated,
+              business: (updated.business as OfferRow["business"]) || prev.business,
+            }
+          : prev,
       );
       setMessage(`Offer ${action === "pause" ? "paused" : "resumed"}.`);
     }
@@ -597,6 +629,21 @@ export function Offers() {
                       {selectedOffer.description || "No description"}
                     </p>
                   </div>
+                  <div className="space-y-2">
+                    <p className="text-sm text-gray-500">Offer Photo</p>
+                    {selectedOffer.image_url ? (
+                      <>
+                        <img
+                          src={selectedOffer.image_url}
+                          alt={selectedOffer.title || "Offer image"}
+                          className="w-full max-h-52 object-cover rounded-lg border border-gray-200"
+                        />
+                        <p className="text-xs text-gray-500 break-all">{selectedOffer.image_url}</p>
+                      </>
+                    ) : (
+                      <p className="text-sm text-gray-600">No offer photo set.</p>
+                    )}
+                  </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <p className="text-sm text-gray-500">Business</p>
@@ -630,7 +677,7 @@ export function Offers() {
                     Switch to Edit
                   </button>
                 </>
-              ) : (
+              ) : drawerMode === "create" ? (
                 <>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">Business ID</label>
@@ -659,51 +706,65 @@ export function Offers() {
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Type</label>
-                      <input
-                        value={editType}
-                        onChange={(e) => setEditType(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
-                      />
-                    </div>
-                    {drawerMode !== "create" ? (
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Active</label>
-                        <select
-                          value={editActive ? "true" : "false"}
-                          onChange={(e) => setEditActive(e.target.value === "true")}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
-                        >
-                          <option value="true">True</option>
-                          <option value="false">False</option>
-                        </select>
-                      </div>
-                    ) : null}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Type</label>
+                    <input
+                      value={editType}
+                      onChange={(e) => setEditType(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
                   </div>
 
                   <div className="flex gap-3">
                     <button
                       type="button"
                       className="flex-1 px-4 py-2.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
-                      onClick={() =>
-                        void (drawerMode === "create" ? createOffer() : saveOfferEdit())
-                      }
-                      disabled={
-                        workingId === "create" ||
-                        (selectedOffer ? workingId === selectedOffer.id : false)
-                      }
+                      onClick={() => void createOffer()}
+                      disabled={workingId === "create"}
                     >
                       <Save className="w-4 h-4" />
-                      {drawerMode === "create" ? "Create" : "Save"}
+                      Create
                     </button>
                     <button
                       type="button"
                       className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-                      onClick={() =>
-                        drawerMode === "create" ? setDrawerOpen(false) : setDrawerMode("view")
-                      }
+                      onClick={() => setDrawerOpen(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <label className="block">
+                    <span className="text-sm font-medium text-gray-700">Full offer details (JSON)</span>
+                    <textarea
+                      rows={16}
+                      value={editPayload}
+                      onChange={(event) => setEditPayload(event.target.value)}
+                      className="mt-1 w-full px-3 py-2 font-mono text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </label>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={removeOfferPhotoFromDraft}
+                      className="flex-1 px-4 py-2.5 border border-red-300 text-red-700 rounded-lg hover:bg-red-50 transition-colors"
+                    >
+                      Remove Offer Photo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void saveOfferEdit()}
+                      disabled={selectedOffer ? workingId === selectedOffer.id : false}
+                      className="flex-1 px-4 py-2.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-60"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                      onClick={() => setDrawerMode("view")}
                     >
                       Cancel
                     </button>

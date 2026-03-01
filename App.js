@@ -254,6 +254,7 @@ const PRIVACY_POLICY_URL = "https://www.wellopartners.com/privacy";
 const TERMS_URL = "https://www.wellopartners.com/terms";
 const THIRD_PARTY_NOTICES_URL =
   "https://www.wellopartners.com/third-party-notices";
+const EMAIL_ADDRESS_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PLAID_LINK_CONSENT_VERSION = "2026-02-19";
 const getPlaidLinkConsentKey = (userId) =>
   `wello_plaid_link_consent_v${PLAID_LINK_CONSENT_VERSION}:${String(userId || "").trim() || "anon"}`;
@@ -423,6 +424,12 @@ const normalizeCashoutProvider = (value) =>
   String(value || "").trim().toLowerCase();
 const normalizeCashoutMethodType = (value) =>
   String(value || "").trim().toLowerCase();
+const normalizeCashoutDeliveryEmail = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+const isValidCashoutDeliveryEmail = (value) =>
+  EMAIL_ADDRESS_PATTERN.test(normalizeCashoutDeliveryEmail(value));
 const isActiveCashoutClaimEntry = (entry) => {
   const claimUrl = String(entry?.claimUrl || entry?.provider_claim_url || "")
     .trim();
@@ -4123,6 +4130,14 @@ export default function App() {
   const [profilePhone, setProfilePhone] = useState("");
   const [profileCompany, setProfileCompany] = useState("");
   const [profileMessage, setProfileMessage] = useState(null);
+  const [deleteAccountConsentChecked, setDeleteAccountConsentChecked] =
+    useState(false);
+  const [deleteAccountStatus, setDeleteAccountStatus] = useState({
+    loading: false,
+    error: null,
+    success: null,
+    forfeitedCents: 0,
+  });
   const [signInNotice, setSignInNotice] = useState(null);
   const [forgotPasswordBusy, setForgotPasswordBusy] = useState(false);
   const [securityEmailDraft, setSecurityEmailDraft] = useState("");
@@ -4548,6 +4563,8 @@ export default function App() {
   );
   const cashoutIdempotencyKeyRef = useRef(null);
   const [cashoutAmountText, setCashoutAmountText] = useState("0.00");
+  const [cashoutGiftCardRecipientEmail, setCashoutGiftCardRecipientEmail] =
+    useState("");
   const [cashoutHistoryExpanded, setCashoutHistoryExpanded] = useState(false);
   const [cashoutPayoutHistory, setCashoutPayoutHistory] = useState([]);
   const [cashoutShowAllLinkedAccounts, setCashoutShowAllLinkedAccounts] =
@@ -4650,6 +4667,18 @@ export default function App() {
     if (!defaultCode) return;
     setSelectedCashoutCatalogCode(defaultCode);
   }, [cashoutCatalogItems, selectedCashoutCatalogItem?.code]);
+  const defaultGiftCardRecipientEmail = useMemo(
+    () => normalizeCashoutDeliveryEmail(profileEmail || authEmail || ""),
+    [authEmail, profileEmail],
+  );
+  useEffect(() => {
+    if (cashoutMethodType !== "gift_card") return;
+    setCashoutGiftCardRecipientEmail((previous) => {
+      const normalizedPrevious = normalizeCashoutDeliveryEmail(previous);
+      if (normalizedPrevious) return previous;
+      return defaultGiftCardRecipientEmail;
+    });
+  }, [cashoutMethodType, defaultGiftCardRecipientEmail]);
   const tremendousDemoAvailableCents = useMemo(() => {
     const realAvailableCents = Number(cashbackBalance.availableCents) || 0;
     if (TREMENDOUS_DEMO_USE_VIRTUAL_BALANCE && realAvailableCents <= 0) {
@@ -7386,10 +7415,24 @@ export default function App() {
     const selectedCatalogCode = normalizeCatalogItemCode(
       selectedCashoutCatalogItem?.code,
     );
+    const normalizedGiftCardRecipientEmail = normalizeCashoutDeliveryEmail(
+      cashoutGiftCardRecipientEmail,
+    );
     if (methodType === "gift_card" && !selectedCatalogCode) {
       setCashoutActionStatus({
         loading: false,
         error: "Select a gift card before cashing out.",
+        success: null,
+      });
+      return;
+    }
+    if (
+      methodType === "gift_card" &&
+      !isValidCashoutDeliveryEmail(normalizedGiftCardRecipientEmail)
+    ) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Enter a valid delivery email for this gift card.",
         success: null,
       });
       return;
@@ -7476,7 +7519,10 @@ export default function App() {
         amountCents: amountCentsToCashout,
         idempotencyKey,
         ...(methodType === "gift_card"
-          ? { catalogItemCode: selectedCatalogCode }
+          ? {
+              catalogItemCode: selectedCatalogCode,
+              recipientEmail: normalizedGiftCardRecipientEmail,
+            }
           : {}),
       },
       { timeoutMs: 20000 },
@@ -7608,6 +7654,7 @@ export default function App() {
     cashoutMethodType,
     cashoutMinCents,
     cashoutAmountText,
+    cashoutGiftCardRecipientEmail,
     handleCashoutBankTilePress,
     loadCashbackBalance,
     openCashoutHostedFlow,
@@ -11628,6 +11675,13 @@ export default function App() {
     setProfileEmail("");
     setProfilePhone("");
     setProfileCompany("");
+    setDeleteAccountConsentChecked(false);
+    setDeleteAccountStatus({
+      loading: false,
+      error: null,
+      success: null,
+      forfeitedCents: 0,
+    });
     setSignInNotice(null);
     setForgotPasswordBusy(false);
     setSecurityEmailDraft("");
@@ -11718,6 +11772,7 @@ export default function App() {
     setOfferImage(null);
     setOfferError(null);
     setOfferBusy(false);
+    setCashoutGiftCardRecipientEmail("");
     setRedemptionHistory([]);
     setRedemptionStatus({ loading: false, error: null });
     setUserReviews([]);
@@ -11735,6 +11790,142 @@ export default function App() {
     setEditOfferHonorChecked(false);
     setPostRedeemBankPromptOpen(false);
   };
+
+  const handleRequestAccountDeletion = useCallback(() => {
+    if (deleteAccountStatus.loading) return;
+    if (!deleteAccountConsentChecked) {
+      setDeleteAccountStatus((prev) => ({
+        ...prev,
+        loading: false,
+        error:
+          "Check the forfeiture confirmation before submitting account deletion.",
+        success: null,
+      }));
+      return;
+    }
+    if (
+      !ensureSupabaseReady((message) =>
+        setDeleteAccountStatus((prev) => ({
+          ...prev,
+          loading: false,
+          error: message,
+          success: null,
+        })),
+      )
+    ) {
+      return;
+    }
+    if (!authUserId) {
+      setDeleteAccountStatus((prev) => ({
+        ...prev,
+        loading: false,
+        error: "Sign in to delete your account.",
+        success: null,
+      }));
+      return;
+    }
+
+    showAppDialog({
+      title: "Delete your account?",
+      message:
+        "This creates a deletion request and immediately forfeits any remaining available cashback. This cannot be undone.",
+      dismissOnBackdrop: false,
+      options: [
+        {
+          label: "Cancel",
+          variant: "ghost",
+        },
+        {
+          label: "Delete account",
+          variant: "primary",
+          onPress: async () => {
+            setDeleteAccountStatus({
+              loading: true,
+              error: null,
+              success: null,
+              forfeitedCents: 0,
+            });
+            const rpcResponse = await withTimeout(
+              supabase.rpc("request_account_deletion", {
+                p_confirm_forfeit_cashback: true,
+              }),
+              12000,
+              "request_account_deletion",
+            );
+            if (rpcResponse.error) {
+              const raw = String(rpcResponse.error.message || "").trim();
+              const lowered = raw.toLowerCase();
+              let message = "Unable to submit account deletion right now.";
+              if (lowered.includes("pending_cashout_exists")) {
+                message =
+                  "You have a pending cashout. Wait for it to complete before deleting your account.";
+              } else if (lowered.includes("forfeit_confirmation_required")) {
+                message =
+                  "Forfeiture confirmation is required before deletion.";
+              } else if (lowered.includes("not_authenticated")) {
+                message = "Session expired. Sign in again to continue.";
+              } else if (raw) {
+                message = raw;
+              }
+              setDeleteAccountStatus((prev) => ({
+                ...prev,
+                loading: false,
+                error: message,
+                success: null,
+              }));
+              return;
+            }
+
+            const row = Array.isArray(rpcResponse.data)
+              ? rpcResponse.data[0] || null
+              : rpcResponse.data;
+            const forfeitedCents = Math.max(
+              0,
+              Number(row?.forfeited_cashback_cents) || 0,
+            );
+            setDeleteAccountConsentChecked(false);
+            setDeleteAccountStatus({
+              loading: false,
+              error: null,
+              success:
+                forfeitedCents > 0
+                  ? `Deletion requested. ${formatCurrencyFromCents(forfeitedCents)} cashback was forfeited.`
+                  : "Deletion requested.",
+              forfeitedCents,
+            });
+            setProfileMessage(null);
+            await loadCashbackBalance({ silent: true });
+
+            showAppDialog({
+              title: "Deletion request submitted",
+              message:
+                forfeitedCents > 0
+                  ? `${formatCurrencyFromCents(forfeitedCents)} was removed from your available cashback and returned to Wello's cashback reserve.`
+                  : "No available cashback needed to be forfeited.",
+              dismissOnBackdrop: false,
+              options: [
+                {
+                  label: "Sign out",
+                  variant: "primary",
+                  onPress: () => {
+                    handleSignOut();
+                  },
+                },
+              ],
+            });
+          },
+        },
+      ],
+    });
+  }, [
+    authUserId,
+    deleteAccountConsentChecked,
+    deleteAccountStatus.loading,
+    ensureSupabaseReady,
+    handleSignOut,
+    loadCashbackBalance,
+    showAppDialog,
+  ]);
 
   const runRedeemGate = async (business) => {
     if (!business) return false;
@@ -24438,6 +24629,40 @@ export default function App() {
                                         ? ` · Max ${formatCurrencyFromCents(cashoutMaxAllowedCents)}`
                                         : ""}
                                     </Text>
+                                    {cashoutMethodType === "gift_card" ? (
+                                      <View style={styles.cashoutDeliveryEmailGroup}>
+                                        <Text style={styles.cashoutDeliveryEmailLabel}>
+                                          Delivery email
+                                        </Text>
+                                        <AutoFocusInput
+                                          style={styles.cashoutDeliveryEmailInput}
+                                          value={cashoutGiftCardRecipientEmail}
+                                          onChangeText={(value) =>
+                                            setCashoutGiftCardRecipientEmail(value)
+                                          }
+                                          placeholder="you@example.com"
+                                          placeholderTextColor={COLORS.muted}
+                                          keyboardType="email-address"
+                                          autoCapitalize="none"
+                                          autoCorrect={false}
+                                          returnKeyType="done"
+                                        />
+                                        <Text style={styles.cashoutDeliveryEmailHint}>
+                                          Gift card redeem details are sent to this
+                                          email.
+                                        </Text>
+                                        {normalizeCashoutDeliveryEmail(
+                                          cashoutGiftCardRecipientEmail,
+                                        ) &&
+                                        !isValidCashoutDeliveryEmail(
+                                          cashoutGiftCardRecipientEmail,
+                                        ) ? (
+                                          <Text style={styles.formError}>
+                                            Enter a valid email address.
+                                          </Text>
+                                        ) : null}
+                                      </View>
+                                    ) : null}
                                     <View style={styles.cashoutAmountRow}>
                                       <View style={styles.cashoutAmountField}>
                                         <Text
@@ -24505,7 +24730,10 @@ export default function App() {
                                           (Number(cashoutMaxAllowedCents) || 0) <=
                                             0 ||
                                           (cashoutMethodType === "gift_card" &&
-                                            !selectedCashoutCatalogItem) ||
+                                            (!selectedCashoutCatalogItem ||
+                                              !isValidCashoutDeliveryEmail(
+                                                cashoutGiftCardRecipientEmail,
+                                              ))) ||
                                           (cashoutMethodType === "bank_transfer" &&
                                             !bankTileLinked) ||
                                           cashoutActionStatus.loading) &&
@@ -24518,7 +24746,10 @@ export default function App() {
                                         (Number(cashoutMaxAllowedCents) || 0) <=
                                           0 ||
                                         (cashoutMethodType === "gift_card" &&
-                                          !selectedCashoutCatalogItem) ||
+                                          (!selectedCashoutCatalogItem ||
+                                            !isValidCashoutDeliveryEmail(
+                                              cashoutGiftCardRecipientEmail,
+                                            ))) ||
                                         (cashoutMethodType === "bank_transfer" &&
                                           !bankTileLinked) ||
                                         cashoutActionStatus.loading
@@ -27705,6 +27936,80 @@ export default function App() {
                               <Text style={styles.supportMetaText}>
                                 {SUPPORT_EMAIL_ADDRESS}
                               </Text>
+                              <View style={styles.deleteAccountSection}>
+                                <Text style={styles.deleteAccountTitle}>
+                                  Delete account
+                                </Text>
+                                <Text style={styles.deleteAccountHint}>
+                                  Submitting deletion forfeits any remaining
+                                  available cashback and returns it to Wello's
+                                  cashback reserve.
+                                </Text>
+                                <TouchableOpacity
+                                  style={styles.deleteAccountConsentRow}
+                                  onPress={() =>
+                                    setDeleteAccountConsentChecked(
+                                      (prev) => !prev,
+                                    )
+                                  }
+                                  accessibilityRole="checkbox"
+                                  accessibilityState={{
+                                    checked: deleteAccountConsentChecked,
+                                  }}
+                                >
+                                  <Ionicons
+                                    name={
+                                      deleteAccountConsentChecked
+                                        ? "checkbox"
+                                        : "square-outline"
+                                    }
+                                    size={18}
+                                    color={
+                                      deleteAccountConsentChecked
+                                        ? COLORS.pine
+                                        : COLORS.muted
+                                    }
+                                  />
+                                  <Text style={styles.deleteAccountConsentText}>
+                                    I understand any remaining cashback balance
+                                    will be forfeited.
+                                  </Text>
+                                </TouchableOpacity>
+                                {deleteAccountStatus.error ? (
+                                  <Text style={styles.formError}>
+                                    {deleteAccountStatus.error}
+                                  </Text>
+                                ) : null}
+                                {deleteAccountStatus.success ? (
+                                  <Text style={styles.formSuccess}>
+                                    {deleteAccountStatus.success}
+                                  </Text>
+                                ) : null}
+                                <TouchableOpacity
+                                  style={[
+                                    styles.deleteAccountButton,
+                                    (!deleteAccountConsentChecked ||
+                                      deleteAccountStatus.loading) &&
+                                      styles.deleteAccountButtonDisabled,
+                                  ]}
+                                  onPress={handleRequestAccountDeletion}
+                                  disabled={
+                                    !deleteAccountConsentChecked ||
+                                    deleteAccountStatus.loading
+                                  }
+                                >
+                                  <Ionicons
+                                    name="trash-outline"
+                                    size={16}
+                                    color={COLORS.danger}
+                                  />
+                                  <Text style={styles.deleteAccountButtonText}>
+                                    {deleteAccountStatus.loading
+                                      ? "Submitting..."
+                                      : "Delete account"}
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
                               <TouchableOpacity
                                 style={styles.supportSignOutButton}
                                 onPress={handleSignOut}
@@ -33943,6 +34248,59 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
+  deleteAccountSection: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: "rgba(180, 83, 9, 0.22)",
+    borderRadius: 16,
+    backgroundColor: "rgba(255, 251, 235, 0.95)",
+    padding: 12,
+    gap: 8,
+  },
+  deleteAccountTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  deleteAccountHint: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: 17,
+  },
+  deleteAccountConsentRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  deleteAccountConsentText: {
+    flex: 1,
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    lineHeight: 17,
+  },
+  deleteAccountButton: {
+    marginTop: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "rgba(180, 83, 9, 0.32)",
+    borderRadius: 14,
+    backgroundColor: "rgba(255, 255, 255, 0.94)",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  deleteAccountButtonDisabled: {
+    opacity: 0.55,
+  },
+  deleteAccountButtonText: {
+    fontSize: 12,
+    color: COLORS.danger,
+    fontFamily: FONT_SEMIBOLD,
+  },
   supportSignOutButton: {
     marginTop: 12,
     flexDirection: "row",
@@ -35926,6 +36284,31 @@ const styles = StyleSheet.create({
   cashoutAmountHint: {
     marginTop: 8,
     fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutDeliveryEmailGroup: {
+    marginTop: 10,
+    gap: 6,
+  },
+  cashoutDeliveryEmailLabel: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutDeliveryEmailInput: {
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.14)",
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutDeliveryEmailHint: {
+    fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },

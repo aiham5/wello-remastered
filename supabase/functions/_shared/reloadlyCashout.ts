@@ -862,8 +862,20 @@ async (req: Request) => {
     const authUser = await supabase.auth.admin.getUserById(userId);
     const authUserRecord = authUser?.data?.user || null;
 
+    const requestedRecipientEmail = normalizeEmail(
+      body?.recipientEmail ?? body?.recipient_email ?? "",
+    );
+    if (
+      requestedRecipientEmail &&
+      !isLikelyValidEmail(requestedRecipientEmail)
+    ) {
+      throw new HttpError("Invalid recipientEmail.", 400, {
+        reason: "invalid_recipient_email",
+      });
+    }
+
     const profileEmail = normalizeEmail(profile?.email);
-    let recipientEmail = profileEmail;
+    let recipientEmail = requestedRecipientEmail || profileEmail;
     if (!isLikelyValidEmail(recipientEmail)) {
       const authEmail = normalizeEmail(authUserRecord?.email);
       if (isLikelyValidEmail(authEmail)) recipientEmail = authEmail;

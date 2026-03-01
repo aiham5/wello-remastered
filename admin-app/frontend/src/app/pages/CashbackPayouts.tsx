@@ -59,13 +59,13 @@ const normalizeProvider = (row: CashoutRow) => String(row.provider || "").toLowe
 const normalizeMethod = (row: CashoutRow) => String(row.method_type || "gift_card").toLowerCase();
 
 const isPendingBankApproval = (row: CashoutRow) =>
-  ["checkbook", "trolley"].includes(normalizeProvider(row)) &&
+  normalizeProvider(row) === "checkbook" &&
   normalizeMethod(row) === "bank_transfer" &&
   normalizeStatus(row) === "pending" &&
   normalizeApproval(row) === "pending";
 
 const isRetryableBankFailure = (row: CashoutRow) =>
-  ["checkbook", "trolley"].includes(normalizeProvider(row)) &&
+  normalizeProvider(row) === "checkbook" &&
   normalizeMethod(row) === "bank_transfer" &&
   normalizeStatus(row) === "failed";
 

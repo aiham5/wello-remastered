@@ -29,6 +29,7 @@ interface BusinessRow {
   status?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  [key: string]: unknown;
 }
 
 type DrawerMode = "view" | "edit";
@@ -57,8 +58,7 @@ export function Businesses() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState<DrawerMode>("view");
   const [selectedBusiness, setSelectedBusiness] = useState<BusinessRow | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editCategory, setEditCategory] = useState("");
+  const [editPayload, setEditPayload] = useState("");
 
   const loadBusinesses = async () => {
     setLoading(true);
@@ -155,16 +155,25 @@ export function Businesses() {
   const openDrawer = (business: BusinessRow, mode: DrawerMode) => {
     setSelectedBusiness(business);
     setDrawerMode(mode);
-    setEditName(String(business.name || ""));
-    setEditCategory(String(business.category_label || ""));
+    const editable = { ...business };
+    delete editable.id;
+    delete editable.created_at;
+    delete editable.updated_at;
+    setEditPayload(JSON.stringify(editable, null, 2));
     setDrawerOpen(true);
   };
 
   const saveBusiness = async () => {
     if (!selectedBusiness) return;
-    const name = editName.trim();
-    if (!name) {
-      setMessage("Business name is required.");
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = JSON.parse(editPayload || "{}");
+    } catch {
+      setMessage("Invalid JSON in business editor.");
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      setMessage("Business editor must be a JSON object.");
       return;
     }
     setWorkingId(selectedBusiness.id);
@@ -172,10 +181,7 @@ export function Businesses() {
       `/api/admin/businesses/${encodeURIComponent(selectedBusiness.id)}/update`,
       {
         method: "POST",
-        body: {
-          name,
-          categoryLabel: editCategory.trim() || null,
-        },
+        body: parsed,
       },
     );
     if (res.error || !res.data) {
@@ -513,21 +519,19 @@ export function Businesses() {
               ) : (
                 <>
                   <label className="block">
-                    <span className="text-sm font-medium text-gray-700">Name</span>
-                    <input
-                      value={editName}
-                      onChange={(event) => setEditName(event.target.value)}
-                      className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    <span className="text-sm font-medium text-gray-700">
+                      Full business details (JSON)
+                    </span>
+                    <textarea
+                      rows={18}
+                      value={editPayload}
+                      onChange={(event) => setEditPayload(event.target.value)}
+                      className="mt-1 w-full px-3 py-2 font-mono text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
                     />
                   </label>
-                  <label className="block">
-                    <span className="text-sm font-medium text-gray-700">Category</span>
-                    <input
-                      value={editCategory}
-                      onChange={(event) => setEditCategory(event.target.value)}
-                      className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
-                    />
-                  </label>
+                  <p className="text-xs text-gray-500">
+                    Edit any business field here. Immutable fields (`id`, `created_at`, `updated_at`) are excluded automatically.
+                  </p>
                   <div className="flex gap-3">
                     <button
                       type="button"

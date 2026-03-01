@@ -277,7 +277,14 @@ export const getAdminContext = async (request, env) => {
 export const enforceAdminRateLimit = async (
   request,
   env,
-  { email = null, route = "" } = {},
+  {
+    email = null,
+    route = "",
+    ipMaxRequests = 180,
+    ipWindowSeconds = 60,
+    staffMaxRequests = 900,
+    staffWindowSeconds = 5 * 60,
+  } = {},
 ) => {
   const ip = getClientIp(request);
   const safeRoute = String(route || "").trim().toLowerCase().slice(0, 120);
@@ -285,16 +292,16 @@ export const enforceAdminRateLimit = async (
   await consumeEdgeRateLimit(env, {
     scope: "admin:api:ip",
     identifier: `ip:${ip}|route:${safeRoute}`,
-    maxRequests: 180,
-    windowSeconds: 60,
+    maxRequests: Math.max(1, Math.trunc(Number(ipMaxRequests) || 180)),
+    windowSeconds: Math.max(1, Math.trunc(Number(ipWindowSeconds) || 60)),
   });
 
   if (email) {
     await consumeEdgeRateLimit(env, {
       scope: "admin:api:staff",
       identifier: `email:${String(email).trim().toLowerCase()}|route:${safeRoute}`,
-      maxRequests: 900,
-      windowSeconds: 5 * 60,
+      maxRequests: Math.max(1, Math.trunc(Number(staffMaxRequests) || 900)),
+      windowSeconds: Math.max(1, Math.trunc(Number(staffWindowSeconds) || 5 * 60)),
     });
   }
 };

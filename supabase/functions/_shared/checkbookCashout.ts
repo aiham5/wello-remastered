@@ -46,6 +46,22 @@ const CHECKBOOK_PUBLISHABLE_KEY = envString(
 const CHECKBOOK_SECRET_KEY = envString("CHECKBOOK_SECRET_KEY");
 const CHECKBOOK_PLAID_PROCESSOR = envString("CHECKBOOK_PLAID_PROCESSOR", "checkbook")
   .toLowerCase();
+const CHECKBOOK_DIRECT_RECIPIENT_PAYOUT_ENABLED = envFlag(
+  "CHECKBOOK_DIRECT_RECIPIENT_PAYOUT_ENABLED",
+  true,
+);
+const CHECKBOOK_DIRECT_RECIPIENT_EMAIL_FALLBACK = envFlag(
+  "CHECKBOOK_DIRECT_RECIPIENT_EMAIL_FALLBACK",
+  false,
+);
+const CHECKBOOK_DIRECT_DEPOSIT_OPTIONS = (() => {
+  const raw = envString("CHECKBOOK_DIRECT_DEPOSIT_OPTIONS", "BANK");
+  const values = raw
+    .split(",")
+    .map((entry) => String(entry || "").trim().toUpperCase())
+    .filter(Boolean);
+  return values.length > 0 ? values : ["BANK"];
+})();
 const CHECKBOOK_WEBHOOK_KEY = envString(
   "CHECKBOOK_WEBHOOK_KEY",
   envString("CHECKBOOK_WEBHOOK_SECRET"),
@@ -1112,28 +1128,61 @@ export const createCheckbookAdminDecisionHandler =
       const amountDollars = Number(
         (Math.max(0, Number(row.amount_cents) || 0) / 100).toFixed(2),
       );
-      const upstream = await callCheckbookApi("/v3/check/digital", {
+      const basePayload = {
+        name: profile.fullName,
+        amount: amountDollars,
+        description: "Wello cashback transfer",
+        metadata: {
+          payoutId,
+          userId: row.user_id,
+          recipientId,
+        },
+      };
+      const directPayload = {
+        ...basePayload,
+        recipient: recipientId,
+        deposit_options: CHECKBOOK_DIRECT_DEPOSIT_OPTIONS,
+      };
+      const legacyEmailPayload = {
+        ...basePayload,
+        recipient: profile.email,
+      };
+
+      let upstream = await callCheckbookApi("/v3/check/digital", {
         method: "POST",
         headers: {
           "Idempotency-Key": reqId,
         },
-        body: JSON.stringify({
-          name: profile.fullName,
-          recipient: profile.email,
-          amount: amountDollars,
-          description: "Wello cashback transfer",
-          metadata: {
-            payoutId,
-            userId: row.user_id,
-            recipientId,
-          },
-        }),
+        body: JSON.stringify(
+          CHECKBOOK_DIRECT_RECIPIENT_PAYOUT_ENABLED
+            ? directPayload
+            : legacyEmailPayload,
+        ),
       });
+
+      if (
+        CHECKBOOK_DIRECT_RECIPIENT_PAYOUT_ENABLED &&
+        !upstream.response.ok &&
+        CHECKBOOK_DIRECT_RECIPIENT_EMAIL_FALLBACK
+      ) {
+        upstream = await callCheckbookApi("/v3/check/digital", {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": reqId,
+          },
+          body: JSON.stringify(legacyEmailPayload),
+        });
+      }
+
       if (!upstream.response.ok) {
         throw new HttpError(
           parseCheckbookError(upstream.parsed, upstream.text, upstream.response.status || null),
           upstream.response.status || 502,
-          { reason: "checkbook_payout_release_failed" },
+          {
+            reason: CHECKBOOK_DIRECT_RECIPIENT_PAYOUT_ENABLED
+              ? "checkbook_direct_payout_release_failed"
+              : "checkbook_payout_release_failed",
+          },
         );
       }
       const checkObject = extractCheckObject(upstream.parsed);

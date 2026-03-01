@@ -15,6 +15,10 @@ interface ReceiptReport {
   receipt_upload_id?: string | null;
   reason?: string | null;
   details?: string | null;
+  metadata?: {
+    custom_reason?: string | null;
+    [key: string]: unknown;
+  } | null;
   status?: string | null;
   resolution_notes?: string | null;
   created_at?: string | null;
@@ -42,6 +46,19 @@ interface ReceiptDetail {
 
 const reasonToLabel = (reason?: string | null) =>
   String(reason || "report").replace(/_/g, " ");
+
+const getBusinessReasonDetail = (row: ReceiptReport) => {
+  const custom = String(row.metadata?.custom_reason || "").trim();
+  if (custom) return custom;
+  const details = String(row.details || "").trim();
+  if (!details) return "No details submitted.";
+  const prefixed = details.replace(/^reported from owner receipts screen\s*\([^)]*\)\.\s*/i, "").trim();
+  if (prefixed.toLowerCase().startsWith("reason:")) {
+    const stripped = prefixed.replace(/^reason:\s*/i, "").trim();
+    if (stripped) return stripped;
+  }
+  return details;
+};
 
 export function FraudDisputes() {
   const [rows, setRows] = useState<ReceiptReport[]>([]);
@@ -231,7 +248,7 @@ export function FraudDisputes() {
                           Reported receipt: <span className="font-medium">{reportedReceiptId}</span>
                         </p>
                         <p className="text-sm text-gray-500 mb-2">
-                          Business input: {case_.details || "No details submitted."}
+                          Business input: {getBusinessReasonDetail(case_)}
                         </p>
                         <p className="text-xs text-gray-500">{formatRelativeTime(case_.created_at)}</p>
                       </div>
@@ -308,12 +325,12 @@ export function FraudDisputes() {
                   <p className="font-medium text-gray-900">{reasonToLabel(selectedReport.reason)}</p>
                 </div>
               </div>
-              <div>
-                <p className="text-sm text-gray-500 mb-1">Business typed details (including Other)</p>
-                <div className="border border-gray-200 rounded-lg p-3 bg-gray-50 text-sm text-gray-800 whitespace-pre-wrap">
-                  {selectedReport.details || "No details provided."}
+                <div>
+                  <p className="text-sm text-gray-500 mb-1">Business typed details (including Other)</p>
+                  <div className="border border-gray-200 rounded-lg p-3 bg-gray-50 text-sm text-gray-800 whitespace-pre-wrap">
+                    {getBusinessReasonDetail(selectedReport)}
+                  </div>
                 </div>
-              </div>
 
               {receiptDetail ? (
                 <>

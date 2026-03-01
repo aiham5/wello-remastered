@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { Bell, Search, Settings, ChevronDown } from "lucide-react";
+import { Bell, Search, Settings, ChevronDown, LogOut } from "lucide-react";
 
 const pageTitles: Record<string, string> = {
   "/": "Dashboard Overview",
@@ -66,6 +66,10 @@ export function Header() {
     navigate(target.path);
   };
 
+  const signOut = () => {
+    window.location.assign("/cdn-cgi/access/logout");
+  };
+
   return (
     <header className="bg-white border-b border-gray-200 px-6 py-4">
       <div className="flex items-center justify-between">
@@ -121,6 +125,15 @@ export function Header() {
             </div>
             <ChevronDown className="w-4 h-4 text-gray-400" />
           </div>
+
+          <button
+            type="button"
+            onClick={signOut}
+            className="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          >
+            <LogOut className="w-4 h-4" />
+            Sign out
+          </button>
         </div>
       </div>
     </header>

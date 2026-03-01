@@ -41,9 +41,11 @@ export function Sidebar() {
     <aside className="w-64 bg-white border-r border-gray-200 flex flex-col">
       <div className="p-6 border-b border-gray-200">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-gradient-to-br from-yellow-400 to-amber-500 rounded-lg flex items-center justify-center">
-            <span className="text-white text-lg font-bold">W</span>
-          </div>
+          <img
+            src="/assets/wello-mark.png"
+            alt="Wello"
+            className="w-8 h-8 object-contain"
+          />
           <div>
             <h1 className="text-xl font-semibold text-gray-900">Wello</h1>
             <p className="text-xs text-gray-500">Admin Dashboard</p>
