@@ -73,6 +73,401 @@ const parseResponseBody = async (response) => {
   }
 };
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const BUSINESS_SELECT_FIELDS = [
+  "id",
+  "owner_id",
+  "name",
+  "address",
+  "city",
+  "state",
+  "postal_code",
+  "phone",
+  "category_key",
+  "category_label",
+  "offer_highlight",
+  "hours",
+  "tags",
+  "latitude",
+  "longitude",
+  "qr_code",
+  "is_open",
+  "approval_status",
+  "status",
+  "stripe_account_id",
+  "stripe_customer_id",
+  "stripe_payment_method_id",
+  "stripe_payment_method_brand",
+  "stripe_payment_method_last4",
+  "stripe_charges_enabled",
+  "stripe_payouts_enabled",
+  "stripe_onboarded_at",
+  "commission_enabled",
+  "commission_rate_cents",
+  "offer_honor_policy_accepted",
+  "offer_honor_policy_version",
+  "offer_honor_policy_accepted_at",
+  "offer_honor_policy_accepted_by",
+  "merchant_descriptor_aliases",
+  "created_at",
+  "updated_at",
+].join(",");
+
+const OFFER_SELECT_FIELDS = [
+  "id",
+  "business_id",
+  "title",
+  "description",
+  "offer_type",
+  "image_url",
+  "active",
+  "approval_status",
+  "redemption_limit_period",
+  "redemption_limit_count",
+  "approved_at",
+  "offer_honor_commitment_accepted",
+  "offer_honor_commitment_version",
+  "offer_honor_commitment_accepted_at",
+  "offer_honor_commitment_accepted_by",
+  "created_at",
+  "updated_at",
+].join(",");
+
+const OFFER_SELECT_FIELDS_WITH_BUSINESS = `${OFFER_SELECT_FIELDS},business:businesses(id,name)`;
+
+const toNullableString = (value, maxLength = 2000) => {
+  if (value == null) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  return text.slice(0, Math.max(1, maxLength));
+};
+
+const toNullableUuid = (value) => {
+  const text = toNullableString(value, 80);
+  if (!text) return null;
+  return UUID_RE.test(text) ? text : "__invalid_uuid__";
+};
+
+const toNullableBoolean = (value) => {
+  if (value == null || value === "") return null;
+  if (typeof value === "boolean") return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "y"].includes(normalized)) return true;
+  if (["false", "0", "no", "n"].includes(normalized)) return false;
+  return "__invalid_boolean__";
+};
+
+const toNullableInteger = (value) => {
+  if (value == null || value === "") return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "__invalid_number__";
+  return Math.trunc(numeric);
+};
+
+const toNullableFloat = (value) => {
+  if (value == null || value === "") return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "__invalid_number__";
+  return numeric;
+};
+
+const toNullableIso = (value) => {
+  if (value == null || value === "") return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "__invalid_date__";
+  return date.toISOString();
+};
+
+const toTextArray = (value, { maxItems = 30, maxItemLength = 120 } = {}) => {
+  if (value == null || value === "") return [];
+  const source = Array.isArray(value)
+    ? value
+    : String(value)
+        .split(",")
+        .map((item) => item.trim());
+  const seen = new Set();
+  const normalized = [];
+  for (const raw of source) {
+    const item = String(raw || "").trim();
+    if (!item) continue;
+    const safe = item.slice(0, maxItemLength);
+    const key = safe.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(safe);
+    if (normalized.length >= maxItems) break;
+  }
+  return normalized;
+};
+
+const sanitizeBusinessUpdates = (payload) => {
+  const body = payload && typeof payload === "object" ? payload : {};
+  const updates = {};
+  const fields = [];
+  const errors = [];
+
+  const optionalStringFields = {
+    name: 160,
+    address: 240,
+    city: 120,
+    state: 80,
+    postal_code: 24,
+    phone: 40,
+    category_key: 80,
+    category_label: 120,
+    offer_highlight: 300,
+    hours: 260,
+    qr_code: 140,
+    stripe_account_id: 140,
+    stripe_customer_id: 140,
+    stripe_payment_method_id: 140,
+    stripe_payment_method_brand: 64,
+    stripe_payment_method_last4: 8,
+    offer_honor_policy_version: 40,
+  };
+
+  for (const [field, maxLength] of Object.entries(optionalStringFields)) {
+    if (!(field in body)) continue;
+    const value = toNullableString(body[field], maxLength);
+    if (field === "name" && !value) {
+      errors.push("Business name is required.");
+      continue;
+    }
+    updates[field] = value;
+    fields.push(field);
+  }
+
+  if ("owner_id" in body) {
+    const value = toNullableUuid(body.owner_id);
+    if (value === "__invalid_uuid__") errors.push("owner_id must be a valid UUID.");
+    else {
+      updates.owner_id = value;
+      fields.push("owner_id");
+    }
+  }
+
+  if ("offer_honor_policy_accepted_by" in body) {
+    const value = toNullableUuid(body.offer_honor_policy_accepted_by);
+    if (value === "__invalid_uuid__") {
+      errors.push("offer_honor_policy_accepted_by must be a valid UUID.");
+    } else {
+      updates.offer_honor_policy_accepted_by = value;
+      fields.push("offer_honor_policy_accepted_by");
+    }
+  }
+
+  const booleanFields = [
+    "is_open",
+    "stripe_charges_enabled",
+    "stripe_payouts_enabled",
+    "commission_enabled",
+    "offer_honor_policy_accepted",
+  ];
+  for (const field of booleanFields) {
+    if (!(field in body)) continue;
+    const value = toNullableBoolean(body[field]);
+    if (value === "__invalid_boolean__") {
+      errors.push(`${field} must be true or false.`);
+      continue;
+    }
+    updates[field] = value;
+    fields.push(field);
+  }
+
+  if ("commission_rate_cents" in body) {
+    const value = toNullableInteger(body.commission_rate_cents);
+    if (value === "__invalid_number__" || (value != null && ![100, 150].includes(value))) {
+      errors.push("commission_rate_cents must be 100 or 150.");
+    } else {
+      updates.commission_rate_cents = value;
+      fields.push("commission_rate_cents");
+    }
+  }
+
+  if ("latitude" in body) {
+    const value = toNullableFloat(body.latitude);
+    if (value === "__invalid_number__" || (value != null && (value < -90 || value > 90))) {
+      errors.push("latitude must be a number between -90 and 90.");
+    } else {
+      updates.latitude = value;
+      fields.push("latitude");
+    }
+  }
+
+  if ("longitude" in body) {
+    const value = toNullableFloat(body.longitude);
+    if (value === "__invalid_number__" || (value != null && (value < -180 || value > 180))) {
+      errors.push("longitude must be a number between -180 and 180.");
+    } else {
+      updates.longitude = value;
+      fields.push("longitude");
+    }
+  }
+
+  if ("approval_status" in body) {
+    const value = toNullableString(body.approval_status, 24);
+    if (value && !["pending", "approved", "rejected"].includes(value.toLowerCase())) {
+      errors.push("approval_status must be pending, approved, or rejected.");
+    } else {
+      updates.approval_status = value;
+      fields.push("approval_status");
+    }
+  }
+
+  if ("status" in body) {
+    const value = toNullableString(body.status, 24);
+    if (value && !["active", "inactive", "archived", "pending"].includes(value.toLowerCase())) {
+      errors.push("status must be active, inactive, archived, or pending.");
+    } else {
+      updates.status = value;
+      fields.push("status");
+    }
+  }
+
+  if ("stripe_onboarded_at" in body) {
+    const value = toNullableIso(body.stripe_onboarded_at);
+    if (value === "__invalid_date__") {
+      errors.push("stripe_onboarded_at must be a valid date.");
+    } else {
+      updates.stripe_onboarded_at = value;
+      fields.push("stripe_onboarded_at");
+    }
+  }
+
+  if ("offer_honor_policy_accepted_at" in body) {
+    const value = toNullableIso(body.offer_honor_policy_accepted_at);
+    if (value === "__invalid_date__") {
+      errors.push("offer_honor_policy_accepted_at must be a valid date.");
+    } else {
+      updates.offer_honor_policy_accepted_at = value;
+      fields.push("offer_honor_policy_accepted_at");
+    }
+  }
+
+  if ("tags" in body) {
+    updates.tags = toTextArray(body.tags, { maxItems: 30, maxItemLength: 80 });
+    fields.push("tags");
+  }
+
+  if ("merchant_descriptor_aliases" in body) {
+    updates.merchant_descriptor_aliases = toTextArray(body.merchant_descriptor_aliases, {
+      maxItems: 30,
+      maxItemLength: 120,
+    });
+    fields.push("merchant_descriptor_aliases");
+  }
+
+  return { updates, fields, errors };
+};
+
+const sanitizeOfferUpdates = (payload) => {
+  const body = payload && typeof payload === "object" ? payload : {};
+  const updates = {};
+  const fields = [];
+  const errors = [];
+
+  const optionalStringFields = {
+    title: 160,
+    description: 1600,
+    offer_type: 80,
+    image_url: 2048,
+    offer_honor_commitment_version: 40,
+  };
+  for (const [field, maxLength] of Object.entries(optionalStringFields)) {
+    if (!(field in body)) continue;
+    const value = toNullableString(body[field], maxLength);
+    if (field === "title" && !value) {
+      errors.push("Offer title is required.");
+      continue;
+    }
+    updates[field] = value;
+    fields.push(field);
+  }
+
+  if ("business_id" in body) {
+    const value = toNullableUuid(body.business_id);
+    if (value === "__invalid_uuid__") errors.push("business_id must be a valid UUID.");
+    else {
+      updates.business_id = value;
+      fields.push("business_id");
+    }
+  }
+
+  if ("offer_honor_commitment_accepted_by" in body) {
+    const value = toNullableUuid(body.offer_honor_commitment_accepted_by);
+    if (value === "__invalid_uuid__") {
+      errors.push("offer_honor_commitment_accepted_by must be a valid UUID.");
+    } else {
+      updates.offer_honor_commitment_accepted_by = value;
+      fields.push("offer_honor_commitment_accepted_by");
+    }
+  }
+
+  const booleanFields = ["active", "offer_honor_commitment_accepted"];
+  for (const field of booleanFields) {
+    if (!(field in body)) continue;
+    const value = toNullableBoolean(body[field]);
+    if (value === "__invalid_boolean__") {
+      errors.push(`${field} must be true or false.`);
+      continue;
+    }
+    updates[field] = value;
+    fields.push(field);
+  }
+
+  if ("approval_status" in body) {
+    const value = toNullableString(body.approval_status, 24);
+    if (value && !["pending", "approved", "rejected"].includes(value.toLowerCase())) {
+      errors.push("approval_status must be pending, approved, or rejected.");
+    } else {
+      updates.approval_status = value;
+      fields.push("approval_status");
+    }
+  }
+
+  if ("redemption_limit_period" in body) {
+    const value = toNullableString(body.redemption_limit_period, 24);
+    if (value && !["day", "week", "month", "year", "lifetime"].includes(value.toLowerCase())) {
+      errors.push("redemption_limit_period must be day, week, month, year, or lifetime.");
+    } else {
+      updates.redemption_limit_period = value;
+      fields.push("redemption_limit_period");
+    }
+  }
+
+  if ("redemption_limit_count" in body) {
+    const value = toNullableInteger(body.redemption_limit_count);
+    if (value === "__invalid_number__" || (value != null && (value < 1 || value > 1000))) {
+      errors.push("redemption_limit_count must be between 1 and 1000.");
+    } else {
+      updates.redemption_limit_count = value;
+      fields.push("redemption_limit_count");
+    }
+  }
+
+  if ("approved_at" in body) {
+    const value = toNullableIso(body.approved_at);
+    if (value === "__invalid_date__") errors.push("approved_at must be a valid date.");
+    else {
+      updates.approved_at = value;
+      fields.push("approved_at");
+    }
+  }
+
+  if ("offer_honor_commitment_accepted_at" in body) {
+    const value = toNullableIso(body.offer_honor_commitment_accepted_at);
+    if (value === "__invalid_date__") {
+      errors.push("offer_honor_commitment_accepted_at must be a valid date.");
+    } else {
+      updates.offer_honor_commitment_accepted_at = value;
+      fields.push("offer_honor_commitment_accepted_at");
+    }
+  }
+
+  return { updates, fields, errors };
+};
+
 const r2EncodeRfc3986 = (value) =>
   encodeURIComponent(value).replace(/[!'()*]/g, (char) =>
     `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
@@ -587,12 +982,20 @@ const handleRpc = async (ctx, body) => {
     const totalCentsRaw = args.p_receipt_total_cents;
     const totalCents = totalCentsRaw == null ? null : Number(totalCentsRaw);
     const notes = args.p_review_notes == null ? null : String(args.p_review_notes);
+    const retryAllowedParsed = toNullableBoolean(args.p_retry_allowed);
+    const retryAllowed =
+      retryAllowedParsed === "__invalid_boolean__"
+        ? "__invalid_boolean__"
+        : Boolean(retryAllowedParsed);
 
     if (!receiptId) {
       return json({ ok: false, error: { code: "invalid_receipt_id", message: "Receipt id is required." } }, 400);
     }
     if (!["verify", "reject", "undo", "edit"].includes(action)) {
       return json({ ok: false, error: { code: "invalid_action", message: "Invalid receipt action." } }, 400);
+    }
+    if (action === "reject" && retryAllowed === "__invalid_boolean__") {
+      return json({ ok: false, error: { code: "invalid_retry_allowed", message: "Retry allowed must be true or false." } }, 400);
     }
     if (!["pending", "verified", "rejected"].includes(expectedStatus)) {
       return json({ ok: false, error: { code: "missing_expected_status", message: "Expected status is required." } }, 400);
@@ -603,7 +1006,7 @@ const handleRpc = async (ctx, body) => {
 
     const currentRes = await selectOne({
       table: "receipt_uploads",
-      select: "id,review_status,review_notes,reviewed_by,reviewed_at,receipt_total_cents,redemption_id",
+      select: "id,review_status,review_notes,reviewed_by,reviewed_at,receipt_total_cents,redemption_id,retry_allowed,retry_decided_by,retry_decided_at",
       filters: [{ column: "id", op: "eq", value: receiptId }],
     });
     if (currentRes.error) {
@@ -679,16 +1082,25 @@ const handleRpc = async (ctx, body) => {
       updates.review_notes = notes;
       updates.reviewed_by = ctx.profile.id;
       updates.reviewed_at = nowIso;
+      updates.retry_allowed = false;
+      updates.retry_decided_by = null;
+      updates.retry_decided_at = null;
     } else if (action === "reject") {
       updates.review_status = "rejected";
       updates.review_notes = notes;
       updates.reviewed_by = ctx.profile.id;
       updates.reviewed_at = nowIso;
+      updates.retry_allowed = Boolean(retryAllowed);
+      updates.retry_decided_by = ctx.profile.id;
+      updates.retry_decided_at = nowIso;
     } else if (action === "undo") {
       updates.review_status = "pending";
       updates.review_notes = notes;
       updates.reviewed_by = null;
       updates.reviewed_at = null;
+      updates.retry_allowed = false;
+      updates.retry_decided_by = null;
+      updates.retry_decided_at = null;
     } else {
       updates.receipt_total_cents = Math.trunc(totalCents);
       updates.review_notes = notes;
@@ -710,7 +1122,7 @@ const handleRpc = async (ctx, body) => {
       table: "receipt_uploads",
       updates,
       filters,
-      select: "id,review_status,review_notes,reviewed_by,reviewed_at,receipt_total_cents,business_id,redemption_id,user_id,uploaded_at,storage_path,promo_code_id",
+      select: "id,review_status,review_notes,reviewed_by,reviewed_at,receipt_total_cents,business_id,redemption_id,user_id,uploaded_at,storage_path,promo_code_id,retry_allowed,retry_decided_by,retry_decided_at",
     });
     if (result.error) {
       return json({ ok: false, error: { code: "rpc_failed", message: result.error.message, status: result.error.status } }, result.error.status);
@@ -736,6 +1148,9 @@ const handleRpc = async (ctx, body) => {
         review_notes: current.review_notes,
         reviewed_by: current.reviewed_by,
         reviewed_at: current.reviewed_at,
+        retry_allowed: current.retry_allowed,
+        retry_decided_by: current.retry_decided_by,
+        retry_decided_at: current.retry_decided_at,
       },
       after: {
         review_status: result.row.review_status,
@@ -743,8 +1158,11 @@ const handleRpc = async (ctx, body) => {
         review_notes: result.row.review_notes,
         reviewed_by: result.row.reviewed_by,
         reviewed_at: result.row.reviewed_at,
+        retry_allowed: result.row.retry_allowed,
+        retry_decided_by: result.row.retry_decided_by,
+        retry_decided_at: result.row.retry_decided_at,
       },
-      meta: { action },
+      meta: { action, retryAllowed: action === "reject" ? Boolean(retryAllowed) : null },
     });
 
     return json({ ok: true, data: result.row }, 200);
@@ -1115,6 +1533,19 @@ const routeExplicit = async (ctx, request, segments) => {
   }
 
   if (segments.length === 1 && segments[0] === "query" && method === "POST") {
+    const action = String(body?.action || "select").trim().toLowerCase();
+    if (action !== "select") {
+      return json(
+        {
+          ok: false,
+          error: {
+            code: "query_mutation_disabled",
+            message: "Mutations through /api/admin/query are disabled. Use explicit admin endpoints.",
+          },
+        },
+        403,
+      );
+    }
     return handleQuery(ctx, body || {});
   }
 
@@ -1167,7 +1598,7 @@ const routeExplicit = async (ctx, request, segments) => {
       table: "receipt_uploads",
       action: "select",
       select:
-        "id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,promo_code_id,business:businesses(id,name,commission_rate_cents),redemption:redemptions(id,offer:offers(id,title))",
+        "id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,promo_code_id,retry_allowed,retry_decided_by,retry_decided_at,promo_code:promo_codes(id,code,cashback_rate_bps),business:businesses(id,name,commission_rate_cents),redemption:redemptions(id,offer:offers(id,title))",
       order: [{ column: "uploaded_at", ascending: false }],
       limit: pageSize,
       range: {
@@ -1184,7 +1615,7 @@ const routeExplicit = async (ctx, request, segments) => {
       table: "receipt_uploads",
       action: "select",
       select:
-        "id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,promo_code_id,business:businesses(id,name,commission_rate_cents),redemption:redemptions(id,offer:offers(id,title),commission_events(id,amount_cents,status)),promo_code:promo_codes(id,code,cashback_rate_bps),cashback_events(id,amount_cents,status,cashback_rate_bps,cashback_basis,platform_subsidy_cents,promo_code_id,promo_code:promo_codes(code,cashback_rate_bps))",
+        "id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,promo_code_id,retry_allowed,retry_decided_by,retry_decided_at,business:businesses(id,name,commission_rate_cents),redemption:redemptions(id,offer:offers(id,title),commission_events(id,amount_cents,status)),promo_code:promo_codes(id,code,cashback_rate_bps),cashback_events(id,amount_cents,status,cashback_rate_bps,cashback_basis,platform_subsidy_cents,promo_code_id,promo_code:promo_codes(code,cashback_rate_bps))",
       filters: [{ column: "id", op: "eq", value: segments[1] }],
       single: "maybe",
     });
@@ -1210,6 +1641,7 @@ const routeExplicit = async (ctx, request, segments) => {
         p_review_notes: body?.reviewNotes ?? null,
         p_expected_status: body?.expectedStatus,
         p_expected_reviewed_at: body?.expectedReviewedAt ?? null,
+        p_retry_allowed: body?.retryAllowed ?? false,
       },
     });
   }
@@ -1232,9 +1664,9 @@ const routeExplicit = async (ctx, request, segments) => {
       table: "receipt_reports",
       action: "select",
       select:
-        "id,receipt_upload_id,business_id,reporter_id,reason,details,status,resolution_notes,resolved_by,resolved_at,created_at,updated_at,business:businesses(id,name),receipt:receipt_uploads(id,review_status,uploaded_at,receipt_total_cents)",
+        "id,receipt_upload_id,business_id,reporter_id,reason,details,metadata,status,resolution_notes,resolved_by,resolved_at,created_at,updated_at,business:businesses(id,name),receipt:receipt_uploads(id,review_status,uploaded_at,receipt_total_cents)",
       order: [{ column: "created_at", ascending: false }],
-      limit: Number(new URL(request.url).searchParams.get("limit") || 30),
+      limit: Math.max(1, Math.min(200, Number(new URL(request.url).searchParams.get("limit") || 30) || 30)),
       filters: [],
     });
   }
@@ -1255,36 +1687,71 @@ const routeExplicit = async (ctx, request, segments) => {
     return handleQuery(ctx, {
       table: "businesses",
       action: "select",
-      select: "id,name,owner_id,category_label,approval_status,status,created_at,updated_at",
+      select: BUSINESS_SELECT_FIELDS,
       order: [{ column: "created_at", ascending: true }],
-      limit: Number(new URL(request.url).searchParams.get("limit") || 30),
+      limit: Math.max(1, Math.min(300, Number(new URL(request.url).searchParams.get("limit") || 30) || 30)),
       filters: [],
     });
   }
 
   if (segments.length === 3 && segments[0] === "businesses" && segments[2] === "update" && method === "POST") {
     const businessId = String(segments[1] || "").trim();
-    const name = String(body?.name || "").trim();
-    const categoryLabelRaw = body?.categoryLabel;
     if (!businessId) {
       return json({ ok: false, error: { code: "invalid_business_id", message: "Business id is required." } }, 400);
     }
-    if (!name) {
-      return json({ ok: false, error: { code: "invalid_business_name", message: "Business name is required." } }, 400);
+    const beforeResult = await runQuery({
+      table: "businesses",
+      action: "select",
+      select: BUSINESS_SELECT_FIELDS,
+      filters: [{ column: "id", op: "eq", value: businessId }],
+      single: "maybe",
+    });
+    if (!beforeResult.ok) {
+      return json(beforeResult.payload, beforeResult.status || 400);
     }
-    if (name.length > 160) {
-      return json({ ok: false, error: { code: "invalid_business_name", message: "Business name is too long." } }, 400);
+    if (!beforeResult.payload?.data?.id) {
+      return json({ ok: false, error: { code: "business_not_found", message: "Business not found." } }, 404);
     }
-    const updates = {
-      name,
-      category_label: categoryLabelRaw == null ? null : String(categoryLabelRaw || "").trim() || null,
-      updated_at: new Date().toISOString(),
+
+    const normalizedBody = {
+      ...body,
+      category_label: body?.category_label ?? body?.categoryLabel,
+      category_key: body?.category_key ?? body?.categoryKey,
+      offer_highlight: body?.offer_highlight ?? body?.offerHighlight,
+      postal_code: body?.postal_code ?? body?.postalCode,
+      qr_code: body?.qr_code ?? body?.qrCode,
+      owner_id: body?.owner_id ?? body?.ownerId,
+      commission_rate_cents: body?.commission_rate_cents ?? body?.commissionRateCents,
+      commission_enabled: body?.commission_enabled ?? body?.commissionEnabled,
+      stripe_onboarded_at: body?.stripe_onboarded_at ?? body?.stripeOnboardedAt,
+      offer_honor_policy_accepted: body?.offer_honor_policy_accepted ?? body?.offerHonorPolicyAccepted,
+      offer_honor_policy_version: body?.offer_honor_policy_version ?? body?.offerHonorPolicyVersion,
+      offer_honor_policy_accepted_at: body?.offer_honor_policy_accepted_at ?? body?.offerHonorPolicyAcceptedAt,
+      offer_honor_policy_accepted_by: body?.offer_honor_policy_accepted_by ?? body?.offerHonorPolicyAcceptedBy,
+      merchant_descriptor_aliases: body?.merchant_descriptor_aliases ?? body?.merchantDescriptorAliases,
+      stripe_account_id: body?.stripe_account_id ?? body?.stripeAccountId,
+      stripe_customer_id: body?.stripe_customer_id ?? body?.stripeCustomerId,
+      stripe_payment_method_id: body?.stripe_payment_method_id ?? body?.stripePaymentMethodId,
+      stripe_payment_method_brand: body?.stripe_payment_method_brand ?? body?.stripePaymentMethodBrand,
+      stripe_payment_method_last4: body?.stripe_payment_method_last4 ?? body?.stripePaymentMethodLast4,
+      stripe_charges_enabled: body?.stripe_charges_enabled ?? body?.stripeChargesEnabled,
+      stripe_payouts_enabled: body?.stripe_payouts_enabled ?? body?.stripePayoutsEnabled,
+      approval_status: body?.approval_status ?? body?.approvalStatus,
     };
+    const { updates, fields, errors } = sanitizeBusinessUpdates(normalizedBody);
+    if (errors.length) {
+      return json({ ok: false, error: { code: "invalid_business_update", message: errors.join(" ") } }, 400);
+    }
+    if (!fields.length) {
+      return json({ ok: false, error: { code: "empty_update", message: "No editable business fields were provided." } }, 400);
+    }
+    updates.updated_at = new Date().toISOString();
+
     const updateResult = await runQuery({
       table: "businesses",
       action: "update",
       body: updates,
-      select: "id,name,owner_id,category_label,approval_status,status,created_at,updated_at",
+      select: BUSINESS_SELECT_FIELDS,
       filters: [{ column: "id", op: "eq", value: businessId }],
       single: "maybe",
     });
@@ -1299,8 +1766,9 @@ const routeExplicit = async (ctx, request, segments) => {
       entity: "businesses",
       entityId: businessId,
       status: "success",
+      before: beforeResult.payload.data,
       after: updateResult.payload.data,
-      meta: { fields: ["name", "category_label"] },
+      meta: { fields },
     });
     return json({ ok: true, data: updateResult.payload.data }, 200);
   }
@@ -1313,7 +1781,7 @@ const routeExplicit = async (ctx, request, segments) => {
     const beforeResult = await runQuery({
       table: "businesses",
       action: "select",
-      select: "id,name,approval_status,status,created_at,updated_at",
+      select: BUSINESS_SELECT_FIELDS,
       filters: [{ column: "id", op: "eq", value: businessId }],
       single: "maybe",
     });
@@ -1334,7 +1802,7 @@ const routeExplicit = async (ctx, request, segments) => {
         status: "inactive",
         updated_at: new Date().toISOString(),
       },
-      select: "id,name,owner_id,category_label,approval_status,status,created_at,updated_at",
+      select: BUSINESS_SELECT_FIELDS,
       filters: [{ column: "id", op: "eq", value: businessId }],
       single: "maybe",
     });
@@ -1366,24 +1834,44 @@ const routeExplicit = async (ctx, request, segments) => {
     return handleQuery(ctx, {
       table: "offers",
       action: "select",
-      select: "id,business_id,title,description,offer_type,active,approval_status,created_at,business:businesses(id,name)",
+      select: OFFER_SELECT_FIELDS_WITH_BUSINESS,
       order: [{ column: "created_at", ascending: true }],
-      limit: Number(new URL(request.url).searchParams.get("limit") || 30),
+      limit: Math.max(1, Math.min(300, Number(new URL(request.url).searchParams.get("limit") || 30) || 30)),
       filters: [],
     });
   }
 
   if (segments.length === 2 && segments[0] === "offers" && segments[1] === "create" && method === "POST") {
-    const businessId = String(body?.businessId || "").trim();
+    const businessId = String(body?.businessId || body?.business_id || "").trim();
     const title = String(body?.title || "").trim();
     const description = body?.description == null ? null : String(body.description || "").trim() || null;
-    const offerType = String(body?.offerType || "cashback").trim() || "cashback";
+    const offerType = String(body?.offerType || body?.offer_type || "cashback").trim() || "cashback";
+    const imageUrl = toNullableString(body?.imageUrl ?? body?.image_url, 2048);
+    const redemptionLimitPeriod = toNullableString(
+      body?.redemptionLimitPeriod ?? body?.redemption_limit_period,
+      24,
+    );
+    const redemptionLimitCount = toNullableInteger(
+      body?.redemptionLimitCount ?? body?.redemption_limit_count,
+    );
 
     if (!businessId) {
       return json({ ok: false, error: { code: "invalid_business_id", message: "Business ID is required." } }, 400);
     }
     if (!title) {
       return json({ ok: false, error: { code: "invalid_title", message: "Offer title is required." } }, 400);
+    }
+    if (
+      redemptionLimitPeriod &&
+      !["day", "week", "month", "year", "lifetime"].includes(redemptionLimitPeriod.toLowerCase())
+    ) {
+      return json({ ok: false, error: { code: "invalid_redemption_period", message: "Invalid redemption limit period." } }, 400);
+    }
+    if (
+      redemptionLimitCount === "__invalid_number__" ||
+      (redemptionLimitCount != null && (redemptionLimitCount < 1 || redemptionLimitCount > 1000))
+    ) {
+      return json({ ok: false, error: { code: "invalid_redemption_limit", message: "redemption_limit_count must be between 1 and 1000." } }, 400);
     }
 
     const businessLookup = await runQuery({
@@ -1408,10 +1896,13 @@ const routeExplicit = async (ctx, request, segments) => {
         title,
         description,
         offer_type: offerType,
+        image_url: imageUrl,
+        redemption_limit_period: redemptionLimitPeriod,
+        redemption_limit_count: redemptionLimitCount,
         active: false,
         approval_status: "pending",
       },
-      select: "id,business_id,title,description,offer_type,active,approval_status,created_at,updated_at",
+      select: OFFER_SELECT_FIELDS,
       single: "maybe",
     });
     if (!createResult.ok || !createResult.payload?.data) {
@@ -1441,6 +1932,91 @@ const routeExplicit = async (ctx, request, segments) => {
     });
   }
 
+  if (segments.length === 3 && segments[0] === "offers" && segments[2] === "update" && method === "POST") {
+    const offerId = String(segments[1] || "").trim();
+    if (!offerId) {
+      return json({ ok: false, error: { code: "invalid_offer_id", message: "Offer id is required." } }, 400);
+    }
+    const beforeResult = await runQuery({
+      table: "offers",
+      action: "select",
+      select: OFFER_SELECT_FIELDS,
+      filters: [{ column: "id", op: "eq", value: offerId }],
+      single: "maybe",
+    });
+    if (!beforeResult.ok) {
+      return json(beforeResult.payload, beforeResult.status || 400);
+    }
+    if (!beforeResult.payload?.data?.id) {
+      return json({ ok: false, error: { code: "offer_not_found", message: "Offer not found." } }, 404);
+    }
+
+    const normalizedBody = {
+      ...body,
+      business_id: body?.business_id ?? body?.businessId,
+      offer_type: body?.offer_type ?? body?.offerType,
+      image_url: body?.image_url ?? body?.imageUrl,
+      approval_status: body?.approval_status ?? body?.approvalStatus,
+      redemption_limit_period: body?.redemption_limit_period ?? body?.redemptionLimitPeriod,
+      redemption_limit_count: body?.redemption_limit_count ?? body?.redemptionLimitCount,
+      approved_at: body?.approved_at ?? body?.approvedAt,
+      offer_honor_commitment_accepted:
+        body?.offer_honor_commitment_accepted ?? body?.offerHonorCommitmentAccepted,
+      offer_honor_commitment_version:
+        body?.offer_honor_commitment_version ?? body?.offerHonorCommitmentVersion,
+      offer_honor_commitment_accepted_at:
+        body?.offer_honor_commitment_accepted_at ?? body?.offerHonorCommitmentAcceptedAt,
+      offer_honor_commitment_accepted_by:
+        body?.offer_honor_commitment_accepted_by ?? body?.offerHonorCommitmentAcceptedBy,
+    };
+    const { updates, fields, errors } = sanitizeOfferUpdates(normalizedBody);
+    if (errors.length) {
+      return json({ ok: false, error: { code: "invalid_offer_update", message: errors.join(" ") } }, 400);
+    }
+    if (!fields.length) {
+      return json({ ok: false, error: { code: "empty_update", message: "No editable offer fields were provided." } }, 400);
+    }
+
+    if (updates.business_id) {
+      const businessLookup = await runQuery({
+        table: "businesses",
+        action: "select",
+        select: "id,name",
+        filters: [{ column: "id", op: "eq", value: updates.business_id }],
+        single: "maybe",
+      });
+      if (!businessLookup.ok) {
+        return json(businessLookup.payload, businessLookup.status || 400);
+      }
+      if (!businessLookup.payload?.data?.id) {
+        return json({ ok: false, error: { code: "business_not_found", message: "Business not found." } }, 404);
+      }
+    }
+
+    updates.updated_at = new Date().toISOString();
+    const updateResult = await runQuery({
+      table: "offers",
+      action: "update",
+      body: updates,
+      select: OFFER_SELECT_FIELDS_WITH_BUSINESS,
+      filters: [{ column: "id", op: "eq", value: offerId }],
+      single: "maybe",
+    });
+    if (!updateResult.ok) {
+      return json(updateResult.payload, updateResult.status || 400);
+    }
+    await logAdminActionInternal(ctx, {
+      action: "offer_updated",
+      entity: "offers",
+      entityId: offerId,
+      status: "success",
+      before: beforeResult.payload.data,
+      after: updateResult.payload.data,
+      meta: { fields },
+    });
+    return json({ ok: true, data: updateResult.payload.data }, 200);
+  }
+
   if (
     segments.length === 3 &&
     segments[0] === "offers" &&
@@ -1456,7 +2032,7 @@ const routeExplicit = async (ctx, request, segments) => {
     const beforeResult = await runQuery({
       table: "offers",
       action: "select",
-      select: "id,business_id,title,description,offer_type,active,approval_status,created_at,updated_at",
+      select: OFFER_SELECT_FIELDS,
       filters: [{ column: "id", op: "eq", value: offerId }],
       single: "maybe",
     });
@@ -1473,7 +2049,7 @@ const routeExplicit = async (ctx, request, segments) => {
         active: nextActive,
         updated_at: new Date().toISOString(),
       },
-      select: "id,business_id,title,description,offer_type,active,approval_status,created_at,updated_at",
+      select: OFFER_SELECT_FIELDS_WITH_BUSINESS,
       filters: [{ column: "id", op: "eq", value: offerId }],
       single: "maybe",
     });
@@ -1583,7 +2159,7 @@ const routeExplicit = async (ctx, request, segments) => {
       const status = String(row.status || "").toLowerCase();
       const approvalStatus = String(row.approval_status || "").toLowerCase();
       const eligible =
-        ["checkbook", "trolley"].includes(provider) &&
+        provider === "checkbook" &&
         methodType === "bank_transfer" &&
         status === "pending" &&
         approvalStatus === "pending";
@@ -1668,13 +2244,13 @@ const routeExplicit = async (ctx, request, segments) => {
     const methodType = String(row.method_type || "").toLowerCase();
     const status = String(row.status || "").toLowerCase();
     const approvalStatus = String(row.approval_status || "").toLowerCase();
-    if (status !== "failed" || methodType !== "bank_transfer" || !["checkbook", "trolley"].includes(provider)) {
+    if (status !== "failed" || methodType !== "bank_transfer" || provider !== "checkbook") {
       return json(
         {
           ok: false,
           error: {
             code: "not_retryable",
-            message: "Only failed bank-transfer payouts for supported providers can be retried.",
+            message: "Only failed Checkbook bank-transfer payouts can be retried.",
           },
         },
         400,
@@ -1928,21 +2504,54 @@ export const onRequest = async (context) => {
 
   let ctx = null;
   const url = new URL(request.url);
+  const method = request.method.toUpperCase();
+  const isMutation = !["GET", "HEAD", "OPTIONS"].includes(method);
   const segments = url.pathname
     .replace(/^\/api\/admin\/?/, "")
     .split("/")
     .filter(Boolean);
 
+  const contentLength = Number(request.headers.get("content-length") || 0);
+  if (isMutation && Number.isFinite(contentLength) && contentLength > 256000) {
+    return json(
+      {
+        ok: false,
+        error: {
+          code: "payload_too_large",
+          message: "Request payload is too large.",
+        },
+      },
+      413,
+    );
+  }
+
   try {
     await enforceAdminRateLimit(request, env, {
       route: url.pathname,
     });
+    if (isMutation) {
+      await enforceAdminRateLimit(request, env, {
+        route: `${url.pathname}:mut`,
+        ipMaxRequests: 60,
+        ipWindowSeconds: 60,
+      });
+    }
     ctx = await getAdminContext(request, env);
     ctx.env = env;
     await enforceAdminRateLimit(request, env, {
       email: ctx.email,
       route: url.pathname,
     });
+    if (isMutation) {
+      await enforceAdminRateLimit(request, env, {
+        email: ctx.email,
+        route: `${url.pathname}:mut`,
+        ipMaxRequests: 60,
+        ipWindowSeconds: 60,
+        staffMaxRequests: 240,
+        staffWindowSeconds: 5 * 60,
+      });
+    }
     const response = await routeExplicit(ctx, request, segments);
     await logAuthEvent(ctx, {
       outcome: response.status >= 400 ? "failure" : "success",

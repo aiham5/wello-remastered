@@ -28,12 +28,20 @@ interface ReceiptListRow {
   review_notes?: string | null;
   reviewed_at?: string | null;
   uploaded_at?: string | null;
+  retry_allowed?: boolean | null;
+  retry_decided_by?: string | null;
+  retry_decided_at?: string | null;
+  promo_code_id?: string | null;
+  promo_code?: {
+    id?: string | null;
+    code?: string | null;
+    cashback_rate_bps?: number | null;
+  } | null;
   business?: { id: string; name?: string | null } | null;
 }
 
 interface ReceiptDetail extends ReceiptListRow {
   commission_due_cents?: number | null;
-  promo_code_id?: string | null;
 }
 
 interface PreviewData {
@@ -64,6 +72,7 @@ export function ReceiptReviews() {
   const [previewError, setPreviewError] = useState("");
   const [totalInput, setTotalInput] = useState("0.00");
   const [notesInput, setNotesInput] = useState("");
+  const [rejectAllowRetry, setRejectAllowRetry] = useState(true);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerUrl, setViewerUrl] = useState("");
   const [viewerTitle, setViewerTitle] = useState("Receipt Image");
@@ -108,6 +117,11 @@ export function ReceiptReviews() {
     setDetail(res.data);
     setTotalInput(asDollarsString(res.data.receipt_total_cents));
     setNotesInput(String(res.data.review_notes || ""));
+    setRejectAllowRetry(
+      String(res.data.review_status || "").toLowerCase() === "pending"
+        ? true
+        : Boolean(res.data.retry_allowed),
+    );
     setPreview(null);
     setPreviewError("");
 
@@ -167,7 +181,8 @@ export function ReceiptReviews() {
       const business = String(receipt.business?.name || "").toLowerCase();
       const user = String(receipt.user_id || "").toLowerCase();
       const id = String(receipt.id || "").toLowerCase();
-      return business.includes(query) || user.includes(query) || id.includes(query);
+      const promo = String(receipt.promo_code?.code || receipt.promo_code_id || "").toLowerCase();
+      return business.includes(query) || user.includes(query) || id.includes(query) || promo.includes(query);
     });
   }, [rows, searchQuery]);
 
@@ -206,6 +221,7 @@ export function ReceiptReviews() {
           reviewNotes: notesInput.trim() || null,
           expectedStatus,
           expectedReviewedAt,
+          retryAllowed: action === "reject" ? rejectAllowRetry : false,
         },
       },
     );
@@ -225,6 +241,7 @@ export function ReceiptReviews() {
               review_notes: updated.review_notes,
               reviewed_at: updated.reviewed_at,
               receipt_total_cents: updated.receipt_total_cents,
+              retry_allowed: updated.retry_allowed,
             }
           : row,
       ),
@@ -234,7 +251,9 @@ export function ReceiptReviews() {
       action === "verify"
         ? "Receipt verified."
         : action === "reject"
-          ? "Receipt rejected."
+          ? updated.retry_allowed
+            ? "Receipt rejected. Retry upload is allowed."
+            : "Receipt rejected. Retry upload is disabled."
           : "Receipt updated.",
     );
     setWorking(false);
@@ -323,6 +342,7 @@ export function ReceiptReviews() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Business</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Promo</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
@@ -330,7 +350,7 @@ export function ReceiptReviews() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {loading ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-10 text-center text-gray-500">
+                    <td colSpan={7} className="px-6 py-10 text-center text-gray-500">
                       Loading receipts...
                     </td>
                   </tr>
@@ -363,6 +383,11 @@ export function ReceiptReviews() {
                         <td className="px-6 py-4 whitespace-nowrap">
                           <p className="font-medium text-gray-900">
                             {formatCurrencyFromCents(amountCents)}
+                          </p>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <p className="text-sm text-gray-900">
+                            {receipt.promo_code?.code || receipt.promo_code_id || "None"}
                           </p>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -409,7 +434,7 @@ export function ReceiptReviews() {
                   })
                 ) : (
                   <tr>
-                    <td colSpan={6} className="px-6 py-10 text-center text-gray-500">
+                    <td colSpan={7} className="px-6 py-10 text-center text-gray-500">
                       No receipts match current filters.
                     </td>
                   </tr>
@@ -444,6 +469,12 @@ export function ReceiptReviews() {
                   <p className="text-gray-500">User</p>
                   <p className="font-medium text-gray-900">{detail.user_id || "--"}</p>
                 </div>
+                <div>
+                  <p className="text-gray-500">Promo</p>
+                  <p className="font-medium text-gray-900">
+                    {detail.promo_code?.code || detail.promo_code_id || "None"}
+                  </p>
+                </div>
               </div>
 
               <label className="block">
@@ -464,6 +495,23 @@ export function ReceiptReviews() {
                   className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
                 />
               </label>
+              {String(detail.review_status || "").toLowerCase() === "pending" ? (
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={rejectAllowRetry}
+                    onChange={(e) => setRejectAllowRetry(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                    disabled={working}
+                  />
+                  Allow user to retry receipt upload if rejected
+                </label>
+              ) : null}
+              {String(detail.review_status || "").toLowerCase() === "rejected" ? (
+                <p className="text-xs text-gray-500">
+                  Retry upload: {detail.retry_allowed ? "Allowed" : "Disabled"}
+                </p>
+              ) : null}
 
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="bg-gray-50 border border-gray-200 rounded-lg p-2">

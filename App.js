@@ -435,7 +435,7 @@ const isActiveCashoutClaimEntry = (entry) => {
     return provider === "reloadly";
   }
   if (methodType === "bank_transfer") {
-    return provider === "checkbook" || provider === "trolley";
+    return provider === "checkbook";
   }
   return false;
 };
@@ -1099,6 +1099,7 @@ const mapSupabaseRedemption = (row) => ({
       verificationSource: receipt.verification_source || "receipt",
       verificationReference: receipt.verification_reference || null,
       reviewStatus: receipt.review_status || null,
+      retryAllowed: receipt.retry_allowed === true,
       reviewNotes: String(receipt.review_notes || "").trim() || null,
       uploadedAt: receipt.uploaded_at
         ? new Date(receipt.uploaded_at).getTime()
@@ -3419,6 +3420,7 @@ const insertReceiptUploadRecord = async ({
   businessId,
   userId,
   storagePath,
+  allowRetryResubmit = false,
 }) => {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return { data: null, error: "Supabase is not configured." };
@@ -3482,10 +3484,55 @@ const insertReceiptUploadRecord = async ({
       lowered.includes("duplicate") ||
       lowered.includes("unique")
     ) {
+      if (allowRetryResubmit) {
+        const retryRpc = await withTimeout(
+          restClient.rpc("user_resubmit_rejected_receipt", {
+            p_redemption_id: redemptionId,
+            p_storage_path: storagePath,
+          }),
+          12000,
+          "receipt_retry_resubmit",
+        );
+        if (!retryRpc.error && retryRpc.data) {
+          const row = Array.isArray(retryRpc.data)
+            ? retryRpc.data[0] || null
+            : retryRpc.data;
+          if (row?.id) {
+            return {
+              data: row,
+              error: null,
+              status: retryRpc.status ?? insertResponse.status,
+              resubmitted: true,
+            };
+          }
+        }
+        if (retryRpc.error) {
+          const retryMessage = String(retryRpc.error.message || "").toLowerCase();
+          if (retryMessage.includes("retry_not_allowed")) {
+            return {
+              data: null,
+              error: "Retry upload is disabled for this rejected receipt.",
+              status: retryRpc.status ?? 403,
+            };
+          }
+          if (retryMessage.includes("receipt_not_rejected")) {
+            return {
+              data: null,
+              error: "Only rejected receipts can be retried.",
+              status: retryRpc.status ?? 409,
+            };
+          }
+          return {
+            data: null,
+            error: retryRpc.error.message || "Unable to retry receipt upload.",
+            status: retryRpc.status ?? insertResponse.status,
+          };
+        }
+      }
       const lookupResponse = await withTimeout(
         restClient
           .from("receipt_uploads")
-          .select("id, uploaded_at, storage_path")
+          .select("id, uploaded_at, storage_path, review_status, retry_allowed")
           .eq("redemption_id", redemptionId)
           .order("uploaded_at", { ascending: false })
           .limit(1)
@@ -7509,6 +7556,11 @@ export default function App() {
       success: null,
     });
     if (methodType === "gift_card") {
+      setCashoutCelebration((prev) => ({ ...prev, visible: false }));
+      if (cashoutCelebrationTimerRef.current) {
+        clearTimeout(cashoutCelebrationTimerRef.current);
+        cashoutCelebrationTimerRef.current = null;
+      }
       setCashoutVoucherReveal({
         visible: true,
         brandName: selectedBrandName,
@@ -7542,11 +7594,11 @@ export default function App() {
         message: "Bank transfer request submitted for admin approval.",
         options: [{ label: "OK", variant: "primary" }],
       });
+      triggerCashoutCelebration(
+        Number(data?.amountCents) || amountCentsToCashout,
+        methodType,
+      );
     }
-    triggerCashoutCelebration(
-      Number(data?.amountCents) || amountCentsToCashout,
-      methodType,
-    );
     setCashoutAmountText("0.00");
   }, [
     bankTileLinked,
@@ -14837,16 +14889,24 @@ export default function App() {
       });
       return;
     }
-    if (entry.receipt?.id) {
+    const existingReviewStatus = String(entry?.receipt?.reviewStatus || "").toLowerCase();
+    const canResubmitRejectedReceipt =
+      Boolean(entry?.receipt?.id) &&
+      existingReviewStatus === "rejected" &&
+      entry?.receipt?.retryAllowed === true;
+    if (entry.receipt?.id && !canResubmitRejectedReceipt) {
       logReceiptUploadDebug("blockedAlreadyUploaded", { entryId: entry.id });
       setReceiptUploadStatus({
         uploading: false,
-        error: "Receipt already uploaded.",
+        error:
+          existingReviewStatus === "rejected"
+            ? "Receipt was rejected and retry upload is not allowed."
+            : "Receipt already uploaded.",
         targetId: null,
       });
       return;
     }
-    if (!isReceiptWindowOpen(entry)) {
+    if (!isReceiptWindowOpen(entry) && !canResubmitRejectedReceipt) {
       logReceiptUploadDebug("blockedWindowExpired", {
         entryId: entry.id,
       });
@@ -15016,6 +15076,7 @@ export default function App() {
           businessId: entry.businessId,
           userId: authUserId,
           storagePath: path,
+          allowRetryResubmit: canResubmitRejectedReceipt,
         });
         logReceiptUploadDebug("insertResult", {
           ok: Boolean(data && !insertError),
@@ -15053,6 +15114,7 @@ export default function App() {
                     verificationSource: "receipt",
                     verificationReference: null,
                     reviewStatus: "pending",
+                    retryAllowed: false,
                     uploadedAt: data.uploaded_at
                       ? new Date(data.uploaded_at).getTime()
                       : Date.now(),
@@ -16467,7 +16529,7 @@ export default function App() {
         "created_at",
         "offer:offers (id, title, description, offer_type, image_url)",
         "business:businesses (id, name, category_key, category_label)",
-        "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, verification_source, verification_reference, cashback_events (amount_cents, status))",
+        "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference, cashback_events (amount_cents, status))",
         "purchase_verifications (id, source, status, reason_code, reason_detail, last_checked_at, confirmed_at, rejected_at)",
       ].join(",");
       const selectBasic = [
@@ -16477,7 +16539,7 @@ export default function App() {
         "created_at",
         "offer:offers (id, title, description, offer_type, image_url)",
         "business:businesses (id, name, category_key, category_label)",
-        "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, verification_source, verification_reference)",
+        "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference)",
         "purchase_verifications (id, source, status, reason_code, reason_detail, last_checked_at, confirmed_at, rejected_at)",
       ].join(",");
       const selectLegacy = [
@@ -16487,7 +16549,7 @@ export default function App() {
         "created_at",
         "offer:offers (id, title, description, offer_type, image_url)",
         "business:businesses (id, name, category_key, category_label)",
-        "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, verification_source, verification_reference)",
+        "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference)",
       ].join(",");
 
       let { data, error } = await supabase
@@ -18032,7 +18094,7 @@ export default function App() {
                         size={42}
                         color={
                           scannerStatus === "success"
-                            ? "#1D4ED8"
+                            ? "#16A34A"
                             : scannerStatus === "blocked" ||
                                 scannerStatus === "error"
                               ? "#B42318"
@@ -19995,7 +20057,7 @@ export default function App() {
                         size={18}
                         color={
                           receiptUploadOverlay.phase === "success"
-                            ? "#1E3A8A"
+                            ? "#16A34A"
                             : "#B42318"
                         }
                       />
@@ -20040,7 +20102,10 @@ export default function App() {
 
             <Modal
               transparent
-              visible={cashoutCelebration.visible}
+              visible={
+                cashoutCelebration.visible &&
+                !cashoutVoucherReveal.visible
+              }
               animationType="fade"
               presentationStyle="overFullScreen"
               statusBarTranslucent
@@ -23849,13 +23914,22 @@ export default function App() {
                                       purchaseVerifyStatus.loading &&
                                       purchaseVerifyStatus.targetId ===
                                         entry.id;
-                                    const needsReceipt = !hasReceipt;
                                     const purchaseVerification =
                                       entry.purchaseVerification || null;
                                     const verificationStatus =
                                       purchaseVerification?.status || null;
+                                    const receiptReviewStatus = String(
+                                      entry.receipt?.reviewStatus || "",
+                                    ).toLowerCase();
+                                    const canResubmitRejectedReceipt =
+                                      hasReceipt &&
+                                      receiptReviewStatus === "rejected" &&
+                                      entry?.receipt?.retryAllowed === true;
+                                    const needsReceipt =
+                                      !hasReceipt || canResubmitRejectedReceipt;
                                     const canUploadReceipt =
-                                      needsReceipt && receiptWindowOpen;
+                                      canResubmitRejectedReceipt ||
+                                      (needsReceipt && receiptWindowOpen);
                                     const canRetryAutoVerify =
                                       hasLinkedPlaidBank &&
                                       needsReceipt &&
@@ -23872,9 +23946,6 @@ export default function App() {
                                     const cashbackCents = Number(
                                       entry.receipt?.cashbackCents,
                                     );
-                                    const receiptReviewStatus = String(
-                                      entry.receipt?.reviewStatus || "",
-                                    ).toLowerCase();
                                     const receiptRejectionReason =
                                       receiptReviewStatus === "rejected"
                                         ? String(

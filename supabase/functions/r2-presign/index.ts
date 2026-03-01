@@ -398,9 +398,23 @@ Deno.serve(async (req) => {
       const redemptionCreatedAtMs = redemption?.created_at
         ? Date.parse(String(redemption.created_at))
         : Number.NaN;
+      const { data: retryReceipt } = await supabaseAdminClient
+        .from("receipt_uploads")
+        .select("id, review_status, retry_allowed, user_id")
+        .eq("redemption_id", bodyRedemptionId)
+        .eq("user_id", userId)
+        .order("uploaded_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const retryResubmissionAllowed = Boolean(
+        retryReceipt?.id &&
+          String(retryReceipt.review_status || "").toLowerCase() === "rejected" &&
+          retryReceipt.retry_allowed === true,
+      );
       if (
         Number.isFinite(redemptionCreatedAtMs) &&
-        Date.now() - redemptionCreatedAtMs > RECEIPT_UPLOAD_WINDOW_MS
+        Date.now() - redemptionCreatedAtMs > RECEIPT_UPLOAD_WINDOW_MS &&
+        !retryResubmissionAllowed
       ) {
         return new Response(
           JSON.stringify({
