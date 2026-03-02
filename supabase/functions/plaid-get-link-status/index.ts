@@ -5,6 +5,7 @@ import {
   HttpError,
   json,
 } from "../_shared/auth.ts";
+import { hasPlaidLinkPurpose } from "../_shared/plaidLinkPurposes.ts";
 import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
@@ -36,7 +37,7 @@ serve(async (req) => {
     const { data, error } = await supabase
       .from("plaid_linked_items")
       .select(
-        "plaid_item_id, institution_id, institution_name, status, consent_expires_at, last_sync_at, created_at, update_mode_required, update_mode_reason, update_mode_detected_at, new_accounts_available",
+        "plaid_item_id, institution_id, institution_name, status, consent_expires_at, last_sync_at, created_at, update_mode_required, update_mode_reason, update_mode_detected_at, new_accounts_available, link_purposes",
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
@@ -85,7 +86,7 @@ serve(async (req) => {
       const { data: accountsData, error: accountsError } = await supabase
         .from("plaid_linked_accounts")
         .select(
-          "plaid_item_id, plaid_account_id, account_name, account_mask, account_subtype, account_type, status, created_at",
+          "plaid_item_id, plaid_account_id, account_name, account_mask, account_subtype, account_type, status, created_at, link_purposes",
         )
         .eq("user_id", userId)
         .eq("status", "active")
@@ -161,13 +162,30 @@ serve(async (req) => {
         String(item?.institution_name || "").trim() || null,
       );
     });
+    const activeCashoutItems = active.filter((item) =>
+      hasPlaidLinkPurpose(item?.link_purposes, "cashout")
+    );
+    const activeReceiptItems = active.filter((item) =>
+      hasPlaidLinkPurpose(item?.link_purposes, "receipt_verification")
+    );
+    const activeCashoutAccounts = linkedAccounts.filter((account) =>
+      hasPlaidLinkPurpose(account?.link_purposes, "cashout")
+    );
+    const activeReceiptAccounts = linkedAccounts.filter((account) =>
+      hasPlaidLinkPurpose(account?.link_purposes, "receipt_verification")
+    );
+    const selectedCashoutAccountId = activeCashoutAccounts.some((account) =>
+        String(account?.plaid_account_id || "").trim() === selectedPayoutAccountId
+      )
+      ? selectedPayoutAccountId
+      : "";
 
     return json({
       linked: active.length > 0,
       linkedCount: active.length,
       linkedSince,
-      linkedAccountCount: linkedAccounts.length,
-      accounts: linkedAccounts.map((account) => {
+      linkedAccountCount: activeCashoutAccounts.length,
+      accounts: activeCashoutAccounts.map((account) => {
         const itemId = String(account?.plaid_item_id || "").trim();
         const accountId = String(account?.plaid_account_id || "").trim();
         const mask = String(account?.account_mask || "").trim() || null;
@@ -221,6 +239,19 @@ serve(async (req) => {
           "Cashback is automatically verified when purchases are visible through your linked bank.",
         secondary:
           "Some cards or banks may require receipt upload for verification.",
+      },
+      purposes: {
+        cashout: {
+          linked: activeCashoutItems.length > 0,
+          linkedCount: activeCashoutItems.length,
+          linkedAccountCount: activeCashoutAccounts.length,
+          selectedPayoutAccountId: selectedCashoutAccountId || null,
+        },
+        receiptVerification: {
+          linked: activeReceiptItems.length > 0,
+          linkedCount: activeReceiptItems.length,
+          linkedAccountCount: activeReceiptAccounts.length,
+        },
       },
     });
   } catch (error) {

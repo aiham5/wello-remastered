@@ -5,6 +5,7 @@ import {
   HttpError,
   json,
 } from "../_shared/auth.ts";
+import { parsePlaidLinkPurpose } from "../_shared/plaidLinkPurposes.ts";
 import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import { plaidCreateLinkToken } from "../_shared/plaid.ts";
 import { enforceRateLimit } from "../_shared/rateLimit.ts";
@@ -24,6 +25,10 @@ serve(async (req) => {
     userIdForLog = userId;
     const supabase = createAdminSupabase();
     supabaseForLog = supabase;
+    const purposes = parsePlaidLinkPurpose(
+      body?.purpose ?? body?.linkPurpose ?? body?.link_purpose,
+      { allowLegacyBoth: true, field: "purpose" },
+    );
     await enforceRateLimit({
       req,
       scope: "plaid:create-link-token",
@@ -47,7 +52,7 @@ serve(async (req) => {
     const { data: itemRows, error: itemError } = await supabase
       .from("plaid_linked_items")
       .select(
-        "plaid_item_id, plaid_access_token, status, update_mode_required, update_mode_reason, new_accounts_available, updated_at, created_at",
+        "plaid_item_id, plaid_access_token, status, update_mode_required, update_mode_reason, new_accounts_available, updated_at, created_at, link_purposes",
       )
       .eq("user_id", userId)
       .neq("status", "revoked")
@@ -75,7 +80,13 @@ serve(async (req) => {
       .trim()
       .slice(0, 200) || null;
 
-    const items = Array.isArray(itemRows) ? itemRows : [];
+    const items = (Array.isArray(itemRows) ? itemRows : []).filter((row) => {
+      const rowPurposes = Array.isArray(row?.link_purposes)
+        ? row.link_purposes
+        : [];
+      if (!rowPurposes.length) return true;
+      return rowPurposes.some((entry) => purposes.includes(entry));
+    });
     const updateRequiredItem = items.find((row) =>
       Boolean(row?.update_mode_required) &&
       String(row?.plaid_access_token || "").trim().length > 0
@@ -120,6 +131,7 @@ serve(async (req) => {
         mode,
         accountSelectionEnabled,
         updateModeRequired,
+        purposes,
         platform: normalizedPlatform,
       },
     });
@@ -137,6 +149,7 @@ serve(async (req) => {
           accountSelectionEnabled,
         }
         : null,
+      purposes,
       copy: {
         primary: updateItem
           ? accountSelectionEnabled

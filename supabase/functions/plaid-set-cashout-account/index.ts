@@ -216,11 +216,12 @@ serve(async (req) => {
     const { data: linkedAccount, error: linkedAccountError } = await supabase
       .from("plaid_linked_accounts")
       .select(
-        "plaid_item_id, plaid_account_id, account_name, account_mask, account_subtype, account_type, status",
+        "plaid_item_id, plaid_account_id, account_name, account_mask, account_subtype, account_type, status, link_purposes",
       )
       .eq("user_id", userId)
       .eq("plaid_account_id", plaidAccountId)
       .eq("status", "active")
+      .contains("link_purposes", ["cashout"])
       .maybeSingle();
     if (linkedAccountError || !linkedAccount) {
       throw new HttpError(
@@ -234,10 +235,11 @@ serve(async (req) => {
     plaidItemIdForLog = plaidItemId || null;
     const { data: linkedItem, error: linkedItemError } = await supabase
       .from("plaid_linked_items")
-      .select("plaid_access_token, institution_name, status")
+      .select("plaid_access_token, institution_name, status, link_purposes")
       .eq("user_id", userId)
       .eq("plaid_item_id", plaidItemId)
       .eq("status", "active")
+      .contains("link_purposes", ["cashout"])
       .maybeSingle();
     if (linkedItemError || !linkedItem) {
       throw new HttpError(

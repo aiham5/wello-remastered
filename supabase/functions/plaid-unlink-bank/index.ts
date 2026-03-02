@@ -5,6 +5,10 @@ import {
   createAdminSupabase,
   json,
 } from "../_shared/auth.ts";
+import {
+  normalizePlaidLinkPurposes,
+  parsePlaidLinkPurpose,
+} from "../_shared/plaidLinkPurposes.ts";
 import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import { plaidRemoveItem } from "../_shared/plaid.ts";
 import { enforceRateLimit } from "../_shared/rateLimit.ts";
@@ -23,6 +27,13 @@ serve(async (req) => {
 
   try {
     const { userId, body } = await authenticateRequest(req);
+    const purposeInput = body?.purpose ?? body?.linkPurpose ?? body?.link_purpose;
+    const purposesToRemove = purposeInput
+      ? parsePlaidLinkPurpose(purposeInput, {
+        allowLegacyBoth: false,
+        field: "purpose",
+      })
+      : null;
     userIdForLog = userId;
     const targetItemId = String(body?.itemId || body?.item_id || "").trim();
     targetItemIdForLog = targetItemId || null;
@@ -44,7 +55,7 @@ serve(async (req) => {
 
     let query = supabase
       .from("plaid_linked_items")
-      .select("id, plaid_item_id, plaid_access_token")
+      .select("id, plaid_item_id, plaid_access_token, link_purposes")
       .eq("user_id", userId)
       .eq("status", "active");
 
@@ -63,8 +74,13 @@ serve(async (req) => {
       .filter(Boolean);
     let unlinkedCount = 0;
     for (const item of targets) {
+      const currentPurposes = normalizePlaidLinkPurposes(item?.link_purposes);
+      const remainingPurposes = purposesToRemove
+        ? currentPurposes.filter((purpose) => !purposesToRemove.includes(purpose))
+        : [];
+      const revokeItem = !purposesToRemove || remainingPurposes.length === 0;
       const accessToken = String(item?.plaid_access_token || "").trim();
-      if (accessToken) {
+      if (revokeItem && accessToken) {
         try {
           await plaidRemoveItem(accessToken);
         } catch {
@@ -74,26 +90,55 @@ serve(async (req) => {
       const { error: updateError } = await supabase
         .from("plaid_linked_items")
         .update({
-          status: "revoked",
-          plaid_access_token: null,
-          transactions_cursor: null,
-          last_sync_at: null,
-          institution_id: null,
-          institution_name: null,
-          available_products: [],
-          billed_products: [],
-          consent_expires_at: null,
+          ...(revokeItem
+            ? {
+              status: "revoked",
+              plaid_access_token: null,
+              transactions_cursor: null,
+              last_sync_at: null,
+              institution_id: null,
+              institution_name: null,
+              available_products: [],
+              billed_products: [],
+              consent_expires_at: null,
+            }
+            : {
+              link_purposes: remainingPurposes,
+            }),
         })
         .eq("id", item.id);
       if (!updateError) unlinkedCount += 1;
     }
 
     if (targetItemIds.length > 0) {
-      await supabase
-        .from("plaid_linked_accounts")
-        .update({ status: "revoked" })
-        .eq("user_id", userId)
-        .in("plaid_item_id", targetItemIds);
+      if (!purposesToRemove) {
+        await supabase
+          .from("plaid_linked_accounts")
+          .update({ status: "revoked" })
+          .eq("user_id", userId)
+          .in("plaid_item_id", targetItemIds);
+      } else {
+        const { data: activeAccounts } = await supabase
+          .from("plaid_linked_accounts")
+          .select("id, link_purposes")
+          .eq("user_id", userId)
+          .eq("status", "active")
+          .in("plaid_item_id", targetItemIds);
+        for (const account of Array.isArray(activeAccounts) ? activeAccounts : []) {
+          const accountPurposes = normalizePlaidLinkPurposes(account?.link_purposes);
+          const remainingPurposes = accountPurposes.filter((purpose) =>
+            !purposesToRemove.includes(purpose)
+          );
+          await supabase
+            .from("plaid_linked_accounts")
+            .update(
+              remainingPurposes.length > 0
+                ? { link_purposes: remainingPurposes }
+                : { status: "revoked" },
+            )
+            .eq("id", account.id);
+        }
+      }
 
       const { data: profile } = await supabase
         .from("profiles")
@@ -102,7 +147,11 @@ serve(async (req) => {
         .maybeSingle();
 
       const selectedItemId = String(profile?.stripe_cashout_plaid_item_id || "").trim();
-      if (selectedItemId && targetItemIds.includes(selectedItemId)) {
+      if (
+        selectedItemId &&
+        targetItemIds.includes(selectedItemId) &&
+        (!purposesToRemove || purposesToRemove.includes("cashout"))
+      ) {
         await supabase
           .from("profiles")
           .update({
@@ -125,6 +174,7 @@ serve(async (req) => {
       metadata: {
         unlinkedCount,
         targetedUnlink: Boolean(targetItemId),
+        purposesRemoved: purposesToRemove || ["cashout", "receipt_verification"],
       },
     });
 
@@ -132,7 +182,9 @@ serve(async (req) => {
       unlinked: true,
       unlinkedCount,
       copy: {
-        primary: "Linked bank removed.",
+        primary: purposesToRemove
+          ? "Linked bank access updated."
+          : "Linked bank removed.",
         secondary:
           "You can still upload a receipt to verify purchases when bank data is unavailable.",
       },

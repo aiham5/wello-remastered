@@ -285,6 +285,7 @@ serve(async (req: Request) => {
         .select("plaid_account_id")
         .eq("user_id", userId)
         .eq("status", "active")
+        .contains("link_purposes", ["cashout"])
         .limit(1),
     ]);
     const hasActivePlaidBank = Array.isArray(linkedPlaidAccounts) &&

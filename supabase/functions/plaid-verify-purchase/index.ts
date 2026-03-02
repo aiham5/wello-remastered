@@ -6,6 +6,7 @@ import {
   createAdminSupabase,
   json,
 } from "../_shared/auth.ts";
+import { hasPlaidLinkPurpose } from "../_shared/plaidLinkPurposes.ts";
 import {
   PlaidTransaction,
   plaidGetIdentity,
@@ -595,7 +596,7 @@ serve(async (req) => {
     const { data: linkedItems, error: linkedError } = await supabase
       .from("plaid_linked_items")
       .select(
-        "id, plaid_item_id, plaid_access_token, institution_name, status, last_sync_at",
+        "id, plaid_item_id, plaid_access_token, institution_name, status, last_sync_at, link_purposes",
       )
       .eq("user_id", userId)
       .eq("status", "active");
@@ -604,9 +605,13 @@ serve(async (req) => {
       throw new HttpError(linkedError.message || "Unable to load linked banks.", 500);
     }
 
-    const activeLinkedItems = (Array.isArray(linkedItems) ? linkedItems : []).filter(
-      (item) => String(item?.plaid_access_token || "").trim().length > 0,
-    );
+    const activeLinkedItems = (Array.isArray(linkedItems) ? linkedItems : [])
+      .filter((item) =>
+        String(item?.plaid_access_token || "").trim().length > 0
+      )
+      .filter((item) =>
+        hasPlaidLinkPurpose(item?.link_purposes, "receipt_verification")
+      );
 
     if (!activeLinkedItems.length) {
       const verification = await createOrUpdateVerification({

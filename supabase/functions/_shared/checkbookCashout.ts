@@ -15,6 +15,7 @@ import {
   plaidGetInstitutionById,
   plaidGetItem,
 } from "./plaid.ts";
+import { mergePlaidLinkPurposes } from "./plaidLinkPurposes.ts";
 
 type CreateOptions = { endpointName: string; requireIdempotencyKey: boolean };
 type BasicOptions = { endpointName: string };
@@ -500,7 +501,8 @@ const getPlaidCashoutLinkState = async (
         .from("plaid_linked_accounts")
         .select("plaid_account_id")
         .eq("user_id", userId)
-        .eq("status", "active"),
+        .eq("status", "active")
+        .contains("link_purposes", ["cashout"]),
     ]);
   if (accountsError) {
     throw new HttpError(
@@ -536,7 +538,17 @@ const upsertLinkedPlaidData = async (
   institutionId: string | null,
   institutionName: string | null,
   accounts: Array<Record<string, unknown>>,
+  purpose: "cashout" | "receipt_verification",
 ) => {
+  const { data: existingItem } = await supabase
+    .from("plaid_linked_items")
+    .select("link_purposes")
+    .eq("plaid_item_id", itemId)
+    .maybeSingle();
+  const mergedItemPurposes = mergePlaidLinkPurposes(
+    existingItem?.link_purposes,
+    [purpose],
+  );
   const { error: upsertItemError } = await supabase
     .from("plaid_linked_items")
     .upsert(
@@ -550,6 +562,7 @@ const upsertLinkedPlaidData = async (
         available_products: [],
         billed_products: [],
         last_sync_at: new Date().toISOString(),
+        link_purposes: mergedItemPurposes,
         update_mode_required: false,
         update_mode_reason: null,
         update_mode_detected_at: null,
@@ -566,6 +579,21 @@ const upsertLinkedPlaidData = async (
     );
   }
 
+  const { data: existingAccounts } = await supabase
+    .from("plaid_linked_accounts")
+    .select("plaid_account_id, link_purposes")
+    .eq("user_id", userId)
+    .eq("plaid_item_id", itemId);
+  const purposeByAccountId = new Map<string, string[]>();
+  (Array.isArray(existingAccounts) ? existingAccounts : []).forEach((row) => {
+    const accountId = String(row?.plaid_account_id || "").trim();
+    if (!accountId) return;
+    purposeByAccountId.set(
+      accountId,
+      mergePlaidLinkPurposes(row?.link_purposes, [purpose]),
+    );
+  });
+
   const mappedAccounts = accounts
     .filter((account) => String(account?.account_id || "").trim().length > 0)
     .map((account) => ({
@@ -580,6 +608,8 @@ const upsertLinkedPlaidData = async (
       account_subtype: String(account?.subtype || "").trim() || null,
       account_type: String(account?.type || "").trim() || null,
       status: "active",
+      link_purposes:
+        purposeByAccountId.get(String(account?.account_id || "").trim()) || [purpose],
     }));
 
   if (mappedAccounts.length > 0) {
@@ -669,6 +699,7 @@ const linkCheckbookRecipientFromPlaid = async (
     institutionId,
     institutionName,
     accounts,
+    "cashout",
   );
 
   const processor = await plaidCreateProcessorToken(
@@ -768,6 +799,8 @@ const linkCheckbookRecipientFromPlaid = async (
   return {
     recipientId,
     bankSummary: bankSummary || "Linked via Plaid",
+    selectedPayoutAccountId: plaidAccountId,
+    selectedPayoutLabel: bankSummary || "Linked via Plaid",
   };
 };
 
@@ -792,6 +825,17 @@ export const createCheckbookBankLinkHandler =
       const publicToken = String(
         body?.publicToken || body?.public_token || "",
       ).trim();
+      const purpose = String(
+        body?.purpose || body?.linkPurpose || body?.link_purpose || "",
+      )
+        .trim()
+        .toLowerCase();
+      if (purpose && purpose !== "cashout") {
+        throw new HttpError("Invalid purpose.", 400, {
+          reason: "invalid_link_purpose",
+          allowedPurposes: ["cashout"],
+        });
+      }
       const plaidAccountId = String(
         body?.plaidAccountId || body?.plaid_account_id || body?.accountId || "",
       ).trim() || null;
@@ -804,7 +848,8 @@ export const createCheckbookBankLinkHandler =
         !forceRelink &&
         existing.recipientId &&
         ["linked", "verified", "active"].includes(existing.recipientStatus) &&
-        plaidState.hasActivePlaidAccount
+        plaidState.hasActivePlaidAccount &&
+        plaidState.selectedPlaidAccountActive
       ) {
         return json({
           ok: true,
@@ -812,6 +857,8 @@ export const createCheckbookBankLinkHandler =
           linkToken: null,
           recipientId: existing.recipientId,
           bankSummary: existing.bankSummary,
+          selectedPayoutAccountId: plaidState.selectedPlaidAccountId,
+          selectedPayoutLabel: existing.bankSummary,
         }, 200);
       }
 
@@ -836,6 +883,8 @@ export const createCheckbookBankLinkHandler =
           requestId: String(linkTokenPayload?.request_id || "").trim() || null,
           recipientId: existing.recipientId,
           bankSummary: existing.bankSummary,
+          selectedPayoutAccountId: plaidState.selectedPlaidAccountId,
+          selectedPayoutLabel: existing.bankSummary,
         }, 200);
       }
 
@@ -852,6 +901,8 @@ export const createCheckbookBankLinkHandler =
         linkToken: null,
         recipientId: linked.recipientId,
         bankSummary: linked.bankSummary,
+        selectedPayoutAccountId: linked.selectedPayoutAccountId || null,
+        selectedPayoutLabel: linked.selectedPayoutLabel || linked.bankSummary,
       }, 200);
     } catch (error) {
       if (error instanceof HttpError) {

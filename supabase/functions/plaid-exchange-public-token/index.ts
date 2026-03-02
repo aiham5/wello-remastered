@@ -5,6 +5,10 @@ import {
   HttpError,
   json,
 } from "../_shared/auth.ts";
+import {
+  mergePlaidLinkPurposes,
+  parsePlaidLinkPurpose,
+} from "../_shared/plaidLinkPurposes.ts";
 import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import {
   plaidExchangePublicToken,
@@ -29,6 +33,10 @@ serve(async (req) => {
     userIdForLog = userId;
     const supabase = createAdminSupabase();
     supabaseForLog = supabase;
+    const purposes = parsePlaidLinkPurpose(
+      body?.purpose ?? body?.linkPurpose ?? body?.link_purpose,
+      { allowLegacyBoth: true, field: "purpose" },
+    );
     await enforceRateLimit({
       req,
       scope: "plaid:exchange-public-token",
@@ -69,7 +77,7 @@ serve(async (req) => {
 
     const { data: existingItem, error: existingItemError } = await supabase
       .from("plaid_linked_items")
-      .select("user_id")
+      .select("user_id, link_purposes")
       .eq("plaid_item_id", exchange.item_id)
       .maybeSingle();
     if (existingItemError) {
@@ -88,6 +96,10 @@ serve(async (req) => {
       );
     }
 
+    const mergedItemPurposes = mergePlaidLinkPurposes(
+      existingItem?.link_purposes,
+      purposes,
+    );
     const { error: upsertError } = await supabase
       .from("plaid_linked_items")
       .upsert(
@@ -102,6 +114,7 @@ serve(async (req) => {
           billed_products: item?.item?.billed_products || [],
           consent_expires_at: item?.item?.consent_expiration_time || null,
           last_sync_at: null,
+          link_purposes: mergedItemPurposes,
           update_mode_required: false,
           update_mode_reason: null,
           update_mode_detected_at: null,
@@ -135,7 +148,28 @@ serve(async (req) => {
           account_subtype: String(account.subtype || "").trim() || null,
           account_type: String(account.type || "").trim() || null,
           status: "active",
+          link_purposes: purposes,
         }));
+
+    if (accountRows.length > 0) {
+      const { data: existingAccounts } = await supabase
+        .from("plaid_linked_accounts")
+        .select("plaid_account_id, link_purposes")
+        .eq("user_id", userId)
+        .eq("plaid_item_id", exchange.item_id);
+      const purposeByAccountId = new Map<string, typeof purposes>();
+      (Array.isArray(existingAccounts) ? existingAccounts : []).forEach((row) => {
+        const accountId = String(row?.plaid_account_id || "").trim();
+        if (!accountId) return;
+        purposeByAccountId.set(
+          accountId,
+          mergePlaidLinkPurposes(row?.link_purposes, purposes),
+        );
+      });
+      accountRows.forEach((row) => {
+        row.link_purposes = purposeByAccountId.get(row.plaid_account_id) || purposes;
+      });
+    }
 
     if (accountRows.length > 0) {
       const { error: accountUpsertError } = await supabase
@@ -229,6 +263,7 @@ serve(async (req) => {
         linkedAccountCount: accountRows.length,
         hasInstitutionId: Boolean(institutionId),
         hasInstitutionName: Boolean(institutionName),
+        purposes,
       },
     });
 
@@ -238,6 +273,7 @@ serve(async (req) => {
       institutionId,
       institutionName,
       linkedAccountCount: accountRows.length,
+      purposes,
       copy: {
         primary:
           "Cashback is automatically verified when purchases are visible through your linked bank.",

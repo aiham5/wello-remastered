@@ -5,6 +5,7 @@ import {
   jwtVerify,
 } from "https://esm.sh/jose@5.9.6";
 import { createAdminSupabase, HttpError, json } from "../_shared/auth.ts";
+import { mergePlaidLinkPurposes } from "../_shared/plaidLinkPurposes.ts";
 import { logPlaidEvent } from "../_shared/plaidLogging.ts";
 import {
   ensurePlaidEnv,
@@ -280,7 +281,7 @@ const syncAccountsForItem = async (
 ) => {
   const { data: item, error: itemError } = await supabase
     .from("plaid_linked_items")
-    .select("user_id, plaid_access_token, status")
+    .select("user_id, plaid_access_token, status, link_purposes")
     .eq("plaid_item_id", plaidItemId)
     .maybeSingle();
 
@@ -321,6 +322,7 @@ const syncAccountsForItem = async (
   }
 
   const accountsResult = await plaidGetAccounts(accessToken);
+  const itemPurposes = mergePlaidLinkPurposes(item?.link_purposes, []);
   const accountRows =
     (Array.isArray(accountsResult.accounts) ? accountsResult.accounts : [])
       .filter((account) => String(account?.account_id || "").trim().length > 0)
@@ -336,6 +338,7 @@ const syncAccountsForItem = async (
         account_subtype: String(account.subtype || "").trim() || null,
         account_type: String(account.type || "").trim() || null,
         status: "active",
+        link_purposes: itemPurposes,
       }));
 
   if (accountRows.length > 0) {

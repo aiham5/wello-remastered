@@ -171,6 +171,10 @@ const PLAID_AUTO_VERIFY_COPY =
 const PLAID_FALLBACK_COPY = "Can't find a transaction yet? Upload a receipt.";
 const PLAID_PENDING_COPY =
   "Verification is in progress. Cashback may appear as pending.";
+const RECEIPT_UPLOAD_WINDOW_COPY =
+  "Upload receipts within 24 hours of redeeming offers.";
+const PLAID_VERIFY_WINDOW_COPY =
+  "For automatic bank verification, redeem within 5 hours of purchase.";
 const PLAID_LINK_UNAVAILABLE_COPY =
   "Bank linking is temporarily unavailable right now. Please try again shortly.";
 const PLAID_LINK_OPEN_FAILED_COPY =
@@ -515,6 +519,10 @@ const createInitialPlaidLinkState = () => ({
   loading: false,
   linked: false,
   linkedCount: 0,
+  cashoutLinked: false,
+  cashoutLinkedCount: 0,
+  receiptLinked: false,
+  receiptLinkedCount: 0,
   linkedSinceMs: null,
   linkedAccounts: [],
   selectedPayoutAccountId: null,
@@ -3709,6 +3717,30 @@ function parseDistanceLabelMiles(value) {
   return null;
 }
 
+function distanceBetweenCoordsMeters(from, to) {
+  if (!from || !to) return null;
+  const lat1 = (from.latitude * Math.PI) / 180;
+  const lat2 = (to.latitude * Math.PI) / 180;
+  const deltaLat = ((to.latitude - from.latitude) * Math.PI) / 180;
+  const deltaLng = ((to.longitude - from.longitude) * Math.PI) / 180;
+  const a =
+    Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+    Math.cos(lat1) *
+      Math.cos(lat2) *
+      Math.sin(deltaLng / 2) *
+      Math.sin(deltaLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return 6371000 * c;
+}
+
+function formatDistanceMetersLabel(meters) {
+  if (!Number.isFinite(meters)) return "--";
+  const miles = meters / 1609.34;
+  if (miles >= 0.1) return `${miles.toFixed(1)} mi`;
+  if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
+  return `${Math.round(meters)} m`;
+}
+
 function normalizeTagFilterValue(value) {
   return String(value || "")
     .toLowerCase()
@@ -4029,6 +4061,8 @@ export default function App() {
   const [markerFocusedBusinessId, setMarkerFocusedBusinessId] = useState(null);
   const markerPressAtRef = useRef(0);
   const [mapRegion, setMapRegion] = useState(MAP_REGION);
+  const [nearbyOrigin, setNearbyOrigin] = useState(null);
+  const [nearbyOriginLoading, setNearbyOriginLoading] = useState(false);
   const initialBusinesses = SUPABASE_URL && SUPABASE_ANON_KEY ? [] : BUSINESSES;
   const initialOffers = SUPABASE_URL && SUPABASE_ANON_KEY ? [] : OFFER_SEEDS;
   const [businesses, setBusinesses] = useState(initialBusinesses);
@@ -4591,12 +4625,6 @@ export default function App() {
     }
     return cashoutCatalogItems[0] || null;
   }, [cashoutCatalogItems, selectedCashoutCatalogCode]);
-  const bankTileStatus = String(
-    cashoutCatalogState.bankTile?.status || "needs_onboarding",
-  )
-    .trim()
-    .toLowerCase();
-  const bankTileLinked = bankTileStatus === "linked";
   const cashoutMinCents = useMemo(() => {
     if (cashoutMethodType === "bank_transfer") return MIN_CASHOUT_CENTS;
     const catalogMin = Math.max(
@@ -4753,18 +4781,17 @@ export default function App() {
   const [historyVerificationExpanded, setHistoryVerificationExpanded] =
     useState(false);
   const hasLinkedPlaidBank = useMemo(() => {
-    if (plaidLinkState.linked) return true;
-    if ((Number(plaidLinkState.linkedCount) || 0) > 0) return true;
-    return (
-      (Array.isArray(plaidLinkState.linkedAccounts)
-        ? plaidLinkState.linkedAccounts.length
-        : 0) > 0
-    );
+    if (plaidLinkState.receiptLinked) return true;
+    if ((Number(plaidLinkState.receiptLinkedCount) || 0) > 0) return true;
+    return false;
   }, [
-    plaidLinkState.linked,
-    plaidLinkState.linkedCount,
-    plaidLinkState.linkedAccounts,
+    plaidLinkState.receiptLinked,
+    plaidLinkState.receiptLinkedCount,
   ]);
+  const cashoutBankReady = useMemo(
+    () => Boolean(String(plaidLinkState.selectedPayoutAccountId || "").trim()),
+    [plaidLinkState.selectedPayoutAccountId],
+  );
   const plaidNeedsAttention = useMemo(
     () => Boolean(plaidLinkState.updateMode?.needsAttention),
     [plaidLinkState.updateMode],
@@ -5911,7 +5938,7 @@ export default function App() {
       });
       return;
     }
-    if (bankTileLinked) return;
+    if (cashoutBankReady) return;
     setCashoutActionStatus({
       loading: true,
       error: null,
@@ -5921,6 +5948,7 @@ export default function App() {
       "cashout-bank-link",
       {
         platform: Platform.OS,
+        purpose: "cashout",
         ...(Platform.OS === "android" && PLAID_ANDROID_PACKAGE_NAME
           ? { androidPackageName: PLAID_ANDROID_PACKAGE_NAME }
           : {}),
@@ -5956,6 +5984,16 @@ export default function App() {
       },
     }));
     if (status === "linked") {
+      const selectedAccountId = String(data?.selectedPayoutAccountId || "").trim();
+      const selectedAccountLabel = String(
+        data?.selectedPayoutLabel || data?.bankSummary || "",
+      ).trim();
+      setPlaidLinkState((prev) => ({
+        ...prev,
+        selectedPayoutAccountId: selectedAccountId || prev.selectedPayoutAccountId,
+        selectedPayoutLabel: selectedAccountLabel || prev.selectedPayoutLabel,
+      }));
+      await loadCashoutCatalog({ page: 0, append: false });
       setCashoutActionStatus({
         loading: false,
         error: null,
@@ -6026,6 +6064,7 @@ export default function App() {
               "cashout-bank-link",
               {
                 publicToken,
+                purpose: "cashout",
                 ...(selectedPlaidAccountId
                   ? { plaidAccountId: selectedPlaidAccountId }
                   : {}),
@@ -6059,6 +6098,21 @@ export default function App() {
                   String(completion.data?.bankSummary || "").trim() || null,
               },
             }));
+            const selectedAccountId = String(
+              completion.data?.selectedPayoutAccountId || "",
+            ).trim();
+            const selectedAccountLabel = String(
+              completion.data?.selectedPayoutLabel ||
+                completion.data?.bankSummary ||
+                "",
+            ).trim();
+            setPlaidLinkState((prev) => ({
+              ...prev,
+              selectedPayoutAccountId:
+                selectedAccountId || prev.selectedPayoutAccountId,
+              selectedPayoutLabel: selectedAccountLabel || prev.selectedPayoutLabel,
+            }));
+            await loadCashoutCatalog({ page: 0, append: false });
             settle(() => {
               setCashoutActionStatus({
                 loading: false,
@@ -6127,7 +6181,13 @@ export default function App() {
         success: null,
       });
     }
-  }, [bankTileLinked, callAuthedEdgeFunction, isSignedIn, openCashoutHostedFlow]);
+  }, [
+    cashoutBankReady,
+    callAuthedEdgeFunction,
+    isSignedIn,
+    loadCashoutCatalog,
+    openCashoutHostedFlow,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -7437,7 +7497,7 @@ export default function App() {
       });
       return;
     }
-    if (methodType === "bank_transfer" && !bankTileLinked) {
+    if (methodType === "bank_transfer" && !cashoutBankReady) {
       await handleCashoutBankTilePress();
       return;
     }
@@ -7647,7 +7707,7 @@ export default function App() {
     }
     setCashoutAmountText("0.00");
   }, [
-    bankTileLinked,
+    cashoutBankReady,
     callAuthedEdgeFunction,
     cashbackBalance.availableCents,
     cashoutMaxAllowedCents,
@@ -8488,6 +8548,14 @@ export default function App() {
     const businessMap = new Map(
       businesses.map((business) => [business.id, business]),
     );
+    const nearbyCoordinate =
+      Number.isFinite(Number(nearbyOrigin?.latitude)) &&
+      Number.isFinite(Number(nearbyOrigin?.longitude))
+        ? {
+            latitude: Number(nearbyOrigin.latitude),
+            longitude: Number(nearbyOrigin.longitude),
+          }
+        : null;
     return publicOffers
       .map((offer) => {
         const business = businessMap.get(offer.businessId) || offer.business;
@@ -8514,6 +8582,22 @@ export default function App() {
         const openFromHours = isBusinessOpenNow(business.hours);
         const isOpen =
           openFromHours === null ? (business.isOpen ?? true) : openFromHours;
+        const businessCoordinate =
+          business?.coordinate &&
+          Number.isFinite(Number(business.coordinate?.latitude)) &&
+          Number.isFinite(Number(business.coordinate?.longitude))
+            ? {
+                latitude: Number(business.coordinate.latitude),
+                longitude: Number(business.coordinate.longitude),
+              }
+            : null;
+        const distanceMeters =
+          nearbyCoordinate && businessCoordinate
+            ? distanceBetweenCoordsMeters(nearbyCoordinate, businessCoordinate)
+            : null;
+        const distanceMiles = Number.isFinite(distanceMeters)
+          ? distanceMeters / 1609.34
+          : null;
         return {
           id: offer.id,
           offerId: offer.id,
@@ -8525,7 +8609,10 @@ export default function App() {
           offerTitle,
           offerDescription,
           offerType,
-          distance: business.distance || "--",
+          distance: Number.isFinite(distanceMeters)
+            ? formatDistanceMetersLabel(distanceMeters)
+            : "--",
+          distanceMiles,
           rating: Number.isFinite(business.rating) ? business.rating : null,
           tags: business.tags || [],
           imageUrl: offer.imageUrl,
@@ -8537,7 +8624,7 @@ export default function App() {
         };
       })
       .filter(Boolean);
-  }, [publicOffers, businesses]);
+  }, [publicOffers, businesses, nearbyOrigin]);
   const discoverTagFilters = useMemo(() => {
     const tagStats = new Map();
     offerCards.forEach((card) => {
@@ -8590,7 +8677,11 @@ export default function App() {
     const selectedRadiusMiles =
       DISCOVER_RADIUS_OPTIONS.find((option) => option.key === discoverRadiusKey)
         ?.miles ?? 20;
-    const getDistanceMiles = (card) => parseDistanceLabelMiles(card?.distance);
+    const getDistanceMiles = (card) => {
+      const numeric = Number(card?.distanceMiles);
+      if (Number.isFinite(numeric)) return numeric;
+      return parseDistanceLabelMiles(card?.distance);
+    };
     const compareByDistanceAsc = (a, b) => {
       const aOpen = a?.isOpen !== false;
       const bOpen = b?.isOpen !== false;
@@ -8629,10 +8720,10 @@ export default function App() {
       });
       if (!matchesFilters) return false;
       const cardDistanceMiles = getDistanceMiles(card);
-      if (
-        Number.isFinite(cardDistanceMiles) &&
-        cardDistanceMiles > selectedRadiusMiles
-      ) {
+      if (!Number.isFinite(cardDistanceMiles)) {
+        return false;
+      }
+      if (cardDistanceMiles > selectedRadiusMiles) {
         return false;
       }
       if (!trimmed) return true;
@@ -8688,6 +8779,9 @@ export default function App() {
     }
     return sorted;
   }, [offerCards, activeFilters, query, discoverRadiusKey]);
+  const nearbyOriginAvailable =
+    Number.isFinite(Number(nearbyOrigin?.latitude)) &&
+    Number.isFinite(Number(nearbyOrigin?.longitude));
 
   const discoverSheetOfferCards = useMemo(() => {
     const list = Array.isArray(filteredOfferCards)
@@ -9952,17 +10046,6 @@ export default function App() {
     loadNotificationPreferences();
   }, [loadNotificationPreferences]);
 
-  useEffect(() => {
-    if (!mapRegion?.latitude || !mapRegion?.longitude) return;
-    const hash = `${mapRegion.latitude.toFixed(4)}:${mapRegion.longitude.toFixed(4)}`;
-    if (lastLocationHashRef.current === hash) return;
-    lastLocationHashRef.current = hash;
-    upsertUserLocation({
-      latitude: mapRegion.latitude,
-      longitude: mapRegion.longitude,
-    });
-  }, [mapRegion, upsertUserLocation]);
-
   const ensureSupabaseReady = useCallback((setError) => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setError("Supabase is not configured yet.");
@@ -10390,10 +10473,18 @@ export default function App() {
 
   const upsertUserLocation = useCallback(
     async (coords) => {
+      const latitude = Number(coords?.latitude);
+      const longitude = Number(coords?.longitude);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        return;
+      }
+      const nextOrigin = { latitude, longitude };
+      const hash = `${latitude.toFixed(4)}:${longitude.toFixed(4)}`;
+      if (lastLocationHashRef.current !== hash) {
+        lastLocationHashRef.current = hash;
+        setNearbyOrigin(nextOrigin);
+      }
       if (
-        !coords ||
-        !coords.latitude ||
-        !coords.longitude ||
         !authUserId ||
         !ensureSupabaseReady(() => null)
       ) {
@@ -10401,13 +10492,50 @@ export default function App() {
       }
       await supabase.from("user_locations").upsert({
         user_id: authUserId,
-        latitude: coords.latitude,
-        longitude: coords.longitude,
+        latitude,
+        longitude,
         recorded_at: new Date().toISOString(),
       });
     },
-    [authUserId],
+    [authUserId, ensureSupabaseReady],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isSignedIn || !authUserId || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setNearbyOriginLoading(false);
+      if (!isSignedIn) {
+        setNearbyOrigin(null);
+      }
+      return () => {
+        cancelled = true;
+      };
+    }
+    setNearbyOriginLoading(true);
+    supabase
+      .from("user_locations")
+      .select("latitude, longitude, recorded_at")
+      .eq("user_id", authUserId)
+      .order("recorded_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled) return;
+        const latitude = Number(data?.latitude);
+        const longitude = Number(data?.longitude);
+        if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+          const hash = `${latitude.toFixed(4)}:${longitude.toFixed(4)}`;
+          lastLocationHashRef.current = hash;
+          setNearbyOrigin({ latitude, longitude });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setNearbyOriginLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authUserId, isSignedIn]);
 
   const handlePreferenceToggle = useCallback(
     (key, value) => {
@@ -12362,32 +12490,6 @@ export default function App() {
     return { latitude, longitude };
   };
 
-  const toRadians = (value) => (value * Math.PI) / 180;
-
-  const distanceBetweenMeters = (from, to) => {
-    if (!from || !to) return null;
-    const lat1 = toRadians(from.latitude);
-    const lat2 = toRadians(to.latitude);
-    const deltaLat = toRadians(to.latitude - from.latitude);
-    const deltaLng = toRadians(to.longitude - from.longitude);
-    const a =
-      Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
-      Math.cos(lat1) *
-        Math.cos(lat2) *
-        Math.sin(deltaLng / 2) *
-        Math.sin(deltaLng / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return 6371000 * c;
-  };
-
-  const formatDistanceMeters = (meters) => {
-    if (!Number.isFinite(meters)) return "--";
-    const miles = meters / 1609.34;
-    if (miles >= 0.1) return `${miles.toFixed(1)} mi`;
-    if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
-    return `${Math.round(meters)} m`;
-  };
-
   const geocodeAddress = useCallback(async (address) => {
     if (!ADDRESS_LOOKUP_ENABLED || !address) return null;
     try {
@@ -14311,8 +14413,12 @@ export default function App() {
           ? Math.max(Number(data.payoutSwitchPolicy.switchesRemaining) || 0, 0)
           : Math.max(monthlyLimit - switchesUsed, 0);
       const updateMode = data?.updateMode || {};
+      const cashoutPurpose = data?.purposes?.cashout || {};
+      const receiptPurpose = data?.purposes?.receiptVerification || {};
       const selectedPayoutAccountId = String(
-        data?.payoutSelection?.selectedAccountId || "",
+        cashoutPurpose?.selectedPayoutAccountId ||
+          data?.payoutSelection?.selectedAccountId ||
+          "",
       ).trim() || null;
       const selectedPayoutLabel = String(
         data?.payoutSelection?.label || "",
@@ -14322,6 +14428,22 @@ export default function App() {
         loading: false,
         linked: Boolean(data?.linked),
         linkedCount: Number(data?.linkedCount) || 0,
+        cashoutLinked:
+          cashoutPurpose?.linked != null
+            ? Boolean(cashoutPurpose.linked)
+            : Boolean(selectedPayoutAccountId),
+        cashoutLinkedCount: Math.max(
+          Number(cashoutPurpose?.linkedCount) || 0,
+          0,
+        ),
+        receiptLinked:
+          receiptPurpose?.linked != null
+            ? Boolean(receiptPurpose.linked)
+            : Boolean(data?.linked),
+        receiptLinkedCount: Math.max(
+          Number(receiptPurpose?.linkedCount) || 0,
+          0,
+        ),
         linkedSinceMs: data?.linkedSince
           ? new Date(data.linkedSince).getTime()
           : null,
@@ -14579,6 +14701,7 @@ export default function App() {
 
       const requestPayload = {
         platform: Platform.OS,
+        purpose: "receipt_verification",
         ...(Platform.OS === "android" && PLAID_ANDROID_PACKAGE_NAME
           ? { androidPackageName: PLAID_ANDROID_PACKAGE_NAME }
           : {}),
@@ -14679,6 +14802,7 @@ export default function App() {
                 const { data: exchangeData, error: exchangeError } =
                   await callPlaidFunction("plaid-exchange-public-token", {
                     publicToken,
+                    purpose: "receipt_verification",
                   });
                 if (exchangeError) {
                   settle(() => {
@@ -14828,7 +14952,9 @@ export default function App() {
     if (!isSignedIn) return;
     setPlaidLinkAction("unlinking");
     setPlaidLinkState((prev) => ({ ...prev, loading: true, error: null }));
-    const { data, error } = await callPlaidFunction("plaid-unlink-bank", {});
+    const { data, error } = await callPlaidFunction("plaid-unlink-bank", {
+      purpose: "receipt_verification",
+    });
     if (error) {
       setPlaidLinkAction("idle");
       setPlaidLinkState((prev) => ({ ...prev, loading: false, error }));
@@ -15103,7 +15229,7 @@ export default function App() {
       });
       setReceiptUploadStatus({
         uploading: false,
-        error: "Receipt window expired.",
+        error: `${RECEIPT_UPLOAD_WINDOW_COPY} This redemption is outside that window.`,
         targetId: null,
       });
       return;
@@ -20152,8 +20278,7 @@ export default function App() {
                 <View style={styles.noticeCard}>
                   <Text style={styles.noticeTitle}>Receipt uploads</Text>
                   <Text style={styles.noticeBody}>
-                    Upload receipts within 24 hours of redeeming offers to
-                    verify them.
+                    {RECEIPT_UPLOAD_WINDOW_COPY}
                   </Text>
                   <View style={styles.noticeActions}>
                     <TouchableOpacity
@@ -21308,7 +21433,10 @@ export default function App() {
                           {plaidPromptCopy.title}
                         </Text>
                         <Text style={styles.discoverPlaidPromptBody}>
-                          {plaidPromptCopy.body}
+                          {mergeVerificationCopy(
+                            plaidPromptCopy.body,
+                            PLAID_VERIFY_WINDOW_COPY,
+                          )}
                         </Text>
                       </View>
                       <View style={styles.discoverPlaidPromptActions}>
@@ -21426,10 +21554,35 @@ export default function App() {
 
                   {discoverSheetOfferCards.length === 0 ? (
                     <View style={styles.emptyState}>
-                      <Text style={styles.emptyTitle}>No listings match.</Text>
-                      <Text style={styles.emptyCopy}>
-                        Try a different search or reset filters.
-                      </Text>
+                      {!nearbyOriginAvailable ? (
+                        <>
+                          <Text style={styles.emptyTitle}>
+                            Location is needed
+                          </Text>
+                          <Text style={styles.emptyCopy}>
+                            Enable location to see offers within your selected
+                            radius.
+                          </Text>
+                          <TouchableOpacity
+                            style={styles.secondaryButton}
+                            onPress={handleLocateMe}
+                            disabled={locating || nearbyOriginLoading}
+                          >
+                            <Text style={styles.secondaryButtonText}>
+                              {locating || nearbyOriginLoading
+                                ? "Checking location..."
+                                : "Use my location"}
+                            </Text>
+                          </TouchableOpacity>
+                        </>
+                      ) : (
+                        <>
+                          <Text style={styles.emptyTitle}>No listings match.</Text>
+                          <Text style={styles.emptyCopy}>
+                            Try a different search or expand your radius.
+                          </Text>
+                        </>
+                      )}
                     </View>
                   ) : (
                     <View style={styles.demoListStack}>
@@ -23929,11 +24082,11 @@ export default function App() {
                                   <Text style={styles.receiptCollapsedMeta}>
                                     {plaidLinkState.loading
                                       ? "Checking linked bank status..."
-                                      : pendingReceiptCount > 0
-                                        ? `${pendingReceiptCount} receipt${
+                                        : pendingReceiptCount > 0
+                                          ? `${pendingReceiptCount} receipt${
                                             pendingReceiptCount === 1 ? "" : "s"
                                           } pending`
-                                        : `Linked banks: ${plaidLinkState.linkedCount}`}
+                                        : `Linked banks: ${plaidLinkState.receiptLinkedCount || plaidLinkState.linkedCount}`}
                                   </Text>
                                   <TouchableOpacity
                                     style={styles.receiptCollapsedManageButton}
@@ -24021,8 +24174,13 @@ export default function App() {
                                       : plaidNeedsAttention
                                         ? plaidPromptCopy.body
                                         : hasLinkedPlaidBank
-                                          ? `Linked banks: ${plaidLinkState.linkedCount}`
+                                          ? `Linked banks: ${plaidLinkState.receiptLinkedCount || plaidLinkState.linkedCount}`
                                           : "Link a bank for instant verification"}
+                                  </Text>
+                                  <Text style={styles.receiptNoticeMeta}>
+                                    {hasLinkedPlaidBank
+                                      ? PLAID_VERIFY_WINDOW_COPY
+                                      : RECEIPT_UPLOAD_WINDOW_COPY}
                                   </Text>
                                   {plaidLinkState.error && (
                                     <Text style={styles.receiptNoticeMetaError}>
@@ -24735,7 +24893,7 @@ export default function App() {
                                                 cashoutGiftCardRecipientEmail,
                                               ))) ||
                                           (cashoutMethodType === "bank_transfer" &&
-                                            !bankTileLinked) ||
+                                            !cashoutBankReady) ||
                                           cashoutActionStatus.loading) &&
                                           styles.cashoutPayoutButtonDisabled,
                                       ]}
@@ -24751,7 +24909,7 @@ export default function App() {
                                               cashoutGiftCardRecipientEmail,
                                             ))) ||
                                         (cashoutMethodType === "bank_transfer" &&
-                                          !bankTileLinked) ||
+                                          !cashoutBankReady) ||
                                         cashoutActionStatus.loading
                                       }
                                     >
@@ -24864,7 +25022,7 @@ export default function App() {
                                           style={styles.cashoutMethodTileMeta}
                                           numberOfLines={2}
                                         >
-                                          {bankTileLinked
+                                          {cashoutBankReady
                                             ? String(
                                                 cashoutCatalogState.bankTile
                                                   ?.bankSummary || "Linked",
