@@ -493,9 +493,9 @@ const NOTIFICATION_DEFAULTS = {
   expiring_offer: true,
   nearby_offer: true,
 };
-const NAV_PILL_MIN = IS_COMPACT ? 78 : 90;
-const NAV_GAP = IS_COMPACT ? 6 : 8;
-const NAV_PADDING = IS_COMPACT ? 8 : 10;
+const NAV_PILL_MIN = IS_COMPACT ? 72 : 82;
+const NAV_GAP = 0;
+const NAV_PADDING = IS_COMPACT ? 6 : 8;
 const TIME_SELECT_MAX = Math.min(160, Math.round(SCREEN_WIDTH * 0.42));
 const TIME_SELECT_MIN = IS_COMPACT ? 80 : 96;
 const TIME_MERIDIEM_WIDTH = IS_COMPACT ? 68 : 80;
@@ -3741,6 +3741,12 @@ function formatDistanceMetersLabel(meters) {
   return `${Math.round(meters)} m`;
 }
 
+function parseTimestampMs(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const ms = new Date(value || "").getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
 function normalizeTagFilterValue(value) {
   return String(value || "")
     .toLowerCase()
@@ -3767,84 +3773,47 @@ const readAnimatedValueNow = async (animatedValue, fallback = 0) => {
 
 function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
   const category = getCategoryConfig(item.categoryKey);
+  const ratingNumeric = Number(item?.rating);
   const ratingLabel =
-    item.rating && Number.isFinite(item.rating) ? item.rating.toFixed(1) : null;
-  const offerTitle = item.offerTitle || item.offer;
-  const offerTypeLabel = item.offerType
-    ? normalizeOfferType(item.offerType)
-    : "Offer";
-  const redemptionLimitCount = Number(item.redemptionLimitCount);
-  const redemptionLimitPeriod = String(item.redemptionLimitPeriod || "");
-  const limitMeta = useMemo(() => {
-    const isDay = redemptionLimitPeriod === "day";
-    const isWeek = redemptionLimitPeriod === "week";
-    const isLimited =
-      Number.isFinite(redemptionLimitCount) &&
-      redemptionLimitCount > 0 &&
-      (isDay || isWeek);
-    const periodLabel = isDay ? "day" : isWeek ? "week" : "";
-    const count = isLimited ? redemptionLimitCount : 0;
-    const mode = isLimited ? (count === 1 ? "once" : "max") : "unlimited";
-    const label =
-      mode === "unlimited"
-        ? "Unlimited"
-        : mode === "once"
-          ? `Once/${periodLabel}`
-          : `Max ${count}/${periodLabel}`;
-    const icon = (() => {
-      if (mode === "unlimited") return "infinite";
-      if (isDay) return mode === "once" ? "sunny-outline" : "time-outline";
-      return mode === "once" ? "calendar-outline" : "calendar-clear-outline";
-    })();
-    const badgeStyle =
-      mode === "unlimited"
-        ? styles.cardLimitBadgeUnlimited
-        : mode === "once" && isDay
-          ? styles.cardLimitBadgeOnceDay
-          : mode === "max" && isDay
-            ? styles.cardLimitBadgeMaxDay
-            : mode === "once" && isWeek
-              ? styles.cardLimitBadgeOnceWeek
-              : styles.cardLimitBadgeMaxWeek;
-    const textStyle =
-      mode === "unlimited"
-        ? styles.cardLimitTextUnlimited
-        : mode === "once" && isDay
-          ? styles.cardLimitTextOnceDay
-          : mode === "max" && isDay
-            ? styles.cardLimitTextMaxDay
-            : mode === "once" && isWeek
-              ? styles.cardLimitTextOnceWeek
-              : styles.cardLimitTextMaxWeek;
-    return { label, icon, badgeStyle, textStyle };
-  }, [redemptionLimitCount, redemptionLimitPeriod]);
+    Number.isFinite(ratingNumeric) && ratingNumeric > 0
+      ? ratingNumeric.toFixed(1)
+      : "--";
+  const distanceLabelRaw = String(item?.distanceLabel || item?.distance || "")
+    .trim()
+    .replace(/\s+/g, " ");
+  const distanceMilesNumeric = Number(item?.distanceMiles);
+  const distanceLabel =
+    distanceLabelRaw && distanceLabelRaw !== "--"
+      ? distanceLabelRaw
+      : Number.isFinite(distanceMilesNumeric)
+        ? `${distanceMilesNumeric.toFixed(1)} mi`
+        : "--";
   const hoursValue = item.hours || item.business?.hours || "";
   const openFromHours = isBusinessOpenNow(hoursValue);
   const isOpen =
     openFromHours === null
       ? (item.isOpen ?? item.business?.isOpen ?? true)
       : openFromHours;
-  const operatingHoursLabel = useMemo(() => {
+  const closingTimeLabel = useMemo(() => {
     const raw = String(hoursValue || "")
       .replace(/\s+/g, " ")
       .trim();
-    if (!raw) return null;
-    if (raw.toLowerCase() === "hours available upon request") return null;
-    return raw;
+    if (!raw || raw.toLowerCase() === "hours available upon request") return "";
+    const match = raw.match(/-\s*([0-9]{1,2}(?::[0-9]{2})?\s*[APap][Mm])/);
+    if (!match?.[1]) return "";
+    return String(match[1]).toUpperCase().replace(/\s+/g, " ").trim();
   }, [hoursValue]);
-  const tags = sanitizeBusinessTags(item.tags);
-  const visibleTags = tags.slice(0, 2);
-  const extraTagCount = tags.length - visibleTags.length;
-  const cashbackLabel = useMemo(() => {
-    return formatPercentOnlyLabel(cashbackRatePercent);
-  }, [cashbackRatePercent]);
+  const statusText = isOpen
+    ? closingTimeLabel
+      ? `Closes ${closingTimeLabel}`
+      : "Open now"
+    : "Closed";
+  const statusVariant = !isOpen ? "closed" : closingTimeLabel ? "closing" : "open";
+  const cashbackLabel = "10%";
   return (
     <View style={styles.cardShell}>
       <TouchableOpacity
-        style={[
-          styles.liveEditorialStackCard,
-          selected && styles.liveEditorialStackCardSelected,
-        ]}
+        style={styles.liveEditorialStackCard}
         onPress={onPress}
         activeOpacity={0.85}
       >
@@ -3863,31 +3832,39 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
             />
           ) : (
             <View style={styles.liveEditorialStackMediaFallback}>
-              <Ionicons name="image-outline" size={20} color={COLORS.muted} />
-              <Text style={styles.liveEditorialStackMediaLabel}>
-                Offer image
-              </Text>
+              <Ionicons
+                name="image-outline"
+                size={20}
+                color="rgba(255,255,255,0.45)"
+              />
             </View>
           )}
           <LinearGradient
-            colors={["transparent", "rgba(15, 23, 42, 0.74)"]}
+            colors={["rgba(15, 23, 42, 0.04)", "rgba(15, 23, 42, 0.64)"]}
             start={{ x: 0.5, y: 0 }}
             end={{ x: 0.5, y: 1 }}
             style={styles.liveEditorialStackShade}
           />
           <View style={styles.liveEditorialStackTopRow}>
-            <View style={styles.liveEditorialStackCategoryPill}>
-              <Text style={styles.liveEditorialStackCategoryText}>
-                {category.display}
-              </Text>
+            <View
+              style={[
+                styles.liveEditorialStackOpenPill,
+                statusVariant === "closing"
+                  ? styles.liveEditorialStackOpenPillClosing
+                  : statusVariant === "open"
+                    ? styles.liveEditorialStackOpenPillOpen
+                    : styles.liveEditorialStackOpenPillClosed,
+              ]}
+            >
+              <Text style={styles.liveEditorialStackOpenText}>{statusText}</Text>
             </View>
-            <View style={styles.liveEditorialStackOfferTypePill}>
+            <View style={styles.liveEditorialStackCategoryPill}>
               <Text
-                style={styles.liveEditorialStackOfferTypeText}
+                style={styles.liveEditorialStackCategoryText}
                 numberOfLines={1}
                 ellipsizeMode="tail"
               >
-                {offerTypeLabel}
+                {category.display}
               </Text>
             </View>
           </View>
@@ -3895,110 +3872,48 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
             <Text style={styles.liveEditorialStackName} numberOfLines={1}>
               {item.name}
             </Text>
-            {offerTitle ? (
-              <Text style={styles.liveEditorialStackOffer} numberOfLines={1}>
-                {offerTitle}
+            <View style={styles.liveEditorialStackHeadlineMetaRow}>
+              <Ionicons
+                name="location-outline"
+                size={13}
+                color="rgba(255,255,255,0.9)"
+              />
+              <Text style={styles.liveEditorialStackHeadlineMeta} numberOfLines={1}>
+                {distanceLabel}
               </Text>
-            ) : null}
-          </View>
-          {tags.length > 0 && (
-            <View style={styles.liveEditorialStackTagRow}>
-              {visibleTags.map((tag) => (
-                <View key={tag} style={styles.liveEditorialStackTagPill}>
-                  <Text style={styles.liveEditorialStackTagText}>{tag}</Text>
-                </View>
-              ))}
-              {extraTagCount > 0 && (
-                <View style={styles.liveEditorialStackTagPill}>
-                  <Text style={styles.liveEditorialStackTagText}>
-                    +{extraTagCount}
-                  </Text>
-                </View>
-              )}
+              <Text style={styles.liveEditorialStackHeadlineMetaDot}>·</Text>
+              <Ionicons name="star" size={12} color="#F8FAFC" />
+              <Text style={styles.liveEditorialStackHeadlineMeta} numberOfLines={1}>
+                {ratingLabel}
+              </Text>
             </View>
-          )}
+          </View>
         </View>
         <View style={styles.liveEditorialStackPanel}>
-          <View style={styles.liveEditorialStackMetaTopRow}>
-            <View style={styles.liveEditorialStackMetaRow}>
-              <Text style={styles.liveEditorialStackMeta}>
-                {limitMeta.label}
-              </Text>
-              {operatingHoursLabel ? (
-                <View style={styles.liveEditorialStackHoursPill}>
-                  <Ionicons name="time-outline" size={11} color="#475569" />
-                  <Text
-                    style={styles.liveEditorialStackHoursText}
-                    numberOfLines={1}
-                  >
-                    {operatingHoursLabel}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
-            <View style={styles.liveEditorialStackRatingPill}>
-              <Ionicons name="star" size={11} color="#A16207" />
-              <Text style={styles.liveEditorialStackRatingText}>
-                {ratingLabel || "New"}
-              </Text>
-            </View>
-          </View>
-          {selected ? (
-            <View style={styles.liveEditorialStackActionsRow}>
-              <TouchableOpacity
-                style={[
-                  styles.liveEditorialStackRedeemButton,
-                  !isOpen && styles.liveEditorialStackRedeemButtonDisabled,
-                ]}
-                onPress={onRedeem}
-                activeOpacity={0.85}
-                disabled={!isOpen}
-              >
-                <Text
-                  style={[
-                    styles.liveEditorialStackRedeemText,
-                    !isOpen && styles.liveEditorialStackRedeemTextDisabled,
-                  ]}
-                >
-                  {isOpen ? "Redeem offer" : "Closed now"}
-                </Text>
-              </TouchableOpacity>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.liveEditorialStackDirectionsButton,
-                  pressed && styles.liveEditorialStackDirectionsButtonPressed,
-                ]}
-                onPress={() => openMapsForBusiness(item.business || item)}
-              >
-                <Ionicons name="navigate" size={14} color={COLORS.pine} />
-                <Text style={styles.liveEditorialStackDirectionsText}>
-                  Directions
-                </Text>
-              </Pressable>
-            </View>
-          ) : null}
-          {cashbackLabel ? (
-            <View style={styles.liveEditorialStackCashbackPill}>
-              <Ionicons name="cash-outline" size={14} color="#166534" />
-              <Text style={styles.liveEditorialStackCashbackText}>
-                {cashbackLabel} Cashback
-              </Text>
-            </View>
-          ) : null}
-        </View>
-        {!isOpen ? (
-          <View
-            pointerEvents="none"
-            style={styles.liveEditorialStackClosedOverlay}
+          <TouchableOpacity
+            style={styles.liveEditorialStackCashbackPill}
+            activeOpacity={0.88}
+            onPress={onRedeem}
+            disabled={!isOpen}
           >
-            <View style={styles.liveEditorialStackClosedPill}>
-              <Ionicons name="time-outline" size={13} color="#4B5563" />
-              <Text style={styles.liveEditorialStackClosedText}>
-                Closed now
-              </Text>
+            <View style={styles.liveEditorialStackCashbackContent}>
+              <View style={styles.liveEditorialStackCashbackIconWrap}>
+                <Ionicons name="pricetag-outline" size={18} color="#059669" />
+              </View>
+              <View style={styles.liveEditorialStackCashbackCopy}>
+                <Text style={styles.liveEditorialStackCashbackText}>
+                  {cashbackLabel} Cashback
+                </Text>
+                <Text style={styles.liveEditorialStackCashbackSubtext}>
+                  {isOpen ? "Tap to redeem" : "Closed now"}
+                </Text>
+              </View>
             </View>
-          </View>
-        ) : null}
+            <View style={styles.liveEditorialStackCashbackArrow}>
+              <Ionicons name="arrow-forward" size={22} color="#6B7280" />
+            </View>
+          </TouchableOpacity>
+        </View>
       </TouchableOpacity>
     </View>
   );
@@ -4078,6 +3993,7 @@ export default function App() {
   const [sessionReady, setSessionReady] = useState(false);
   const [authEmail, setAuthEmail] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [authCreatedAtMs, setAuthCreatedAtMs] = useState(null);
   const [googleAuthState, setGoogleAuthState] = useState("idle");
   const [signInEmail, setSignInEmail] = useState("");
   const [signInPassword, setSignInPassword] = useState("");
@@ -4328,6 +4244,7 @@ export default function App() {
   });
   const [redemptionHistory, setRedemptionHistory] = useState([]);
   const [expandedHistoryGroups, setExpandedHistoryGroups] = useState({});
+  const [historySummaryFilter, setHistorySummaryFilter] = useState("earned");
   const [reviewStatus, setReviewStatus] = useState({
     loading: false,
     error: null,
@@ -5391,6 +5308,7 @@ export default function App() {
         setAuthEmail(email);
       }
       setAuthUserId(user.id);
+      setAuthCreatedAtMs(parseTimestampMs(user?.created_at));
       const fallbackName = formatDisplayName(email);
       const { data, error } = await supabase
         .from("profiles")
@@ -6519,6 +6437,7 @@ export default function App() {
     setIsSignedIn(false);
     setAccountRole("consumer");
     setAuthUserId(null);
+    setAuthCreatedAtMs(null);
     setAuthEmail("");
     setProfileEmail("");
     setProfileName("");
@@ -8615,7 +8534,13 @@ export default function App() {
           distanceMiles,
           rating: Number.isFinite(business.rating) ? business.rating : null,
           tags: business.tags || [],
-          imageUrl: offer.imageUrl,
+          imageUrl:
+            offer.imageUrl ||
+            business.imageUrl ||
+            business.image_url ||
+            business.photoUrl ||
+            business.photo_url ||
+            "",
           redemptionLimitPeriod: offer.redemptionLimitPeriod,
           redemptionLimitCount: offer.redemptionLimitCount,
           searchText,
@@ -9098,7 +9023,7 @@ export default function App() {
     const count = visibleTabs.length || 1;
     const baseWidth =
       count * NAV_PILL_MIN + (count - 1) * NAV_GAP + NAV_PADDING * 2 + 4;
-    const maxWidth = SCREEN_WIDTH - (IS_COMPACT ? 16 : 24);
+    const maxWidth = SCREEN_WIDTH;
     if (count <= 2) {
       return Math.min(baseWidth, maxWidth);
     }
@@ -9142,8 +9067,8 @@ export default function App() {
   }, [navRowWidth, visibleTabs.length]);
   const navIndicatorWidth = useMemo(() => {
     if (navSlotWidth <= 0) return 0;
-    const maxWidth = IS_COMPACT ? 36 : 42;
-    return Math.max(18, Math.min(navSlotWidth * 0.52, maxWidth));
+    const maxWidth = IS_COMPACT ? 72 : 82;
+    return Math.max(40, Math.min(navSlotWidth * 0.56, maxWidth));
   }, [navSlotWidth]);
   const navIndicatorTranslateX = useMemo(() => {
     if (navSlotWidth <= 0) return 0;
@@ -9184,6 +9109,17 @@ export default function App() {
     }
     return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
   }, [profileName, profileEmail]);
+  const profileMemberSinceLabel = useMemo(() => {
+    if (!authCreatedAtMs) return null;
+    try {
+      return new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        year: "numeric",
+      }).format(new Date(authCreatedAtMs));
+    } catch {
+      return null;
+    }
+  }, [authCreatedAtMs]);
   const signUpNameParts = useMemo(
     () => splitFullName(signUpName),
     [signUpName],
@@ -9530,6 +9466,10 @@ export default function App() {
         return sum + (Number(entry?.amountCents) || 0);
       }, 0),
     [cashoutWithdrawalEntries],
+  );
+  const historySummaryModeLabel = useMemo(
+    () => (historySummaryFilter === "cashed_out" ? "Cashed out" : "Earned"),
+    [historySummaryFilter],
   );
   const resumeCashoutClaimUrl = useMemo(() => {
     if (!CONSUMER_CASHOUT_ENABLED) return "";
@@ -10241,6 +10181,7 @@ export default function App() {
 
         const sessionEmail = sessionUser.email || "";
         setAuthUserId(sessionUser.id);
+        setAuthCreatedAtMs(parseTimestampMs(sessionUser?.created_at));
         setAuthEmail(sessionEmail);
         if (sessionEmail) {
           setProfileEmail(sessionEmail);
@@ -10600,6 +10541,7 @@ export default function App() {
       }
       // Let auth listener hydrate profile once session context is fully ready.
       setAuthUserId(data.user.id);
+      setAuthCreatedAtMs(parseTimestampMs(data?.user?.created_at));
       setAuthEmail(data.user.email || email);
       setProfileEmail(data.user.email || email);
       setProfileName(formatDisplayName(data.user.email || email));
@@ -11798,6 +11740,7 @@ export default function App() {
     setShowBusinessVerifyPasswordConfirm(false);
     setAccountRole("consumer");
     setAuthUserId(null);
+    setAuthCreatedAtMs(null);
     setAuthEmail("");
     setProfileName("");
     setProfileEmail("");
@@ -18056,7 +17999,12 @@ export default function App() {
 
             <LinearGradient
               pointerEvents="none"
-              colors={["rgba(244, 246, 249, 0.0)", "rgba(244, 246, 249, 0.45)"]}
+              colors={[
+                "rgba(244, 246, 249, 0.0)",
+                "rgba(244, 246, 249, 0.86)",
+                "rgba(244, 246, 249, 1)",
+              ]}
+              locations={[0.28, 0.72, 1]}
               style={styles.mapShade}
             />
 
@@ -18098,11 +18046,11 @@ export default function App() {
                     const focusAnim = getTabFocusAnim(tab.key);
                     const iconSize = navNeedsTightFit
                       ? IS_COMPACT
-                        ? 14
-                        : 15
+                        ? 17
+                        : 18
                       : IS_COMPACT
-                        ? 15
-                        : 16;
+                        ? 19
+                        : 20;
                     return (
                       <TouchableOpacity
                         key={tab.key}
@@ -21367,7 +21315,7 @@ export default function App() {
                         style={styles.searchIcon}
                       />
                       <AutoFocusInput
-                        placeholder="Search businesses or offers"
+                        placeholder="Search nearby offers..."
                         placeholderTextColor={COLORS.muted}
                         style={styles.searchInput}
                         value={query}
@@ -21399,23 +21347,17 @@ export default function App() {
                       style={[
                         styles.filterButton,
                         showFilters && styles.filterButtonActive,
-                        IS_COMPACT && styles.filterButtonCompact,
                       ]}
                       onPress={() => setShowFilters((prev) => !prev)}
+                      accessibilityLabel={
+                        showFilters ? "Hide filters" : "Show filters"
+                      }
                     >
                       <Ionicons
                         name="options-outline"
-                        size={15}
+                        size={18}
                         color={showFilters ? COLORS.white : COLORS.ink}
                       />
-                      <Text
-                        style={[
-                          styles.filterButtonText,
-                          showFilters && styles.filterButtonTextActive,
-                        ]}
-                      >
-                        {showFilters ? "Hide" : "Filters"}
-                      </Text>
                     </TouchableOpacity>
                   </View>
 
@@ -21546,9 +21488,9 @@ export default function App() {
                   )}
 
                   <View style={styles.cardHeaderRow}>
-                    <Text style={styles.sectionTitle}>Offers Nearby</Text>
+                    <Text style={styles.sectionTitle}>Nearby</Text>
                     <Text style={styles.sectionMeta}>
-                      {discoverSheetOfferCards.length} nearby
+                      {discoverSheetOfferCards.length} offers
                     </Text>
                   </View>
 
@@ -24002,6 +23944,86 @@ export default function App() {
                                 {purchaseVerifyStatus.success}
                               </Text>
                             )}
+                            <View style={styles.historySummaryCardsRow}>
+                              <TouchableOpacity
+                                style={[
+                                  styles.historySummaryCard,
+                                  historySummaryFilter === "earned" &&
+                                    styles.historySummaryCardActive,
+                                ]}
+                                activeOpacity={0.9}
+                                onPress={() => setHistorySummaryFilter("earned")}
+                              >
+                                <View style={styles.historySummaryCardHeader}>
+                                  <Ionicons
+                                    name="arrow-down-outline"
+                                    size={16}
+                                    color={
+                                      historySummaryFilter === "earned"
+                                        ? "#047857"
+                                        : "#64748B"
+                                    }
+                                  />
+                                  <Text style={styles.historySummaryCardLabel}>
+                                    Earned
+                                  </Text>
+                                </View>
+                                <Text style={styles.historySummaryCardValue}>
+                                  {formatCurrencyFromCents(cashoutEarnedTotalCents)}
+                                </Text>
+                                <Text style={styles.historySummaryCardMeta}>
+                                  {cashoutEarnedHistoryEntries.length} transaction
+                                  {cashoutEarnedHistoryEntries.length === 1
+                                    ? ""
+                                    : "s"}
+                                </Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={[
+                                  styles.historySummaryCard,
+                                  historySummaryFilter === "cashed_out" &&
+                                    styles.historySummaryCardActiveMuted,
+                                ]}
+                                activeOpacity={0.9}
+                                onPress={() =>
+                                  setHistorySummaryFilter("cashed_out")
+                                }
+                              >
+                                <View style={styles.historySummaryCardHeader}>
+                                  <Ionicons
+                                    name="arrow-up-outline"
+                                    size={16}
+                                    color="#64748B"
+                                  />
+                                  <Text style={styles.historySummaryCardLabelMuted}>
+                                    Cashed out
+                                  </Text>
+                                </View>
+                                <Text style={styles.historySummaryCardValueMuted}>
+                                  {formatCurrencyFromCents(cashoutWithdrawnTotalCents)}
+                                </Text>
+                                <Text style={styles.historySummaryCardMeta}>
+                                  {cashoutWithdrawalEntries.length} transaction
+                                  {cashoutWithdrawalEntries.length === 1
+                                    ? ""
+                                    : "s"}
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                            <View style={styles.historySummaryFilterRow}>
+                              <View style={styles.historySummaryFilterPill}>
+                                <Text style={styles.historySummaryFilterPillText}>
+                                  Showing: {historySummaryModeLabel}
+                                </Text>
+                              </View>
+                              <TouchableOpacity
+                                onPress={() => setHistorySummaryFilter("earned")}
+                              >
+                                <Text style={styles.historySummaryClearText}>
+                                  Clear filter
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
                             {historyVerifyNotice && (
                               <View
                                 style={[
@@ -24715,6 +24737,14 @@ export default function App() {
                               ]}
                             >
                               <View
+                                pointerEvents="none"
+                                style={styles.cashoutHeroOrbOne}
+                              />
+                              <View
+                                pointerEvents="none"
+                                style={styles.cashoutHeroOrbTwo}
+                              />
+                              <View
                                 style={[
                                   styles.pointsHeader,
                                   styles.cashoutBalanceHeader,
@@ -24727,7 +24757,7 @@ export default function App() {
                                     color={COLORS.muted}
                                   />
                                   <Text style={styles.pointsLabel}>
-                                    Cashback balance
+                                    Available balance
                                   </Text>
                                 </View>
                                 <Text
@@ -27212,6 +27242,14 @@ export default function App() {
                                   <Text style={styles.profileName}>
                                     {profileName || "Wello Owner"}
                                   </Text>
+                                  <Text style={styles.profileEmail}>
+                                    {profileEmail || authEmail || "Email unavailable"}
+                                  </Text>
+                                  <Text style={styles.profileMemberSince}>
+                                    {profileMemberSinceLabel
+                                      ? `Member since ${profileMemberSinceLabel}`
+                                      : "Member"}
+                                  </Text>
                                 </View>
                                 <View style={styles.profileRolePill}>
                                   <Text style={styles.profileRoleText}>
@@ -27219,6 +27257,126 @@ export default function App() {
                                   </Text>
                                 </View>
                               </View>
+                            </View>
+                            <View style={styles.profileMetaRow}>
+                              <View style={styles.profileMetaCard}>
+                                <Text style={styles.profileMetaValue}>
+                                  {formatCurrencyFromCents(cashoutEarnedTotalCents)}
+                                </Text>
+                                <Text style={styles.profileMetaLabel}>
+                                  Total Earned
+                                </Text>
+                              </View>
+                              <View style={styles.profileMetaCard}>
+                                <Text style={styles.profileMetaValue}>
+                                  {redemptionHistory.length}
+                                </Text>
+                                <Text style={styles.profileMetaLabel}>
+                                  Offers Used
+                                </Text>
+                              </View>
+                            </View>
+                            <View style={styles.profileQuickListCard}>
+                              <TouchableOpacity
+                                style={styles.profileQuickListRow}
+                                activeOpacity={0.86}
+                                onPress={() =>
+                                  setAppDialog({
+                                    visible: true,
+                                    title: "Personal Information",
+                                    message:
+                                      "Update your name, email, and phone in the Account section below.",
+                                    dismissOnBackdrop: true,
+                                    options: [
+                                      {
+                                        label: "Got it",
+                                        variant: "primary",
+                                        onPress: () =>
+                                          setAppDialog((prev) => ({
+                                            ...prev,
+                                            visible: false,
+                                          })),
+                                      },
+                                    ],
+                                  })
+                                }
+                              >
+                                <View style={styles.profileQuickListIconWrap}>
+                                  <Ionicons
+                                    name="person-outline"
+                                    size={18}
+                                    color="#667085"
+                                  />
+                                </View>
+                                <View style={styles.profileQuickListCopy}>
+                                  <Text style={styles.profileQuickListTitle}>
+                                    Personal Information
+                                  </Text>
+                                  <Text style={styles.profileQuickListMeta}>
+                                    Name, email, phone
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name="chevron-forward"
+                                  size={18}
+                                  color="#C5CDD9"
+                                />
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.profileQuickListRow}
+                                activeOpacity={0.86}
+                                onPress={() => setNotificationSettingsOpen(true)}
+                              >
+                                <View style={styles.profileQuickListIconWrap}>
+                                  <Ionicons
+                                    name="notifications-outline"
+                                    size={18}
+                                    color="#667085"
+                                  />
+                                </View>
+                                <View style={styles.profileQuickListCopy}>
+                                  <Text style={styles.profileQuickListTitle}>
+                                    Notifications
+                                  </Text>
+                                  <Text style={styles.profileQuickListMeta}>
+                                    Push and email preferences
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name="chevron-forward"
+                                  size={18}
+                                  color="#C5CDD9"
+                                />
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={[
+                                  styles.profileQuickListRow,
+                                  styles.profileQuickListRowLast,
+                                ]}
+                                activeOpacity={0.86}
+                                onPress={handleContactSupport}
+                              >
+                                <View style={styles.profileQuickListIconWrap}>
+                                  <Ionicons
+                                    name="help-circle-outline"
+                                    size={18}
+                                    color="#667085"
+                                  />
+                                </View>
+                                <View style={styles.profileQuickListCopy}>
+                                  <Text style={styles.profileQuickListTitle}>
+                                    Help & Support
+                                  </Text>
+                                  <Text style={styles.profileQuickListMeta}>
+                                    FAQ, contact us
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name="chevron-forward"
+                                  size={18}
+                                  color="#C5CDD9"
+                                />
+                              </TouchableOpacity>
                             </View>
 
                             <View
@@ -28175,7 +28333,7 @@ export default function App() {
                                 <Ionicons
                                   name="log-out-outline"
                                   size={16}
-                                  color={COLORS.muted}
+                                  color="#EF4444"
                                 />
                                 <Text style={styles.supportSignOutText}>
                                   Sign out
@@ -30526,28 +30684,34 @@ const styles = StyleSheet.create({
   },
   topMeta: {
     position: "absolute",
-    left: IS_COMPACT ? 8 : 12,
-    right: IS_COMPACT ? 8 : 12,
+    left: 0,
+    right: 0,
   },
   navContainer: {
-    alignSelf: "center",
+    alignSelf: "stretch",
     backgroundColor: COLORS.white,
-    borderRadius: 24,
-    paddingHorizontal: NAV_PADDING - 2,
-    paddingBottom: NAV_PADDING - 2,
-    paddingTop: NAV_PADDING - 2,
-    borderWidth: 0,
+    borderRadius: 0,
+    paddingHorizontal: NAV_PADDING,
+    paddingBottom: IS_COMPACT ? 2 : 4,
+    paddingTop: IS_COMPACT ? 4 : 6,
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.26)",
+    borderTopWidth: 0,
+    borderLeftWidth: 0,
+    borderRightWidth: 0,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   navContainerTight: {
-    paddingHorizontal: IS_COMPACT ? 4 : 6,
-    paddingBottom: IS_COMPACT ? 5 : 6,
-    paddingTop: IS_COMPACT ? 5 : 6,
+    paddingHorizontal: 4,
+    paddingBottom: 2,
+    paddingTop: 4,
   },
   navRow: {
     flexDirection: "row",
     paddingHorizontal: 2,
     paddingTop: 0,
-    paddingBottom: 8,
+    paddingBottom: 6,
     borderRadius: 0,
     backgroundColor: "transparent",
     borderWidth: 0,
@@ -31085,51 +31249,51 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "transparent",
     borderRadius: 0,
-    paddingVertical: IS_COMPACT ? 4 : 5,
+    paddingVertical: IS_COMPACT ? 5 : 6,
     paddingHorizontal: Platform.select({
-      ios: IS_COMPACT ? 10 : 14,
-      android: IS_COMPACT ? 10 : 12,
-      default: IS_COMPACT ? 12 : 16,
+      ios: IS_COMPACT ? 6 : 8,
+      android: IS_COMPACT ? 6 : 8,
+      default: IS_COMPACT ? 8 : 10,
     }),
     borderWidth: 0,
     position: "relative",
   },
   navPillTight: {
     paddingHorizontal: Platform.select({
-      ios: IS_COMPACT ? 8 : 10,
-      android: IS_COMPACT ? 7 : 9,
-      default: IS_COMPACT ? 12 : 16,
+      ios: IS_COMPACT ? 6 : 8,
+      android: IS_COMPACT ? 6 : 8,
+      default: IS_COMPACT ? 8 : 10,
     }),
   },
   navPillSpaced: {
     marginLeft: NAV_GAP,
   },
   navPillSpacedTight: {
-    marginLeft: IS_COMPACT ? 4 : 6,
+    marginLeft: 0,
   },
   navPillContent: {
     alignItems: "center",
     justifyContent: "center",
-    minHeight: IS_COMPACT ? 34 : 36,
+    minHeight: IS_COMPACT ? 54 : 58,
   },
   navPillIcon: {
-    color: "#64748B",
+    color: "#98A2B3",
   },
   navPillIconActive: {
-    color: COLORS.pine,
+    color: COLORS.ink,
   },
   navPillText: {
     fontSize: Platform.select({
-      ios: IS_COMPACT ? 13 : 14,
-      android: IS_COMPACT ? 12 : 13,
-      default: IS_COMPACT ? 13 : 14,
+      ios: IS_COMPACT ? 11 : 12,
+      android: IS_COMPACT ? 11 : 12,
+      default: IS_COMPACT ? 11 : 12,
     }),
-    color: "#64748B",
+    color: "#98A2B3",
     fontFamily: FONT_MEDIUM,
     lineHeight: Platform.select({
-      ios: IS_COMPACT ? 16 : 18,
-      android: IS_COMPACT ? 15 : 17,
-      default: IS_COMPACT ? 16 : 18,
+      ios: IS_COMPACT ? 14 : 16,
+      android: IS_COMPACT ? 14 : 16,
+      default: IS_COMPACT ? 14 : 16,
     }),
     textAlign: "center",
     ...Platform.select({
@@ -31137,37 +31301,38 @@ const styles = StyleSheet.create({
     }),
   },
   navPillLabel: {
-    marginTop: 1,
+    marginTop: 5,
   },
   navPillTextTight: {
     ...Platform.select({
       ios: {
-        fontSize: IS_COMPACT ? 11 : 12,
-        lineHeight: IS_COMPACT ? 14 : 16,
+        fontSize: IS_COMPACT ? 10 : 11,
+        lineHeight: IS_COMPACT ? 13 : 14,
         letterSpacing: -0.1,
       },
       android: {
-        fontSize: IS_COMPACT ? 12 : 13,
-        lineHeight: IS_COMPACT ? 15 : 17,
+        fontSize: IS_COMPACT ? 10 : 11,
+        lineHeight: IS_COMPACT ? 13 : 14,
         letterSpacing: -0.1,
       },
       default: {},
     }),
   },
   navPillTextActive: {
-    color: COLORS.pine,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
   },
   navIndicator: {
     position: "absolute",
     bottom: 0,
-    height: 3,
+    height: 4,
     borderRadius: 999,
-    backgroundColor: COLORS.pine,
+    backgroundColor: "#2E6BFF",
   },
   navPillBadge: {
     position: "absolute",
-    top: -2,
-    right: IS_COMPACT ? 8 : 10,
+    top: 2,
+    right: IS_COMPACT ? 14 : 18,
     minWidth: 18,
     height: 18,
     borderRadius: 9,
@@ -31430,19 +31595,20 @@ const styles = StyleSheet.create({
     shouldRasterizeIOS: true,
   },
   sheetBackground: {
-    backgroundColor: COLORS.white,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+    backgroundColor: "#F4F6FA",
+    borderTopLeftRadius: 34,
+    borderTopRightRadius: 34,
     borderTopWidth: 1,
-    borderColor: COLORS.sand,
-    ...ELEVATION.modal,
+    borderColor: "rgba(148, 163, 184, 0.24)",
+    shadowOpacity: 0,
+    elevation: 0,
   },
   sheetScroll: {
     flex: 1,
   },
   sheetContentInsets: {
-    paddingHorizontal: IS_COMPACT ? 12 : 16,
-    paddingTop: 10,
+    paddingHorizontal: IS_COMPACT ? 14 : 22,
+    paddingTop: 12,
   },
   sheetScrollContent: {
     paddingBottom: 24,
@@ -31452,55 +31618,56 @@ const styles = StyleSheet.create({
   },
   sheetHandle: {
     alignItems: "center",
-    paddingTop: 10,
-    paddingBottom: 12,
+    paddingTop: 12,
+    paddingBottom: 14,
   },
   handleBar: {
-    width: 54,
-    height: 5,
+    width: 74,
+    height: 7,
     borderRadius: RADII.pill,
-    backgroundColor: "#C9D3E1",
-    marginBottom: 8,
+    backgroundColor: "#C6CDD9",
+    marginBottom: 10,
   },
   sheetHint: {
-    fontSize: IS_COMPACT ? 13 : 14,
-    color: COLORS.muted,
+    fontSize: IS_COMPACT ? 14 : 15,
+    color: "#8A96A8",
     fontFamily: FONT_TEXT,
   },
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: IS_COMPACT ? 8 : 10,
-    marginBottom: 12,
+    gap: 10,
+    marginBottom: 14,
   },
   searchRowCompact: {
-    flexDirection: "column",
-    alignItems: "stretch",
+    flexDirection: "row",
+    alignItems: "center",
   },
   searchInputWrap: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: COLORS.white,
-    borderRadius: RADII.md,
-    paddingHorizontal: 12,
-    minHeight: IS_COMPACT ? 46 : 48,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    minHeight: IS_COMPACT ? 52 : 54,
     borderWidth: 1,
-    borderColor: COLORS.sand,
-    ...ELEVATION.soft,
+    borderColor: "#D4DCE8",
+    shadowOpacity: 0,
+    elevation: 0,
   },
   searchInputWrapFocused: {
     borderColor: COLORS.sun,
     shadowOpacity: 0.2,
   },
   searchIcon: {
-    marginRight: 8,
+    marginRight: 10,
   },
   searchInput: {
     flex: 1,
     paddingVertical: IS_COMPACT ? 8 : 10,
     fontFamily: FONT_TEXT,
-    fontSize: IS_COMPACT ? 15 : 16,
+    fontSize: IS_COMPACT ? 16 : 17,
     color: COLORS.ink,
   },
   searchClearButton: {
@@ -31510,20 +31677,23 @@ const styles = StyleSheet.create({
   },
   filterButton: {
     backgroundColor: COLORS.white,
-    paddingVertical: IS_COMPACT ? 8 : 10,
-    paddingHorizontal: IS_COMPACT ? 12 : 14,
-    borderRadius: RADII.sm,
+    width: IS_COMPACT ? 52 : 56,
+    minWidth: IS_COMPACT ? 52 : 56,
+    minHeight: IS_COMPACT ? 52 : 54,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: COLORS.sand,
+    borderColor: "#D4DCE8",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    minHeight: IS_COMPACT ? 44 : 46,
-    ...ELEVATION.soft,
+    gap: 0,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   filterButtonCompact: {
-    width: "100%",
+    width: IS_COMPACT ? 52 : 56,
   },
   filterButtonActive: {
     backgroundColor: COLORS.pine,
@@ -31619,39 +31789,39 @@ const styles = StyleSheet.create({
     fontFamily: FONT_SEMIBOLD,
   },
   discoverPlaidPrompt: {
-    borderRadius: 14,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: "#D4DEEA",
-    backgroundColor: "#F7FAFF",
-    paddingVertical: 9,
-    paddingHorizontal: 10,
-    marginBottom: 10,
+    borderColor: "#BEE6D4",
+    backgroundColor: "#DFF4EA",
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    marginBottom: 12,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 10,
   },
   discoverPlaidPromptIconWrap: {
-    width: 24,
-    height: 24,
+    width: 28,
+    height: 28,
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#EAF1FD",
+    backgroundColor: "#E8F8EE",
   },
   discoverPlaidPromptCopy: {
     flex: 1,
   },
   discoverPlaidPromptTitle: {
-    fontSize: 13,
-    lineHeight: 16,
+    fontSize: 14,
+    lineHeight: 18,
     color: COLORS.ink,
-    fontFamily: FONT_SEMIBOLD,
+    fontFamily: FONT_MEDIUM,
   },
   discoverPlaidPromptBody: {
-    marginTop: 2,
+    marginTop: 1,
     fontSize: 12,
-    lineHeight: 14,
-    color: COLORS.muted,
+    lineHeight: 16,
+    color: "#64748B",
     fontFamily: FONT_TEXT,
   },
   discoverPlaidPromptActions: {
@@ -31660,10 +31830,10 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   discoverPlaidPromptConnect: {
-    minHeight: 28,
-    paddingHorizontal: 10,
+    minHeight: 36,
+    paddingHorizontal: 14,
     borderRadius: 999,
-    backgroundColor: COLORS.pine,
+    backgroundColor: "#058257",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -31671,7 +31841,7 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   discoverPlaidPromptConnectText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.white,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -31686,17 +31856,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 8,
+    marginBottom: 10,
   },
   sectionTitle: {
     fontSize: 17,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
+    letterSpacing: -0.2,
   },
   sectionMeta: {
-    fontSize: 13,
-    color: COLORS.muted,
-    fontFamily: FONT_TEXT,
+    fontSize: 15,
+    color: "#2E6BFF",
+    fontFamily: FONT_MEDIUM,
   },
   tremendousDemoCard: {
     borderRadius: 18,
@@ -33093,14 +33264,17 @@ const styles = StyleSheet.create({
   cardShell: {
     width: "100%",
     marginRight: 0,
-    ...ELEVATION.soft,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   liveEditorialStackCard: {
     backgroundColor: COLORS.white,
-    borderRadius: RADII.md,
+    borderRadius: 24,
     borderWidth: 1,
-    borderColor: COLORS.sand,
+    borderColor: "#E1E7EF",
     overflow: "hidden",
+    shadowOpacity: 0,
+    elevation: 0,
   },
   liveEditorialStackCardSelected: {
     borderColor: COLORS.coral,
@@ -33131,7 +33305,7 @@ const styles = StyleSheet.create({
   liveEditorialStackMedia: {
     position: "relative",
     aspectRatio: OFFER_IMAGE_ASPECT,
-    backgroundColor: "#F5F8FC",
+    backgroundColor: "#F4F7FC",
     overflow: "hidden",
   },
   liveEditorialStackMediaImage: {
@@ -33143,7 +33317,7 @@ const styles = StyleSheet.create({
     height: "100%",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
+    backgroundColor: "#626A78",
   },
   liveEditorialStackMediaLabel: {
     fontSize: 12,
@@ -33155,28 +33329,61 @@ const styles = StyleSheet.create({
   },
   liveEditorialStackTopRow: {
     position: "absolute",
-    top: 10,
-    left: 10,
-    right: 10,
+    top: 12,
+    left: 12,
+    right: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
   },
   liveEditorialStackCategoryPill: {
-    borderRadius: 999,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#475569",
-    backgroundColor: "#252A37",
-    height: 24,
-    paddingHorizontal: 9,
+    borderColor: "rgba(255, 255, 255, 0.24)",
+    backgroundColor: "rgba(255, 255, 255, 0.34)",
+    minHeight: 32,
+    maxWidth: "44%",
+    paddingHorizontal: 12,
     alignItems: "center",
     justifyContent: "center",
   },
   liveEditorialStackCategoryText: {
     fontSize: 11,
-    color: "#E2E8F0",
-    fontFamily: FONT_MEDIUM,
+    color: "#F8FAFC",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  liveEditorialStackOpenPill: {
+    borderRadius: 14,
+    borderWidth: 1,
+    minHeight: 32,
+    maxWidth: "44%",
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveEditorialStackOpenPillOpen: {
+    borderColor: "rgba(5, 130, 87, 0.24)",
+    backgroundColor: "#10B981",
+  },
+  liveEditorialStackOpenPillClosing: {
+    borderColor: "rgba(180, 83, 9, 0.22)",
+    backgroundColor: "#F59E0B",
+  },
+  liveEditorialStackOpenPillClosed: {
+    borderColor: "rgba(107, 114, 128, 0.28)",
+    backgroundColor: "#6B7280",
+  },
+  liveEditorialStackOpenText: {
+    fontSize: 12,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  liveEditorialStackOpenTextOpen: {
+    color: COLORS.white,
+  },
+  liveEditorialStackOpenTextClosed: {
+    color: COLORS.white,
   },
   liveEditorialStackOfferTypePill: {
     borderRadius: 999,
@@ -33200,19 +33407,37 @@ const styles = StyleSheet.create({
   },
   liveEditorialStackHeadlineWrap: {
     position: "absolute",
-    left: 12,
-    right: 12,
+    left: 16,
+    right: 16,
     bottom: 12,
   },
   liveEditorialStackName: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.white,
-    fontFamily: FONT_DISPLAY,
+    fontFamily: FONT_SEMIBOLD,
+    letterSpacing: -0.2,
+  },
+  liveEditorialStackHeadlineMetaRow: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  liveEditorialStackHeadlineMeta: {
+    fontSize: 12,
+    color: "rgba(255,255,255,0.92)",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  liveEditorialStackHeadlineMetaDot: {
+    fontSize: 12,
+    color: "rgba(255,255,255,0.82)",
+    fontFamily: FONT_MEDIUM,
+    marginHorizontal: 2,
   },
   liveEditorialStackOffer: {
-    marginTop: 3,
+    marginTop: 0,
     fontSize: 13,
-    color: "#DCE4EE",
+    color: "#1F2937",
     fontFamily: FONT_MEDIUM,
   },
   liveEditorialStackTagRow: {
@@ -33238,10 +33463,9 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   liveEditorialStackPanel: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingTop: 8,
     paddingBottom: 8,
-    gap: 6,
   },
   liveEditorialStackMetaTopRow: {
     flexDirection: "row",
@@ -33257,7 +33481,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   liveEditorialStackMeta: {
-    fontSize: 11,
+    fontSize: 12,
     color: "#64748B",
     fontFamily: FONT_MEDIUM,
   },
@@ -33345,24 +33569,57 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   liveEditorialStackCashbackPill: {
-    marginTop: 2,
-    marginHorizontal: -12,
-    marginBottom: -8,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(22, 101, 52, 0.22)",
-    backgroundColor: "#ECF9F0",
-    minHeight: 36,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    borderRadius: 16,
+    borderWidth: 0,
+    backgroundColor: COLORS.white,
+    minHeight: 66,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  liveEditorialStackCashbackContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+  },
+  liveEditorialStackCashbackIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
     justifyContent: "center",
-    gap: 5,
+    backgroundColor: "#E5F6EF",
+  },
+  liveEditorialStackCashbackCopy: {
+    flex: 1,
+    minWidth: 0,
   },
   liveEditorialStackCashbackText: {
-    fontSize: 13,
-    color: "#166534",
-    fontFamily: FONT_MEDIUM,
+    fontSize: 16,
+    color: "#059669",
+    fontFamily: FONT_SEMIBOLD,
+    letterSpacing: -0.2,
+  },
+  liveEditorialStackCashbackSubtext: {
+    marginTop: 2,
+    fontSize: 11,
+    color: "#8B97A9",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  liveEditorialStackCashbackArrow: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#E9EDF3",
   },
   card: {
     backgroundColor: COLORS.white,
@@ -33826,7 +34083,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.10)",
     marginBottom: 12,
-    ...ELEVATION.medium,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   formCardDisabledOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -34032,12 +34290,13 @@ const styles = StyleSheet.create({
   },
   profileCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 22,
-    padding: 16,
+    borderRadius: 20,
+    padding: 18,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderColor: "#D9E1EC",
     marginBottom: 12,
-    ...ELEVATION.medium,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   profileHeader: {
     flexDirection: "row",
@@ -34046,46 +34305,51 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   profileAvatar: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: "#F4F7FD",
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    backgroundColor: "#3B6CFF",
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderWidth: 0,
   },
   profileInitials: {
-    fontSize: 19,
-    color: COLORS.pine,
+    fontSize: 28,
+    color: COLORS.white,
     fontFamily: FONT_DISPLAY,
   },
   profileHeaderText: {
     flex: 1,
   },
   profileName: {
-    fontSize: 23,
+    fontSize: 18,
     color: COLORS.ink,
-    fontFamily: FONT_DISPLAY,
-    letterSpacing: -0.25,
+    fontFamily: FONT_SEMIBOLD,
+    letterSpacing: -0.1,
   },
   profileEmail: {
-    fontSize: 13,
-    color: COLORS.muted,
+    fontSize: 15,
+    color: "#8B97A9",
     fontFamily: FONT_TEXT,
-    marginTop: 2,
+    marginTop: 4,
+  },
+  profileMemberSince: {
+    fontSize: 13,
+    color: "#8B97A9",
+    fontFamily: FONT_TEXT,
+    marginTop: 4,
   },
   profileRolePill: {
-    backgroundColor: "#F3F6FC",
+    backgroundColor: "#F7F9FD",
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderColor: "#DEE5EE",
   },
   profileRoleText: {
-    fontSize: 12,
-    color: COLORS.pine,
+    fontSize: 11,
+    color: "#6B778A",
     fontFamily: FONT_MEDIUM,
     letterSpacing: 0.2,
   },
@@ -34220,31 +34484,74 @@ const styles = StyleSheet.create({
   },
   profileMetaRow: {
     flexDirection: "row",
-    gap: 10,
-    marginTop: 6,
-    marginBottom: 6,
+    gap: 12,
+    marginTop: 4,
+    marginBottom: 10,
   },
   profileMetaCard: {
     flex: 1,
-    backgroundColor: COLORS.mint,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
     borderWidth: 1,
-    borderColor: COLORS.sand,
+    borderColor: "#D9E1EC",
   },
   profileMetaLabel: {
-    fontSize: 11,
-    color: COLORS.muted,
+    fontSize: 13,
+    color: "#8B97A9",
     fontFamily: FONT_TEXT,
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
+    letterSpacing: 0,
+    marginTop: 4,
   },
   profileMetaValue: {
-    fontSize: 14,
+    fontSize: 17,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM,
-    marginTop: 4,
+    fontFamily: FONT_SEMIBOLD,
+    marginTop: 0,
+  },
+  profileQuickListCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#D9E1EC",
+    overflow: "hidden",
+    marginBottom: 12,
+  },
+  profileQuickListRow: {
+    minHeight: 76,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E8EDF4",
+  },
+  profileQuickListRowLast: {
+    borderBottomWidth: 0,
+  },
+  profileQuickListIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F4F7FC",
+  },
+  profileQuickListCopy: {
+    flex: 1,
+  },
+  profileQuickListTitle: {
+    fontSize: 17,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  profileQuickListMeta: {
+    marginTop: 2,
+    fontSize: 13,
+    color: "#8B97A9",
+    fontFamily: FONT_TEXT,
   },
   formLabel: {
     fontSize: 14,
@@ -34465,16 +34772,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.12)",
-    borderRadius: 16,
-    backgroundColor: COLORS.white,
+    borderWidth: 0,
+    borderRadius: 14,
+    backgroundColor: "transparent",
     paddingVertical: 11,
     paddingHorizontal: 12,
   },
   supportSignOutText: {
-    fontSize: 12,
-    color: COLORS.muted,
+    fontSize: 16,
+    color: "#EF4444",
     fontFamily: FONT_SEMIBOLD,
   },
   legalChecklist: {
@@ -34512,7 +34818,8 @@ const styles = StyleSheet.create({
     padding: 15,
     gap: 9,
     marginBottom: 12,
-    ...ELEVATION.medium,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   notificationPanelPro: {
     overflow: "hidden",
@@ -35478,21 +35785,22 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
   },
   receiptNoticeCard: {
-    backgroundColor: "#F7FAFF",
-    borderRadius: 18,
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#D4DEEA",
-    padding: 15,
+    borderColor: "#D9E1EC",
+    padding: 16,
     marginBottom: 12,
-    ...ELEVATION.medium,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   receiptNoticeCardAttention: {
-    borderColor: "#D4DEEA",
-    backgroundColor: "#F7FAFF",
+    borderColor: "#D9E1EC",
+    backgroundColor: COLORS.white,
   },
   receiptNoticeCardReady: {
-    borderColor: "#D4DEEA",
-    backgroundColor: "#F7FAFF",
+    borderColor: "#D9E1EC",
+    backgroundColor: COLORS.white,
   },
   receiptNoticeHeader: {
     flexDirection: "row",
@@ -35672,6 +35980,90 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
+  },
+  historySummaryCardsRow: {
+    marginBottom: 12,
+    flexDirection: "row",
+    gap: 10,
+  },
+  historySummaryCard: {
+    flex: 1,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#D9E1EC",
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    minHeight: 126,
+  },
+  historySummaryCardActive: {
+    borderColor: "#5EE3B1",
+    backgroundColor: "#CBEFDC",
+  },
+  historySummaryCardActiveMuted: {
+    borderColor: "#D9E1EC",
+    backgroundColor: "#F2F5FA",
+  },
+  historySummaryCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  historySummaryCardLabel: {
+    fontSize: 18,
+    color: "#047857",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  historySummaryCardLabelMuted: {
+    fontSize: 18,
+    color: "#374151",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  historySummaryCardValue: {
+    marginTop: 12,
+    fontSize: 22,
+    lineHeight: 28,
+    color: "#047857",
+    fontFamily: FONT_BOLD,
+    letterSpacing: -0.2,
+  },
+  historySummaryCardValueMuted: {
+    marginTop: 12,
+    fontSize: 22,
+    lineHeight: 28,
+    color: "#334155",
+    fontFamily: FONT_BOLD,
+    letterSpacing: -0.2,
+  },
+  historySummaryCardMeta: {
+    marginTop: 6,
+    fontSize: 15,
+    color: "#8B97A9",
+    fontFamily: FONT_MEDIUM,
+  },
+  historySummaryFilterRow: {
+    marginBottom: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+  },
+  historySummaryFilterPill: {
+    borderRadius: 999,
+    backgroundColor: "#CBEFDC",
+    paddingHorizontal: 14,
+    minHeight: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  historySummaryFilterPillText: {
+    fontSize: 14,
+    color: "#047857",
+    fontFamily: FONT_MEDIUM,
+  },
+  historySummaryClearText: {
+    fontSize: 14,
+    color: "#2E6BFF",
+    fontFamily: FONT_SEMIBOLD,
   },
   historyVerifyNoticeCard: {
     borderRadius: 18,
@@ -35888,15 +36280,12 @@ const styles = StyleSheet.create({
   },
   historyGroupCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 22,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderColor: "#D9E1EC",
     overflow: "hidden",
-    shadowColor: "#0F172A",
-    shadowOpacity: 0.07,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 3,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   historyGroupCardNeedsReceipt: {
     borderColor: "rgba(194, 65, 12, 0.34)",
@@ -36092,21 +36481,41 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
   },
   pointsCard: {
-    borderRadius: 16,
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: COLORS.sand,
-    padding: 14,
-    backgroundColor: COLORS.mint,
-    marginBottom: 12,
+    borderColor: "rgba(56, 189, 248, 0.18)",
+    padding: 16,
+    backgroundColor: "#15233B",
+    marginBottom: 14,
   },
   cashoutHeroCard: {
-    backgroundColor: COLORS.white,
-    borderColor: "rgba(15, 23, 42, 0.10)",
+    backgroundColor: "#15233B",
+    borderColor: "rgba(71, 85, 105, 0.38)",
     borderWidth: 1,
-    borderRadius: 20,
-    paddingVertical: 15,
-    paddingHorizontal: 16,
-    ...ELEVATION.medium,
+    borderRadius: 22,
+    paddingVertical: 18,
+    paddingHorizontal: 18,
+    overflow: "hidden",
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  cashoutHeroOrbOne: {
+    position: "absolute",
+    left: -64,
+    bottom: -78,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: "rgba(148, 163, 184, 0.16)",
+  },
+  cashoutHeroOrbTwo: {
+    position: "absolute",
+    right: -50,
+    top: -52,
+    width: 164,
+    height: 164,
+    borderRadius: 82,
+    backgroundColor: "rgba(148, 163, 184, 0.12)",
   },
   cashoutTileGrid: {
     marginTop: 8,
@@ -36126,23 +36535,22 @@ const styles = StyleSheet.create({
     width: "48%",
     minWidth: 96,
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.12)",
-    borderRadius: 14,
-    backgroundColor: "#F8FAFD",
-    padding: 8,
+    borderColor: "#D9E1EC",
+    borderRadius: 18,
+    backgroundColor: COLORS.white,
+    padding: 10,
     gap: 6,
   },
   cashoutMethodTileSelected: {
-    borderColor: COLORS.pine,
-    backgroundColor: "#EEF4FF",
+    borderColor: "#2659FF",
+    backgroundColor: "#F1F5FF",
   },
   cashoutMethodTileMedia: {
     width: "100%",
-    height: 72,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    backgroundColor: COLORS.white,
+    height: 92,
+    borderRadius: 14,
+    borderWidth: 0,
+    backgroundColor: "#EEF2F8",
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
@@ -36152,14 +36560,14 @@ const styles = StyleSheet.create({
     height: "100%",
   },
   cashoutMethodTileTitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM,
+    fontFamily: FONT_SEMIBOLD,
     lineHeight: 16,
   },
   cashoutMethodTileMeta: {
-    fontSize: 11,
-    color: COLORS.muted,
+    fontSize: 12,
+    color: "#8B97A9",
     fontFamily: FONT_TEXT,
     lineHeight: 14,
   },
@@ -36283,23 +36691,18 @@ const styles = StyleSheet.create({
     color: "#B91C1C",
   },
   cashoutBalanceHeader: {
-    marginBottom: 10,
+    marginBottom: 12,
     paddingHorizontal: 0,
     paddingVertical: 0,
     backgroundColor: "transparent",
     borderRadius: 0,
-    borderTopWidth: 0,
-    borderLeftWidth: 0,
-    borderRightWidth: 0,
-    borderWidth: 1,
-    borderColor: COLORS.sand,
-    borderBottomColor: COLORS.sand,
+    borderWidth: 0,
   },
   cashoutBalanceValue: {
     fontSize: 34,
     lineHeight: 38,
     letterSpacing: -0.3,
-    color: COLORS.ink,
+    color: COLORS.white,
     fontFamily: FONT_BOLD,
   },
   cashoutSectionLead: {
@@ -36324,8 +36727,8 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   cashoutBalanceBadgeReady: {
-    backgroundColor: "#F0F4FF",
-    borderColor: "#C7D4EE",
+    backgroundColor: "rgba(16, 185, 129, 0.24)",
+    borderColor: "rgba(16, 185, 129, 0.32)",
   },
   cashoutBalanceBadgeMuted: {
     backgroundColor: "#F4F7FF",
@@ -36336,7 +36739,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   cashoutBalanceBadgeTextReady: {
-    color: "#1E3A8A",
+    color: "#D1FAE5",
   },
   cashoutBalanceBadgeTextMuted: {
     color: "#92400E",
@@ -36354,12 +36757,12 @@ const styles = StyleSheet.create({
   },
   pointsLabel: {
     fontSize: 13,
-    color: COLORS.muted,
+    color: "rgba(224, 231, 255, 0.84)",
     fontFamily: FONT_TEXT,
   },
   pointsValue: {
     fontSize: 19,
-    color: COLORS.ink,
+    color: COLORS.white,
     fontFamily: FONT_BOLD,
   },
   pointsMeta: {
@@ -36547,23 +36950,23 @@ const styles = StyleSheet.create({
   },
   cashoutBalanceBar: {
     marginTop: 14,
-    borderRadius: 14,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#1B4ED8",
-    backgroundColor: "#1D4ED8",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    borderColor: "#1D4ED8",
+    backgroundColor: "#2552D6",
+    paddingHorizontal: 16,
+    paddingVertical: 13,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
   cashoutBalanceBarLabel: {
-    fontSize: 14,
-    color: "rgba(255,255,255,0.88)",
+    fontSize: 16,
+    color: "rgba(255,255,255,0.9)",
     fontFamily: FONT_SEMIBOLD,
   },
   cashoutBalanceBarValue: {
-    fontSize: 28,
+    fontSize: 26,
     color: COLORS.white,
     fontFamily: FONT_BOLD,
   },
