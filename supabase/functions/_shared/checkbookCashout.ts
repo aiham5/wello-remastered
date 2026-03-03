@@ -20,7 +20,6 @@ import { mergePlaidLinkPurposes } from "./plaidLinkPurposes.ts";
 type CreateOptions = { endpointName: string; requireIdempotencyKey: boolean };
 type BasicOptions = { endpointName: string };
 
-const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const textEncoder = new TextEncoder();
 
 const envString = (name: string, fallback = "") =>
@@ -79,12 +78,17 @@ const CHECKBOOK_CASHOUT_MAX_CENTS = Math.max(
   Math.trunc(envNumber("CHECKBOOK_CASHOUT_MAX_CENTS", 100000)),
   CHECKBOOK_CASHOUT_MIN_CENTS,
 );
-const CASHOUT_WEEKLY_LIMIT_ENABLED = envFlag(
-  "CASHOUT_WEEKLY_LIMIT_ENABLED",
-  true,
+const CASHOUT_MONTHLY_LIMIT_ENABLED = envFlag(
+  "CASHOUT_MONTHLY_LIMIT_ENABLED",
+  envFlag("CASHOUT_WEEKLY_LIMIT_ENABLED", true),
 );
-const CASHOUT_WEEKLY_LIMIT_MAX = Math.max(
-  Math.trunc(envNumber("CASHOUT_WEEKLY_LIMIT_MAX", 2)),
+const CASHOUT_MONTHLY_LIMIT_MAX = Math.max(
+  Math.trunc(
+    envNumber(
+      "CASHOUT_MONTHLY_LIMIT_MAX",
+      envNumber("CASHOUT_WEEKLY_LIMIT_MAX", 4),
+    ),
+  ),
   1,
 );
 const CASHOUT_ADMIN_DECISION_SECRET = envString("CASHOUT_ADMIN_DECISION_SECRET");
@@ -294,50 +298,65 @@ const isFailureLike = (value: string) =>
   ["failed", "rejected", "canceled", "cancelled", "returned", "expired", "error"]
     .includes(String(value || "").trim().toLowerCase());
 
-const ensureWeeklyLimit = async (
+const getCashoutMonthWindowBounds = (nowDate = new Date()) => {
+  const year = nowDate.getUTCFullYear();
+  const month = nowDate.getUTCMonth();
+  const windowStart = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
+  const nextWindowStart = new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0));
+  return {
+    windowStartIso: windowStart.toISOString(),
+    nextWindowStartIso: nextWindowStart.toISOString(),
+  };
+};
+
+const ensureMonthlyLimit = async (
   supabase: ReturnType<typeof createAdminSupabase>,
   userId: string,
 ) => {
-  if (!CASHOUT_WEEKLY_LIMIT_ENABLED) {
+  if (!CASHOUT_MONTHLY_LIMIT_ENABLED) {
     return {
       payoutsRemainingInWindow: null,
       payoutsUsedInWindow: null,
       nextEligibleAt: null,
+      monthlyLimit: null,
       weeklyLimit: null,
+      limitWindow: null,
     };
   }
-  const windowStartIso = new Date(Date.now() - ONE_WEEK_MS).toISOString();
+  const { windowStartIso, nextWindowStartIso } = getCashoutMonthWindowBounds();
   const { data, error } = await supabase
     .from("cashout_payouts")
     .select("id, created_at")
     .eq("user_id", userId)
     .in("status", ["pending", "paid"])
     .gte("created_at", windowStartIso)
+    .lt("created_at", nextWindowStartIso)
     .order("created_at", { ascending: true });
   if (error) throw new HttpError(error.message || "Unable to load cashout history.", 500);
   const rows = Array.isArray(data) ? data : [];
-  if (rows.length >= CASHOUT_WEEKLY_LIMIT_MAX) {
-    const oldestAt = Date.parse(String(rows[0]?.created_at || ""));
-    const nextEligibleAt = Number.isFinite(oldestAt)
-      ? new Date(oldestAt + ONE_WEEK_MS).toISOString()
-      : new Date(Date.now() + ONE_WEEK_MS).toISOString();
+  if (rows.length >= CASHOUT_MONTHLY_LIMIT_MAX) {
+    const nextEligibleAt = nextWindowStartIso;
     throw new HttpError(
-      `Cashout is limited to ${CASHOUT_WEEKLY_LIMIT_MAX} times per 7 days.`,
+      `Cashout is limited to ${CASHOUT_MONTHLY_LIMIT_MAX} times per month.`,
       429,
       {
-        reason: "weekly_cashout_limit",
+        reason: "monthly_cashout_limit",
         nextEligibleAt,
         payoutsUsedInWindow: rows.length,
         payoutsRemainingInWindow: 0,
-        weeklyLimit: CASHOUT_WEEKLY_LIMIT_MAX,
+        monthlyLimit: CASHOUT_MONTHLY_LIMIT_MAX,
+        weeklyLimit: CASHOUT_MONTHLY_LIMIT_MAX,
+        limitWindow: "month",
       },
     );
   }
   return {
-    payoutsRemainingInWindow: Math.max(CASHOUT_WEEKLY_LIMIT_MAX - (rows.length + 1), 0),
+    payoutsRemainingInWindow: Math.max(CASHOUT_MONTHLY_LIMIT_MAX - (rows.length + 1), 0),
     payoutsUsedInWindow: rows.length + 1,
     nextEligibleAt: null,
-    weeklyLimit: CASHOUT_WEEKLY_LIMIT_MAX,
+    monthlyLimit: CASHOUT_MONTHLY_LIMIT_MAX,
+    weeklyLimit: CASHOUT_MONTHLY_LIMIT_MAX,
+    limitWindow: "month",
   };
 };
 
@@ -1020,7 +1039,7 @@ export const createCheckbookCashoutHandler =
           reason: "bank_setup_incomplete",
         });
       }
-      const windowInfo = await ensureWeeklyLimit(supabase, userId);
+      const windowInfo = await ensureMonthlyLimit(supabase, userId);
       const { data: inserted, error: insertError } = await supabase
         .from("cashout_payouts")
         .insert({

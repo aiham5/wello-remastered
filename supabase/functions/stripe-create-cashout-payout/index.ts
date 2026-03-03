@@ -15,21 +15,41 @@ const SUPABASE_ANON_KEY =
   Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
   "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
-const CASHOUT_WEEKLY_LIMIT_ENABLED = (() => {
-  const raw = String(Deno.env.get("CASHOUT_WEEKLY_LIMIT_ENABLED") || "")
+const CASHOUT_MONTHLY_LIMIT_ENABLED = (() => {
+  const raw = String(
+    Deno.env.get("CASHOUT_MONTHLY_LIMIT_ENABLED") ||
+      Deno.env.get("CASHOUT_WEEKLY_LIMIT_ENABLED") ||
+      "",
+  )
     .trim()
     .toLowerCase();
   if (!raw) return true;
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 })();
-const CASHOUT_WEEKLY_LIMIT_MAX = (() => {
-  const raw = Math.trunc(Number(Deno.env.get("CASHOUT_WEEKLY_LIMIT_MAX") || "2"));
-  if (!Number.isFinite(raw) || raw < 1) return 2;
+const CASHOUT_MONTHLY_LIMIT_MAX = (() => {
+  const raw = Math.trunc(
+    Number(
+      Deno.env.get("CASHOUT_MONTHLY_LIMIT_MAX") ||
+        Deno.env.get("CASHOUT_WEEKLY_LIMIT_MAX") ||
+        "4",
+    ),
+  );
+  if (!Number.isFinite(raw) || raw < 1) return 4;
   return raw;
 })();
 
-const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const MIN_CASHOUT_CENTS = 1000;
+
+const getCashoutMonthWindowBounds = (nowDate = new Date()) => {
+  const year = nowDate.getUTCFullYear();
+  const month = nowDate.getUTCMonth();
+  const windowStart = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
+  const nextWindowStart = new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0));
+  return {
+    windowStartIso: windowStart.toISOString(),
+    nextWindowStartIso: nextWindowStart.toISOString(),
+  };
+};
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
@@ -131,15 +151,15 @@ Deno.serve(async (req) => {
     let payoutsRemainingInWindow = 0;
     let nextEligibleAtForWindow: string | null = null;
 
-    if (CASHOUT_WEEKLY_LIMIT_ENABLED) {
-      const weekWindowStartMs = Date.now() - ONE_WEEK_MS;
-      const weekWindowStartIso = new Date(weekWindowStartMs).toISOString();
+    if (CASHOUT_MONTHLY_LIMIT_ENABLED) {
+      const { windowStartIso, nextWindowStartIso } = getCashoutMonthWindowBounds();
       const { data: recentPayouts, error: recentPayoutsError } = await supabase
         .from("cashout_payouts")
         .select("id, created_at")
         .eq("user_id", userId)
         .in("status", ["pending", "paid"])
-        .gte("created_at", weekWindowStartIso)
+        .gte("created_at", windowStartIso)
+        .lt("created_at", nextWindowStartIso)
         .order("created_at", { ascending: true });
       if (recentPayoutsError) {
         return new Response(
@@ -152,29 +172,27 @@ Deno.serve(async (req) => {
       payoutsUsedInWindowBefore = payoutRows.length;
       payoutsUsedInWindowAfter = payoutsUsedInWindowBefore + 1;
       payoutsRemainingInWindow = Math.max(
-        CASHOUT_WEEKLY_LIMIT_MAX - payoutsUsedInWindowAfter,
+        CASHOUT_MONTHLY_LIMIT_MAX - payoutsUsedInWindowAfter,
         0,
       );
-      const oldestInWindow = payoutRows[0]?.created_at
-        ? Date.parse(payoutRows[0].created_at)
-        : NaN;
-      const computedNextEligibleAt = Number.isFinite(oldestInWindow)
-        ? new Date(oldestInWindow + ONE_WEEK_MS).toISOString()
-        : new Date(Date.now() + ONE_WEEK_MS).toISOString();
+      const computedNextEligibleAt = nextWindowStartIso;
       if (payoutsRemainingInWindow <= 0) {
         nextEligibleAtForWindow = computedNextEligibleAt;
       }
 
-      if (payoutRows.length >= CASHOUT_WEEKLY_LIMIT_MAX) {
+      if (payoutRows.length >= CASHOUT_MONTHLY_LIMIT_MAX) {
         nextEligibleAtForWindow = computedNextEligibleAt;
         if (nextEligibleAtForWindow) {
           return new Response(
             JSON.stringify({
-              error: `Cashout is limited to ${CASHOUT_WEEKLY_LIMIT_MAX} times per 7 days.`,
+              error: `Cashout is limited to ${CASHOUT_MONTHLY_LIMIT_MAX} times per month.`,
+              reason: "monthly_cashout_limit",
               nextEligibleAt: nextEligibleAtForWindow,
               payoutsUsedInWindow: payoutsUsedInWindowBefore,
               payoutsRemainingInWindow: 0,
-              weeklyLimit: CASHOUT_WEEKLY_LIMIT_MAX,
+              monthlyLimit: CASHOUT_MONTHLY_LIMIT_MAX,
+              weeklyLimit: CASHOUT_MONTHLY_LIMIT_MAX,
+              limitWindow: "month",
             }),
             { status: 429 },
           );
@@ -366,7 +384,7 @@ Deno.serve(async (req) => {
       metadata: {
         user_id: userId,
         payout_id: payoutId,
-        purpose: "cashback_weekly_cashout",
+        purpose: "cashback_monthly_cashout",
       },
     });
     transferId = transfer.id;
@@ -398,20 +416,26 @@ Deno.serve(async (req) => {
         transferId: transfer.id,
         amountCents: payoutAmountCents,
         availableCents,
-        overageCents: overage || 0,
-        adjustmentId,
-        nextEligibleAt:
-          CASHOUT_WEEKLY_LIMIT_ENABLED && payoutsRemainingInWindow <= 0
-            ? nextEligibleAtForWindow || new Date(Date.now() + ONE_WEEK_MS).toISOString()
+      overageCents: overage || 0,
+      adjustmentId,
+      nextEligibleAt:
+          CASHOUT_MONTHLY_LIMIT_ENABLED && payoutsRemainingInWindow <= 0
+            ? nextEligibleAtForWindow || getCashoutMonthWindowBounds().nextWindowStartIso
             : null,
-        payoutsUsedInWindow: CASHOUT_WEEKLY_LIMIT_ENABLED
+        payoutsUsedInWindow: CASHOUT_MONTHLY_LIMIT_ENABLED
           ? payoutsUsedInWindowAfter
           : null,
-        payoutsRemainingInWindow: CASHOUT_WEEKLY_LIMIT_ENABLED
+        payoutsRemainingInWindow: CASHOUT_MONTHLY_LIMIT_ENABLED
           ? payoutsRemainingInWindow
           : null,
-        weeklyLimit: CASHOUT_WEEKLY_LIMIT_ENABLED
-          ? CASHOUT_WEEKLY_LIMIT_MAX
+        monthlyLimit: CASHOUT_MONTHLY_LIMIT_ENABLED
+          ? CASHOUT_MONTHLY_LIMIT_MAX
+          : null,
+        weeklyLimit: CASHOUT_MONTHLY_LIMIT_ENABLED
+          ? CASHOUT_MONTHLY_LIMIT_MAX
+          : null,
+        limitWindow: CASHOUT_MONTHLY_LIMIT_ENABLED
+          ? "month"
           : null,
       }),
       { status: 200 },

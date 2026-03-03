@@ -150,6 +150,7 @@ const SAFE_TOP =
     : IS_COMPACT
       ? 8
       : 12;
+const SAFE_BOTTOM = Platform.OS === "ios" ? 22 : 10;
 const CARD_WIDTH = Math.min(280, Math.max(210, Math.round(SCREEN_WIDTH * 0.7)));
 const CARD_GAP = Math.round(Math.max(10, SCREEN_WIDTH * 0.03));
 const OFFER_IMAGE_ASPECT = 1.91 / 1;
@@ -496,6 +497,7 @@ const NOTIFICATION_DEFAULTS = {
 const NAV_PILL_MIN = IS_COMPACT ? 72 : 82;
 const NAV_GAP = 0;
 const NAV_PADDING = IS_COMPACT ? 6 : 8;
+const NAV_SIDE_INSET = IS_COMPACT ? 10 : 12;
 const TIME_SELECT_MAX = Math.min(160, Math.round(SCREEN_WIDTH * 0.42));
 const TIME_SELECT_MIN = IS_COMPACT ? 80 : 96;
 const TIME_MERIDIEM_WIDTH = IS_COMPACT ? 68 : 80;
@@ -1219,6 +1221,26 @@ const getInitials = (value) => {
   if (!parts.length) return "W";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0].slice(0, 1) + parts[1].slice(0, 1)).toUpperCase();
+};
+
+const HISTORY_GROUP_AVATAR_COLORS = [
+  "#FF7A00",
+  "#F4A300",
+  "#F43F5E",
+  "#EF4444",
+  "#22C55E",
+  "#0EA5E9",
+  "#8B5CF6",
+];
+
+const getHistoryGroupAvatarColor = (value) => {
+  const seed = String(value || "").trim();
+  if (!seed) return HISTORY_GROUP_AVATAR_COLORS[0];
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  return HISTORY_GROUP_AVATAR_COLORS[hash % HISTORY_GROUP_AVATAR_COLORS.length];
 };
 
 const formatOfferDate = (value) => {
@@ -2851,18 +2873,159 @@ const fetchGeocodeResult = async (address) => {
 };
 
 const isBusinessOpenNow = (value) => {
+  const status = getBusinessHoursStatus(value, null);
+  if (!status.sourceKnown) return null;
+  return status.isOpen;
+};
+
+const DAY_KEY_BY_WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const CLOSING_SOON_THRESHOLD_MINUTES = 120;
+
+const formatClockLabelFromMinutes = (minutes, lowercaseMeridiem = true) => {
+  if (!Number.isFinite(minutes)) return "";
+  const normalized = ((Math.round(minutes) % (24 * 60)) + 24 * 60) % (24 * 60);
+  const hours24 = Math.floor(normalized / 60);
+  const mins = normalized % 60;
+  const meridiem = hours24 >= 12 ? "PM" : "AM";
+  const hours12 = ((hours24 + 11) % 12) + 1;
+  const suffix = lowercaseMeridiem ? meridiem.toLowerCase() : meridiem;
+  return `${hours12}:${String(mins).padStart(2, "0")} ${suffix}`;
+};
+
+const withTimeOnDate = (baseDate, minutesFromMidnight, dayOffset = 0) => {
+  const date = new Date(baseDate.getTime());
+  date.setDate(date.getDate() + dayOffset);
+  date.setHours(0, 0, 0, 0);
+  date.setMinutes(Math.max(0, Math.floor(Number(minutesFromMidnight) || 0)));
+  return date;
+};
+
+const getBusinessHoursStatus = (value, fallbackOpen = null, nowDate = new Date()) => {
+  const fallbackIsOpen =
+    typeof fallbackOpen === "boolean" ? fallbackOpen : null;
   const parsed = parseBusinessHours(value);
-  if (!parsed) return null;
+  const buildFallback = () => {
+    if (fallbackIsOpen === null) {
+      return {
+        sourceKnown: false,
+        isOpen: false,
+        minutesUntilClose: null,
+        opensAtLabel: "",
+        closesAtLabel: "",
+        statusText: "Closed",
+        statusVariant: "closed",
+        closedOverlayText: "Closed",
+      };
+    }
+    return {
+      sourceKnown: false,
+      isOpen: fallbackIsOpen,
+      minutesUntilClose: null,
+      opensAtLabel: "",
+      closesAtLabel: "",
+      statusText: fallbackIsOpen ? "Open now" : "Closed",
+      statusVariant: fallbackIsOpen ? "open" : "closed",
+      closedOverlayText: "Closed",
+    };
+  };
+  if (!parsed) return buildFallback();
+
   const start = parseClockMinutes(parsed.startTime, parsed.startMeridiem);
   const end = parseClockMinutes(parsed.endTime, parsed.endMeridiem);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-  const now = new Date();
-  const current = now.getHours() * 60 + now.getMinutes();
-  if (start === end) return true;
-  if (end > start) {
-    return current >= start && current <= end;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return buildFallback();
+
+  if (start === end) {
+    return {
+      sourceKnown: true,
+      isOpen: true,
+      minutesUntilClose: null,
+      opensAtLabel: "",
+      closesAtLabel: "",
+      statusText: "Open now",
+      statusVariant: "open",
+      closedOverlayText: "",
+    };
   }
-  return current >= start || current <= end;
+
+  const selectedDays = new Set(parseOperatingDaysValue(parsed.days || ""));
+  const now = new Date(nowDate.getTime());
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const todayKey = DAY_KEY_BY_WEEKDAY[now.getDay()] || "Mon";
+  const prevDate = new Date(now.getTime());
+  prevDate.setDate(prevDate.getDate() - 1);
+  const previousDayKey = DAY_KEY_BY_WEEKDAY[prevDate.getDay()] || "Sun";
+  const includesToday = selectedDays.has(todayKey);
+  const includesPreviousDay = selectedDays.has(previousDayKey);
+  const overnight = end < start;
+
+  let isOpen = false;
+  let closeAtDate = null;
+  if (!overnight) {
+    if (includesToday && currentMinutes >= start && currentMinutes <= end) {
+      isOpen = true;
+      closeAtDate = withTimeOnDate(now, end, 0);
+    }
+  } else {
+    if (includesToday && currentMinutes >= start) {
+      isOpen = true;
+      closeAtDate = withTimeOnDate(now, end, 1);
+    } else if (includesPreviousDay && currentMinutes <= end) {
+      isOpen = true;
+      closeAtDate = withTimeOnDate(now, end, 0);
+    }
+  }
+
+  if (isOpen) {
+    const minutesUntilClose = closeAtDate
+      ? Math.max(0, Math.round((closeAtDate.getTime() - now.getTime()) / 60000))
+      : null;
+    const closesAtLabel = formatClockLabelFromMinutes(end, true);
+    const shouldShowClosingTime =
+      Number.isFinite(minutesUntilClose) &&
+      minutesUntilClose < CLOSING_SOON_THRESHOLD_MINUTES;
+    return {
+      sourceKnown: true,
+      isOpen: true,
+      minutesUntilClose,
+      opensAtLabel: "",
+      closesAtLabel,
+      statusText: shouldShowClosingTime
+        ? `Closes ${closesAtLabel}`
+        : "Open now",
+      statusVariant: shouldShowClosingTime ? "closing" : "open",
+      closedOverlayText: "",
+    };
+  }
+
+  let nextOpenDate = null;
+  if (includesToday && currentMinutes < start) {
+    nextOpenDate = withTimeOnDate(now, start, 0);
+  } else {
+    for (let offset = 1; offset <= 7; offset += 1) {
+      const candidate = new Date(now.getTime());
+      candidate.setDate(candidate.getDate() + offset);
+      const dayKey = DAY_KEY_BY_WEEKDAY[candidate.getDay()] || "";
+      if (!selectedDays.has(dayKey)) continue;
+      nextOpenDate = withTimeOnDate(now, start, offset);
+      break;
+    }
+  }
+  const opensAtLabel = nextOpenDate
+    ? formatClockLabelFromMinutes(start, true)
+    : "";
+  const closedOverlayText = opensAtLabel
+    ? `Closed, opens at ${opensAtLabel}`
+    : "Closed";
+  return {
+    sourceKnown: true,
+    isOpen: false,
+    minutesUntilClose: null,
+    opensAtLabel,
+    closesAtLabel: "",
+    statusText: opensAtLabel ? `Opens ${opensAtLabel}` : "Closed",
+    statusVariant: "closed",
+    closedOverlayText,
+  };
 };
 
 const parseAddressComponents = (components = []) => {
@@ -3717,6 +3880,13 @@ function parseDistanceLabelMiles(value) {
   return null;
 }
 
+function formatDistanceMilesLabel(miles) {
+  if (!Number.isFinite(miles)) return "--";
+  if (miles < 0.1) return "<0.1 mi";
+  if (miles < 10) return `${miles.toFixed(1)} mi`;
+  return `${Math.round(miles)} mi`;
+}
+
 function distanceBetweenCoordsMeters(from, to) {
   if (!from || !to) return null;
   const lat1 = (from.latitude * Math.PI) / 180;
@@ -3736,9 +3906,7 @@ function distanceBetweenCoordsMeters(from, to) {
 function formatDistanceMetersLabel(meters) {
   if (!Number.isFinite(meters)) return "--";
   const miles = meters / 1609.34;
-  if (miles >= 0.1) return `${miles.toFixed(1)} mi`;
-  if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
-  return `${Math.round(meters)} m`;
+  return formatDistanceMilesLabel(miles);
 }
 
 function parseTimestampMs(value) {
@@ -3782,33 +3950,26 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
     .trim()
     .replace(/\s+/g, " ");
   const distanceMilesNumeric = Number(item?.distanceMiles);
+  const distanceMilesFromLabel = parseDistanceLabelMiles(distanceLabelRaw);
+  const resolvedDistanceMiles = Number.isFinite(distanceMilesNumeric)
+    ? distanceMilesNumeric
+    : distanceMilesFromLabel;
   const distanceLabel =
-    distanceLabelRaw && distanceLabelRaw !== "--"
-      ? distanceLabelRaw
-      : Number.isFinite(distanceMilesNumeric)
-        ? `${distanceMilesNumeric.toFixed(1)} mi`
-        : "--";
+    Number.isFinite(resolvedDistanceMiles)
+      ? formatDistanceMilesLabel(resolvedDistanceMiles)
+      : "--";
   const hoursValue = item.hours || item.business?.hours || "";
-  const openFromHours = isBusinessOpenNow(hoursValue);
-  const isOpen =
-    openFromHours === null
-      ? (item.isOpen ?? item.business?.isOpen ?? true)
-      : openFromHours;
-  const closingTimeLabel = useMemo(() => {
-    const raw = String(hoursValue || "")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!raw || raw.toLowerCase() === "hours available upon request") return "";
-    const match = raw.match(/-\s*([0-9]{1,2}(?::[0-9]{2})?\s*[APap][Mm])/);
-    if (!match?.[1]) return "";
-    return String(match[1]).toUpperCase().replace(/\s+/g, " ").trim();
-  }, [hoursValue]);
-  const statusText = isOpen
-    ? closingTimeLabel
-      ? `Closes ${closingTimeLabel}`
-      : "Open now"
-    : "Closed";
-  const statusVariant = !isOpen ? "closed" : closingTimeLabel ? "closing" : "open";
+  const fallbackIsOpen =
+    typeof item?.isOpen === "boolean"
+      ? item.isOpen
+      : typeof item?.business?.isOpen === "boolean"
+        ? item.business.isOpen
+        : null;
+  const hoursStatus = getBusinessHoursStatus(hoursValue, fallbackIsOpen);
+  const isOpen = hoursStatus.isOpen;
+  const statusText = hoursStatus.statusText;
+  const statusVariant = hoursStatus.statusVariant;
+  const closedOverlayText = hoursStatus.closedOverlayText;
   const cashbackLabel = "10%";
   return (
     <View style={styles.cardShell}>
@@ -3845,6 +4006,15 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
             end={{ x: 0.5, y: 1 }}
             style={styles.liveEditorialStackShade}
           />
+          {!isOpen ? (
+            <View style={styles.liveEditorialStackClosedOverlay}>
+              <View style={styles.liveEditorialStackClosedPill}>
+                <Text style={styles.liveEditorialStackClosedText}>
+                  {closedOverlayText}
+                </Text>
+              </View>
+            </View>
+          ) : null}
           <View style={styles.liveEditorialStackTopRow}>
             <View
               style={[
@@ -3898,7 +4068,7 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
           >
             <View style={styles.liveEditorialStackCashbackContent}>
               <View style={styles.liveEditorialStackCashbackIconWrap}>
-                <Ionicons name="pricetag-outline" size={18} color="#059669" />
+                <Text style={styles.liveEditorialStackCashbackPercentIcon}>%</Text>
               </View>
               <View style={styles.liveEditorialStackCashbackCopy}>
                 <Text style={styles.liveEditorialStackCashbackText}>
@@ -3910,7 +4080,7 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
               </View>
             </View>
             <View style={styles.liveEditorialStackCashbackArrow}>
-              <Ionicons name="arrow-forward" size={22} color="#6B7280" />
+              <Ionicons name="arrow-forward" size={22} color="#059669" />
             </View>
           </TouchableOpacity>
         </View>
@@ -4080,6 +4250,7 @@ export default function App() {
   const [profilePhone, setProfilePhone] = useState("");
   const [profileCompany, setProfileCompany] = useState("");
   const [profileMessage, setProfileMessage] = useState(null);
+  const [profileSubpage, setProfileSubpage] = useState("main");
   const [deleteAccountConsentChecked, setDeleteAccountConsentChecked] =
     useState(false);
   const [deleteAccountStatus, setDeleteAccountStatus] = useState({
@@ -4154,6 +4325,12 @@ export default function App() {
   const [scannerOffer, setScannerOffer] = useState(null);
   const [scannerStatus, setScannerStatus] = useState(null);
   const [scannerMessage, setScannerMessage] = useState(null);
+  const [redeemActivationModal, setRedeemActivationModal] = useState({
+    visible: false,
+    card: null,
+    status: "idle",
+    message: null,
+  });
   const [redeemGate, setRedeemGate] = useState({
     allowed: true,
     reason: null,
@@ -4277,6 +4454,7 @@ export default function App() {
     });
   const [receiptNoticeOpen, setReceiptNoticeOpen] = useState(false);
   const receiptNoticeShownRef = useRef(false);
+  const lastReceiptUploadAlertCountRef = useRef(0);
   const [expandedAdminEdits, setExpandedAdminEdits] = useState({});
   const [expandedAdminOffers, setExpandedAdminOffers] = useState({});
   const [expandedAdminBusinesses, setExpandedAdminBusinesses] = useState({});
@@ -4505,6 +4683,8 @@ export default function App() {
   );
   const [cashoutCatalogModalVisible, setCashoutCatalogModalVisible] =
     useState(false);
+  const [cashoutGiftModalVisible, setCashoutGiftModalVisible] = useState(false);
+  const [cashoutBankModalVisible, setCashoutBankModalVisible] = useState(false);
   const [cashoutMethodType, setCashoutMethodType] = useState("gift_card");
   const [selectedCashoutCatalogCode, setSelectedCashoutCatalogCode] =
     useState(null);
@@ -4602,6 +4782,81 @@ export default function App() {
       label: `Cash out ${formatCurrencyFromCents(cents)}`,
     };
   }, [cashoutAmountText, cashoutMaxAllowedCents, cashoutMinCents]);
+  const cashoutInputAmountCents = useMemo(() => {
+    const parsed = parseCashoutAmountToCents(cashoutAmountText);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.round(parsed);
+  }, [cashoutAmountText]);
+  const cashoutRemainingAfterInputCents = useMemo(
+    () =>
+      Math.max(
+        0,
+        (Number(cashbackBalance.availableCents) || 0) - cashoutInputAmountCents,
+      ),
+    [cashbackBalance.availableCents, cashoutInputAmountCents],
+  );
+  const setCashoutAmountFromCents = useCallback((value) => {
+    const next = Math.max(0, Math.round(Number(value) || 0));
+    setCashoutAmountText((next / 100).toFixed(2));
+  }, []);
+  const stepCashoutAmountCents = useCallback(
+    (deltaCents) => {
+      const current = cashoutInputAmountCents;
+      const maxAllowed = Math.max(0, Number(cashoutMaxAllowedCents) || 0);
+      const next = Math.max(0, Math.min(maxAllowed, current + deltaCents));
+      setCashoutAmountFromCents(next);
+    },
+    [cashoutInputAmountCents, cashoutMaxAllowedCents, setCashoutAmountFromCents],
+  );
+  const cashoutGiftQuickAmountCents = useMemo(() => {
+    if (cashoutMethodType !== "gift_card") return [];
+    const minValue = Math.max(
+      GIFT_CARD_MIN_CASHOUT_CENTS,
+      Number(selectedCashoutCatalogItem?.minCents) || 0,
+    );
+    const maxValue = Math.max(0, Number(cashoutMaxAllowedCents) || 0);
+    const candidates = [minValue, minValue * 3, maxValue];
+    const unique = [];
+    candidates.forEach((value) => {
+      const normalized = Math.round(Number(value) || 0);
+      if (normalized <= 0 || normalized > maxValue) return;
+      if (unique.includes(normalized)) return;
+      unique.push(normalized);
+    });
+    return unique.slice(0, 3);
+  }, [cashoutMaxAllowedCents, cashoutMethodType, selectedCashoutCatalogItem]);
+  const cashoutBankQuickAmountCents = useMemo(() => {
+    if (cashoutMethodType !== "bank_transfer") return [];
+    const maxValue = Math.max(0, Number(cashoutMaxAllowedCents) || 0);
+    const candidates = [1000, 2000, maxValue];
+    const unique = [];
+    candidates.forEach((value) => {
+      const normalized = Math.round(Number(value) || 0);
+      if (normalized <= 0 || normalized > maxValue) return;
+      if (unique.includes(normalized)) return;
+      unique.push(normalized);
+    });
+    return unique.slice(0, 3);
+  }, [cashoutMaxAllowedCents, cashoutMethodType]);
+  const openGiftCardCashoutModal = useCallback(
+    (catalogCode) => {
+      const normalizedCode = normalizeCatalogItemCode(catalogCode);
+      if (!normalizedCode) return;
+      setCashoutBankModalVisible(false);
+      setCashoutMethodType("gift_card");
+      setSelectedCashoutCatalogCode(normalizedCode);
+      const selectedItem = cashoutCatalogItems.find(
+        (item) => normalizeCatalogItemCode(item?.code) === normalizedCode,
+      );
+      const minValue = Math.max(
+        GIFT_CARD_MIN_CASHOUT_CENTS,
+        Number(selectedItem?.minCents) || 0,
+      );
+      setCashoutAmountFromCents(minValue);
+      setCashoutGiftModalVisible(true);
+    },
+    [cashoutCatalogItems, setCashoutAmountFromCents],
+  );
   useEffect(() => {
     cashoutIdempotencyKeyRef.current = null;
   }, [cashoutAmountText, cashoutMethodType, selectedCashoutCatalogCode]);
@@ -4735,7 +4990,7 @@ export default function App() {
     }
     return {
       title: "Link bank for instant cashback",
-      body: "Connect your bank to enable instant purchase verification.",
+      body: "Connect your bank to verify purchases automatically.",
       cta: "Connect",
     };
   }, [plaidLinkState.updateMode]);
@@ -5846,7 +6101,8 @@ export default function App() {
     [callAuthedEdgeFunction, isSignedIn],
   );
 
-  const handleCashoutBankTilePress = useCallback(async () => {
+  const handleCashoutBankTilePress = useCallback(async (options = {}) => {
+    const forceLink = Boolean(options?.force);
     setCashoutMethodType("bank_transfer");
     if (!isSignedIn) {
       setCashoutActionStatus({
@@ -5856,7 +6112,7 @@ export default function App() {
       });
       return;
     }
-    if (cashoutBankReady) return;
+    if (cashoutBankReady && !forceLink) return;
     setCashoutActionStatus({
       loading: true,
       error: null,
@@ -6105,6 +6361,23 @@ export default function App() {
     isSignedIn,
     loadCashoutCatalog,
     openCashoutHostedFlow,
+  ]);
+  const openBankTransferCashoutModal = useCallback(async () => {
+    setCashoutGiftModalVisible(false);
+    setCashoutMethodType("bank_transfer");
+    setCashoutBankModalVisible(true);
+    if (!cashoutBankReady) {
+      await handleCashoutBankTilePress();
+      return;
+    }
+    if (cashoutInputAmountCents <= 0) {
+      setCashoutAmountFromCents(0);
+    }
+  }, [
+    cashoutBankReady,
+    cashoutInputAmountCents,
+    handleCashoutBankTilePress,
+    setCashoutAmountFromCents,
   ]);
 
   useEffect(() => {
@@ -7511,6 +7784,16 @@ export default function App() {
       if (status === 429) {
         const nextEligibleAt =
           details?.nextEligibleAt || data?.nextEligibleAt || null;
+        const limitWindowRaw = String(
+          details?.limitWindow ||
+            data?.limitWindow ||
+            (details?.monthlyLimit != null || data?.monthlyLimit != null
+              ? "month"
+              : "week"),
+        )
+          .trim()
+          .toLowerCase();
+        const isMonthlyLimit = limitWindowRaw === "month";
         const nextLabel = nextEligibleAt
           ? new Date(nextEligibleAt).toLocaleString([], {
               year: "numeric",
@@ -7519,13 +7802,25 @@ export default function App() {
               hour: "numeric",
               minute: "2-digit",
             })
-          : "later this week";
+          : isMonthlyLimit
+            ? "next month"
+            : "later this week";
         const limitLabel = Math.max(
-          Number(details?.weeklyLimit || data?.weeklyLimit) || 2,
+          Number(
+            details?.monthlyLimit ||
+              data?.monthlyLimit ||
+              details?.weeklyLimit ||
+              data?.weeklyLimit,
+          ) || (isMonthlyLimit ? 4 : 2),
           1,
         );
-        const cadenceLabel =
-          limitLabel === 1 ? "once per week" : `${limitLabel} times per week`;
+        const cadenceLabel = isMonthlyLimit
+          ? limitLabel === 1
+            ? "once per month"
+            : `${limitLabel} times per month`
+          : limitLabel === 1
+            ? "once per week"
+            : `${limitLabel} times per week`;
         const message = `You can cash out ${cadenceLabel}. Your next cashout is available on ${nextLabel}.`;
         showAppDialog({
           title: "Cashout limit reached",
@@ -7581,6 +7876,7 @@ export default function App() {
       success: null,
     });
     if (methodType === "gift_card") {
+      setCashoutGiftModalVisible(false);
       setCashoutCelebration((prev) => ({ ...prev, visible: false }));
       if (cashoutCelebrationTimerRef.current) {
         clearTimeout(cashoutCelebrationTimerRef.current);
@@ -7614,6 +7910,7 @@ export default function App() {
       openCashoutHostedFlow(claimUrl);
     }
     if (methodType === "bank_transfer") {
+      setCashoutBankModalVisible(false);
       showAppDialog({
         title: "Transfer requested",
         message: "Bank transfer request submitted for admin approval.",
@@ -9023,7 +9320,7 @@ export default function App() {
     const count = visibleTabs.length || 1;
     const baseWidth =
       count * NAV_PILL_MIN + (count - 1) * NAV_GAP + NAV_PADDING * 2 + 4;
-    const maxWidth = SCREEN_WIDTH;
+    const maxWidth = Math.max(260, SCREEN_WIDTH - NAV_SIDE_INSET * 2);
     if (count <= 2) {
       return Math.min(baseWidth, maxWidth);
     }
@@ -9327,7 +9624,17 @@ export default function App() {
       group.pendingCount = hasReview ? 0 : group.pendingEntries.length;
       group.receiptPendingCount = group.entries.reduce((total, entry) => {
         const hasReceipt = Boolean(entry.receipt?.id);
-        if (!hasReceipt && isReceiptWindowOpen(entry)) {
+        const receiptReviewStatus = String(
+          entry?.receipt?.reviewStatus || "",
+        ).toLowerCase();
+        const canResubmitRejectedReceipt =
+          hasReceipt &&
+          receiptReviewStatus === "rejected" &&
+          entry?.receipt?.retryAllowed === true;
+        const canUploadReceipt =
+          canResubmitRejectedReceipt ||
+          (!hasReceipt && isReceiptWindowOpen(entry));
+        if (canUploadReceipt) {
           return total + 1;
         }
         return total;
@@ -9591,19 +9898,6 @@ export default function App() {
     0,
     cashoutLinkedPayoutAccounts.length - visibleCashoutLinkedPayoutAccounts.length,
   );
-  const cashoutPayoutSwitchCopy = useMemo(() => {
-    const policy = plaidLinkState.payoutSwitchPolicy || {};
-    const monthlyLimit = Math.max(Number(policy.monthlyLimit) || 0, 0);
-    const switchesRemaining = Math.max(Number(policy.switchesRemaining) || 0, 0);
-    if (!monthlyLimit) return "";
-    if (switchesRemaining <= 0) {
-      return "Payout bank switch limit reached for this month.";
-    }
-    if (monthlyLimit >= 9999) {
-      return "Payout bank switching is available.";
-    }
-    return `${switchesRemaining}/${monthlyLimit} payout bank switches remaining this month.`;
-  }, [plaidLinkState.payoutSwitchPolicy]);
   const cashoutVoucherCardPreview = useMemo(() => {
     const cardNumberRaw = String(
       cashoutVoucherReveal.cardNumber || "",
@@ -9749,6 +10043,14 @@ export default function App() {
     setCashoutActionStatus({ loading: false, error: null, success: null });
     setCashoutCatalogState(createInitialCashoutCatalogState());
     setCashoutCatalogModalVisible(false);
+    setCashoutGiftModalVisible(false);
+    setCashoutBankModalVisible(false);
+    setRedeemActivationModal({
+      visible: false,
+      card: null,
+      status: "idle",
+      message: null,
+    });
     setCashoutMethodType("gift_card");
     setSelectedCashoutCatalogCode(null);
     setCashoutClaimUrl(null);
@@ -10359,6 +10661,35 @@ export default function App() {
       );
     }
   }, [authUserId, upsertNotificationToken]);
+
+  const scheduleReceiptUploadNeededNotification = useCallback(
+    async (count) => {
+      const pendingCount = Math.max(Number(count) || 0, 0);
+      if (!pendingCount) return;
+      try {
+        const { status } = await Notifications.getPermissionsAsync();
+        if (status !== "granted") return;
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: "Receipt upload needed",
+            body:
+              pendingCount === 1
+                ? "You have 1 redemption that needs a receipt upload within 24 hours."
+                : `You have ${pendingCount} redemptions that need receipt uploads within 24 hours.`,
+            data: {
+              type: "receipt_upload_needed",
+              pendingReceiptCount: pendingCount,
+              targetTab: "history",
+            },
+          },
+          trigger: null,
+        });
+      } catch {
+        // Keep UX resilient; notification delivery should never break history.
+      }
+    },
+    [],
+  );
 
   const loadNotificationPreferences = useCallback(async () => {
     if (!authUserId) return;
@@ -11746,6 +12077,7 @@ export default function App() {
     setProfileEmail("");
     setProfilePhone("");
     setProfileCompany("");
+    setProfileSubpage("main");
     setDeleteAccountConsentChecked(false);
     setDeleteAccountStatus({
       loading: false,
@@ -11861,6 +12193,12 @@ export default function App() {
     setEditOfferHonorChecked(false);
     setPostRedeemBankPromptOpen(false);
   };
+
+  useEffect(() => {
+    if (activeTab !== "profile" && profileSubpage !== "main") {
+      setProfileSubpage("main");
+    }
+  }, [activeTab, profileSubpage]);
 
   const handleRequestAccountDeletion = useCallback(() => {
     if (deleteAccountStatus.loading) return;
@@ -12015,6 +12353,9 @@ export default function App() {
   };
 
   const handleRedeemOffer = async (card) => {
+    if (redeemActivationModal.visible && redeemActivationModal.status === "loading") {
+      return;
+    }
     const business = resolveBusinessFromCard(card);
     if (!business) return;
     if (!isSignedIn) {
@@ -12037,17 +12378,78 @@ export default function App() {
     if (businessDetailOpen) {
       setBusinessDetailOpen(false);
     }
-    setScannerBusiness(business);
-    setScannerOffer(card);
-    setScannerStatus("checking");
-    setScannerMessage(null);
+    const ratingNumeric = Number(card?.rating ?? business?.rating);
+    const ratingLabel =
+      Number.isFinite(ratingNumeric) && ratingNumeric > 0
+        ? ratingNumeric.toFixed(1)
+        : "--";
+    const distanceRaw = String(
+      card?.distanceLabel || card?.distance || business?.distance || "",
+    )
+      .trim()
+      .replace(/\s+/g, " ");
+    const distanceMilesRaw = Number(card?.distanceMiles ?? business?.distanceMiles);
+    const distanceMilesFromLabel = parseDistanceLabelMiles(distanceRaw);
+    const resolvedDistanceMiles = Number.isFinite(distanceMilesRaw)
+      ? distanceMilesRaw
+      : distanceMilesFromLabel;
+    const distanceLabel = Number.isFinite(resolvedDistanceMiles)
+      ? formatDistanceMilesLabel(resolvedDistanceMiles)
+      : "--";
+    const hoursValue = String(card?.hours || business?.hours || "").trim();
+    const openFromHours = isBusinessOpenNow(hoursValue);
+    const isOpen =
+      openFromHours === null
+        ? (card?.isOpen ?? business?.isOpen ?? true)
+        : openFromHours;
+    const categoryLabel = getCategoryConfig(
+      card?.categoryKey || business?.type || business?.categoryKey,
+    ).display;
+    setRedeemActivationModal({
+      visible: true,
+      status: "loading",
+      message: "Activating offer...",
+      card: {
+        name: String(card?.name || business?.name || "Wello business").trim(),
+        imageUrl: String(
+          card?.imageUrl || business?.imageUrl || business?.coverImageUrl || "",
+        ).trim(),
+        ratingLabel,
+        distanceLabel,
+        categoryLabel,
+        statusLabel: isOpen ? "Open now" : "Closed",
+      },
+    });
+    setPostRedeemBankPromptOpen(false);
     redemptionLoggedRef.current = false;
-    setScannerVisible(true);
+    setScannerVisible(false);
     const allowed = await runRedeemGate(business);
     if (allowed) {
-      await redeemOfferInStore(business, card);
+      const redeemed = await redeemOfferInStore(business, card);
+      setRedeemActivationModal((prev) => ({
+        ...prev,
+        status: redeemed ? "success" : "error",
+        message: redeemed
+          ? "Offer activated! Pay as usual."
+          : "Unable to activate right now. Please try again.",
+      }));
+    } else {
+      setRedeemActivationModal((prev) => ({
+        ...prev,
+        status: "error",
+        message: scannerMessage || REDEEM_BLOCKED_MESSAGE,
+      }));
     }
   };
+
+  const closeRedeemActivationModal = useCallback(() => {
+    setRedeemActivationModal({
+      visible: false,
+      card: null,
+      status: "idle",
+      message: null,
+    });
+  }, []);
 
   const handleCloseScanner = () => {
     setScannerVisible(false);
@@ -17479,6 +17881,7 @@ export default function App() {
     if (!isSignedIn || !showHistoryTab) {
       receiptNoticeShownRef.current = false;
       setReceiptNoticeOpen(false);
+      lastReceiptUploadAlertCountRef.current = 0;
       return;
     }
     if (activeTab !== "history") return;
@@ -17487,6 +17890,26 @@ export default function App() {
     receiptNoticeShownRef.current = true;
     setReceiptNoticeOpen(true);
   }, [activeTab, isSignedIn, showHistoryTab, pendingReceiptCount]);
+
+  useEffect(() => {
+    if (!isSignedIn || !showHistoryTab) {
+      lastReceiptUploadAlertCountRef.current = 0;
+      return;
+    }
+    if (pendingReceiptCount <= 0) {
+      lastReceiptUploadAlertCountRef.current = 0;
+      return;
+    }
+    const lastCount = Math.max(lastReceiptUploadAlertCountRef.current || 0, 0);
+    if (pendingReceiptCount <= lastCount) return;
+    lastReceiptUploadAlertCountRef.current = pendingReceiptCount;
+    void scheduleReceiptUploadNeededNotification(pendingReceiptCount);
+  }, [
+    isSignedIn,
+    showHistoryTab,
+    pendingReceiptCount,
+    scheduleReceiptUploadNeededNotification,
+  ]);
 
   useEffect(() => {
     if (activeTab !== "history") return;
@@ -17881,7 +18304,7 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <SafeAreaView style={styles.screen} edges={["left", "right", "bottom"]}>
+        <SafeAreaView style={styles.screen} edges={["left", "right"]}>
           <StatusBar
             barStyle="dark-content"
             translucent
@@ -18315,6 +18738,140 @@ export default function App() {
                       )}
                     </TouchableOpacity>
                   </View>
+                </Pressable>
+              </Pressable>
+            </Modal>
+
+            <Modal
+              transparent
+              visible={redeemActivationModal.visible}
+              animationType="slide"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={closeRedeemActivationModal}
+            >
+              <Pressable
+                style={styles.offerActivationOverlay}
+                onPress={() => {
+                  if (redeemActivationModal.status === "loading") return;
+                  closeRedeemActivationModal();
+                }}
+              >
+                <Pressable style={styles.offerActivationCard} onPress={() => {}}>
+                  <View style={styles.offerActivationHandle} />
+                  <View style={styles.offerActivationHero}>
+                    {redeemActivationModal.card?.imageUrl ? (
+                      <Image
+                        source={{ uri: redeemActivationModal.card.imageUrl }}
+                        style={styles.offerActivationHeroImage}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <View style={styles.offerActivationHeroFallback}>
+                        <Ionicons
+                          name="image-outline"
+                          size={26}
+                          color="rgba(255,255,255,0.6)"
+                        />
+                      </View>
+                    )}
+                    <LinearGradient
+                      colors={["rgba(15,23,42,0.1)", "rgba(15,23,42,0.8)"]}
+                      start={{ x: 0.5, y: 0 }}
+                      end={{ x: 0.5, y: 1 }}
+                      style={styles.offerActivationHeroShade}
+                    />
+                    <View style={styles.offerActivationHeroBottomRow}>
+                      <View style={styles.offerActivationHeroCopy}>
+                        <Text style={styles.offerActivationHeroName} numberOfLines={1}>
+                          {redeemActivationModal.card?.name || "Wello business"}
+                        </Text>
+                        <Text style={styles.offerActivationHeroMeta} numberOfLines={1}>
+                          {redeemActivationModal.card?.categoryLabel || "Business"} ·{" "}
+                          {redeemActivationModal.card?.distanceLabel || "--"}
+                        </Text>
+                      </View>
+                      <View style={styles.offerActivationCashbackBadge}>
+                        <Text style={styles.offerActivationCashbackValue}>10%</Text>
+                        <Text style={styles.offerActivationCashbackLabel}>
+                          cashback
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                  <View style={styles.offerActivationStatsRow}>
+                    <View style={styles.offerActivationStatCard}>
+                      <Text style={styles.offerActivationStatLabel}>Rating</Text>
+                      <Text style={styles.offerActivationStatValue}>
+                        ★ {redeemActivationModal.card?.ratingLabel || "--"}
+                      </Text>
+                    </View>
+                    <View style={styles.offerActivationStatCard}>
+                      <Text style={styles.offerActivationStatLabel}>Distance</Text>
+                      <Text style={styles.offerActivationStatValue}>
+                        {redeemActivationModal.card?.distanceLabel || "--"}
+                      </Text>
+                    </View>
+                    <View style={styles.offerActivationStatCard}>
+                      <Text style={styles.offerActivationStatLabel}>Status</Text>
+                      <Text
+                        style={[
+                          styles.offerActivationStatStatusValue,
+                          redeemActivationModal.card?.statusLabel === "Open now"
+                            ? styles.offerActivationStatStatusValueOpen
+                            : null,
+                        ]}
+                        numberOfLines={1}
+                        ellipsizeMode="tail"
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.78}
+                      >
+                        {redeemActivationModal.card?.statusLabel || "--"}
+                      </Text>
+                    </View>
+                  </View>
+                  <View
+                    style={[
+                      styles.offerActivationNotice,
+                      redeemActivationModal.status === "error"
+                        ? styles.offerActivationNoticeError
+                        : null,
+                    ]}
+                  >
+                    {redeemActivationModal.status === "loading" ? (
+                      <ActivityIndicator size="small" color="#0F766E" />
+                    ) : (
+                      <Ionicons
+                        name={
+                          redeemActivationModal.status === "success"
+                            ? "checkmark"
+                            : "warning-outline"
+                        }
+                        size={20}
+                        color={
+                          redeemActivationModal.status === "success"
+                            ? "#047857"
+                            : "#B42318"
+                        }
+                      />
+                    )}
+                    <Text
+                      style={[
+                        styles.offerActivationNoticeText,
+                        redeemActivationModal.status === "error"
+                          ? styles.offerActivationNoticeTextError
+                          : null,
+                      ]}
+                    >
+                      {redeemActivationModal.message ||
+                        "Offer activated! Pay as usual."}
+                    </Text>
+                  </View>
+                  {redeemActivationModal.status === "success" ? (
+                    <Text style={styles.offerActivationPolicyText}>
+                      {PLAID_VERIFY_WINDOW_COPY}
+                    </Text>
+                  ) : null}
                 </Pressable>
               </Pressable>
             </Modal>
@@ -20845,9 +21402,8 @@ export default function App() {
                         ]}
                         activeOpacity={0.9}
                         onPress={() => {
-                          setCashoutMethodType("gift_card");
-                          setSelectedCashoutCatalogCode(code);
                           setCashoutCatalogModalVisible(false);
+                          openGiftCardCashoutModal(code);
                         }}
                       >
                         <View style={styles.cashoutCatalogRowMedia}>
@@ -20920,6 +21476,416 @@ export default function App() {
                   ) : null}
                 </ScrollView>
               </SafeAreaView>
+            </Modal>
+            <Modal
+              transparent
+              visible={cashoutGiftModalVisible}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={() => setCashoutGiftModalVisible(false)}
+            >
+              <View style={styles.cashoutSheetOverlay}>
+                <Pressable
+                  style={styles.cashoutSheetBackdrop}
+                  onPress={() => setCashoutGiftModalVisible(false)}
+                />
+                <KeyboardAvoidingView
+                  behavior={Platform.OS === "ios" ? "padding" : undefined}
+                  style={styles.cashoutSheetKeyboard}
+                >
+                  <View style={styles.cashoutSheetCard}>
+                    <View style={styles.cashoutSheetHandleWrap}>
+                      <View style={styles.cashoutSheetHandle} />
+                    </View>
+                    <View style={styles.cashoutSheetHeader}>
+                      <View style={styles.cashoutSheetBrandWrap}>
+                        <View style={styles.cashoutSheetBrandIcon}>
+                          {String(selectedCashoutCatalogItem?.imageUrl || "").trim() ? (
+                            <Image
+                              source={{ uri: String(selectedCashoutCatalogItem.imageUrl).trim() }}
+                              style={styles.cashoutSheetBrandImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <Ionicons name="gift-outline" size={20} color={COLORS.ink} />
+                          )}
+                        </View>
+                        <View style={styles.cashoutSheetBrandCopy}>
+                          <Text style={styles.cashoutSheetTitle} numberOfLines={1}>
+                            {String(selectedCashoutCatalogItem?.name || "Gift card")}
+                          </Text>
+                          <Text style={styles.cashoutSheetSubtitle}>US Gift Card</Text>
+                        </View>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.cashoutSheetCloseButton}
+                        onPress={() => setCashoutGiftModalVisible(false)}
+                      >
+                        <Ionicons name="close" size={18} color={COLORS.ink} />
+                      </TouchableOpacity>
+                    </View>
+                    <View style={styles.cashoutSheetAmountBox}>
+                      <Text style={styles.cashoutSheetAmountLabel}>Select amount</Text>
+                      <View style={styles.cashoutSheetStepperRow}>
+                        <TouchableOpacity
+                          style={styles.cashoutSheetStepperButton}
+                          onPress={() => stepCashoutAmountCents(-500)}
+                          disabled={cashoutActionStatus.loading}
+                        >
+                          <Ionicons name="remove" size={18} color={COLORS.muted} />
+                        </TouchableOpacity>
+                        <Text style={styles.cashoutSheetAmountValue}>
+                          {formatCurrencyFromCents(cashoutInputAmountCents)}
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.cashoutSheetStepperButton}
+                          onPress={() => stepCashoutAmountCents(500)}
+                          disabled={cashoutActionStatus.loading}
+                        >
+                          <Ionicons name="add" size={18} color={COLORS.muted} />
+                        </TouchableOpacity>
+                      </View>
+                      <View style={styles.cashoutSheetQuickAmountsRow}>
+                        {cashoutGiftQuickAmountCents.map((amountCents) => {
+                          const selected = cashoutInputAmountCents === amountCents;
+                          return (
+                            <TouchableOpacity
+                              key={`gift-amount-${amountCents}`}
+                              style={[
+                                styles.cashoutSheetQuickAmountChip,
+                                selected && styles.cashoutSheetQuickAmountChipSelected,
+                              ]}
+                              onPress={() => setCashoutAmountFromCents(amountCents)}
+                              disabled={cashoutActionStatus.loading}
+                            >
+                              <Text
+                                style={[
+                                  styles.cashoutSheetQuickAmountChipText,
+                                  selected && styles.cashoutSheetQuickAmountChipTextSelected,
+                                ]}
+                              >
+                                {formatCurrencyFromCents(amountCents)}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+                    <View style={styles.cashoutDeliveryEmailGroup}>
+                      <Text style={styles.cashoutDeliveryEmailLabel}>Delivery email</Text>
+                      <AutoFocusInput
+                        style={styles.cashoutDeliveryEmailInput}
+                        value={cashoutGiftCardRecipientEmail}
+                        onChangeText={(value) => setCashoutGiftCardRecipientEmail(value)}
+                        placeholder="you@example.com"
+                        placeholderTextColor={COLORS.muted}
+                        keyboardType="email-address"
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        returnKeyType="done"
+                      />
+                      <Text style={styles.cashoutDeliveryEmailHint}>
+                        Gift card redeem details are sent to this email.
+                      </Text>
+                    </View>
+                    <View style={styles.cashoutSheetSummaryRows}>
+                      <View style={styles.cashoutSheetSummaryRow}>
+                        <Text style={styles.cashoutSheetSummaryLabel}>Gift card value</Text>
+                        <Text style={styles.cashoutSheetSummaryValue}>
+                          {formatCurrencyFromCents(cashoutInputAmountCents)}
+                        </Text>
+                      </View>
+                      <View style={styles.cashoutSheetSummaryRow}>
+                        <Text style={styles.cashoutSheetSummaryLabel}>Your balance</Text>
+                        <Text style={styles.cashoutSheetSummaryValue}>
+                          {formatCurrencyFromCents(cashbackBalance.availableCents)}
+                        </Text>
+                      </View>
+                      <View style={styles.cashoutSheetSummaryDivider} />
+                      <View style={styles.cashoutSheetSummaryRow}>
+                        <Text style={styles.cashoutSheetSummaryLabel}>Remaining</Text>
+                        <Text style={styles.cashoutSheetSummaryValuePositive}>
+                          {formatCurrencyFromCents(cashoutRemainingAfterInputCents)}
+                        </Text>
+                      </View>
+                    </View>
+                    {normalizeCashoutDeliveryEmail(cashoutGiftCardRecipientEmail) &&
+                    !isValidCashoutDeliveryEmail(cashoutGiftCardRecipientEmail) ? (
+                      <Text style={styles.formError}>Enter a valid email address.</Text>
+                    ) : null}
+                    <TouchableOpacity
+                      style={[
+                        styles.cashoutSheetPrimaryButton,
+                        (cashoutPreview.mode === "invalid" ||
+                          cashoutPreview.mode === "below_min" ||
+                          (Number(cashoutMaxAllowedCents) || 0) <= 0 ||
+                          !selectedCashoutCatalogItem ||
+                          !isValidCashoutDeliveryEmail(cashoutGiftCardRecipientEmail) ||
+                          cashoutActionStatus.loading) &&
+                          styles.cashoutSheetPrimaryButtonDisabled,
+                      ]}
+                      onPress={handleCashoutPayout}
+                      disabled={
+                        cashoutPreview.mode === "invalid" ||
+                        cashoutPreview.mode === "below_min" ||
+                        (Number(cashoutMaxAllowedCents) || 0) <= 0 ||
+                        !selectedCashoutCatalogItem ||
+                        !isValidCashoutDeliveryEmail(cashoutGiftCardRecipientEmail) ||
+                        cashoutActionStatus.loading
+                      }
+                    >
+                      <Text style={styles.cashoutSheetPrimaryButtonText}>
+                        {cashoutPreview.label}
+                      </Text>
+                      <Ionicons name="arrow-forward" size={16} color={COLORS.white} />
+                    </TouchableOpacity>
+                  </View>
+                </KeyboardAvoidingView>
+              </View>
+            </Modal>
+            <Modal
+              transparent
+              visible={cashoutBankModalVisible}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={() => setCashoutBankModalVisible(false)}
+            >
+              <View style={styles.cashoutSheetOverlay}>
+                <Pressable
+                  style={styles.cashoutSheetBackdrop}
+                  onPress={() => setCashoutBankModalVisible(false)}
+                />
+                <KeyboardAvoidingView
+                  behavior={Platform.OS === "ios" ? "padding" : undefined}
+                  style={styles.cashoutSheetKeyboard}
+                >
+                  <View style={styles.cashoutSheetCard}>
+                    <View style={styles.cashoutSheetHandleWrap}>
+                      <View style={styles.cashoutSheetHandle} />
+                    </View>
+                    <View style={styles.cashoutSheetHeader}>
+                      <View style={styles.cashoutSheetBrandWrap}>
+                        <View style={styles.cashoutSheetBrandIcon}>
+                          <Ionicons name="business-outline" size={20} color="#2563EB" />
+                        </View>
+                        <View style={styles.cashoutSheetBrandCopy}>
+                          <Text style={styles.cashoutSheetTitle}>Bank Transfer</Text>
+                          <Text style={styles.cashoutSheetSubtitle} numberOfLines={1}>
+                            {String(
+                              cashoutCatalogState.bankTile?.bankSummary ||
+                                cashoutStatus.selectedPayoutLabel ||
+                                "Link bank transfer",
+                            ).trim() || "Link bank transfer"}
+                          </Text>
+                        </View>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.cashoutSheetCloseButton}
+                        onPress={() => setCashoutBankModalVisible(false)}
+                      >
+                        <Ionicons name="close" size={18} color={COLORS.ink} />
+                      </TouchableOpacity>
+                    </View>
+                    <View style={styles.cashoutSheetAmountBox}>
+                      <Text style={styles.cashoutSheetAmountLabel}>Enter amount</Text>
+                      <View style={styles.cashoutSheetCurrencyInputRow}>
+                        <Text style={styles.cashoutSheetCurrencyPrefix}>$</Text>
+                        <AutoFocusInput
+                          style={styles.cashoutSheetCurrencyInput}
+                          value={cashoutAmountText}
+                          onChangeText={(value) =>
+                            setCashoutAmountText(formatCashoutAmountInput(value))
+                          }
+                          placeholder="0.00"
+                          placeholderTextColor={COLORS.muted}
+                          keyboardType="decimal-pad"
+                          returnKeyType="done"
+                          selectTextOnFocus
+                        />
+                      </View>
+                      <View style={styles.cashoutSheetQuickAmountsRow}>
+                        {cashoutBankQuickAmountCents.map((amountCents) => {
+                          const selected = cashoutInputAmountCents === amountCents;
+                          const isMax =
+                            amountCents === Math.max(0, Number(cashoutMaxAllowedCents) || 0);
+                          return (
+                            <TouchableOpacity
+                              key={`bank-amount-${amountCents}`}
+                              style={[
+                                styles.cashoutSheetQuickAmountChip,
+                                selected && styles.cashoutSheetQuickAmountChipSelected,
+                              ]}
+                              onPress={() => setCashoutAmountFromCents(amountCents)}
+                              disabled={cashoutActionStatus.loading}
+                            >
+                              <Text
+                                style={[
+                                  styles.cashoutSheetQuickAmountChipText,
+                                  selected && styles.cashoutSheetQuickAmountChipTextSelected,
+                                ]}
+                              >
+                                {isMax ? "Max" : formatCurrencyFromCents(amountCents)}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+                    <View style={styles.cashoutSheetSummaryRows}>
+                      <View style={styles.cashoutSheetSummaryRow}>
+                        <Text style={styles.cashoutSheetSummaryLabel}>Transfer amount</Text>
+                        <Text style={styles.cashoutSheetSummaryValue}>
+                          {formatCurrencyFromCents(cashoutInputAmountCents)}
+                        </Text>
+                      </View>
+                      <View style={styles.cashoutSheetSummaryRow}>
+                        <Text style={styles.cashoutSheetSummaryLabel}>Your balance</Text>
+                        <Text style={styles.cashoutSheetSummaryValue}>
+                          {formatCurrencyFromCents(cashbackBalance.availableCents)}
+                        </Text>
+                      </View>
+                      <View style={styles.cashoutSheetSummaryRow}>
+                        <Text style={styles.cashoutSheetSummaryLabel}>Processing</Text>
+                        <Text style={styles.cashoutSheetSummaryValue}>1-3 business days</Text>
+                      </View>
+                      <View style={styles.cashoutSheetSummaryDivider} />
+                      <View style={styles.cashoutSheetSummaryRow}>
+                        <Text style={styles.cashoutSheetSummaryLabel}>Remaining</Text>
+                        <Text
+                          style={
+                            cashoutInputAmountCents > 0
+                              ? styles.cashoutSheetSummaryValue
+                              : styles.cashoutSheetSummaryValueDanger
+                          }
+                        >
+                          {cashoutInputAmountCents > 0
+                            ? formatCurrencyFromCents(cashoutRemainingAfterInputCents)
+                            : "Enter amount"}
+                        </Text>
+                      </View>
+                    </View>
+                    {cashoutLinkedPayoutAccounts.length > 0 ? (
+                      <View style={styles.cashoutLinkedAccountOptions}>
+                        {visibleCashoutLinkedPayoutAccounts.map((account) => {
+                          const canSelect =
+                            account.selectedForPayout ||
+                            Boolean(plaidLinkState.payoutSwitchPolicy?.canSwitch);
+                          return (
+                            <TouchableOpacity
+                              key={`bank-modal-payout-account-${account.accountId}`}
+                              style={[
+                                styles.cashoutLinkedAccountRow,
+                                !canSelect && styles.cashoutLinkedAccountRowDisabled,
+                              ]}
+                              disabled={!canSelect || cashoutActionStatus.loading}
+                              onPress={() => {
+                                setCashoutMethodType("bank_transfer");
+                                handleSelectCashoutPayoutAccount(account.accountId);
+                              }}
+                            >
+                              <Ionicons
+                                name={
+                                  account.selectedForPayout
+                                    ? "radio-button-on"
+                                    : "radio-button-off"
+                                }
+                                size={16}
+                                color={
+                                  account.selectedForPayout
+                                    ? COLORS.pine
+                                    : COLORS.muted
+                                }
+                              />
+                              <View style={styles.cashoutLinkedAccountMain}>
+                                <Text
+                                  style={styles.cashoutLinkedAccountTitle}
+                                  numberOfLines={1}
+                                >
+                                  {account.name}
+                                </Text>
+                                <Text
+                                  style={styles.cashoutLinkedAccountMeta}
+                                  numberOfLines={1}
+                                >
+                                  {[
+                                    account.institutionName,
+                                    account.mask ? `****${account.mask}` : null,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" · ") || "Linked bank account"}
+                                </Text>
+                              </View>
+                            </TouchableOpacity>
+                          );
+                        })}
+                        {hiddenCashoutLinkedAccountCount > 0 ? (
+                          <TouchableOpacity
+                            style={styles.cashoutShowMoreButton}
+                            onPress={() => setCashoutShowAllLinkedAccounts(true)}
+                          >
+                            <Text style={styles.cashoutShowMoreButtonText}>
+                              Show {hiddenCashoutLinkedAccountCount} more
+                            </Text>
+                          </TouchableOpacity>
+                        ) : null}
+                        {cashoutShowAllLinkedAccounts &&
+                        cashoutLinkedPayoutAccounts.length > 3 ? (
+                          <TouchableOpacity
+                            style={styles.cashoutShowMoreButton}
+                            onPress={() => setCashoutShowAllLinkedAccounts(false)}
+                          >
+                            <Text style={styles.cashoutShowMoreButtonText}>
+                              Show fewer
+                            </Text>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+                    ) : null}
+                    <TouchableOpacity
+                      style={styles.cashoutChangeBankButton}
+                      onPress={() => handleCashoutBankTilePress({ force: true })}
+                      disabled={cashoutActionStatus.loading}
+                    >
+                      <Text style={styles.cashoutChangeBankButtonText}>
+                        Add or reconnect bank
+                      </Text>
+                      <Ionicons
+                        name="chevron-forward"
+                        size={14}
+                        color={COLORS.ink}
+                      />
+                    </TouchableOpacity>
+                    {cashoutBankLinkInlineError ? (
+                      <Text style={styles.formError}>{cashoutBankLinkInlineError}</Text>
+                    ) : null}
+                    <TouchableOpacity
+                      style={[
+                        styles.cashoutSheetPrimaryButton,
+                        (cashoutPreview.mode === "invalid" ||
+                          cashoutPreview.mode === "below_min" ||
+                          (Number(cashoutMaxAllowedCents) || 0) <= 0 ||
+                          !cashoutBankReady ||
+                          cashoutActionStatus.loading) &&
+                          styles.cashoutSheetPrimaryButtonDisabled,
+                      ]}
+                      onPress={handleCashoutPayout}
+                      disabled={
+                        cashoutPreview.mode === "invalid" ||
+                        cashoutPreview.mode === "below_min" ||
+                        (Number(cashoutMaxAllowedCents) || 0) <= 0 ||
+                        !cashoutBankReady ||
+                        cashoutActionStatus.loading
+                      }
+                    >
+                      <Text style={styles.cashoutSheetPrimaryButtonText}>
+                        Transfer {formatCurrencyFromCents(cashoutInputAmountCents)}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </KeyboardAvoidingView>
+              </View>
             </Modal>
 
             <Modal
@@ -21375,10 +22341,7 @@ export default function App() {
                           {plaidPromptCopy.title}
                         </Text>
                         <Text style={styles.discoverPlaidPromptBody}>
-                          {mergeVerificationCopy(
-                            plaidPromptCopy.body,
-                            PLAID_VERIFY_WINDOW_COPY,
-                          )}
+                          {plaidPromptCopy.body}
                         </Text>
                       </View>
                       <View style={styles.discoverPlaidPromptActions}>
@@ -24081,59 +25044,82 @@ export default function App() {
                                   : styles.receiptNoticeCardAttention,
                               ]}
                             >
-                              <View style={styles.receiptNoticeHeader}>
-                                <View style={styles.receiptNoticeHeaderLeft}>
-                                  <View style={styles.receiptNoticeIconWrap}>
-                                    <Ionicons
-                                      name="shield-checkmark-outline"
-                                      size={18}
-                                      color="#1A1F2E"
-                                    />
-                                  </View>
-                                  <View style={styles.receiptNoticeHeaderCopy}>
-                                    <Text style={styles.receiptNoticeTitle}>
-                                      Instant verification
-                                    </Text>
-                                  </View>
-                                </View>
-                              </View>
                               {hasLinkedPlaidBank &&
                               !plaidNeedsAttention &&
                               !historyVerificationExpanded ? (
-                                <View style={styles.receiptCollapsedRow}>
-                                  <Text style={styles.receiptCollapsedMeta}>
-                                    {plaidLinkState.loading
-                                      ? "Checking linked bank status..."
-                                        : pendingReceiptCount > 0
-                                          ? `${pendingReceiptCount} receipt${
-                                            pendingReceiptCount === 1 ? "" : "s"
-                                          } pending`
-                                        : `Linked banks: ${plaidLinkState.receiptLinkedCount || plaidLinkState.linkedCount}`}
-                                  </Text>
-                                  <TouchableOpacity
-                                    style={styles.receiptCollapsedManageButton}
-                                    onPress={() =>
-                                      setHistoryVerificationExpanded(true)
-                                    }
-                                    disabled={
-                                      plaidLinkState.loading ||
-                                      plaidLinkAction !== "idle"
-                                    }
+                                <TouchableOpacity
+                                  style={styles.receiptNoticeCompactRow}
+                                  activeOpacity={0.9}
+                                  onPress={() =>
+                                    setHistoryVerificationExpanded(true)
+                                  }
+                                  disabled={
+                                    plaidLinkState.loading ||
+                                    plaidLinkAction !== "idle"
+                                  }
+                                >
+                                  <View
+                                    style={[
+                                      styles.receiptNoticeIconWrap,
+                                      styles.receiptNoticeIconWrapActive,
+                                    ]}
                                   >
-                                    <Text
-                                      style={styles.receiptCollapsedManageText}
-                                    >
-                                      Manage
-                                    </Text>
                                     <Ionicons
-                                      name="chevron-forward"
-                                      size={14}
-                                      color={COLORS.ink}
+                                      name="shield-checkmark-outline"
+                                      size={18}
+                                      color="#059669"
                                     />
-                                  </TouchableOpacity>
-                                </View>
+                                  </View>
+                                  <View style={styles.receiptNoticeCompactCopy}>
+                                    <Text style={styles.receiptNoticeCompactTitle}>
+                                      Instant verification active
+                                    </Text>
+                                    <Text style={styles.receiptNoticeCompactSubtitle}>
+                                      {plaidLinkState.loading
+                                        ? "Checking linked banks..."
+                                        : `${Math.max(
+                                            1,
+                                            Number(
+                                              plaidLinkState.receiptLinkedCount ||
+                                                plaidLinkState.linkedCount,
+                                            ) || 0,
+                                          )} bank${
+                                            Math.max(
+                                              1,
+                                              Number(
+                                                plaidLinkState.receiptLinkedCount ||
+                                                  plaidLinkState.linkedCount,
+                                              ) || 0,
+                                            ) === 1
+                                              ? ""
+                                              : "s"
+                                          } linked`}
+                                    </Text>
+                                  </View>
+                                  <Ionicons
+                                    name="chevron-forward"
+                                    size={18}
+                                    color="#2563EB"
+                                  />
+                                </TouchableOpacity>
                               ) : (
                                 <>
+                                  <View style={styles.receiptNoticeHeader}>
+                                    <View style={styles.receiptNoticeHeaderLeft}>
+                                      <View style={styles.receiptNoticeIconWrap}>
+                                        <Ionicons
+                                          name="shield-checkmark-outline"
+                                          size={18}
+                                          color="#1A1F2E"
+                                        />
+                                      </View>
+                                      <View style={styles.receiptNoticeHeaderCopy}>
+                                        <Text style={styles.receiptNoticeTitle}>
+                                          Instant verification
+                                        </Text>
+                                      </View>
+                                    </View>
+                                  </View>
                                   <View style={styles.receiptNoticeActionsRow}>
                                     <TouchableOpacity
                                       style={[
@@ -24200,9 +25186,7 @@ export default function App() {
                                           : "Link a bank for instant verification"}
                                   </Text>
                                   <Text style={styles.receiptNoticeMeta}>
-                                    {hasLinkedPlaidBank
-                                      ? PLAID_VERIFY_WINDOW_COPY
-                                      : RECEIPT_UPLOAD_WINDOW_COPY}
+                                    {RECEIPT_UPLOAD_WINDOW_COPY}
                                   </Text>
                                   {plaidLinkState.error && (
                                     <Text style={styles.receiptNoticeMetaError}>
@@ -24248,16 +25232,17 @@ export default function App() {
                                   const isExpanded = Boolean(
                                     expandedHistoryGroups[group.key],
                                   );
-                                  const needsReceiptUpload =
+                                  const groupNeedsReceiptUpload =
                                     Number(group.receiptPendingCount || 0) > 0;
-                                  const accentColor = needsReceiptUpload
-                                    ? "#B45309"
-                                    : "#64748B";
                                   const earnedTotalCents =
                                     Number(group.totalCashbackEarnedCents) || 0;
                                   const initials = getInitials(
                                     group.businessName,
                                   );
+                                  const avatarColor =
+                                    getHistoryGroupAvatarColor(
+                                      group.businessId || group.key,
+                                    );
                                   const entriesWithReceipt =
                                     group.entries.filter((entry) =>
                                       Boolean(entry.receipt?.id),
@@ -24423,6 +25408,26 @@ export default function App() {
                                             >
                                               {offerTitle}
                                             </Text>
+                                            {canUploadReceipt ? (
+                                              <View
+                                                style={
+                                                  styles.historyEntryMissingUploadRow
+                                                }
+                                              >
+                                                <Ionicons
+                                                  name="alert-circle-outline"
+                                                  size={12}
+                                                  color="#B45309"
+                                                />
+                                                <Text
+                                                  style={
+                                                    styles.historyEntryMissingUploadText
+                                                  }
+                                                >
+                                                  Receipt upload needed
+                                                </Text>
+                                              </View>
+                                            ) : null}
                                           </View>
                                           <View style={styles.historyEntryMeta}>
                                             <View
@@ -24451,7 +25456,7 @@ export default function App() {
                                               size={14}
                                               color={
                                                 statusCopy.tone === "success"
-                                                  ? "#166534"
+                                                  ? "#16A34A"
                                                   : statusCopy.tone ===
                                                       "pending"
                                                     ? "#92400E"
@@ -24545,11 +25550,7 @@ export default function App() {
                                   return (
                                     <View
                                       key={group.key}
-                                      style={[
-                                        styles.historyGroupCard,
-                                        needsReceiptUpload &&
-                                          styles.historyGroupCardNeedsReceipt,
-                                      ]}
+                                      style={styles.historyGroupCard}
                                     >
                                       <Pressable
                                         style={({ pressed }) => [
@@ -24558,7 +25559,7 @@ export default function App() {
                                             styles.historyGroupHeaderPressed,
                                         ]}
                                         android_ripple={{
-                                          color: hexToRgba(accentColor, 0.12),
+                                          color: "rgba(15, 23, 42, 0.06)",
                                           borderless: false,
                                         }}
                                         onPress={() =>
@@ -24575,21 +25576,15 @@ export default function App() {
                                             style={[
                                               styles.historyGroupAvatar,
                                               {
-                                                borderColor: hexToRgba(
-                                                  accentColor,
-                                                  0.35,
-                                                ),
-                                                backgroundColor: hexToRgba(
-                                                  accentColor,
-                                                  0.12,
-                                                ),
+                                                borderColor: avatarColor,
+                                                backgroundColor: avatarColor,
                                               },
                                             ]}
                                           >
                                             <Text
                                               style={[
                                                 styles.historyGroupAvatarText,
-                                                { color: accentColor },
+                                                { color: "#FFFFFF" },
                                               ]}
                                             >
                                               {initials}
@@ -24609,7 +25604,10 @@ export default function App() {
                                                 style={styles.historyGroupSub}
                                                 numberOfLines={1}
                                               >
-                                                {group.entries.length} redeemed
+                                                {group.entries.length} transaction
+                                                {group.entries.length === 1
+                                                  ? ""
+                                                  : "s"}
                                               </Text>
                                             </View>
                                           </View>
@@ -24618,9 +25616,33 @@ export default function App() {
                                         <View
                                           style={styles.historyGroupActions}
                                         >
-                                          <View
-                                            style={styles.historyGroupChevron}
-                                          >
+                                          {groupNeedsReceiptUpload ? (
+                                            <View
+                                              style={
+                                                styles.historyGroupUploadNeededBadge
+                                              }
+                                            >
+                                              <Ionicons
+                                                name="alert-circle-outline"
+                                                size={12}
+                                                color="#B45309"
+                                              />
+                                              <Text
+                                                style={
+                                                  styles.historyGroupUploadNeededBadgeText
+                                                }
+                                              >
+                                                Upload needed
+                                              </Text>
+                                            </View>
+                                          ) : null}
+                                          <View style={styles.historyGroupAmountRow}>
+                                            <Text style={styles.historyGroupAmount}>
+                                              {earnedTotalCents > 0 ? "+" : ""}
+                                              {formatCurrencyFromCents(
+                                                Math.max(earnedTotalCents, 0),
+                                              )}
+                                            </Text>
                                             <Ionicons
                                               name={
                                                 isExpanded
@@ -24628,33 +25650,15 @@ export default function App() {
                                                   : "chevron-down"
                                               }
                                               size={18}
-                                              color={COLORS.muted}
+                                              color="#94A3B8"
                                             />
                                           </View>
                                         </View>
                                       </Pressable>
-                                      {earnedTotalCents > 0 && (
-                                        <View
-                                          style={styles.historyGroupEarnedBar}
-                                        >
-                                          <Text
-                                            style={
-                                              styles.historyGroupEarnedBarText
-                                            }
-                                          >
-                                            Total cashback earned:{" "}
-                                            {formatCurrencyFromCents(
-                                              earnedTotalCents,
-                                            )}
-                                          </Text>
-                                        </View>
-                                      )}
                                       {isExpanded && (
                                         <View
                                           style={[
                                             styles.historyEntries,
-                                            earnedTotalCents > 0 &&
-                                              styles.historyEntriesAfterEarnedBar,
                                           ]}
                                         >
                                           {group.pendingCount > 0 && (
@@ -24730,46 +25734,84 @@ export default function App() {
                                 </Text>
                               </View>
                             </View>
-                            <View
-                              style={[
-                                styles.pointsCard,
-                                styles.cashoutHeroCard,
-                              ]}
-                            >
-                              <View
-                                pointerEvents="none"
-                                style={styles.cashoutHeroOrbOne}
-                              />
-                              <View
-                                pointerEvents="none"
-                                style={styles.cashoutHeroOrbTwo}
-                              />
+                            <View style={styles.cashoutMainPanel}>
                               <View
                                 style={[
-                                  styles.pointsHeader,
-                                  styles.cashoutBalanceHeader,
+                                  styles.pointsCard,
+                                  styles.cashoutHeroCard,
                                 ]}
                               >
-                                <View style={styles.pointsLabelRow}>
-                                  <Ionicons
-                                    name="sparkles-outline"
-                                    size={14}
-                                    color={COLORS.muted}
-                                  />
-                                  <Text style={styles.pointsLabel}>
-                                    Available balance
-                                  </Text>
-                                </View>
-                                <Text
+                                <View
+                                  pointerEvents="none"
+                                  style={styles.cashoutHeroOrbOne}
+                                />
+                                <View
+                                  pointerEvents="none"
+                                  style={styles.cashoutHeroOrbTwo}
+                                />
+                                <View
                                   style={[
-                                    styles.pointsValue,
-                                    styles.cashoutBalanceValue,
+                                    styles.pointsHeader,
+                                    styles.cashoutBalanceHeader,
                                   ]}
                                 >
-                                  {formatCurrencyFromCents(
-                                    cashbackBalance.availableCents,
-                                  )}
-                                </Text>
+                                  <View style={styles.pointsLabelRow}>
+                                    <Ionicons
+                                      name="sparkles-outline"
+                                      size={14}
+                                      color={COLORS.muted}
+                                    />
+                                    <Text style={styles.pointsLabel}>
+                                      Available balance
+                                    </Text>
+                                  </View>
+                                  <Text
+                                    style={[
+                                      styles.pointsValue,
+                                      styles.cashoutBalanceValue,
+                                    ]}
+                                  >
+                                    {formatCurrencyFromCents(
+                                      cashbackBalance.availableCents,
+                                    )}
+                                  </Text>
+                                </View>
+                                <View style={styles.cashoutBalanceBadgeRow}>
+                                  <View
+                                    style={[
+                                      styles.cashoutBalanceBadge,
+                                      cashoutBankReady
+                                        ? styles.cashoutBalanceBadgeReady
+                                        : styles.cashoutBalanceBadgeMuted,
+                                    ]}
+                                  >
+                                    <Ionicons
+                                      name={
+                                        cashoutBankReady
+                                          ? "checkmark"
+                                          : "time-outline"
+                                      }
+                                      size={12}
+                                      color={
+                                        cashoutBankReady
+                                          ? "#D1FAE5"
+                                          : "#92400E"
+                                      }
+                                    />
+                                    <Text
+                                      style={[
+                                        styles.cashoutBalanceBadgeText,
+                                        cashoutBankReady
+                                          ? styles.cashoutBalanceBadgeTextReady
+                                          : styles.cashoutBalanceBadgeTextMuted,
+                                      ]}
+                                    >
+                                      {cashoutBankReady
+                                        ? "Ready to cash out"
+                                        : "Link bank for transfers"}
+                                    </Text>
+                                  </View>
+                                </View>
                               </View>
                               {CONSUMER_CASHOUT_ENABLED ? (
                                 <>
@@ -24789,169 +25831,142 @@ export default function App() {
                                       {cashoutCatalogState.error}
                                     </Text>
                                   ) : null}
-                                  <View style={styles.cashoutAmountGroup}>
-                                    <View style={styles.cashoutAmountHeader}>
-                                      <Text style={styles.cashoutAmountTitle}>
-                                        Amount
-                                      </Text>
-                                      <Text style={styles.cashoutAmountMeta}>
-                                        {cashoutMethodType === "bank_transfer"
-                                          ? "Bank transfer"
-                                          : String(
-                                              selectedCashoutCatalogItem?.name ||
-                                                "Gift card",
-                                            )}
-                                      </Text>
-                                    </View>
-                                    <Text style={styles.cashoutAmountMeta}>
-                                      Available:{" "}
-                                      {formatCurrencyFromCents(
-                                        cashoutMaxAllowedCents,
-                                      )}
+                                  <View style={styles.cashoutOptionSection}>
+                                    <Text style={styles.cashoutOptionSectionTitle}>
+                                      Bank transfer
                                     </Text>
-                                    <Text style={styles.cashoutAmountHint}>
-                                      Minimum:{" "}
-                                      {formatCurrencyFromCents(cashoutMinCents)}
-                                      {cashoutMethodType === "gift_card" &&
-                                      Number(selectedCashoutCatalogItem?.maxCents)
-                                        ? ` · Max ${formatCurrencyFromCents(cashoutMaxAllowedCents)}`
-                                        : ""}
-                                    </Text>
-                                    {cashoutMethodType === "gift_card" ? (
-                                      <View style={styles.cashoutDeliveryEmailGroup}>
-                                        <Text style={styles.cashoutDeliveryEmailLabel}>
-                                          Delivery email
-                                        </Text>
-                                        <AutoFocusInput
-                                          style={styles.cashoutDeliveryEmailInput}
-                                          value={cashoutGiftCardRecipientEmail}
-                                          onChangeText={(value) =>
-                                            setCashoutGiftCardRecipientEmail(value)
-                                          }
-                                          placeholder="you@example.com"
-                                          placeholderTextColor={COLORS.muted}
-                                          keyboardType="email-address"
-                                          autoCapitalize="none"
-                                          autoCorrect={false}
-                                          returnKeyType="done"
+                                    <TouchableOpacity
+                                      style={styles.cashoutTransferRow}
+                                      activeOpacity={0.9}
+                                      onPress={openBankTransferCashoutModal}
+                                    >
+                                      <View style={styles.cashoutTransferRowIcon}>
+                                        <Ionicons
+                                          name="business-outline"
+                                          size={20}
+                                          color="#2563EB"
                                         />
-                                        <Text style={styles.cashoutDeliveryEmailHint}>
-                                          Gift card redeem details are sent to this
-                                          email.
-                                        </Text>
-                                        {normalizeCashoutDeliveryEmail(
-                                          cashoutGiftCardRecipientEmail,
-                                        ) &&
-                                        !isValidCashoutDeliveryEmail(
-                                          cashoutGiftCardRecipientEmail,
-                                        ) ? (
-                                          <Text style={styles.formError}>
-                                            Enter a valid email address.
-                                          </Text>
-                                        ) : null}
                                       </View>
-                                    ) : null}
-                                    <View style={styles.cashoutAmountRow}>
-                                      <View style={styles.cashoutAmountField}>
+                                      <View style={styles.cashoutTransferRowMain}>
+                                        <Text style={styles.cashoutTransferRowTitle}>
+                                          Transfer to bank
+                                        </Text>
                                         <Text
-                                          style={styles.cashoutAmountPrefix}
+                                          style={styles.cashoutTransferRowSubtitle}
+                                          numberOfLines={1}
                                         >
-                                          $
+                                          {cashoutBankReady
+                                            ? String(
+                                                cashoutCatalogState.bankTile
+                                                  ?.bankSummary ||
+                                                  cashoutStatus.selectedPayoutLabel ||
+                                                  "Linked",
+                                              ).trim() || "Linked"
+                                            : "Link bank transfer"}
                                         </Text>
-                                        <AutoFocusInput
-                                          style={styles.cashoutAmountInput}
-                                          value={cashoutAmountText}
-                                          onChangeText={(value) =>
-                                            setCashoutAmountText(
-                                              formatCashoutAmountInput(value),
-                                            )
-                                          }
-                                          placeholder="0.00"
-                                          placeholderTextColor={COLORS.muted}
-                                          keyboardType="decimal-pad"
-                                          selectTextOnFocus
-                                          returnKeyType="done"
-                                        />
                                       </View>
+                                      <Ionicons
+                                        name="chevron-forward"
+                                        size={16}
+                                        color="#94A3B8"
+                                      />
+                                    </TouchableOpacity>
+                                  </View>
+                                  <View style={styles.cashoutOptionSection}>
+                                    <View style={styles.cashoutGiftSectionHeader}>
+                                      <Text style={styles.cashoutOptionSectionTitle}>
+                                        Gift cards
+                                      </Text>
                                       <TouchableOpacity
-                                        style={styles.cashoutAmountMaxButton}
-                                        onPress={() =>
-                                          setCashoutAmountText(
-                                            (
-                                              (Number(cashoutMaxAllowedCents) ||
-                                                0) / 100
-                                            ).toFixed(2),
-                                          )
-                                        }
-                                        disabled={cashoutActionStatus.loading}
+                                        style={styles.cashoutGiftViewAllButton}
+                                        onPress={() => {
+                                          setCashoutCatalogModalVisible(true);
+                                          if (
+                                            cashoutCatalogState.all.length === 0 &&
+                                            !cashoutCatalogState.loading
+                                          ) {
+                                            loadCashoutCatalog({
+                                              page: 0,
+                                              append: false,
+                                            });
+                                          }
+                                        }}
                                       >
-                                        <Text
-                                          style={styles.cashoutAmountMaxText}
-                                        >
-                                          Max
+                                        <Text style={styles.cashoutGiftViewAllText}>
+                                          View all (
+                                          {Math.max(
+                                            Number(cashoutCatalogState.total) || 0,
+                                            cashoutCatalogItems.length,
+                                          )}
+                                          )
                                         </Text>
                                       </TouchableOpacity>
                                     </View>
-                                    {(Number(
-                                      parseCashoutAmountToCents(
-                                        cashoutAmountText,
-                                      ) || 0,
-                                    ) > 0) &&
-                                      (cashoutPreview.mode === "invalid" ||
-                                        cashoutPreview.mode ===
-                                          "below_min") && (
-                                        <Text style={styles.formError}>
-                                          {cashoutPreview.mode === "below_min"
-                                            ? `Minimum cashout is ${formatCurrencyFromCents(cashoutMinCents)}.`
-                                            : `Enter an amount up to ${formatCurrencyFromCents(
-                                                cashoutMaxAllowedCents,
-                                              )}.`}
-                                        </Text>
-                                      )}
+                                    <View style={styles.cashoutTileGrid}>
+                                      {cashoutCatalogState.curated
+                                        .slice(0, 6)
+                                        .map((item) => {
+                                          const code = normalizeCatalogItemCode(
+                                            item?.code,
+                                          );
+                                          if (!code) return null;
+                                          return (
+                                            <TouchableOpacity
+                                              key={code}
+                                              style={styles.cashoutMethodTile}
+                                              activeOpacity={0.9}
+                                              onPress={() =>
+                                                openGiftCardCashoutModal(code)
+                                              }
+                                            >
+                                              <View style={styles.cashoutMethodTileMedia}>
+                                                {String(
+                                                  item?.imageUrl || "",
+                                                ).trim() ? (
+                                                  <Image
+                                                    source={{
+                                                      uri: String(
+                                                        item.imageUrl,
+                                                      ).trim(),
+                                                    }}
+                                                    style={
+                                                      styles.cashoutMethodTileImage
+                                                    }
+                                                    resizeMode="cover"
+                                                  />
+                                                ) : (
+                                                  <Ionicons
+                                                    name="gift-outline"
+                                                    size={30}
+                                                    color={COLORS.pine}
+                                                  />
+                                                )}
+                                              </View>
+                                              <Text
+                                                style={styles.cashoutMethodTileTitle}
+                                                numberOfLines={1}
+                                              >
+                                                {String(item?.name || "Gift card")}
+                                              </Text>
+                                              <Text
+                                                style={styles.cashoutMethodTileMeta}
+                                                numberOfLines={1}
+                                              >
+                                                {formatCurrencyFromCents(
+                                                  Math.max(
+                                                    GIFT_CARD_MIN_CASHOUT_CENTS,
+                                                    Number(item?.minCents) || 0,
+                                                  ),
+                                                )}{" "}
+                                                • US
+                                              </Text>
+                                            </TouchableOpacity>
+                                          );
+                                        })}
+                                    </View>
                                   </View>
-                                  <View style={styles.cashoutPrimaryActions}>
-                                    <TouchableOpacity
-                                      style={[
-                                        styles.cashoutPayoutButton,
-                                        (cashoutPreview.mode === "invalid" ||
-                                          cashoutPreview.mode === "below_min" ||
-                                          (Number(cashoutMaxAllowedCents) || 0) <=
-                                            0 ||
-                                          (cashoutMethodType === "gift_card" &&
-                                            (!selectedCashoutCatalogItem ||
-                                              !isValidCashoutDeliveryEmail(
-                                                cashoutGiftCardRecipientEmail,
-                                              ))) ||
-                                          (cashoutMethodType === "bank_transfer" &&
-                                            !cashoutBankReady) ||
-                                          cashoutActionStatus.loading) &&
-                                          styles.cashoutPayoutButtonDisabled,
-                                      ]}
-                                      onPress={handleCashoutPayout}
-                                      disabled={
-                                        cashoutPreview.mode === "invalid" ||
-                                        cashoutPreview.mode === "below_min" ||
-                                        (Number(cashoutMaxAllowedCents) || 0) <=
-                                          0 ||
-                                        (cashoutMethodType === "gift_card" &&
-                                          (!selectedCashoutCatalogItem ||
-                                            !isValidCashoutDeliveryEmail(
-                                              cashoutGiftCardRecipientEmail,
-                                            ))) ||
-                                        (cashoutMethodType === "bank_transfer" &&
-                                          !cashoutBankReady) ||
-                                        cashoutActionStatus.loading
-                                      }
-                                    >
-                                      <Text
-                                        style={styles.cashoutPayoutButtonText}
-                                      >
-                                        {cashoutMethodType === "bank_transfer"
-                                          ? "Request bank transfer"
-                                          : cashoutPreview.label}
-                                      </Text>
-                                    </TouchableOpacity>
-                                    {resumeCashoutClaimUrl ? (
+                                  {resumeCashoutClaimUrl ? (
+                                    <>
                                       <TouchableOpacity
                                         style={styles.cashoutOpenPayoutButton}
                                         onPress={() => {
@@ -24962,9 +25977,7 @@ export default function App() {
                                         disabled={cashoutActionStatus.loading}
                                       >
                                         <Text
-                                          style={
-                                            styles.cashoutOpenPayoutButtonText
-                                          }
+                                          style={styles.cashoutOpenPayoutButtonText}
                                         >
                                           {resumeCashoutClaimLabel}
                                         </Text>
@@ -25008,332 +26021,12 @@ export default function App() {
                                           </View>
                                         ) : null}
                                       </TouchableOpacity>
-                                    ) : null}
-                                  </View>
-                                  {cashoutBankLinkInlineError ? (
-                                    <Text style={styles.formError}>
-                                      {cashoutBankLinkInlineError}
-                                    </Text>
-                                  ) : null}
-                                  {resumeCashoutClaimUrl ? (
-                                    <Text style={styles.cashoutResumeHint}>
-                                      Closed payout options by mistake? Tap above
-                                      to reopen.
-                                    </Text>
-                                  ) : null}
-                                  <View style={styles.cashoutOptionSection}>
-                                    <Text style={styles.cashoutOptionSectionTitle}>
-                                      Bank transfer
-                                    </Text>
-                                    <View style={styles.cashoutTileGrid}>
-                                      <TouchableOpacity
-                                        style={[
-                                          styles.cashoutMethodTile,
-                                          cashoutMethodType === "bank_transfer" &&
-                                            styles.cashoutMethodTileSelected,
-                                        ]}
-                                        activeOpacity={0.9}
-                                        onPress={handleCashoutBankTilePress}
-                                      >
-                                        <View style={styles.cashoutMethodTileMedia}>
-                                          <Ionicons
-                                            name="business-outline"
-                                            size={34}
-                                            color={COLORS.pine}
-                                          />
-                                        </View>
-                                        <Text
-                                          style={styles.cashoutMethodTileTitle}
-                                          numberOfLines={2}
-                                        >
-                                          Your bank account
-                                        </Text>
-                                        <Text
-                                          style={styles.cashoutMethodTileMeta}
-                                          numberOfLines={2}
-                                        >
-                                          {cashoutBankReady
-                                            ? String(
-                                                cashoutCatalogState.bankTile
-                                                  ?.bankSummary || "Linked",
-                                              ).trim() || "Linked"
-                                            : "Link bank transfer"}
-                                        </Text>
-                                      </TouchableOpacity>
-                                    </View>
-                                    {cashoutPayoutSwitchCopy ? (
-                                      <Text style={styles.formHint}>
-                                        {cashoutPayoutSwitchCopy}
+                                      <Text style={styles.cashoutResumeHint}>
+                                        Closed payout options by mistake? Tap above
+                                        to reopen.
                                       </Text>
-                                    ) : null}
-                                    {cashoutLinkedPayoutAccounts.length > 0 ? (
-                                      <View style={styles.cashoutLinkedAccountOptions}>
-                                        {visibleCashoutLinkedPayoutAccounts.map(
-                                          (account) => {
-                                            const canSelect =
-                                              account.selectedForPayout ||
-                                              Boolean(
-                                                plaidLinkState.payoutSwitchPolicy
-                                                  ?.canSwitch,
-                                              );
-                                            return (
-                                              <TouchableOpacity
-                                                key={`cashout-payout-account-${account.accountId}`}
-                                                style={[
-                                                  styles.cashoutLinkedAccountRow,
-                                                  !canSelect &&
-                                                    styles.cashoutLinkedAccountRowDisabled,
-                                                ]}
-                                                disabled={
-                                                  !canSelect ||
-                                                  cashoutActionStatus.loading
-                                                }
-                                                onPress={() => {
-                                                  setCashoutMethodType(
-                                                    "bank_transfer",
-                                                  );
-                                                  handleSelectCashoutPayoutAccount(
-                                                    account.accountId,
-                                                  );
-                                                }}
-                                              >
-                                                <Ionicons
-                                                  name={
-                                                    account.selectedForPayout
-                                                      ? "radio-button-on"
-                                                      : "radio-button-off"
-                                                  }
-                                                  size={16}
-                                                  color={
-                                                    account.selectedForPayout
-                                                      ? COLORS.pine
-                                                      : COLORS.muted
-                                                  }
-                                                />
-                                                <View
-                                                  style={styles.cashoutLinkedAccountMain}
-                                                >
-                                                  <Text
-                                                    style={
-                                                      styles.cashoutLinkedAccountTitle
-                                                    }
-                                                    numberOfLines={1}
-                                                  >
-                                                    {account.name}
-                                                  </Text>
-                                                  <Text
-                                                    style={
-                                                      styles.cashoutLinkedAccountMeta
-                                                    }
-                                                    numberOfLines={1}
-                                                  >
-                                                    {[
-                                                      account.institutionName,
-                                                      account.mask
-                                                        ? `****${account.mask}`
-                                                        : null,
-                                                    ]
-                                                      .filter(Boolean)
-                                                      .join(" · ") || "Linked bank account"}
-                                                  </Text>
-                                                </View>
-                                                {account.selectedForPayout ? (
-                                                  <Text
-                                                    style={styles.cashoutSelectedAccountTag}
-                                                  >
-                                                    Selected
-                                                  </Text>
-                                                ) : null}
-                                              </TouchableOpacity>
-                                            );
-                                          },
-                                        )}
-                                        {hiddenCashoutLinkedAccountCount > 0 ? (
-                                          <TouchableOpacity
-                                            style={styles.cashoutShowMoreButton}
-                                            onPress={() =>
-                                              setCashoutShowAllLinkedAccounts(
-                                                true,
-                                              )
-                                            }
-                                          >
-                                            <Text
-                                              style={
-                                                styles.cashoutShowMoreButtonText
-                                              }
-                                            >
-                                              Show {hiddenCashoutLinkedAccountCount} more
-                                            </Text>
-                                          </TouchableOpacity>
-                                        ) : null}
-                                        {cashoutShowAllLinkedAccounts &&
-                                        cashoutLinkedPayoutAccounts.length > 3 ? (
-                                          <TouchableOpacity
-                                            style={styles.cashoutShowMoreButton}
-                                            onPress={() =>
-                                              setCashoutShowAllLinkedAccounts(
-                                                false,
-                                              )
-                                            }
-                                          >
-                                            <Text
-                                              style={
-                                                styles.cashoutShowMoreButtonText
-                                              }
-                                            >
-                                              Show fewer
-                                            </Text>
-                                          </TouchableOpacity>
-                                        ) : null}
-                                      </View>
-                                    ) : null}
-                                    <TouchableOpacity
-                                      style={styles.cashoutChangeBankButton}
-                                      onPress={() =>
-                                        handleLinkPurchaseVerificationBank()
-                                      }
-                                      disabled={
-                                        plaidLinkState.loading ||
-                                        plaidLinkAction !== "idle"
-                                      }
-                                    >
-                                      <Text style={styles.cashoutChangeBankButtonText}>
-                                        {plaidLinkAction === "linking"
-                                          ? "Opening Plaid Link..."
-                                          : "Add or reconnect bank"}
-                                      </Text>
-                                      <Ionicons
-                                        name="chevron-forward"
-                                        size={14}
-                                        color={COLORS.ink}
-                                      />
-                                    </TouchableOpacity>
-                                  </View>
-                                  <View style={styles.cashoutOptionSection}>
-                                    <Text style={styles.cashoutOptionSectionTitle}>
-                                      Gift card redemptions
-                                    </Text>
-                                    <View style={styles.cashoutTileGrid}>
-                                      {cashoutCatalogState.curated
-                                        .slice(0, 5)
-                                        .map((item) => {
-                                          const code = normalizeCatalogItemCode(
-                                            item?.code,
-                                          );
-                                          const selected =
-                                            cashoutMethodType === "gift_card" &&
-                                            normalizeCatalogItemCode(
-                                              selectedCashoutCatalogCode,
-                                            ) === code;
-                                          return (
-                                            <TouchableOpacity
-                                              key={code}
-                                              style={[
-                                                styles.cashoutMethodTile,
-                                                selected &&
-                                                  styles.cashoutMethodTileSelected,
-                                              ]}
-                                              activeOpacity={0.9}
-                                              onPress={() => {
-                                                setCashoutMethodType("gift_card");
-                                                setSelectedCashoutCatalogCode(
-                                                  code,
-                                                );
-                                              }}
-                                            >
-                                              <View
-                                                style={styles.cashoutMethodTileMedia}
-                                              >
-                                                {String(
-                                                  item?.imageUrl || "",
-                                                ).trim() ? (
-                                                  <Image
-                                                    source={{
-                                                      uri: String(
-                                                        item.imageUrl,
-                                                      ).trim(),
-                                                    }}
-                                                    style={
-                                                      styles.cashoutMethodTileImage
-                                                    }
-                                                    resizeMode="cover"
-                                                  />
-                                                ) : (
-                                                  <Ionicons
-                                                    name="gift-outline"
-                                                    size={30}
-                                                    color={COLORS.pine}
-                                                  />
-                                                )}
-                                              </View>
-                                              <Text
-                                                style={styles.cashoutMethodTileTitle}
-                                                numberOfLines={2}
-                                              >
-                                                {String(item?.name || "Gift card")}
-                                              </Text>
-                                              <Text
-                                                style={styles.cashoutMethodTileMeta}
-                                                numberOfLines={1}
-                                              >
-                                                {formatCurrencyFromCents(
-                                                  Math.max(
-                                                    GIFT_CARD_MIN_CASHOUT_CENTS,
-                                                    Number(item?.minCents) || 0,
-                                                  ),
-                                                )}{" "}
-                                                min
-                                              </Text>
-                                            </TouchableOpacity>
-                                          );
-                                        })}
-                                      <TouchableOpacity
-                                        style={styles.cashoutMethodTile}
-                                        activeOpacity={0.9}
-                                        onPress={() => {
-                                          setCashoutCatalogModalVisible(true);
-                                          if (
-                                            cashoutCatalogState.all.length ===
-                                              0 &&
-                                            !cashoutCatalogState.loading
-                                          ) {
-                                            loadCashoutCatalog({
-                                              page: 0,
-                                              append: false,
-                                            });
-                                          }
-                                        }}
-                                      >
-                                        <View
-                                          style={styles.cashoutMethodTileMedia}
-                                        >
-                                          <Ionicons
-                                            name="grid-outline"
-                                            size={30}
-                                            color={COLORS.pine}
-                                          />
-                                        </View>
-                                        <Text
-                                          style={styles.cashoutMethodTileTitle}
-                                        >
-                                          View all
-                                        </Text>
-                                        <Text style={styles.cashoutMethodTileMeta}>
-                                          Browse catalog
-                                        </Text>
-                                      </TouchableOpacity>
-                                    </View>
-                                  </View>
-                                  <View style={styles.cashoutBalanceBar}>
-                                    <Text style={styles.cashoutBalanceBarLabel}>
-                                      Balance
-                                    </Text>
-                                    <Text style={styles.cashoutBalanceBarValue}>
-                                      {formatCurrencyFromCents(
-                                        cashbackBalance.availableCents,
-                                      )}
-                                    </Text>
-                                  </View>
+                                    </>
+                                  ) : null}
                                 </>
                               ) : (
                                 <Text style={styles.formHint}>
@@ -25356,7 +26049,12 @@ export default function App() {
                                 </Text>
                               )}
                             </View>
-                            <View style={styles.sectionBlock}>
+                            <View
+                              style={[
+                                styles.sectionBlock,
+                                styles.cashoutActivityBlock,
+                              ]}
+                            >
                               <TouchableOpacity
                                 style={styles.cashoutCollapseHeader}
                                 activeOpacity={0.85}
@@ -27225,11 +27923,13 @@ export default function App() {
                           </View>
                         ) : (
                           <>
-                            <View style={styles.sectionBlock}>
-                              <Text style={styles.sectionTitleAlt}>
-                                Profile
-                              </Text>
-                            </View>
+                            {profileSubpage === "main" ? (
+                              <>
+                                <View style={styles.sectionBlock}>
+                                  <Text style={styles.sectionTitleAlt}>
+                                    Profile
+                                  </Text>
+                                </View>
 
                             <View style={styles.profileCard}>
                               <View style={styles.profileHeader}>
@@ -27276,30 +27976,11 @@ export default function App() {
                                 </Text>
                               </View>
                             </View>
-                            <View style={styles.profileQuickListCard}>
+                                <View style={styles.profileQuickListCard}>
                               <TouchableOpacity
                                 style={styles.profileQuickListRow}
                                 activeOpacity={0.86}
-                                onPress={() =>
-                                  setAppDialog({
-                                    visible: true,
-                                    title: "Personal Information",
-                                    message:
-                                      "Update your name, email, and phone in the Account section below.",
-                                    dismissOnBackdrop: true,
-                                    options: [
-                                      {
-                                        label: "Got it",
-                                        variant: "primary",
-                                        onPress: () =>
-                                          setAppDialog((prev) => ({
-                                            ...prev,
-                                            visible: false,
-                                          })),
-                                      },
-                                    ],
-                                  })
-                                }
+                                onPress={() => setProfileSubpage("personal_information")}
                               >
                                 <View style={styles.profileQuickListIconWrap}>
                                   <Ionicons
@@ -27348,13 +28029,13 @@ export default function App() {
                                   color="#C5CDD9"
                                 />
                               </TouchableOpacity>
-                              <TouchableOpacity
+                                <TouchableOpacity
                                 style={[
                                   styles.profileQuickListRow,
                                   styles.profileQuickListRowLast,
                                 ]}
                                 activeOpacity={0.86}
-                                onPress={handleContactSupport}
+                                onPress={() => setProfileSubpage("help_support")}
                               >
                                 <View style={styles.profileQuickListIconWrap}>
                                   <Ionicons
@@ -27368,7 +28049,7 @@ export default function App() {
                                     Help & Support
                                   </Text>
                                   <Text style={styles.profileQuickListMeta}>
-                                    FAQ, contact us
+                                    Contact support
                                   </Text>
                                 </View>
                                 <Ionicons
@@ -27377,131 +28058,7 @@ export default function App() {
                                   color="#C5CDD9"
                                 />
                               </TouchableOpacity>
-                            </View>
-
-                            <View
-                              style={[
-                                styles.notificationPanel,
-                                styles.notificationPanelPro,
-                              ]}
-                            >
-                              <LinearGradient
-                                colors={[
-                                  "rgba(11, 33, 71, 0.08)",
-                                  "rgba(11, 33, 71, 0)",
-                                ]}
-                                start={{ x: 0, y: 0 }}
-                                end={{ x: 1, y: 1 }}
-                                style={styles.notificationGradientAccent}
-                              />
-                              <View style={styles.notificationHeaderRow}>
-                                <View style={styles.notificationHeaderLeft}>
-                                  <View style={styles.notificationIconWrap}>
-                                    <Ionicons
-                                      name="notifications-outline"
-                                      size={16}
-                                      color={COLORS.pine}
-                                    />
-                                  </View>
-                                  <View style={styles.notificationHeaderCopy}>
-                                    <Text style={styles.notificationTitleText}>
-                                      Notifications
-                                    </Text>
-                                    <Text
-                                      style={styles.notificationSubtitleText}
-                                    >
-                                      {enabledNotificationCount} of 3 enabled
-                                    </Text>
-                                  </View>
                                 </View>
-                                <View style={styles.notificationStatusPill}>
-                                  <Text style={styles.notificationStatusText}>
-                                    {enabledNotificationCount === 0
-                                      ? "Off"
-                                      : enabledNotificationCount === 3
-                                        ? "On"
-                                        : "Partial"}
-                                  </Text>
-                                </View>
-                              </View>
-
-                              <View style={styles.notificationTagsRow}>
-                                <View
-                                  style={[
-                                    styles.notificationTypePill,
-                                    notificationPreferences.new_offer &&
-                                      styles.notificationTypePillActive,
-                                  ]}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.notificationTypeText,
-                                      notificationPreferences.new_offer &&
-                                        styles.notificationTypeTextActive,
-                                    ]}
-                                  >
-                                    New offers
-                                  </Text>
-                                </View>
-                                <View
-                                  style={[
-                                    styles.notificationTypePill,
-                                    notificationPreferences.expiring_offer &&
-                                      styles.notificationTypePillActive,
-                                  ]}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.notificationTypeText,
-                                      notificationPreferences.expiring_offer &&
-                                        styles.notificationTypeTextActive,
-                                    ]}
-                                  >
-                                    Expiring
-                                  </Text>
-                                </View>
-                                <View
-                                  style={[
-                                    styles.notificationTypePill,
-                                    notificationPreferences.nearby_offer &&
-                                      styles.notificationTypePillActive,
-                                  ]}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.notificationTypeText,
-                                      notificationPreferences.nearby_offer &&
-                                        styles.notificationTypeTextActive,
-                                    ]}
-                                  >
-                                    Nearby
-                                  </Text>
-                                </View>
-                              </View>
-
-                              <TouchableOpacity
-                                style={styles.notificationManageButton}
-                                onPress={() =>
-                                  setNotificationSettingsOpen(true)
-                                }
-                              >
-                                <View style={styles.notificationManageCopy}>
-                                  <Text style={styles.notificationManageTitle}>
-                                    Manage notifications
-                                  </Text>
-                                </View>
-                                <Ionicons
-                                  name="chevron-forward"
-                                  size={16}
-                                  color={COLORS.muted}
-                                />
-                              </TouchableOpacity>
-                              {tokenError && (
-                                <Text style={styles.formError}>
-                                  {tokenError}
-                                </Text>
-                              )}
-                            </View>
 
                             {!isOwner && !isAdmin && !isSupervisor ? (
                               <>
@@ -27765,9 +28322,36 @@ export default function App() {
                               </>
                             ) : null}
 
-                            <View
-                              style={[styles.formCard, styles.securityCard]}
-                            >
+                              </>
+                            ) : null}
+
+                            {profileSubpage === "personal_information" ? (
+                              <>
+                                <View style={styles.sectionBlock}>
+                                  <TouchableOpacity
+                                    style={styles.profileSubpageBackButton}
+                                    onPress={() => setProfileSubpage("main")}
+                                    activeOpacity={0.86}
+                                  >
+                                    <Ionicons
+                                      name="chevron-back"
+                                      size={16}
+                                      color={COLORS.ink}
+                                    />
+                                    <Text style={styles.profileSubpageBackText}>
+                                      Back
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <Text style={styles.sectionTitleAlt}>
+                                    Personal Information
+                                  </Text>
+                                  <Text style={styles.sectionBody}>
+                                    Update your account details.
+                                  </Text>
+                                </View>
+                                <View
+                                  style={[styles.formCard, styles.securityCard]}
+                                >
                               <View style={styles.accountSectionHeader}>
                                 <Ionicons
                                   name="person-circle-outline"
@@ -28212,9 +28796,44 @@ export default function App() {
                                   {securityStatus.message}
                                 </Text>
                               ) : null}
-                            </View>
+                                </View>
+                                {profileMessage && (
+                                  <View
+                                    style={[styles.alertBox, styles.alertSuccess]}
+                                  >
+                                    <Text style={styles.alertText}>
+                                      {profileMessage}
+                                    </Text>
+                                  </View>
+                                )}
+                              </>
+                            ) : null}
 
-                            <View style={styles.formCard}>
+                            {profileSubpage === "help_support" ? (
+                              <>
+                                <View style={styles.sectionBlock}>
+                                  <TouchableOpacity
+                                    style={styles.profileSubpageBackButton}
+                                    onPress={() => setProfileSubpage("main")}
+                                    activeOpacity={0.86}
+                                  >
+                                    <Ionicons
+                                      name="chevron-back"
+                                      size={16}
+                                      color={COLORS.ink}
+                                    />
+                                    <Text style={styles.profileSubpageBackText}>
+                                      Back
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <Text style={styles.sectionTitleAlt}>
+                                    Help & Support
+                                  </Text>
+                                  <Text style={styles.sectionBody}>
+                                    Contact support or report a bug.
+                                  </Text>
+                                </View>
+                                <View style={styles.formCard}>
                               <View style={styles.supportHeaderRow}>
                                 <Ionicons
                                   name="help-buoy-outline"
@@ -28339,17 +28958,9 @@ export default function App() {
                                   Sign out
                                 </Text>
                               </TouchableOpacity>
-                            </View>
-
-                            {profileMessage && (
-                              <View
-                                style={[styles.alertBox, styles.alertSuccess]}
-                              >
-                                <Text style={styles.alertText}>
-                                  {profileMessage}
-                                </Text>
-                              </View>
-                            )}
+                                </View>
+                              </>
+                            ) : null}
                             {keyboardInset > 0 && (
                               <View
                                 pointerEvents="none"
@@ -30688,9 +31299,12 @@ const styles = StyleSheet.create({
     right: 0,
   },
   navContainer: {
-    alignSelf: "stretch",
+    alignSelf: "center",
     backgroundColor: COLORS.white,
-    borderRadius: 0,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    borderBottomLeftRadius: 26,
+    borderBottomRightRadius: 26,
     paddingHorizontal: NAV_PADDING,
     paddingBottom: IS_COMPACT ? 2 : 4,
     paddingTop: IS_COMPACT ? 4 : 6,
@@ -30712,7 +31326,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
     paddingTop: 0,
     paddingBottom: 6,
-    borderRadius: 0,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderBottomLeftRadius: 22,
+    borderBottomRightRadius: 22,
     backgroundColor: "transparent",
     borderWidth: 0,
     position: "relative",
@@ -30751,6 +31368,163 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     textAlign: "center",
+  },
+  offerActivationOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.58)",
+    justifyContent: "flex-end",
+    paddingHorizontal: 12,
+    paddingTop: 24,
+    paddingBottom: SAFE_BOTTOM + 8,
+  },
+  offerActivationCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 14,
+    gap: 12,
+  },
+  offerActivationHandle: {
+    alignSelf: "center",
+    width: 56,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "#CBD5E1",
+  },
+  offerActivationHero: {
+    borderRadius: 18,
+    overflow: "hidden",
+    height: 190,
+    backgroundColor: "#0F172A",
+    justifyContent: "flex-end",
+  },
+  offerActivationHeroImage: {
+    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
+  },
+  offerActivationHeroFallback: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(148, 163, 184, 0.24)",
+  },
+  offerActivationHeroShade: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  offerActivationHeroBottomRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+  },
+  offerActivationHeroCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  offerActivationHeroName: {
+    fontSize: 19,
+    color: "#FFFFFF",
+    fontFamily: FONT_DISPLAY,
+  },
+  offerActivationHeroMeta: {
+    fontSize: 13,
+    color: "rgba(255,255,255,0.86)",
+    fontFamily: FONT_TEXT,
+  },
+  offerActivationCashbackBadge: {
+    minWidth: 72,
+    borderRadius: 16,
+    backgroundColor: "rgba(31, 41, 55, 0.88)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offerActivationCashbackValue: {
+    fontSize: 22,
+    color: "#FFFFFF",
+    fontFamily: FONT_BOLD,
+    lineHeight: 24,
+  },
+  offerActivationCashbackLabel: {
+    marginTop: 2,
+    fontSize: 12,
+    color: "rgba(255,255,255,0.82)",
+    fontFamily: FONT_MEDIUM,
+  },
+  offerActivationStatsRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 10,
+  },
+  offerActivationStatCard: {
+    flex: 1,
+    borderRadius: 14,
+    backgroundColor: "#F3F4F6",
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  offerActivationStatLabel: {
+    fontSize: 12,
+    color: "#94A3B8",
+    fontFamily: FONT_TEXT,
+  },
+  offerActivationStatValue: {
+    fontSize: 18,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  offerActivationStatStatusValue: {
+    fontSize: 18,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+    textAlign: "center",
+    lineHeight: 22,
+    ...Platform.select({
+      android: { includeFontPadding: false },
+    }),
+  },
+  offerActivationStatStatusValueOpen: {
+    color: "#059669",
+  },
+  offerActivationNotice: {
+    minHeight: 62,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#79E2B6",
+    backgroundColor: "#DFF6EA",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  offerActivationNoticeError: {
+    borderColor: "#FECACA",
+    backgroundColor: "#FEF2F2",
+  },
+  offerActivationNoticeText: {
+    flex: 1,
+    fontSize: 15,
+    color: "#047857",
+    fontFamily: FONT_MEDIUM,
+  },
+  offerActivationNoticeTextError: {
+    color: "#B42318",
+  },
+  offerActivationPolicyText: {
+    fontSize: 12,
+    color: "#64748B",
+    fontFamily: FONT_TEXT,
+    lineHeight: 17,
   },
   scannerOverlay: {
     flex: 1,
@@ -31325,9 +32099,10 @@ const styles = StyleSheet.create({
   navIndicator: {
     position: "absolute",
     bottom: 0,
-    height: 4,
+    height: 0,
     borderRadius: 999,
-    backgroundColor: "#2E6BFF",
+    backgroundColor: "transparent",
+    opacity: 0,
   },
   navPillBadge: {
     position: "absolute",
@@ -31595,7 +32370,7 @@ const styles = StyleSheet.create({
     shouldRasterizeIOS: true,
   },
   sheetBackground: {
-    backgroundColor: "#F4F6FA",
+    backgroundColor: COLORS.white,
     borderTopLeftRadius: 34,
     borderTopRightRadius: 34,
     borderTopWidth: 1,
@@ -33287,8 +34062,9 @@ const styles = StyleSheet.create({
   },
   liveEditorialStackClosedPill: {
     borderRadius: 999,
-    paddingHorizontal: 12,
-    height: 30,
+    paddingHorizontal: 14,
+    minHeight: 34,
+    maxWidth: "86%",
     backgroundColor: "rgba(241, 245, 249, 0.95)",
     borderWidth: 1,
     borderColor: "rgba(148, 163, 184, 0.75)",
@@ -33298,9 +34074,10 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   liveEditorialStackClosedText: {
-    fontSize: 13,
+    fontSize: 12,
     color: "#4B5563",
     fontFamily: FONT_SEMIBOLD,
+    textAlign: "center",
   },
   liveEditorialStackMedia: {
     position: "relative",
@@ -33595,6 +34372,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#E5F6EF",
   },
+  liveEditorialStackCashbackPercentIcon: {
+    fontSize: 20,
+    lineHeight: 20,
+    color: "#059669",
+    fontFamily: FONT_BOLD,
+  },
   liveEditorialStackCashbackCopy: {
     flex: 1,
     minWidth: 0,
@@ -33618,8 +34401,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "#E2E8F0",
-    backgroundColor: "#E9EDF3",
+    borderColor: "#CDECDC",
+    backgroundColor: "#E5F6EF",
   },
   card: {
     backgroundColor: COLORS.white,
@@ -34552,6 +35335,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#8B97A9",
     fontFamily: FONT_TEXT,
+  },
+  profileSubpageBackButton: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginBottom: 8,
+    paddingVertical: 2,
+  },
+  profileSubpageBackText: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
   },
   formLabel: {
     fontSize: 14,
@@ -35786,10 +36582,10 @@ const styles = StyleSheet.create({
   },
   receiptNoticeCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 20,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: "#D9E1EC",
-    padding: 16,
+    padding: 14,
     marginBottom: 12,
     shadowOpacity: 0,
     elevation: 0,
@@ -35819,14 +36615,39 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   receiptNoticeIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "rgba(11, 33, 71, 0.14)",
     backgroundColor: "#EFF4FF",
     alignItems: "center",
     justifyContent: "center",
+  },
+  receiptNoticeIconWrapActive: {
+    borderColor: "rgba(5, 150, 105, 0.18)",
+    backgroundColor: "#EAF8F1",
+  },
+  receiptNoticeCompactRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    minHeight: 70,
+  },
+  receiptNoticeCompactCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  receiptNoticeCompactTitle: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  receiptNoticeCompactSubtitle: {
+    marginTop: 2,
+    fontSize: 13,
+    color: "#8B97A9",
+    fontFamily: FONT_MEDIUM,
   },
   receiptNoticeTitle: {
     fontSize: 16,
@@ -36275,14 +37096,14 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   historyList: {
-    gap: 14,
+    gap: 12,
     marginBottom: 14,
   },
   historyGroupCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 20,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: "#D9E1EC",
+    borderColor: "#E5E7EB",
     overflow: "hidden",
     shadowOpacity: 0,
     elevation: 0,
@@ -36302,9 +37123,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
     paddingVertical: 16,
     paddingHorizontal: 16,
+    minHeight: 96,
   },
   historyGroupHeaderPressed: {
     backgroundColor: "rgba(2, 6, 23, 0.03)",
@@ -36317,39 +37139,64 @@ const styles = StyleSheet.create({
     paddingLeft: 0,
   },
   historyGroupAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
+    width: 52,
+    height: 52,
+    borderRadius: 18,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   historyGroupAvatarText: {
-    fontSize: 14,
+    fontSize: 22,
     fontFamily: FONT_BOLD,
-    letterSpacing: 0.4,
+    letterSpacing: 0.2,
   },
   historyGroupMeta: {
     flex: 1,
   },
   historyGroupTitle: {
     flex: 1,
-    fontSize: 17,
+    fontSize: 16,
     color: COLORS.ink,
-    fontFamily: FONT_MEDIUM,
+    fontFamily: FONT_SEMIBOLD,
   },
   historyGroupSubRow: {
     marginTop: 3,
   },
   historyGroupSub: {
     fontSize: 13,
-    color: COLORS.muted,
-    fontFamily: FONT_TEXT,
+    color: "#8B97A9",
+    fontFamily: FONT_MEDIUM,
   },
-  historyGroupActions: {
+  historyGroupUploadNeededBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(180, 83, 9, 0.22)",
+    backgroundColor: "#FFF7ED",
+    paddingHorizontal: 8,
+    minHeight: 22,
+  },
+  historyGroupUploadNeededBadgeText: {
+    fontSize: 11,
+    color: "#B45309",
+    fontFamily: FONT_MEDIUM,
+  },
+  historyGroupActions: {
+    alignItems: "flex-end",
+    gap: 7,
+  },
+  historyGroupAmountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  historyGroupAmount: {
+    fontSize: 17,
+    color: "#16A34A",
+    fontFamily: FONT_BOLD,
   },
   historyGroupEarnedBar: {
     borderTopWidth: 1,
@@ -36395,7 +37242,7 @@ const styles = StyleSheet.create({
     borderTopColor: COLORS.sand,
     paddingHorizontal: 16,
     paddingBottom: 16,
-    paddingTop: 14,
+    paddingTop: 12,
     gap: 12,
   },
   historyEntriesAfterEarnedBar: {
@@ -36481,19 +37328,22 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
   },
   pointsCard: {
-    borderRadius: 22,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "rgba(56, 189, 248, 0.18)",
+    borderColor: "rgba(11, 33, 71, 0.12)",
     padding: 16,
     backgroundColor: "#15233B",
-    marginBottom: 14,
+    marginBottom: 0,
+  },
+  cashoutMainPanel: {
+    gap: 14,
   },
   cashoutHeroCard: {
     backgroundColor: "#15233B",
-    borderColor: "rgba(71, 85, 105, 0.38)",
+    borderColor: "rgba(71, 85, 105, 0.26)",
     borderWidth: 1,
-    borderRadius: 22,
-    paddingVertical: 18,
+    borderRadius: 18,
+    paddingVertical: 16,
     paddingHorizontal: 18,
     overflow: "hidden",
     shadowOpacity: 0,
@@ -36518,39 +37368,92 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(148, 163, 184, 0.12)",
   },
   cashoutTileGrid: {
-    marginTop: 8,
+    marginTop: 10,
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: 12,
   },
   cashoutOptionSection: {
-    marginTop: 10,
+    marginTop: 2,
+  },
+  cashoutActivityBlock: {
+    marginTop: 12,
   },
   cashoutOptionSectionTitle: {
-    fontSize: 13,
-    color: COLORS.muted,
+    fontSize: 15,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutGiftSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  cashoutGiftViewAllButton: {
+    paddingVertical: 2,
+    paddingHorizontal: 2,
+  },
+  cashoutGiftViewAllText: {
+    fontSize: 14,
+    color: "#2563EB",
     fontFamily: FONT_MEDIUM,
+  },
+  cashoutTransferRow: {
+    marginTop: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: COLORS.white,
+    minHeight: 76,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+  },
+  cashoutTransferRowIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EEF3FF",
+  },
+  cashoutTransferRowMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  cashoutTransferRowTitle: {
+    fontSize: 18,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutTransferRowSubtitle: {
+    marginTop: 2,
+    fontSize: 14,
+    color: "#8B97A9",
+    fontFamily: FONT_TEXT,
   },
   cashoutMethodTile: {
     width: "48%",
     minWidth: 96,
-    borderWidth: 1,
-    borderColor: "#D9E1EC",
-    borderRadius: 18,
-    backgroundColor: COLORS.white,
-    padding: 10,
-    gap: 6,
+    borderWidth: 0,
+    borderColor: "transparent",
+    borderRadius: 0,
+    backgroundColor: "transparent",
+    padding: 0,
+    gap: 8,
   },
   cashoutMethodTileSelected: {
-    borderColor: "#2659FF",
-    backgroundColor: "#F1F5FF",
+    borderColor: "transparent",
+    backgroundColor: "transparent",
   },
   cashoutMethodTileMedia: {
     width: "100%",
     height: 92,
     borderRadius: 14,
     borderWidth: 0,
-    backgroundColor: "#EEF2F8",
+    backgroundColor: "transparent",
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
@@ -36560,16 +37463,16 @@ const styles = StyleSheet.create({
     height: "100%",
   },
   cashoutMethodTileTitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
-    lineHeight: 16,
+    lineHeight: 18,
   },
   cashoutMethodTileMeta: {
-    fontSize: 12,
+    fontSize: 13,
     color: "#8B97A9",
     fontFamily: FONT_TEXT,
-    lineHeight: 14,
+    lineHeight: 16,
   },
   cashoutEarnedHistoryCard: {
     borderRadius: 18,
@@ -36691,7 +37594,7 @@ const styles = StyleSheet.create({
     color: "#B91C1C",
   },
   cashoutBalanceHeader: {
-    marginBottom: 12,
+    marginBottom: 10,
     paddingHorizontal: 0,
     paddingVertical: 0,
     backgroundColor: "transparent",
@@ -36947,6 +37850,232 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
+  },
+  cashoutSheetOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(15, 23, 42, 0.42)",
+  },
+  cashoutSheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  cashoutSheetKeyboard: {
+    justifyContent: "flex-end",
+  },
+  cashoutSheetCard: {
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 18,
+    paddingBottom: Platform.OS === "ios" ? 18 : 14,
+    paddingTop: 6,
+    maxHeight: SCREEN_HEIGHT * 0.88,
+    gap: 12,
+  },
+  cashoutSheetHandleWrap: {
+    alignItems: "center",
+    paddingTop: 2,
+  },
+  cashoutSheetHandle: {
+    width: 52,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "#CBD5E1",
+  },
+  cashoutSheetHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+  },
+  cashoutSheetBrandWrap: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  cashoutSheetBrandIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
+    backgroundColor: "#EEF2F8",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  cashoutSheetBrandImage: {
+    width: "100%",
+    height: "100%",
+  },
+  cashoutSheetBrandCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  cashoutSheetTitle: {
+    fontSize: 17,
+    lineHeight: 22,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutSheetSubtitle: {
+    marginTop: 2,
+    fontSize: 14,
+    color: "#8B97A9",
+    fontFamily: FONT_TEXT,
+  },
+  cashoutSheetCloseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  cashoutSheetAmountBox: {
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#F8FAFC",
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 12,
+  },
+  cashoutSheetAmountLabel: {
+    fontSize: 15,
+    color: "#94A3B8",
+    fontFamily: FONT_MEDIUM,
+    textAlign: "center",
+  },
+  cashoutSheetStepperRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  cashoutSheetStepperButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#D7DEE8",
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cashoutSheetAmountValue: {
+    flex: 1,
+    textAlign: "center",
+    fontSize: 40,
+    lineHeight: 44,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+  },
+  cashoutSheetCurrencyInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    minHeight: 58,
+  },
+  cashoutSheetCurrencyPrefix: {
+    fontSize: 46,
+    lineHeight: 50,
+    color: "#CBD5E1",
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutSheetCurrencyInput: {
+    minWidth: 180,
+    fontSize: 48,
+    lineHeight: 52,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+    textAlign: "center",
+    paddingVertical: 0,
+  },
+  cashoutSheetQuickAmountsRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  cashoutSheetQuickAmountChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#D5DCE6",
+    backgroundColor: "#F8FAFC",
+    paddingHorizontal: 14,
+    minHeight: 34,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cashoutSheetQuickAmountChipSelected: {
+    backgroundColor: "#0B1E45",
+    borderColor: "#0B1E45",
+  },
+  cashoutSheetQuickAmountChipText: {
+    fontSize: 16,
+    color: "#475569",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutSheetQuickAmountChipTextSelected: {
+    color: COLORS.white,
+  },
+  cashoutSheetSummaryRows: {
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+    paddingTop: 8,
+    gap: 8,
+  },
+  cashoutSheetSummaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  cashoutSheetSummaryLabel: {
+    fontSize: 14,
+    color: "#64748B",
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutSheetSummaryValue: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutSheetSummaryValuePositive: {
+    fontSize: 14,
+    color: "#059669",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutSheetSummaryValueDanger: {
+    fontSize: 14,
+    color: "#DC2626",
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutSheetSummaryDivider: {
+    height: 1,
+    backgroundColor: "#E2E8F0",
+    marginTop: 2,
+    marginBottom: 2,
+  },
+  cashoutSheetPrimaryButton: {
+    marginTop: 4,
+    minHeight: 56,
+    borderRadius: 16,
+    backgroundColor: "#0B1E45",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  cashoutSheetPrimaryButtonDisabled: {
+    backgroundColor: "#DDE2EC",
+  },
+  cashoutSheetPrimaryButtonText: {
+    fontSize: 20,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
   },
   cashoutBalanceBar: {
     marginTop: 14,
@@ -37373,6 +38502,17 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
+  historyEntryMissingUploadRow: {
+    marginTop: 5,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  historyEntryMissingUploadText: {
+    fontSize: 11,
+    color: "#B45309",
+    fontFamily: FONT_MEDIUM,
+  },
   historyEntrySubtitle: {
     marginTop: 4,
     fontSize: 13,
@@ -37406,7 +38546,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   historyStatusTextSuccess: {
-    color: "#166534",
+    color: "#16A34A",
   },
   historyStatusTextPending: {
     color: "#92400E",
@@ -37463,7 +38603,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   historyCashbackPillTextEarned: {
-    color: "#166534",
+    color: "#16A34A",
   },
   historyCashbackPillTextReversed: {
     color: "#B42318",

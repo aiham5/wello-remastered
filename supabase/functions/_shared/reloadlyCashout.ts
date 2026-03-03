@@ -119,22 +119,6 @@ const RELOADLY_CASHOUT_MAX_CENTS = Math.max(
   RELOADLY_CASHOUT_MIN_CENTS,
 );
 
-const CASHOUT_WEEKLY_LIMIT_ENABLED = (() => {
-  const raw = String(Deno.env.get("CASHOUT_WEEKLY_LIMIT_ENABLED") || "")
-    .trim()
-    .toLowerCase();
-  if (!raw) return true;
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-})();
-const CASHOUT_WEEKLY_LIMIT_MAX = (() => {
-  const raw = Math.trunc(
-    Number(Deno.env.get("CASHOUT_WEEKLY_LIMIT_MAX") || "2"),
-  );
-  if (!Number.isFinite(raw) || raw < 1) return 2;
-  return raw;
-})();
-
-const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const redactSecrets = (value: string) =>
   String(value || "")
@@ -895,59 +879,6 @@ async (req: Request) => {
       .slice(0, 120) || "Wello User";
     const { firstName, lastName } = splitFullName(recipientName);
 
-    let payoutsUsedInWindowBefore = 0;
-    let payoutsUsedInWindowAfter = 0;
-    let payoutsRemainingInWindow = 0;
-    let nextEligibleAtForWindow: string | null = null;
-
-    if (CASHOUT_WEEKLY_LIMIT_ENABLED) {
-      const weekWindowStartMs = Date.now() - ONE_WEEK_MS;
-      const weekWindowStartIso = new Date(weekWindowStartMs).toISOString();
-      const { data: recentPayouts, error: recentPayoutsError } = await supabase
-        .from("cashout_payouts")
-        .select("id, created_at")
-        .eq("user_id", userId)
-        .in("status", ["pending", "paid"])
-        .gte("created_at", weekWindowStartIso)
-        .order("created_at", { ascending: true });
-      if (recentPayoutsError) {
-        throw new HttpError(
-          recentPayoutsError.message || "Unable to load cashout history.",
-          500,
-        );
-      }
-
-      const payoutRows = Array.isArray(recentPayouts) ? recentPayouts : [];
-      payoutsUsedInWindowBefore = payoutRows.length;
-      payoutsUsedInWindowAfter = payoutsUsedInWindowBefore + 1;
-      payoutsRemainingInWindow = Math.max(
-        CASHOUT_WEEKLY_LIMIT_MAX - payoutsUsedInWindowAfter,
-        0,
-      );
-      const oldestInWindow = payoutRows[0]?.created_at
-        ? Date.parse(payoutRows[0].created_at)
-        : NaN;
-      const computedNextEligibleAt = Number.isFinite(oldestInWindow)
-        ? new Date(oldestInWindow + ONE_WEEK_MS).toISOString()
-        : new Date(Date.now() + ONE_WEEK_MS).toISOString();
-      if (payoutRows.length >= CASHOUT_WEEKLY_LIMIT_MAX) {
-        throw new HttpError(
-          `Cashout is limited to ${CASHOUT_WEEKLY_LIMIT_MAX} times per 7 days.`,
-          429,
-          {
-            reason: "weekly_cashout_limit",
-            nextEligibleAt: computedNextEligibleAt,
-            payoutsUsedInWindow: payoutsUsedInWindowBefore,
-            payoutsRemainingInWindow: 0,
-            weeklyLimit: CASHOUT_WEEKLY_LIMIT_MAX,
-          },
-        );
-      }
-      if (payoutsRemainingInWindow <= 0) {
-        nextEligibleAtForWindow = computedNextEligibleAt;
-      }
-    }
-
     const { data: availableEvents, error: eventsError } = await supabase
       .from("cashback_events")
       .select("id, amount_cents, business_id, created_at")
@@ -1262,20 +1193,12 @@ async (req: Request) => {
       status: payoutStatus,
       overageCents: overage || 0,
       adjustmentId,
-      nextEligibleAt:
-        CASHOUT_WEEKLY_LIMIT_ENABLED && payoutsRemainingInWindow <= 0
-          ? nextEligibleAtForWindow ||
-            new Date(Date.now() + ONE_WEEK_MS).toISOString()
-          : null,
-      payoutsUsedInWindow: CASHOUT_WEEKLY_LIMIT_ENABLED
-        ? payoutsUsedInWindowAfter
-        : null,
-      payoutsRemainingInWindow: CASHOUT_WEEKLY_LIMIT_ENABLED
-        ? payoutsRemainingInWindow
-        : null,
-      weeklyLimit: CASHOUT_WEEKLY_LIMIT_ENABLED
-        ? CASHOUT_WEEKLY_LIMIT_MAX
-        : null,
+      nextEligibleAt: null,
+      payoutsUsedInWindow: null,
+      payoutsRemainingInWindow: null,
+      monthlyLimit: null,
+      weeklyLimit: null,
+      limitWindow: null,
       voucher,
     });
   } catch (error) {
