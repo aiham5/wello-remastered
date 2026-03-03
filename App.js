@@ -218,17 +218,6 @@ const CONSUMER_CASHOUT_DISABLED_COPY =
   "Cashout is temporarily unavailable while we finalize a new payout provider.";
 const NEW_WINDOW_MS = 1000 * 60 * 60 * 24 * 10;
 const ADDRESS_DEBOUNCE_MS = 300;
-const GOOGLE_PLACES_KEY = getEnv(
-  "EXPO_PUBLIC_GOOGLE_PLACES_API_KEY",
-  getEnv("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY"),
-);
-const GOOGLE_PLACES_AUTOCOMPLETE_NEW_URL =
-  "https://places.googleapis.com/v1/places:autocomplete";
-const GOOGLE_PLACES_DETAILS_NEW_URL = "https://places.googleapis.com/v1/places";
-const GOOGLE_PLACES_AUTOCOMPLETE_FIELDMASK =
-  "suggestions.placePrediction.placeId,suggestions.placePrediction.place,suggestions.placePrediction.text.text,suggestions.placePrediction.structuredFormat.mainText.text,suggestions.placePrediction.structuredFormat.secondaryText.text";
-const GOOGLE_PLACES_DETAILS_FIELDMASK =
-  "formattedAddress,addressComponents,location";
 const SUPABASE_URL = getEnv("EXPO_PUBLIC_SUPABASE_URL");
 const SUPABASE_ANON_KEY = getEnv("EXPO_PUBLIC_SUPABASE_ANON_KEY");
 const SUPABASE_FUNCTIONS_BASE_URL = SUPABASE_URL
@@ -238,7 +227,7 @@ const PLACES_PROXY_URL = SUPABASE_FUNCTIONS_BASE_URL
   ? `${SUPABASE_FUNCTIONS_BASE_URL}/places-proxy`
   : "";
 const PLACES_PROXY_ENABLED = Boolean(PLACES_PROXY_URL && SUPABASE_ANON_KEY);
-const ADDRESS_LOOKUP_ENABLED = PLACES_PROXY_ENABLED || Boolean(GOOGLE_PLACES_KEY);
+const ADDRESS_LOOKUP_ENABLED = PLACES_PROXY_ENABLED;
 const ADDRESS_LOOKUP_UNAVAILABLE_COPY =
   "Address autocomplete is temporarily unavailable.";
 const APP_SCHEME_RAW = Constants.expoConfig?.scheme;
@@ -2708,168 +2697,46 @@ const callPlacesProxy = async (payload) => {
 const fetchPlacesAutocompleteSuggestions = async (query, sessionToken) => {
   const input = String(query || "").trim();
   if (!input) return [];
+  if (!PLACES_PROXY_ENABLED || !PLACES_PROXY_URL) return [];
 
-  if (PLACES_PROXY_ENABLED) {
-    try {
-      const payload = await callPlacesProxy({
-        action: "autocomplete",
-        input,
-        sessionToken: sessionToken || undefined,
-      });
-      return normalizePlacesAutocompletePayload(payload || {});
-    } catch (proxyError) {
-      if (!GOOGLE_PLACES_KEY) {
-        throw proxyError;
-      }
-    }
-  }
-  if (!GOOGLE_PLACES_KEY) return [];
-
-  try {
-    const response = await fetch(GOOGLE_PLACES_AUTOCOMPLETE_NEW_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": GOOGLE_PLACES_KEY,
-        "X-Goog-FieldMask": GOOGLE_PLACES_AUTOCOMPLETE_FIELDMASK,
-      },
-      body: JSON.stringify({
-        input,
-        sessionToken,
-      }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(
-        payload?.error?.message || "Unable to load suggestions.",
-      );
-    }
-    return normalizePlacesAutocompletePayload(payload);
-  } catch (newApiError) {
-    const legacyResponse = await fetch(
-      `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
-        input,
-      )}&types=address&key=${GOOGLE_PLACES_KEY}`,
-    );
-    const legacyPayload = await legacyResponse.json().catch(() => ({}));
-    if (
-      legacyPayload.status &&
-      legacyPayload.status !== "OK" &&
-      legacyPayload.status !== "ZERO_RESULTS"
-    ) {
-      throw new Error(
-        legacyPayload.error_message ||
-          newApiError?.message ||
-          "Unable to load suggestions.",
-      );
-    }
-    return normalizePlacesAutocompletePayload(legacyPayload);
-  }
+  const payload = await callPlacesProxy({
+    action: "autocomplete",
+    input,
+    sessionToken: sessionToken || undefined,
+  });
+  return normalizePlacesAutocompletePayload(payload || {});
 };
 
 const fetchPlaceDetailsResult = async (placeId, sessionToken) => {
   const normalizedPlaceId = normalizePlaceId(placeId);
   if (!normalizedPlaceId) return null;
-
-  if (PLACES_PROXY_ENABLED) {
-    try {
-      const payload = await callPlacesProxy({
-        action: "details",
-        placeId: normalizedPlaceId,
-        sessionToken: sessionToken || undefined,
-      });
-      const normalized = normalizePlaceDetailsPayload(payload || {});
-      if (!normalized) {
-        throw new Error("Unable to load place details.");
-      }
-      return normalized;
-    } catch (proxyError) {
-      if (!GOOGLE_PLACES_KEY) {
-        throw proxyError;
-      }
-    }
+  if (!PLACES_PROXY_ENABLED || !PLACES_PROXY_URL) return null;
+  const payload = await callPlacesProxy({
+    action: "details",
+    placeId: normalizedPlaceId,
+    sessionToken: sessionToken || undefined,
+  });
+  const normalized = normalizePlaceDetailsPayload(payload || {});
+  if (!normalized) {
+    throw new Error("Unable to load place details.");
   }
-  if (!GOOGLE_PLACES_KEY) return null;
-
-  try {
-    const detailsUrl =
-      `${GOOGLE_PLACES_DETAILS_NEW_URL}/${encodeURIComponent(normalizedPlaceId)}` +
-      (sessionToken
-        ? `?sessionToken=${encodeURIComponent(sessionToken)}`
-        : "");
-    const response = await fetch(detailsUrl, {
-      method: "GET",
-      headers: {
-        "X-Goog-Api-Key": GOOGLE_PLACES_KEY,
-        "X-Goog-FieldMask": GOOGLE_PLACES_DETAILS_FIELDMASK,
-      },
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(
-        payload?.error?.message || "Unable to load place details.",
-      );
-    }
-    const normalized = normalizePlaceDetailsPayload(payload);
-    if (!normalized) {
-      throw new Error("Unable to load place details.");
-    }
-    return normalized;
-  } catch (newApiError) {
-    const legacyResponse = await fetch(
-      `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(
-        normalizedPlaceId,
-      )}&fields=formatted_address,address_components,geometry&key=${GOOGLE_PLACES_KEY}`,
-    );
-    const legacyPayload = await legacyResponse.json().catch(() => ({}));
-    if (legacyPayload.status && legacyPayload.status !== "OK") {
-      throw new Error(
-        legacyPayload.error_message ||
-          newApiError?.message ||
-          "Unable to load place details.",
-      );
-    }
-    const normalized = normalizePlaceDetailsPayload(legacyPayload?.result || {});
-    if (!normalized) {
-      throw new Error("Unable to load place details.");
-    }
-    return normalized;
-  }
+  return normalized;
 };
 
 const fetchGeocodeResult = async (address) => {
   const normalizedAddress = String(address || "").trim();
   if (!normalizedAddress) return null;
-
-  if (PLACES_PROXY_ENABLED) {
-    try {
-      const payload = await callPlacesProxy({
-        action: "geocode",
-        address: normalizedAddress,
-      });
-      const location = payload?.results?.[0]?.geometry?.location;
-      if (!location) return null;
-      const latitude = Number(location?.lat);
-      const longitude = Number(location?.lng);
-      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-      return { latitude, longitude };
-    } catch (proxyError) {
-      if (!GOOGLE_PLACES_KEY) {
-        throw proxyError;
-      }
-    }
-  }
-  if (!GOOGLE_PLACES_KEY) return null;
-
-  const response = await fetch(
-    `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
-      normalizedAddress,
-    )}&key=${GOOGLE_PLACES_KEY}`,
-  );
-  const data = await response.json().catch(() => ({}));
-  const location = data.results?.[0]?.geometry?.location;
+  if (!PLACES_PROXY_ENABLED || !PLACES_PROXY_URL) return null;
+  const payload = await callPlacesProxy({
+    action: "geocode",
+    address: normalizedAddress,
+  });
+  const location = payload?.results?.[0]?.geometry?.location;
   if (!location) return null;
-  return { latitude: location.lat, longitude: location.lng };
+  const latitude = Number(location?.lat);
+  const longitude = Number(location?.lng);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return { latitude, longitude };
 };
 
 const isBusinessOpenNow = (value) => {

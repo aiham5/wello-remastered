@@ -1136,6 +1136,14 @@ export const createCheckbookAdminDecisionHandler =
         throw new HttpError("Missing actor id.", 400, { reason: "missing_actor_id" });
       }
       const supabase = createAdminSupabase();
+      await enforceRateLimit({
+        req,
+        scope: "cashout:bank-decision",
+        identifier: `${actorId}|${action}`,
+        maxRequests: 30,
+        windowSeconds: 60,
+        supabase,
+      });
       const { data: actor, error: actorError } = await supabase
         .from("profiles")
         .select("id, role")

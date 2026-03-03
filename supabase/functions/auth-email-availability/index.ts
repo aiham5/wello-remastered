@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
-import { HttpError } from "../_shared/auth.ts";
+import { extractClientIp, HttpError } from "../_shared/auth.ts";
 import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
@@ -21,11 +21,14 @@ const allowOrigin = (req: Request) => {
     "https://www.wellopartners.com",
   ];
   if (allowed.includes(origin)) return origin;
-  return "*";
+  // Native app requests may not include an Origin header; use a first-party
+  // origin fallback instead of wildcard to reduce browser abuse surface.
+  return allowed[0];
 };
 
 const corsHeaders = (req: Request) => ({
   "Access-Control-Allow-Origin": allowOrigin(req),
+  Vary: "Origin",
   "Access-Control-Allow-Headers":
     "authorization, apikey, content-type, x-client-info",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -63,11 +66,20 @@ Deno.serve(async (req) => {
 
   const adminClient = createAdminClient();
   try {
+    const ip = extractClientIp(req);
+    await enforceRateLimit({
+      req,
+      scope: "auth:email-availability:ip",
+      identifier: `ip:${ip}`,
+      maxRequests: 80,
+      windowSeconds: 10 * 60,
+      supabase: adminClient,
+    });
     await enforceRateLimit({
       req,
       scope: "auth:email-availability",
-      identifier: email,
-      maxRequests: 25,
+      identifier: `${ip}|${email}`,
+      maxRequests: 12,
       windowSeconds: 10 * 60,
       supabase: adminClient,
     });

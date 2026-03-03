@@ -3,13 +3,10 @@ import dotenv from "dotenv";
 dotenv.config();
 dotenv.config({ path: ".env.local", override: true });
 
-const googlePlacesApiKey =
-  process.env.EXPO_PUBLIC_GOOGLE_PLACES_API_KEY ||
-  process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
 const googleMapsApiKey =
   process.env.GOOGLE_MAPS_API_KEY ||
   process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ||
-  googlePlacesApiKey;
+  process.env.EXPO_PUBLIC_GOOGLE_PLACES_API_KEY;
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 const APP_LOGO_PATH = "./assets/logo/logo.png";
@@ -101,13 +98,6 @@ export default ({ config }) => ({
     ...(config.extra ?? {}),
     EXPO_PUBLIC_SUPABASE_URL: supabaseUrl,
     EXPO_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey,
-    ...(googlePlacesApiKey
-      ? {
-          EXPO_PUBLIC_GOOGLE_PLACES_API_KEY: googlePlacesApiKey,
-          // Keep backward compatibility with existing runtime lookups.
-          EXPO_PUBLIC_GOOGLE_MAPS_API_KEY: googlePlacesApiKey,
-        }
-      : {}),
   },
   android: {
     ...config.android,
