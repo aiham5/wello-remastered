@@ -16,6 +16,7 @@ import {
   plaidGetItem,
 } from "./plaid.ts";
 import { mergePlaidLinkPurposes } from "./plaidLinkPurposes.ts";
+import { upsertUserBankAccountSecure } from "./manualWithdrawal.ts";
 
 type CreateOptions = { endpointName: string; requireIdempotencyKey: boolean };
 type BasicOptions = { endpointName: string };
@@ -80,6 +81,7 @@ const ADMIN_DECISION_BEARER_KEY = envString(
   "ADMIN_SUPABASE_SECRET_KEY",
   envString("SUPABASE_SECRET_KEY", SUPABASE_SERVICE_ROLE_KEY),
 );
+const CASHOUT_MANUAL_MODE = envFlag("CASHOUT_MANUAL_MODE", true);
 
 const normalizeEmail = (value: unknown) =>
   String(value || "")
@@ -1900,6 +1902,34 @@ const linkCheckbookRecipientFromPlaidAccess = async (
   ].filter(Boolean);
   const bankSummary = bankSummaryParts.join(" - ").slice(0, 180);
 
+  await upsertUserBankAccountSecure(supabase, {
+    userId,
+    routingNumber,
+    accountNumber,
+    bankName: institutionName || "Linked bank",
+    accountHolderName: profile.fullName,
+  });
+
+  const nowIso = new Date().toISOString();
+  await supabase
+    .from("profiles")
+    .update({
+      stripe_cashout_plaid_item_id: itemId,
+      stripe_cashout_plaid_account_id: plaidAccountId,
+      stripe_cashout_account_label: bankSummary || "Linked via Plaid",
+      stripe_cashout_bank_synced_at: nowIso,
+    })
+    .eq("id", userId);
+
+  if (CASHOUT_MANUAL_MODE) {
+    return {
+      recipientId: null,
+      bankSummary: bankSummary || "Linked via Plaid",
+      selectedPayoutAccountId: plaidAccountId,
+      selectedPayoutLabel: bankSummary || "Linked via Plaid",
+    };
+  }
+
   const iavResponse = await callCheckbookApi("/v3/account/bank/iav/plaid", {
     method: "POST",
     body: JSON.stringify({
@@ -2203,7 +2233,9 @@ export const createCheckbookBankLinkHandler =
   (_options: BasicOptions) => async (req: Request) => {
     if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
     try {
-      ensureCheckbookCredentials();
+      if (!CASHOUT_MANUAL_MODE) {
+        ensureCheckbookCredentials();
+      }
       const { userId, body } = await authenticateRequest(req);
       const supabase = createAdminSupabase();
       await enforceRateLimit({
@@ -2241,23 +2273,27 @@ export const createCheckbookBankLinkHandler =
         String(body?.selectOnly || body?.select_only || "").trim(),
       );
 
+      const hasLinkedRecipient = existing.recipientId &&
+        ["linked", "verified", "active"].includes(existing.recipientStatus);
+      const hasManualSelection = CASHOUT_MANUAL_MODE &&
+        plaidState.selectedPlaidAccountActive;
+
       if (
         !publicToken &&
         !forceRelink &&
         !plaidAccountId &&
-        existing.recipientId &&
-        ["linked", "verified", "active"].includes(existing.recipientStatus) &&
         plaidState.hasActivePlaidAccount &&
-        plaidState.selectedPlaidAccountActive
+        (hasLinkedRecipient || hasManualSelection)
       ) {
+        const selectedLabel = existing.bankSummary || "Linked bank";
         return json({
           ok: true,
           status: "linked",
           linkToken: null,
-          recipientId: existing.recipientId,
-          bankSummary: existing.bankSummary,
+          recipientId: existing.recipientId || null,
+          bankSummary: selectedLabel,
           selectedPayoutAccountId: plaidState.selectedPlaidAccountId,
-          selectedPayoutLabel: existing.bankSummary,
+          selectedPayoutLabel: selectedLabel,
         }, 200);
       }
 
@@ -2294,7 +2330,7 @@ export const createCheckbookBankLinkHandler =
         }
         const { data: itemRows, error: itemLookupError } = await supabase
           .from("plaid_linked_items")
-          .select("id, institution_name, link_purposes, updated_at")
+          .select("id, institution_name, plaid_access_token, link_purposes, updated_at")
           .eq("user_id", userId)
           .eq("plaid_item_id", plaidItemId)
           .eq("status", "active")
@@ -2390,6 +2426,34 @@ export const createCheckbookBankLinkHandler =
             .eq("provider", "checkbook");
         }
 
+        if (CASHOUT_MANUAL_MODE) {
+          const accessToken = String(selectedItem?.plaid_access_token || "").trim();
+          if (!accessToken) {
+            throw new HttpError("Reconnect this bank to use it for cashout.", 400, {
+              reason: "plaid_access_token_missing",
+            });
+          }
+          const auth = await plaidGetAuthNumbers(accessToken, plaidAccountId);
+          const achRows = Array.isArray(auth?.numbers?.ach) ? auth.numbers.ach : [];
+          const achRow = achRows.find((row) =>
+            String(row?.account_id || "").trim() === plaidAccountId
+          ) || achRows[0];
+          const accountNumber = String(achRow?.account || "").replace(/\D+/g, "");
+          const routingNumber = String(achRow?.routing || "").replace(/\D+/g, "");
+          if (!accountNumber || !routingNumber) {
+            throw new HttpError("Reconnect this bank to use it for cashout.", 400, {
+              reason: "plaid_auth_numbers_missing",
+            });
+          }
+          await upsertUserBankAccountSecure(supabase, {
+            userId,
+            routingNumber,
+            accountNumber,
+            bankName: String(selectedItem?.institution_name || "").trim() || "Linked bank",
+            accountHolderName: profile.fullName,
+          });
+        }
+
         return json({
           ok: true,
           status: existing.recipientId ? "linked" : "selected",
@@ -2406,7 +2470,7 @@ export const createCheckbookBankLinkHandler =
         }, 200);
       }
 
-      if (!publicToken && (forceRelink || plaidAccountId)) {
+      if (!publicToken && !forceRelink && plaidAccountId) {
         const linked = await refreshCheckbookRecipientFromStoredPlaid(
           supabase,
           userId,

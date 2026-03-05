@@ -98,3 +98,6 @@ verify_jwt = false
 
 [functions.places-proxy]
 verify_jwt = false
+
+[functions.submit-withdrawal]
+verify_jwt = false

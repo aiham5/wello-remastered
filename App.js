@@ -440,6 +440,29 @@ const isActiveCashoutClaimEntry = (entry) => {
   }
   return false;
 };
+const getCashoutWithdrawalStatusMeta = (entry) => {
+  const status = String(entry?.status || "").trim().toLowerCase();
+  const methodType = normalizeCashoutMethodType(
+    entry?.methodType || entry?.method_type,
+  );
+  const approvalStatus = String(
+    entry?.approvalStatus || entry?.approval_status || "",
+  )
+    .trim()
+    .toLowerCase();
+
+  if (status === "paid") return { label: "Paid", tone: "paid" };
+  if (status === "failed" || approvalStatus === "rejected") {
+    return { label: "Failed", tone: "failed" };
+  }
+  if (methodType === "bank_transfer") {
+    if (approvalStatus === "approved") {
+      return { label: "Verification processing", tone: "review" };
+    }
+    return { label: "In review", tone: "review" };
+  }
+  return { label: "Pending", tone: "default" };
+};
 const isCashoutBankLinkError = (message) => {
   const normalized = String(message || "").trim().toLowerCase();
   if (!normalized) return false;
@@ -7644,24 +7667,58 @@ export default function App() {
     cashoutIdempotencyKeyRef.current = idempotencyKey;
 
     setCashoutActionStatus({ loading: true, error: null, success: null });
-    const payoutResponse = await callAuthedEdgeFunction(
-      "cashout-create",
-      {
-        methodType,
-        amountCents: amountCentsToCashout,
-        idempotencyKey,
-        ...(methodType === "gift_card"
-          ? {
+    const payoutResponse =
+      methodType === "bank_transfer"
+        ? await callAuthedEdgeFunction(
+            "submit-withdrawal",
+            {
+              amountCents: amountCentsToCashout,
+              idempotencyKey,
+            },
+            { timeoutMs: 20000 },
+          )
+        : await callAuthedEdgeFunction(
+            "cashout-create",
+            {
+              methodType,
+              amountCents: amountCentsToCashout,
+              idempotencyKey,
               catalogItemCode: selectedCatalogCode,
               recipientEmail: normalizedGiftCardRecipientEmail,
-            }
-          : {}),
-      },
-      { timeoutMs: 20000 },
-    );
+            },
+            { timeoutMs: 20000 },
+          );
     const { data, error, status, details } = payoutResponse;
     if (error || !data?.success) {
       if (status === 429) {
+        const reasonCode = String(
+          details?.reason || data?.reason || "",
+        ).trim().toLowerCase();
+        if (reasonCode === "withdrawal_rate_limited") {
+          const nextEligibleAt =
+            details?.nextEligibleAt || data?.nextEligibleAt || null;
+          const nextLabel = nextEligibleAt
+            ? new Date(nextEligibleAt).toLocaleString([], {
+                year: "numeric",
+                month: "numeric",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+              })
+            : "tomorrow";
+          showAppDialog({
+            title: "Withdrawal limit reached",
+            message: `Bank transfer cashout is limited to once per day. You can try again after ${nextLabel}.`,
+            options: [{ label: "OK", variant: "primary" }],
+          });
+          setCashoutActionStatus({
+            loading: false,
+            error: null,
+            success: null,
+          });
+          cashoutIdempotencyKeyRef.current = null;
+          return;
+        }
         const nextEligibleAt =
           details?.nextEligibleAt || data?.nextEligibleAt || null;
         const limitWindowRaw = String(
@@ -7793,7 +7850,8 @@ export default function App() {
       setCashoutBankModalVisible(false);
       showAppDialog({
         title: "Transfer requested",
-        message: "Bank transfer request submitted for admin approval.",
+        message:
+          "Your bank transfer request was submitted. Verification processing typically takes 24-48 hours.",
         options: [{ label: "OK", variant: "primary" }],
       });
       triggerCashoutCelebration(
@@ -21686,7 +21744,7 @@ export default function App() {
                       </View>
                       <View style={styles.cashoutSheetSummaryRow}>
                         <Text style={styles.cashoutSheetSummaryLabel}>Processing</Text>
-                        <Text style={styles.cashoutSheetSummaryValue}>1-3 business days</Text>
+                        <Text style={styles.cashoutSheetSummaryValue}>24-48 hours</Text>
                       </View>
                       <View style={styles.cashoutSheetSummaryDivider} />
                       <View style={styles.cashoutSheetSummaryRow}>
@@ -26140,86 +26198,96 @@ export default function App() {
                                     <View style={styles.cashoutWithdrawalList}>
                                       {cashoutWithdrawalEntries
                                         .slice(0, 8)
-                                        .map((entry) => (
-                                          <View
-                                            key={`cashout-withdraw-${entry.id}`}
-                                            style={styles.cashoutWithdrawalRow}
-                                          >
+                                        .map((entry) => {
+                                          const statusMeta =
+                                            getCashoutWithdrawalStatusMeta(entry);
+                                          return (
                                             <View
-                                              style={
-                                                styles.cashoutEarnedRowMain
-                                              }
+                                              key={`cashout-withdraw-${entry.id}`}
+                                              style={styles.cashoutWithdrawalRow}
                                             >
-                                              <Text
-                                                style={
-                                                  styles.cashoutEarnedOffer
-                                                }
-                                                numberOfLines={1}
-                                              >
-                                                {entry.methodType ===
-                                                "bank_transfer"
-                                                  ? "Bank transfer"
-                                                  : String(
-                                                        entry.catalogItemName ||
-                                                          "",
-                                                      ).trim() ||
-                                                    "Gift card payout"}
-                                              </Text>
-                                              <Text
-                                                style={
-                                                  styles.cashoutWithdrawalMeta
-                                                }
-                                                numberOfLines={1}
-                                              >
-                                                {formatHistoryTimestamp(
-                                                  entry.processedAt ||
-                                                    entry.createdAt,
-                                                )}
-                                              </Text>
-                                            </View>
-                                            <View
-                                              style={
-                                                styles.cashoutWithdrawalRight
-                                              }
-                                            >
-                                              <Text
-                                                style={
-                                                  styles.cashoutWithdrawalAmount
-                                                }
-                                              >
-                                                -
-                                                {formatCurrencyFromCents(
-                                                  entry.amountCents,
-                                                )}
-                                              </Text>
                                               <View
-                                                style={[
-                                                  styles.cashoutWithdrawalStatusPill,
-                                                  entry.status === "paid" &&
-                                                    styles.cashoutWithdrawalStatusPillPaid,
-                                                  entry.status === "failed" &&
-                                                    styles.cashoutWithdrawalStatusPillFailed,
-                                                ]}
+                                                style={
+                                                  styles.cashoutEarnedRowMain
+                                                }
                                               >
                                                 <Text
-                                                  style={[
-                                                    styles.cashoutWithdrawalStatusText,
-                                                    entry.status === "paid" &&
-                                                      styles.cashoutWithdrawalStatusTextPaid,
-                                                    entry.status === "failed" &&
-                                                      styles.cashoutWithdrawalStatusTextFailed,
-                                                  ]}
+                                                  style={
+                                                    styles.cashoutEarnedOffer
+                                                  }
+                                                  numberOfLines={1}
                                                 >
-                                                  {entry.status === "paid"
-                                                    ? "Paid"
-                                                    : entry.status === "failed"
-                                                      ? "Failed"
-                                                      : "Pending"}
+                                                  {entry.methodType ===
+                                                  "bank_transfer"
+                                                    ? "Bank transfer"
+                                                    : String(
+                                                          entry.catalogItemName ||
+                                                            "",
+                                                        ).trim() ||
+                                                      "Gift card payout"}
+                                                </Text>
+                                                <Text
+                                                  style={
+                                                    styles.cashoutWithdrawalMeta
+                                                  }
+                                                  numberOfLines={1}
+                                                >
+                                                  {formatHistoryTimestamp(
+                                                    entry.processedAt ||
+                                                      entry.createdAt,
+                                                  )}
                                                 </Text>
                                               </View>
+                                              <View
+                                                style={
+                                                  styles.cashoutWithdrawalRight
+                                                }
+                                              >
+                                                <Text
+                                                  style={
+                                                    styles.cashoutWithdrawalAmount
+                                                  }
+                                                >
+                                                  -
+                                                  {formatCurrencyFromCents(
+                                                    entry.amountCents,
+                                                  )}
+                                                </Text>
+                                                <View
+                                                  style={[
+                                                    styles.cashoutWithdrawalStatusPill,
+                                                    statusMeta.tone ===
+                                                      "paid" &&
+                                                      styles.cashoutWithdrawalStatusPillPaid,
+                                                    statusMeta.tone ===
+                                                      "failed" &&
+                                                      styles.cashoutWithdrawalStatusPillFailed,
+                                                    statusMeta.tone ===
+                                                      "review" &&
+                                                      styles.cashoutWithdrawalStatusPillReview,
+                                                  ]}
+                                                >
+                                                  <Text
+                                                    style={[
+                                                      styles.cashoutWithdrawalStatusText,
+                                                      statusMeta.tone ===
+                                                        "paid" &&
+                                                        styles.cashoutWithdrawalStatusTextPaid,
+                                                      statusMeta.tone ===
+                                                        "failed" &&
+                                                        styles.cashoutWithdrawalStatusTextFailed,
+                                                      statusMeta.tone ===
+                                                        "review" &&
+                                                        styles.cashoutWithdrawalStatusTextReview,
+                                                    ]}
+                                                  >
+                                                    {statusMeta.label}
+                                                  </Text>
+                                                </View>
+                                              </View>
                                             </View>
-                                          </View>
-                                        ))}
+                                          );
+                                        })}
                                     </View>
                                   )}
                                 </View>
@@ -37593,6 +37661,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#FEE2E2",
     borderColor: "#FCA5A5",
   },
+  cashoutWithdrawalStatusPillReview: {
+    backgroundColor: "#E0E7FF",
+    borderColor: "#C7D2FE",
+  },
   cashoutWithdrawalStatusText: {
     fontSize: 11,
     color: "#4B5563",
@@ -37603,6 +37675,9 @@ const styles = StyleSheet.create({
   },
   cashoutWithdrawalStatusTextFailed: {
     color: "#B91C1C",
+  },
+  cashoutWithdrawalStatusTextReview: {
+    color: "#1D4ED8",
   },
   cashoutBalanceHeader: {
     marginBottom: 10,
