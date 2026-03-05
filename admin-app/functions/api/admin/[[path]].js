@@ -1,6 +1,7 @@
 import { enforceAdminRateLimit, getAdminContext, json, logAuthEvent } from "../../_lib/auth.js";
 
 const ALLOWED_TABLES = new Set([
+  "account_deletion_requests",
   "admin_action_logs",
   "admin_auth_events",
   "business_review_audit_log",
@@ -29,6 +30,7 @@ const ALLOWED_MUTATION_TABLES = new Set([
   "promo_codes",
   "receipt_reports",
   "receipt_uploads",
+  "account_deletion_requests",
 ]);
 
 const ALLOWED_RPCS = new Set([
@@ -1681,6 +1683,134 @@ const routeExplicit = async (ctx, request, segments) => {
         p_resolved_by: body?.resolvedBy || ctx.profile.id,
       },
     });
+  }
+
+  if (segments.length === 1 && segments[0] === "account-deletion-requests" && method === "GET") {
+    const searchParams = new URL(request.url).searchParams;
+    const requestStatus = String(searchParams.get("requestStatus") || "all").trim().toLowerCase();
+    const search = String(searchParams.get("search") || "").trim();
+    const page = Math.max(0, Number(searchParams.get("page") || 0) || 0);
+    const limit = Math.max(1, Math.min(100, Number(searchParams.get("limit") || 50) || 50));
+    const filters = [];
+
+    if (requestStatus !== "all") {
+      filters.push({ column: "request_status", op: "eq", value: requestStatus });
+    }
+    if (search) {
+      const safe = search.replace(/,/g, " ");
+      filters.push({
+        column: "or",
+        op: "or",
+        value: `id.ilike.%${safe}%,user_id.ilike.%${safe}%,review_notes.ilike.%${safe}%`,
+      });
+    }
+
+    return handleQuery(ctx, {
+      table: "account_deletion_requests",
+      action: "select",
+      select:
+        "id,user_id,request_status,confirm_forfeit_cashback,forfeited_cashback_cents,forfeited_at,reviewed_by,reviewed_at,review_notes,created_at,updated_at",
+      order: [{ column: "created_at", ascending: false }],
+      limit,
+      range: {
+        from: page * limit,
+        to: page * limit + limit - 1,
+      },
+      filters,
+    });
+  }
+
+  if (
+    segments.length === 3 &&
+    segments[0] === "account-deletion-requests" &&
+    segments[2] === "decision" &&
+    method === "POST"
+  ) {
+    const requestId = String(segments[1] || "").trim();
+    const action = String(body?.action || "").trim().toLowerCase();
+    const expectedStatus = String(body?.expectedStatus || "pending").trim().toLowerCase();
+    const reviewNotes = toNullableString(body?.reviewNotes, 1600);
+
+    if (!requestId) {
+      return json({ ok: false, error: { code: "invalid_request_id", message: "Request id is required." } }, 400);
+    }
+    if (!UUID_RE.test(requestId)) {
+      return json({ ok: false, error: { code: "invalid_request_id", message: "Request id must be a UUID." } }, 400);
+    }
+    if (!["approve", "reject"].includes(action)) {
+      return json({ ok: false, error: { code: "invalid_action", message: "Action must be approve or reject." } }, 400);
+    }
+
+    const requestRow = await runQuery({
+      table: "account_deletion_requests",
+      action: "select",
+      select: "id,request_status,reviewed_by,reviewed_at",
+      filters: [{ column: "id", op: "eq", value: requestId }],
+      single: "maybe",
+    });
+    if (!requestRow.ok || !requestRow.payload?.data?.id) {
+      return json({ ok: false, error: { code: "request_not_found", message: "Account deletion request not found." } }, 404);
+    }
+
+    const currentStatus = String(requestRow.payload.data.request_status || "").toLowerCase();
+    if (currentStatus !== expectedStatus || currentStatus !== "pending") {
+      return json(
+        {
+          ok: false,
+          error: {
+            code: "invalid_transition",
+            message: "Request status changed. Refresh and try again.",
+          },
+        },
+        409,
+      );
+    }
+
+    const nextStatus = action === "approve" ? "approved" : "rejected";
+    const updated = await runQuery({
+      table: "account_deletion_requests",
+      action: "update",
+      body: {
+        request_status: nextStatus,
+        reviewed_by: ctx.profile.id,
+        reviewed_at: new Date().toISOString(),
+        review_notes: reviewNotes,
+      },
+      select:
+        "id,user_id,request_status,confirm_forfeit_cashback,forfeited_cashback_cents,forfeited_at,reviewed_by,reviewed_at,review_notes,created_at,updated_at",
+      filters: [
+        { column: "id", op: "eq", value: requestId },
+        { column: "request_status", op: "eq", value: "pending" },
+      ],
+      single: "maybe",
+    });
+    if (!updated.ok || !updated.payload?.data?.id) {
+      return json(
+        {
+          ok: false,
+          error: {
+            code: "request_not_updated",
+            message: "Request is no longer pending. Please refresh and retry.",
+          },
+        },
+        409,
+      );
+    }
+
+    await logAdminActionInternal(ctx, {
+      action: `account_deletion_${action}`,
+      entity: "account_deletion_requests",
+      entityId: requestId,
+      status: "success",
+      before: requestRow.payload.data,
+      after: updated.payload.data,
+      meta: {
+        action,
+        expectedStatus,
+      },
+    });
+
+    return json({ ok: true, data: updated.payload.data }, 200);
   }
 
   if (segments.length === 1 && segments[0] === "businesses" && method === "GET") {

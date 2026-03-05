@@ -17,6 +17,19 @@ const CASHOUT_SWITCH_LIMIT_DISABLED = /^(1|true|yes|on)$/i.test(
   String(Deno.env.get("CASHOUT_BANK_SWITCH_LIMIT_DISABLED") || "").trim(),
 );
 const TEST_UNLIMITED_SWITCH_LIMIT = 9999;
+const normalizeAccountType = (value: unknown) =>
+  String(value || "").trim().toLowerCase();
+const normalizeAccountSubtype = (value: unknown) =>
+  String(value || "").trim().toLowerCase();
+const isPayoutEligibleAccount = (account: Record<string, unknown>) => {
+  const subtype = normalizeAccountSubtype(account?.account_subtype);
+  const type = normalizeAccountType(account?.account_type);
+  return (
+    subtype === "checking" ||
+    subtype === "savings" ||
+    type === "depository"
+  );
+};
 
 serve(async (req) => {
   if (req.method !== "POST") {
@@ -169,7 +182,8 @@ serve(async (req) => {
       hasPlaidLinkPurpose(item?.link_purposes, "receipt_verification")
     );
     const activeCashoutAccounts = linkedAccounts.filter((account) =>
-      hasPlaidLinkPurpose(account?.link_purposes, "cashout")
+      hasPlaidLinkPurpose(account?.link_purposes, "cashout") &&
+      isPayoutEligibleAccount(account)
     );
     const activeReceiptAccounts = linkedAccounts.filter((account) =>
       hasPlaidLinkPurpose(account?.link_purposes, "receipt_verification")

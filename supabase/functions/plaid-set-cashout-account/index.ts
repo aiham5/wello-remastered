@@ -35,6 +35,25 @@ const toLabel = (parts: Array<string | null | undefined>) =>
     .filter(Boolean)
     .join(" ");
 
+const normalizeLinkPurposes = (value: unknown): string[] => {
+  const rows = Array.isArray(value) ? value : [];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const row of rows) {
+    const key = String(row || "").trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(key);
+  }
+  return normalized;
+};
+
+const withCashoutPurpose = (value: unknown): string[] => {
+  const normalized = normalizeLinkPurposes(value);
+  if (!normalized.includes("cashout")) normalized.push("cashout");
+  return normalized;
+};
+
 const createManagedCashoutAccount = async (
   userId: string,
   email: string | null | undefined,
@@ -213,16 +232,23 @@ serve(async (req) => {
       });
     }
 
-    const { data: linkedAccount, error: linkedAccountError } = await supabase
+    const { data: linkedAccountRows, error: linkedAccountError } = await supabase
       .from("plaid_linked_accounts")
       .select(
-        "plaid_item_id, plaid_account_id, account_name, account_mask, account_subtype, account_type, status, link_purposes",
+        "id, plaid_item_id, plaid_account_id, account_name, account_mask, account_subtype, account_type, status, link_purposes",
       )
       .eq("user_id", userId)
       .eq("plaid_account_id", plaidAccountId)
       .eq("status", "active")
-      .contains("link_purposes", ["cashout"])
-      .maybeSingle();
+      .order("updated_at", { ascending: false });
+    const linkedAccountCandidates = Array.isArray(linkedAccountRows)
+      ? linkedAccountRows
+      : [];
+    const linkedAccount = linkedAccountCandidates.length > 0
+      ? linkedAccountCandidates.find((row) =>
+        normalizeLinkPurposes(row?.link_purposes).includes("cashout")
+      ) || linkedAccountCandidates[0]
+      : null;
     if (linkedAccountError || !linkedAccount) {
       throw new HttpError(
         linkedAccountError?.message || "Linked account not found.",
@@ -230,23 +256,70 @@ serve(async (req) => {
         { reason: "plaid_account_not_found" },
       );
     }
+    const linkedAccountPurposes = withCashoutPurpose(linkedAccount.link_purposes);
+    if (
+      linkedAccount.id &&
+      !normalizeLinkPurposes(linkedAccount.link_purposes).includes("cashout")
+    ) {
+      const { error: accountPurposeError } = await supabase
+        .from("plaid_linked_accounts")
+        .update({
+          link_purposes: linkedAccountPurposes,
+        })
+        .eq("id", linkedAccount.id)
+        .eq("user_id", userId);
+      if (accountPurposeError) {
+        throw new HttpError(
+          accountPurposeError.message || "Unable to activate cashout on bank account.",
+          500,
+          { reason: "plaid_account_purpose_update_failed" },
+        );
+      }
+    }
 
     const plaidItemId = String(linkedAccount.plaid_item_id || "").trim();
     plaidItemIdForLog = plaidItemId || null;
-    const { data: linkedItem, error: linkedItemError } = await supabase
+    const { data: linkedItemRows, error: linkedItemError } = await supabase
       .from("plaid_linked_items")
-      .select("plaid_access_token, institution_name, status, link_purposes")
+      .select("id, plaid_access_token, institution_name, status, link_purposes")
       .eq("user_id", userId)
       .eq("plaid_item_id", plaidItemId)
       .eq("status", "active")
-      .contains("link_purposes", ["cashout"])
-      .maybeSingle();
+      .order("updated_at", { ascending: false });
+    const linkedItemCandidates = Array.isArray(linkedItemRows)
+      ? linkedItemRows
+      : [];
+    const linkedItem = linkedItemCandidates.length > 0
+      ? linkedItemCandidates.find((row) =>
+        normalizeLinkPurposes(row?.link_purposes).includes("cashout")
+      ) || linkedItemCandidates[0]
+      : null;
     if (linkedItemError || !linkedItem) {
       throw new HttpError(
         linkedItemError?.message || "Linked institution is not active.",
         400,
         { reason: "plaid_item_not_active" },
       );
+    }
+    const linkedItemPurposes = withCashoutPurpose(linkedItem.link_purposes);
+    if (
+      linkedItem.id &&
+      !normalizeLinkPurposes(linkedItem.link_purposes).includes("cashout")
+    ) {
+      const { error: itemPurposeError } = await supabase
+        .from("plaid_linked_items")
+        .update({
+          link_purposes: linkedItemPurposes,
+        })
+        .eq("id", linkedItem.id)
+        .eq("user_id", userId);
+      if (itemPurposeError) {
+        throw new HttpError(
+          itemPurposeError.message || "Unable to activate cashout on linked institution.",
+          500,
+          { reason: "plaid_item_purpose_update_failed" },
+        );
+      }
     }
 
     const accessToken = String(linkedItem.plaid_access_token || "").trim();

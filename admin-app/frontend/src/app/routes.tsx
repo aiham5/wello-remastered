@@ -15,6 +15,7 @@ import { Reports } from "./pages/Reports";
 import { Settings } from "./pages/Settings";
 import { AdminRoles } from "./pages/AdminRoles";
 import { Help } from "./pages/Help";
+import { AccountDeletionRequests } from "./pages/AccountDeletionRequests";
 
 export const router = createHashRouter([
   {
@@ -32,6 +33,7 @@ export const router = createHashRouter([
       { path: "fraud-disputes", Component: FraudDisputes },
       { path: "notifications", Component: Notifications },
       { path: "support-tickets", Component: SupportTickets },
+      { path: "account-deletion-requests", Component: AccountDeletionRequests },
       { path: "reports", Component: Reports },
       { path: "settings", Component: Settings },
       { path: "admin-roles", Component: AdminRoles },

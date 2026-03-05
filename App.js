@@ -3998,6 +3998,7 @@ export default function App() {
   const [demoSearchFocused, setDemoSearchFocused] = useState(false);
   const [activeTab, setActiveTab] = useState("discover");
   const [navRowWidth, setNavRowWidth] = useState(0);
+  const [bottomNavHostHeight, setBottomNavHostHeight] = useState(0);
   const activeTabRef = useRef("discover");
   const tabIndicatorIndex = useRef(new Animated.Value(0)).current;
   const tabFocusAnimRef = useRef({});
@@ -6230,10 +6231,21 @@ export default function App() {
     openCashoutHostedFlow,
   ]);
   const openBankTransferCashoutModal = useCallback(async () => {
+    const linkedAccountCount = Array.isArray(plaidLinkState.linkedAccounts)
+      ? plaidLinkState.linkedAccounts.length
+      : 0;
     setCashoutGiftModalVisible(false);
     setCashoutMethodType("bank_transfer");
     setCashoutBankModalVisible(true);
     if (!cashoutBankReady) {
+      if (linkedAccountCount > 0) {
+        setCashoutActionStatus({
+          loading: false,
+          error: "Choose a bank account below.",
+          success: null,
+        });
+        return;
+      }
       await handleCashoutBankTilePress();
       return;
     }
@@ -6244,6 +6256,7 @@ export default function App() {
     cashoutBankReady,
     cashoutInputAmountCents,
     handleCashoutBankTilePress,
+    plaidLinkState.linkedAccounts,
     setCashoutAmountFromCents,
   ]);
 
@@ -9184,15 +9197,8 @@ export default function App() {
     [isOwner, isStaff, showHistoryTab, showCashoutTab],
   );
   const navContainerWidth = useMemo(() => {
-    const count = visibleTabs.length || 1;
-    const baseWidth =
-      count * NAV_PILL_MIN + (count - 1) * NAV_GAP + NAV_PADDING * 2 + 4;
-    const maxWidth = Math.max(260, SCREEN_WIDTH - NAV_SIDE_INSET * 2);
-    if (count <= 2) {
-      return Math.min(baseWidth, maxWidth);
-    }
-    return maxWidth;
-  }, [visibleTabs.length]);
+    return SCREEN_WIDTH;
+  }, []);
   const navNeedsTightFit = useMemo(() => {
     const count = visibleTabs.length || 1;
     if (count < 4) return false;
@@ -9242,6 +9248,11 @@ export default function App() {
       centeredOffset,
     );
   }, [navIndicatorWidth, navSlotWidth, tabIndicatorIndex]);
+  const bottomNavHostBottomPad = useMemo(() => {
+    const measuredHeight = Number(bottomNavHostHeight) > 0 ? bottomNavHostHeight : 0;
+    const fallbackHeight = IS_COMPACT ? 64 : 72;
+    return measuredHeight > 0 ? measuredHeight : fallbackHeight;
+  }, [bottomNavHostHeight]);
   useEffect(() => {
     if (!visibleTabs.length) return;
     const nextIndex = visibleTabs.findIndex((tab) => tab.key === activeTab);
@@ -9729,7 +9740,7 @@ export default function App() {
     const rows = Array.isArray(plaidLinkState.linkedAccounts)
       ? plaidLinkState.linkedAccounts
       : [];
-    return rows
+    const mapped = rows
       .map((account, index) => {
         const accountId = String(account?.accountId || "").trim();
         if (!accountId) return null;
@@ -9750,8 +9761,21 @@ export default function App() {
           index,
         };
       })
-      .filter(Boolean)
-      .sort((a, b) => {
+      .filter(Boolean);
+
+    const dedupedByAccountId = new Map();
+    mapped.forEach((account) => {
+      const existing = dedupedByAccountId.get(account.accountId);
+      if (!existing) {
+        dedupedByAccountId.set(account.accountId, account);
+        return;
+      }
+      if (account.selectedForPayout && !existing.selectedForPayout) {
+        dedupedByAccountId.set(account.accountId, account);
+      }
+    });
+
+    return Array.from(dedupedByAccountId.values()).sort((a, b) => {
         if (a.selectedForPayout && !b.selectedForPayout) return -1;
         if (!a.selectedForPayout && b.selectedForPayout) return 1;
         return a.index - b.index;
@@ -9759,7 +9783,7 @@ export default function App() {
   }, [plaidLinkState.linkedAccounts, plaidLinkState.selectedPayoutAccountId]);
   const visibleCashoutLinkedPayoutAccounts = useMemo(() => {
     if (cashoutShowAllLinkedAccounts) return cashoutLinkedPayoutAccounts;
-    return cashoutLinkedPayoutAccounts.slice(0, 3);
+    return cashoutLinkedPayoutAccounts.slice(0, 1);
   }, [cashoutLinkedPayoutAccounts, cashoutShowAllLinkedAccounts]);
   const hiddenCashoutLinkedAccountCount = Math.max(
     0,
@@ -9806,7 +9830,7 @@ export default function App() {
   useEffect(() => {
     if (
       cashoutShowAllLinkedAccounts &&
-      cashoutLinkedPayoutAccounts.length <= 3
+      cashoutLinkedPayoutAccounts.length <= 1
     ) {
       setCashoutShowAllLinkedAccounts(false);
     }
@@ -14766,16 +14790,39 @@ export default function App() {
         error: null,
         success: null,
       });
-      const { data, error } = await callPlaidFunction(
-        "plaid-set-cashout-account",
-        { plaidAccountId: nextAccountId },
+      const { data, error, details } = await callAuthedEdgeFunction(
+        "cashout-bank-link",
+        {
+          purpose: "cashout",
+          selectOnly: true,
+          plaidAccountId: nextAccountId,
+          platform: Platform.OS,
+          ...(Platform.OS === "android" && PLAID_ANDROID_PACKAGE_NAME
+            ? { androidPackageName: PLAID_ANDROID_PACKAGE_NAME }
+            : {}),
+        },
+        { timeoutMs: 30000 },
       );
-      if (error || !data?.selected) {
+      const nextStatus = String(data?.status || "").trim().toLowerCase();
+      const selectionAccepted =
+        data?.ok && ["linked", "selected"].includes(nextStatus);
+      if (error || !selectionAccepted) {
+        const reason = String(
+          details?.reason || data?.reason || "",
+        ).trim().toLowerCase();
+        const fallbackMessage =
+          reason === "bank_not_linked" ||
+            reason === "plaid_access_token_missing" ||
+            reason === "checkbook_recipient_missing"
+            ? "Reconnect this bank to use it for cashout."
+            : "Unable to update payout bank right now.";
         setCashoutActionStatus({
           loading: false,
           error: toUserFacingError(
-            error || data?.error || "Unable to update payout bank right now.",
-            "Unable to update payout bank right now.",
+            error ||
+              data?.error ||
+              fallbackMessage,
+            fallbackMessage,
           ),
           success: null,
         });
@@ -14783,7 +14830,7 @@ export default function App() {
       }
 
       const selectedAccountLabel = String(
-        data?.selectedAccountLabel || "",
+        data?.selectedPayoutLabel || data?.bankSummary || "",
       ).trim() || null;
       setPlaidLinkState((prev) => ({
         ...prev,
@@ -14827,6 +14874,7 @@ export default function App() {
       isSignedIn,
       plaidLinkState.selectedPayoutAccountId,
       plaidLinkState.payoutSwitchPolicy?.canSwitch,
+      callAuthedEdgeFunction,
       loadCashoutCatalog,
       loadPlaidLinkState,
     ],
@@ -18302,6 +18350,37 @@ export default function App() {
               style={[styles.topMeta, { top: uiTopInset }]}
               pointerEvents="box-none"
             >
+              <View style={styles.locateRow} pointerEvents="box-none">
+                <TouchableOpacity
+                  style={styles.locateButton}
+                  onPress={handleLocateMe}
+                  disabled={locating}
+                >
+                  <Ionicons
+                    name={locating ? "locate" : "locate-outline"}
+                    size={21}
+                    color={COLORS.pine}
+                  />
+                </TouchableOpacity>
+                {locationError && (
+                  <View style={styles.locateError}>
+                    <Text style={styles.locateErrorText}>{locationError}</Text>
+                  </View>
+                )}
+              </View>
+            </View>
+            <View
+              style={styles.bottomNavHost}
+              onLayout={(event) => {
+                const nextHeight = Number(
+                  event?.nativeEvent?.layout?.height || 0,
+                );
+                if (!Number.isFinite(nextHeight)) return;
+                setBottomNavHostHeight((prev) =>
+                  Math.abs(prev - nextHeight) < 1 ? prev : nextHeight,
+                );
+              }}
+            >
               <View
                 style={[
                   styles.navContainer,
@@ -18365,29 +18444,39 @@ export default function App() {
                           style={[
                             styles.navPillContent,
                             {
-                              opacity: focusAnim.interpolate({
-                                inputRange: [0, 1],
-                                outputRange: [0.86, 1],
-                              }),
+                              opacity: 1,
                               transform: [
+                                {
+                                  translateY: focusAnim.interpolate({
+                                    inputRange: [0, 1],
+                                    outputRange: [0, -5],
+                                  }),
+                                },
                                 {
                                   scale: focusAnim.interpolate({
                                     inputRange: [0, 1],
-                                    outputRange: [1, 1.06],
+                                    outputRange: [1, 1.14],
                                   }),
                                 },
                               ],
                             },
                           ]}
                         >
-                          <Ionicons
-                            name={iconName}
-                            size={iconSize}
+                          <View
                             style={[
-                              styles.navPillIcon,
-                              isActive && styles.navPillIconActive,
+                              styles.navIconOrb,
+                              isActive && styles.navIconOrbActive,
                             ]}
-                          />
+                          >
+                            <Ionicons
+                              name={iconName}
+                              size={iconSize}
+                              style={[
+                                styles.navPillIcon,
+                                isActive && styles.navPillIconActive,
+                              ]}
+                            />
+                          </View>
                           <Text
                             style={[
                               styles.navPillText,
@@ -18417,24 +18506,6 @@ export default function App() {
                     );
                   })}
                 </View>
-              </View>
-              <View style={styles.locateRow} pointerEvents="box-none">
-                <TouchableOpacity
-                  style={styles.locateButton}
-                  onPress={handleLocateMe}
-                  disabled={locating}
-                >
-                  <Ionicons
-                    name={locating ? "locate" : "locate-outline"}
-                    size={18}
-                    color={COLORS.pine}
-                  />
-                </TouchableOpacity>
-                {locationError && (
-                  <View style={styles.locateError}>
-                    <Text style={styles.locateErrorText}>{locationError}</Text>
-                  </View>
-                )}
               </View>
             </View>
 
@@ -21635,79 +21706,101 @@ export default function App() {
                     </View>
                     {cashoutLinkedPayoutAccounts.length > 0 ? (
                       <View style={styles.cashoutLinkedAccountOptions}>
-                        {visibleCashoutLinkedPayoutAccounts.map((account) => {
-                          const canSelect =
-                            account.selectedForPayout ||
-                            Boolean(plaidLinkState.payoutSwitchPolicy?.canSwitch);
-                          return (
-                            <TouchableOpacity
-                              key={`bank-modal-payout-account-${account.accountId}`}
-                              style={[
-                                styles.cashoutLinkedAccountRow,
-                                !canSelect && styles.cashoutLinkedAccountRowDisabled,
-                              ]}
-                              disabled={!canSelect || cashoutActionStatus.loading}
-                              onPress={() => {
-                                setCashoutMethodType("bank_transfer");
-                                handleSelectCashoutPayoutAccount(account.accountId);
-                              }}
-                            >
-                              <Ionicons
-                                name={
-                                  account.selectedForPayout
-                                    ? "radio-button-on"
-                                    : "radio-button-off"
-                                }
-                                size={16}
-                                color={
-                                  account.selectedForPayout
-                                    ? COLORS.pine
-                                    : COLORS.muted
-                                }
-                              />
-                              <View style={styles.cashoutLinkedAccountMain}>
-                                <Text
-                                  style={styles.cashoutLinkedAccountTitle}
-                                  numberOfLines={1}
-                                >
-                                  {account.name}
-                                </Text>
-                                <Text
-                                  style={styles.cashoutLinkedAccountMeta}
-                                  numberOfLines={1}
-                                >
-                                  {[
-                                    account.institutionName,
-                                    account.mask ? `****${account.mask}` : null,
-                                  ]
-                                    .filter(Boolean)
-                                    .join(" · ") || "Linked bank account"}
-                                </Text>
-                              </View>
-                            </TouchableOpacity>
-                          );
-                        })}
-                        {hiddenCashoutLinkedAccountCount > 0 ? (
+                        {cashoutLinkedPayoutAccounts.length > 1 ? (
                           <TouchableOpacity
-                            style={styles.cashoutShowMoreButton}
-                            onPress={() => setCashoutShowAllLinkedAccounts(true)}
+                            style={styles.cashoutLinkedAccountsToggle}
+                            onPress={() =>
+                              setCashoutShowAllLinkedAccounts((current) => !current)}
+                            disabled={cashoutActionStatus.loading}
                           >
-                            <Text style={styles.cashoutShowMoreButtonText}>
-                              Show {hiddenCashoutLinkedAccountCount} more
-                            </Text>
+                            <View style={styles.cashoutLinkedAccountsToggleTextWrap}>
+                              <Text style={styles.cashoutLinkedAccountsToggleTitle}>
+                                Linked banks
+                              </Text>
+                              <Text style={styles.cashoutLinkedAccountsToggleSubtext}>
+                                {cashoutShowAllLinkedAccounts
+                                  ? "Tap to collapse"
+                                  : hiddenCashoutLinkedAccountCount > 0
+                                    ? `${hiddenCashoutLinkedAccountCount} more available`
+                                    : "Tap to expand"}
+                              </Text>
+                            </View>
+                            <Ionicons
+                              name={
+                                cashoutShowAllLinkedAccounts
+                                  ? "chevron-up"
+                                  : "chevron-down"
+                              }
+                              size={16}
+                              color={COLORS.muted}
+                            />
                           </TouchableOpacity>
                         ) : null}
-                        {cashoutShowAllLinkedAccounts &&
-                        cashoutLinkedPayoutAccounts.length > 3 ? (
-                          <TouchableOpacity
-                            style={styles.cashoutShowMoreButton}
-                            onPress={() => setCashoutShowAllLinkedAccounts(false)}
-                          >
-                            <Text style={styles.cashoutShowMoreButtonText}>
-                              Show fewer
-                            </Text>
-                          </TouchableOpacity>
-                        ) : null}
+                        <ScrollView
+                          style={
+                            cashoutShowAllLinkedAccounts
+                              ? styles.cashoutLinkedAccountsScrollExpanded
+                              : styles.cashoutLinkedAccountsScroll
+                          }
+                          contentContainerStyle={styles.cashoutLinkedAccountsScrollContent}
+                          nestedScrollEnabled
+                          showsVerticalScrollIndicator={cashoutShowAllLinkedAccounts}
+                          keyboardShouldPersistTaps="handled"
+                        >
+                          {visibleCashoutLinkedPayoutAccounts.map((account) => {
+                            const canSelect =
+                              account.selectedForPayout ||
+                              Boolean(plaidLinkState.payoutSwitchPolicy?.canSwitch);
+                            return (
+                              <TouchableOpacity
+                                key={`bank-modal-payout-account-${account.accountId}`}
+                                style={[
+                                  styles.cashoutLinkedAccountRow,
+                                  !canSelect && styles.cashoutLinkedAccountRowDisabled,
+                                ]}
+                                disabled={!canSelect || cashoutActionStatus.loading}
+                                onPress={() => {
+                                  setCashoutMethodType("bank_transfer");
+                                  setCashoutShowAllLinkedAccounts(false);
+                                  handleSelectCashoutPayoutAccount(account.accountId);
+                                }}
+                              >
+                                <Ionicons
+                                  name={
+                                    account.selectedForPayout
+                                      ? "radio-button-on"
+                                      : "radio-button-off"
+                                  }
+                                  size={16}
+                                  color={
+                                    account.selectedForPayout
+                                      ? COLORS.pine
+                                      : COLORS.muted
+                                  }
+                                />
+                                <View style={styles.cashoutLinkedAccountMain}>
+                                  <Text
+                                    style={styles.cashoutLinkedAccountTitle}
+                                    numberOfLines={1}
+                                  >
+                                    {account.name}
+                                  </Text>
+                                  <Text
+                                    style={styles.cashoutLinkedAccountMeta}
+                                    numberOfLines={1}
+                                  >
+                                    {[
+                                      account.institutionName,
+                                      account.mask ? `****${account.mask}` : null,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" · ") || "Linked bank account"}
+                                  </Text>
+                                </View>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </ScrollView>
                       </View>
                     ) : null}
                     <TouchableOpacity
@@ -22085,6 +22178,7 @@ export default function App() {
             <BottomSheet
               ref={bottomSheetRef}
               snapPoints={sheetSnapPoints}
+              bottomInset={bottomNavHostBottomPad}
               onChange={handleSheetChange}
               onAnimate={handleSheetAnimate}
               handleComponent={renderSheetHandle}
@@ -22107,12 +22201,15 @@ export default function App() {
                   bounces={Platform.OS === "ios"}
                   alwaysBounceVertical={Platform.OS === "ios"}
                   onLayout={handleDiscoverScrollLayout}
-                  contentContainerStyle={[
-                    styles.sheetScrollContent,
-                    styles.sheetContentInsets,
-                    discoverSheetOfferCards.length === 0 &&
-                      styles.sheetScrollContentEmpty,
-                  ]}
+                    contentContainerStyle={[
+                      styles.sheetScrollContent,
+                      styles.sheetContentInsets,
+                      {
+                        paddingBottom: 24,
+                      },
+                      discoverSheetOfferCards.length === 0 &&
+                        styles.sheetScrollContentEmpty,
+                    ]}
                   keyboardShouldPersistTaps="handled"
                   keyboardDismissMode="on-drag"
                   onContentSizeChange={handleDiscoverContentSizeChange}
@@ -22141,7 +22238,7 @@ export default function App() {
                     >
                       <Ionicons
                         name="search"
-                        size={16}
+                        size={14}
                         color={
                           discoverSearchFocused ? COLORS.pine : COLORS.muted
                         }
@@ -22188,8 +22285,8 @@ export default function App() {
                     >
                       <Ionicons
                         name="options-outline"
-                        size={18}
-                        color={showFilters ? COLORS.white : COLORS.ink}
+                        size={16}
+                        color={showFilters ? COLORS.white : "#6E788E"}
                       />
                     </TouchableOpacity>
                   </View>
@@ -22392,6 +22489,7 @@ export default function App() {
                   contentContainerStyle={[
                     styles.sheetScrollContent,
                     styles.sheetContentInsets,
+                    { paddingBottom: 24 },
                   ]}
                 >
                   <View style={styles.tremendousDemoCard}>
@@ -22616,7 +22714,7 @@ export default function App() {
                     >
                       <Ionicons
                         name="search"
-                        size={16}
+                        size={14}
                         color={demoSearchFocused ? COLORS.pine : COLORS.muted}
                         style={styles.searchIcon}
                       />
@@ -22659,8 +22757,8 @@ export default function App() {
                     >
                       <Ionicons
                         name="options-outline"
-                        size={15}
-                        color={showDemoFilters ? COLORS.white : COLORS.ink}
+                        size={14}
+                        color={showDemoFilters ? COLORS.white : "#6E788E"}
                       />
                       <Text
                         style={[
@@ -23083,8 +23181,7 @@ export default function App() {
                       styles.sheetContentInsets,
                       {
                         paddingBottom:
-                          24 +
-                          (activeTab === "profile" ? 0 : keyboardInset) +
+                          24 + (activeTab === "profile" ? 0 : keyboardInset) +
                           (activeTab === "profile" && isProfilePhoneFocused
                             ? Platform.OS === "ios"
                               ? 54
@@ -27806,11 +27903,12 @@ export default function App() {
                                   </Text>
                                 </View>
                                 <View style={styles.profileHeaderText}>
-                                  <Text style={styles.profileName}>
+                                  <Text
+                                    style={styles.profileName}
+                                    numberOfLines={1}
+                                    ellipsizeMode="tail"
+                                  >
                                     {profileName || "Wello Owner"}
-                                  </Text>
-                                  <Text style={styles.profileEmail}>
-                                    {profileEmail || authEmail || "Email unavailable"}
                                   </Text>
                                   <Text style={styles.profileMemberSince}>
                                     {profileMemberSinceLabel
@@ -31165,38 +31263,50 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
   },
+  bottomNavHost: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: "center",
+    zIndex: 30,
+  },
   navContainer: {
     alignSelf: "center",
     backgroundColor: COLORS.white,
-    borderTopLeftRadius: 26,
-    borderTopRightRadius: 26,
-    borderBottomLeftRadius: 26,
-    borderBottomRightRadius: 26,
-    paddingHorizontal: NAV_PADDING,
-    paddingBottom: IS_COMPACT ? 2 : 4,
-    paddingTop: IS_COMPACT ? 4 : 6,
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    paddingHorizontal: IS_COMPACT ? 10 : 14,
+    paddingBottom: SAFE_BOTTOM + (IS_COMPACT ? 6 : 8),
+    paddingTop: IS_COMPACT ? 6 : 8,
     borderWidth: 1,
-    borderColor: "rgba(148, 163, 184, 0.26)",
-    borderTopWidth: 0,
+    borderColor: "rgba(148, 163, 184, 0.22)",
+    borderTopWidth: 1,
     borderLeftWidth: 0,
     borderRightWidth: 0,
-    shadowOpacity: 0,
-    elevation: 0,
+    overflow: "visible",
+    shadowColor: "rgba(15, 23, 42, 0.25)",
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 22,
   },
   navContainerTight: {
-    paddingHorizontal: 4,
-    paddingBottom: 2,
-    paddingTop: 4,
+    paddingHorizontal: 8,
+    paddingBottom: SAFE_BOTTOM + 4,
+    paddingTop: 6,
   },
   navRow: {
     flexDirection: "row",
-    paddingHorizontal: 2,
-    paddingTop: 0,
-    paddingBottom: 6,
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    borderBottomLeftRadius: 22,
-    borderBottomRightRadius: 22,
+    paddingHorizontal: 4,
+    paddingTop: 2,
+    paddingBottom: 2,
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
     backgroundColor: "transparent",
     borderWidth: 0,
     position: "relative",
@@ -31207,11 +31317,12 @@ const styles = StyleSheet.create({
   locateRow: {
     alignItems: "flex-end",
     marginTop: IS_COMPACT ? 8 : 10,
+    paddingRight: IS_COMPACT ? 14 : 18,
   },
   locateButton: {
-    width: IS_COMPACT ? 38 : 42,
-    height: IS_COMPACT ? 38 : 42,
-    borderRadius: IS_COMPACT ? 19 : 21,
+    width: IS_COMPACT ? 46 : 52,
+    height: IS_COMPACT ? 46 : 52,
+    borderRadius: IS_COMPACT ? 23 : 26,
     backgroundColor: COLORS.white,
     borderWidth: 1,
     borderColor: "rgba(26, 31, 46, 0.1)",
@@ -31890,7 +32001,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "transparent",
     borderRadius: 0,
-    paddingVertical: IS_COMPACT ? 5 : 6,
+    paddingVertical: IS_COMPACT ? 3 : 4,
     paddingHorizontal: Platform.select({
       ios: IS_COMPACT ? 6 : 8,
       android: IS_COMPACT ? 6 : 8,
@@ -31915,13 +32026,30 @@ const styles = StyleSheet.create({
   navPillContent: {
     alignItems: "center",
     justifyContent: "center",
-    minHeight: IS_COMPACT ? 54 : 58,
+    minHeight: IS_COMPACT ? 50 : 54,
+  },
+  navIconOrb: {
+    width: IS_COMPACT ? 32 : 36,
+    height: IS_COMPACT ? 32 : 36,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "transparent",
+    marginBottom: 3,
+  },
+  navIconOrbActive: {
+    backgroundColor: "transparent",
+    shadowColor: "transparent",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   navPillIcon: {
-    color: "#98A2B3",
+    color: "#1E2A53",
   },
   navPillIconActive: {
-    color: COLORS.ink,
+    color: "#1E2A53",
   },
   navPillText: {
     fontSize: Platform.select({
@@ -31929,7 +32057,7 @@ const styles = StyleSheet.create({
       android: IS_COMPACT ? 11 : 12,
       default: IS_COMPACT ? 11 : 12,
     }),
-    color: "#98A2B3",
+    color: "#1E2A53",
     fontFamily: FONT_MEDIUM,
     lineHeight: Platform.select({
       ios: IS_COMPACT ? 14 : 16,
@@ -31942,7 +32070,7 @@ const styles = StyleSheet.create({
     }),
   },
   navPillLabel: {
-    marginTop: 5,
+    marginTop: 2,
   },
   navPillTextTight: {
     ...Platform.select({
@@ -31960,8 +32088,8 @@ const styles = StyleSheet.create({
     }),
   },
   navPillTextActive: {
-    color: COLORS.ink,
-    fontFamily: FONT_SEMIBOLD,
+    color: "#1E2A53",
+    fontFamily: FONT_MEDIUM,
   },
   navIndicator: {
     position: "absolute",
@@ -32271,9 +32399,11 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   sheetHint: {
-    fontSize: IS_COMPACT ? 14 : 15,
-    color: "#8A96A8",
+    fontSize: IS_COMPACT ? 17 : 18,
+    color: "#8B97A9",
     fontFamily: FONT_TEXT,
+    textAlign: "center",
+    marginBottom: 2,
   },
   searchRow: {
     flexDirection: "row",
@@ -32289,17 +32419,20 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: COLORS.white,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    minHeight: IS_COMPACT ? 52 : 54,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    minHeight: IS_COMPACT ? 42 : 44,
     borderWidth: 1,
-    borderColor: "#D4DCE8",
-    shadowOpacity: 0,
-    elevation: 0,
+    borderColor: "#D3D8E2",
+    shadowColor: "rgba(15, 23, 42, 0.16)",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 6,
   },
   searchInputWrapFocused: {
-    borderColor: COLORS.sun,
+    borderColor: "#B9C2D3",
     shadowOpacity: 0.2,
   },
   searchIcon: {
@@ -32307,10 +32440,10 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    paddingVertical: IS_COMPACT ? 8 : 10,
+    paddingVertical: IS_COMPACT ? 5 : 6,
     fontFamily: FONT_TEXT,
-    fontSize: IS_COMPACT ? 16 : 17,
-    color: COLORS.ink,
+    fontSize: IS_COMPACT ? 14 : 15,
+    color: "#8B97A9",
   },
   searchClearButton: {
     marginLeft: 8,
@@ -32318,24 +32451,28 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   filterButton: {
-    backgroundColor: COLORS.white,
-    width: IS_COMPACT ? 52 : 56,
-    minWidth: IS_COMPACT ? 52 : 56,
-    minHeight: IS_COMPACT ? 52 : 54,
+    backgroundColor: "#F8FAFC",
+    width: IS_COMPACT ? 42 : 44,
+    minWidth: IS_COMPACT ? 42 : 44,
+    minHeight: IS_COMPACT ? 42 : 44,
     paddingVertical: 0,
     paddingHorizontal: 0,
-    borderRadius: 18,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#D4DCE8",
+    borderColor: "#D3D8E2",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 0,
-    shadowOpacity: 0,
-    elevation: 0,
+    shadowColor: "rgba(15, 23, 42, 0.16)",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 6,
   },
   filterButtonCompact: {
-    width: IS_COMPACT ? 52 : 56,
+    width: IS_COMPACT ? 90 : 96,
+    minWidth: IS_COMPACT ? 90 : 96,
   },
   filterButtonActive: {
     backgroundColor: COLORS.pine,
@@ -34950,7 +35087,7 @@ const styles = StyleSheet.create({
   },
   profileHeader: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 10,
   },
@@ -34970,6 +35107,9 @@ const styles = StyleSheet.create({
   },
   profileHeaderText: {
     flex: 1,
+    minWidth: 0,
+    paddingRight: 8,
+    flexShrink: 1,
   },
   profileName: {
     fontSize: 18,
@@ -34982,6 +35122,8 @@ const styles = StyleSheet.create({
     color: "#8B97A9",
     fontFamily: FONT_TEXT,
     marginTop: 4,
+    lineHeight: 19,
+    flexShrink: 1,
   },
   profileMemberSince: {
     fontSize: 13,
@@ -34996,6 +35138,8 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderWidth: 1,
     borderColor: "#DEE5EE",
+    alignSelf: "flex-start",
+    marginTop: 2,
   },
   profileRoleText: {
     fontSize: 11,
@@ -38162,6 +38306,42 @@ const styles = StyleSheet.create({
   cashoutLinkedAccountOptions: {
     gap: 8,
   },
+  cashoutLinkedAccountsToggle: {
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.10)",
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    paddingVertical: 9,
+    paddingHorizontal: 11,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  cashoutLinkedAccountsToggleTextWrap: {
+    flex: 1,
+  },
+  cashoutLinkedAccountsToggleTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  cashoutLinkedAccountsToggleSubtext: {
+    marginTop: 1,
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  cashoutLinkedAccountsScroll: {
+    maxHeight: 84,
+  },
+  cashoutLinkedAccountsScrollExpanded: {
+    maxHeight: Math.max(188, Math.min(300, SCREEN_HEIGHT * 0.28)),
+  },
+  cashoutLinkedAccountsScrollContent: {
+    gap: 8,
+    paddingRight: 2,
+  },
   cashoutLinkedAccountRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -38189,15 +38369,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-  },
-  cashoutShowMoreButton: {
-    paddingVertical: 4,
-    alignItems: "flex-start",
-  },
-  cashoutShowMoreButtonText: {
-    fontSize: 12,
-    color: COLORS.ink,
-    fontFamily: FONT_MEDIUM,
   },
   cashoutErrorText: {
     marginTop: 8,

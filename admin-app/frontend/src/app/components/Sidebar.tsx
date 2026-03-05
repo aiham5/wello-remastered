@@ -14,7 +14,8 @@ import {
   BarChart3,
   Settings,
   UserCog,
-  LifeBuoy
+  LifeBuoy,
+  UserCheck
 } from "lucide-react";
 
 const navItems = [
@@ -29,6 +30,7 @@ const navItems = [
   { to: "/fraud-disputes", icon: ShieldAlert, label: "Fraud & Disputes" },
   { to: "/notifications", icon: Bell, label: "Notifications" },
   { to: "/support-tickets", icon: MessageSquare, label: "Support Tickets" },
+  { to: "/account-deletion-requests", icon: UserCheck, label: "Account Deletion" },
   { to: "/reports", icon: BarChart3, label: "Reports" },
   { to: "/settings", icon: Settings, label: "Settings" },
   { to: "/admin-roles", icon: UserCog, label: "Admin Roles" },

@@ -46,22 +46,6 @@ const CHECKBOOK_PUBLISHABLE_KEY = envString(
 const CHECKBOOK_SECRET_KEY = envString("CHECKBOOK_SECRET_KEY");
 const CHECKBOOK_PLAID_PROCESSOR = envString("CHECKBOOK_PLAID_PROCESSOR", "checkbook")
   .toLowerCase();
-const CHECKBOOK_DIRECT_RECIPIENT_PAYOUT_ENABLED = envFlag(
-  "CHECKBOOK_DIRECT_RECIPIENT_PAYOUT_ENABLED",
-  true,
-);
-const CHECKBOOK_DIRECT_RECIPIENT_EMAIL_FALLBACK = envFlag(
-  "CHECKBOOK_DIRECT_RECIPIENT_EMAIL_FALLBACK",
-  false,
-);
-const CHECKBOOK_DIRECT_DEPOSIT_OPTIONS = (() => {
-  const raw = envString("CHECKBOOK_DIRECT_DEPOSIT_OPTIONS", "BANK");
-  const values = raw
-    .split(",")
-    .map((entry) => String(entry || "").trim().toUpperCase())
-    .filter(Boolean);
-  return values.length > 0 ? values : ["BANK"];
-})();
 const CHECKBOOK_WEBHOOK_KEY = envString(
   "CHECKBOOK_WEBHOOK_KEY",
   envString("CHECKBOOK_WEBHOOK_SECRET"),
@@ -130,35 +114,55 @@ const sha256Hex = async (value: string) => {
   );
   return toHex(digest);
 };
-const splitFullName = (value: string) => {
-  const parts = String(value || "").trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return { firstName: "Wello", lastName: "User" };
-  if (parts.length === 1) return { firstName: parts[0], lastName: "User" };
-  return {
-    firstName: parts.slice(0, -1).join(" ").slice(0, 80),
-    lastName: parts.slice(-1).join(" ").slice(0, 80),
-  };
-};
 const normalizePlaidAccountSubtype = (value: unknown) =>
   String(value || "").trim().toLowerCase();
+const normalizePlaidAccountType = (value: unknown) =>
+  String(value || "").trim().toLowerCase();
+const isPlaidPayoutEligibleAccount = (account: Record<string, unknown>) => {
+  const subtype = normalizePlaidAccountSubtype(account?.subtype);
+  const type = normalizePlaidAccountType(account?.type);
+  return (
+    subtype === "checking" ||
+    subtype === "savings" ||
+    type === "depository"
+  );
+};
 const mapCheckbookAccountType = (subtype: string) =>
   subtype === "savings" ? "SAVINGS" : "CHECKING";
+const formatPlaidBankSummary = (
+  institutionName: string | null | undefined,
+  accountName: string | null | undefined,
+  accountMask: string | null | undefined,
+) => {
+  const parts = [
+    String(institutionName || "").trim() || "Linked bank",
+    String(accountName || "").trim() || "Account",
+    String(accountMask || "").trim()
+      ? `****${String(accountMask || "").trim()}`
+      : null,
+  ].filter(Boolean);
+  return parts.join(" - ").slice(0, 180);
+};
 const pickPreferredPlaidAccount = (
   accounts: Array<Record<string, unknown>>,
   requestedAccountId: string,
 ) => {
+  const eligibleAccounts = accounts.filter((account) =>
+    isPlaidPayoutEligibleAccount(account)
+  );
+  const accountPool = eligibleAccounts.length > 0 ? eligibleAccounts : accounts;
   const normalizedRequested = String(requestedAccountId || "").trim();
   if (normalizedRequested) {
-    const direct = accounts.find((account) =>
+    const direct = accountPool.find((account) =>
       String(account?.account_id || "").trim() === normalizedRequested
     );
     if (direct) return direct;
   }
-  const preferred = accounts.find((account) => {
+  const preferred = accountPool.find((account) => {
     const subtype = normalizePlaidAccountSubtype(account?.subtype);
     return subtype === "checking" || subtype === "savings";
   });
-  return preferred || accounts[0] || null;
+  return preferred || accountPool[0] || null;
 };
 const deriveUuidFromKey = async (value: string) => {
   const hash = await sha256Hex(String(value || "").trim().toLowerCase());
@@ -176,7 +180,7 @@ const deriveUuidFromKey = async (value: string) => {
 };
 const buildIdempotencyKey = () => crypto.randomUUID();
 
-const getPath = (payload: Record<string, unknown>, keys: string[]) => {
+const getPath = (payload: unknown, keys: string[]) => {
   let cursor: unknown = payload;
   for (const key of keys) {
     if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) {
@@ -206,7 +210,10 @@ const buildAuthHeaders = () => {
   };
 };
 
-const callCheckbookApi = async (path: string, init: RequestInit = {}) => {
+const callCheckbookApi = async (
+  path: string,
+  init: RequestInit = {},
+) => {
   ensureCheckbookCredentials();
   const body = typeof init.body === "string"
     ? init.body
@@ -252,22 +259,1079 @@ const parseCheckbookError = (
   return `Checkbook API error${statusPart}.`;
 };
 
-const extractRecipientId = (parsed: Record<string, unknown>) =>
-  String(
-    parsed?.id ||
-      getPath(parsed, ["recipient", "id"]) ||
-      getPath(parsed, ["data", "id"]) ||
-      "",
-  ).trim() || null;
+const walkTextNodes = (
+  value: unknown,
+  maxDepth = 6,
+): string[] => {
+  const collected: string[] = [];
+  const visit = (node: unknown, depth = 0) => {
+    if (depth > maxDepth || node === null || node === undefined) return;
+    if (typeof node === "string") {
+      const text = node.trim();
+      if (text) collected.push(text);
+      return;
+    }
+    if (typeof node === "number" || typeof node === "boolean") {
+      collected.push(String(node));
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, depth + 1);
+      return;
+    }
+    if (typeof node === "object") {
+      for (const [key, nested] of Object.entries(node as Record<string, unknown>)) {
+        if (!key) continue;
+        const normalizedKey = key.toLowerCase();
+        if (normalizedKey.includes("authorization")) continue;
+        if (
+          typeof nested === "string" ||
+          typeof nested === "number" ||
+          typeof nested === "boolean" ||
+          Array.isArray(nested) ||
+          typeof nested === "object"
+        ) {
+          visit(nested, depth + 1);
+        }
+      }
+    }
+  };
+  visit(value);
+  return collected;
+};
 
-const extractOnboardingUrl = (parsed: Record<string, unknown>) =>
-  String(
-    parsed?.url ||
-      getPath(parsed, ["link", "url"]) ||
-      getPath(parsed, ["data", "url"]) ||
-      getPath(parsed, ["onboarding", "url"]) ||
+const classifyCheckbookDestinationIssue = (parsed: Record<string, unknown>, text: string) => {
+  const messageSources = [
+    parsed?.message,
+    parsed?.error,
+    parsed?.reason,
+    parsed?.code,
+    parsed?.status,
+    parsed?.detail,
+    text,
+  ];
+  const rawText = [
+    ...messageSources.map((entry) => String(entry || "").trim()),
+    ...walkTextNodes(parsed),
+  ]
+    .join(" ")
+    .toLowerCase()
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (
+    rawText.includes("direct deposit") &&
+    (rawText.includes("limit") || rawText.includes("amount") || rawText.includes("maximum"))
+  ) {
+    return {
+      code: "checkbook_direct_deposit_limit_issue",
+      message:
+        "This bank account cannot be used for direct deposit right now due a transfer limit. Please choose a different account or contact Checkbook support.",
+    };
+  }
+
+  if (
+    rawText.includes("direct deposit") &&
+    (
+      rawText.includes("not") ||
+      rawText.includes("cannot") ||
+      rawText.includes("can't") ||
+      rawText.includes("disabled") ||
+      rawText.includes("unsupported")
+    )
+  ) {
+    return {
+      code: "checkbook_direct_deposit_not_supported",
+      message:
+        "This bank account is not configured for direct deposit. Please choose a different bank account.",
+    };
+  }
+
+  if (
+    rawText.includes("recipient") &&
+    (rawText.includes("not found") || rawText.includes("invalid recipient"))
+  ) {
+    return {
+      code: "checkbook_recipient_invalid",
+      message:
+        "Bank recipient record is not available. Re-link this bank account and try again.",
+    };
+  }
+
+  if (
+    rawText.includes("invalid destination") ||
+    rawText.includes("destination not found")
+  ) {
+    return {
+      code: "checkbook_destination_missing",
+      message:
+        "No valid direct-deposit destination was returned for this bank. Please try another account.",
+    };
+  }
+
+  return null;
+};
+
+const isLikelyCheckbookDestinationId = (value: string) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (/^[a-f0-9-]{36}$/i.test(normalized)) return false;
+  if (/^[a-f0-9]{32}$/i.test(normalized)) return false;
+  return normalized.startsWith("ba_") ||
+    normalized.startsWith("acct_") ||
+    normalized.startsWith("account_") ||
+    normalized.startsWith("bank_") ||
+    normalized.startsWith("dest_") ||
+    normalized.startsWith("destination_") ||
+    normalized.startsWith("destination:");
+};
+
+const isLikelyCheckbookRecipientId = (value: string) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized.startsWith("r_") || normalized.startsWith("recipient_");
+};
+
+const coerceToDestinationId = (value: unknown) => {
+  const id = toCleanId(value);
+  if (!id) return null;
+  return isLikelyCheckbookDestinationId(id) ? id : null;
+};
+
+const coerceToRecipientId = (value: unknown) => {
+  const id = toCleanId(value);
+  if (!id) return null;
+  const normalized = String(id).trim().toLowerCase();
+  return normalized.startsWith("r_") || normalized.startsWith("recipient_")
+    ? id
+    : null;
+};
+
+const coerceToRecipientOrDestinationId = (value: unknown) => {
+  const id = toCleanId(value);
+  if (!id) return null;
+  if (isLikelyCheckbookDestinationId(id)) return id;
+  const normalized = String(id || "").trim().toLowerCase();
+  if (normalized.startsWith("r_") || normalized.startsWith("recipient_")) return id;
+  return null;
+};
+
+const hasCheckbookId = (value: unknown) =>
+  coerceToDestinationId(value) || coerceToRecipientId(value);
+
+const extractCheckbookRecipientFromParsed = (parsed: unknown) => {
+  const root = parsed as Record<string, unknown> | null;
+  if (!root || typeof root !== "object") return null;
+
+  const direct = coerceToRecipientOrDestinationId((root as Record<string, unknown>).recipient);
+  if (direct && coerceToRecipientId(direct)) return direct;
+
+  const directById = coerceToRecipientOrDestinationId(root.id);
+  if (directById && coerceToRecipientId(directById)) return directById;
+
+  const candidatePaths: Array<string[]> = [
+    ["recipient", "id"],
+    ["recipient", "recipient_id"],
+    ["recipient", "recipientId"],
+    ["recipient", "recipient", "id"],
+    ["data", "recipient", "id"],
+    ["data", "recipient", "recipient_id"],
+    ["data", "recipient", "recipientId"],
+    ["result", "recipient", "id"],
+    ["result", "recipient", "recipient_id"],
+    ["result", "recipient", "recipientId"],
+  ];
+  for (const path of candidatePaths) {
+    const value = getPath(root, path);
+    const extracted = coerceToRecipientOrDestinationId(value);
+    if (extracted && coerceToRecipientId(extracted)) return extracted;
+  }
+
+  const candidateRecordCollections = [
+    getPath(root, ["recipient"]),
+    getPath(root, ["data", "recipient"]),
+    getPath(root, ["result", "recipient"]),
+  ];
+  for (const candidate of candidateRecordCollections) {
+    const record = candidate;
+    if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+    const recipientRecord = record as Record<string, unknown>;
+    const recipientRecordCandidate = coerceToRecipientOrDestinationId(
+      recipientRecord.id || recipientRecord.recipient_id || recipientRecord.recipientId,
+    );
+    if (recipientRecordCandidate && coerceToRecipientId(recipientRecordCandidate)) {
+      return recipientRecordCandidate;
+    }
+  }
+  return null;
+};
+
+const pickFirstCheckbookDestinationFromRecipientPayload = (
+  parsed: Record<string, unknown>,
+  fallbackEmail: string,
+) => {
+  const recipientPayload = extractDestinationIdFromObjectDeep(parsed, 0, true);
+  const parsedDestination = coerceToDestinationId(recipientPayload);
+  if (parsedDestination) return parsedDestination;
+  const explicitRecipientDestination = coerceToDestinationId(
+    extractCheckbookDestinationId(parsed),
+  );
+  if (explicitRecipientDestination) return explicitRecipientDestination;
+
+  const recipientId = extractCheckbookRecipientFromParsed(parsed);
+  if (!recipientId) {
+    return null;
+  }
+  const resolvedFromRecipient = coerceToDestinationId(recipientId);
+  if (resolvedFromRecipient) return resolvedFromRecipient;
+
+  return resolveCheckbookRecipientDestinationByEmail(fallbackEmail);
+};
+
+const resolveCheckbookDestinationByIdentifier = async (identifier: string) => {
+  const normalized = String(identifier || "").trim();
+  if (!normalized) return null;
+  if (isLikelyCheckbookDestinationId(normalized)) return normalized;
+  const recipientLookup = await callCheckbookApi(
+    `/v3/recipient/${encodeURIComponent(normalized)}`,
+  );
+  if (!recipientLookup.response.ok) return null;
+  const recipientParsed = recipientLookup.parsed as unknown;
+  const direct = coerceToDestinationId(extractCheckbookDestinationId(recipientParsed));
+  if (direct) return direct;
+  const deepDestinationId = extractDestinationIdFromObjectDeep(
+    recipientParsed,
+    0,
+    true,
+  );
+  return coerceToDestinationId(deepDestinationId);
+};
+
+const resolveCheckbookDestinationByIdentifierWithMeta = async (identifier: string) => {
+  const normalized = String(identifier || "").trim();
+  if (!normalized) {
+    return { destinationId: null as string | null, issueCode: null as string | null };
+  }
+  if (isLikelyCheckbookDestinationId(normalized)) return { destinationId: normalized, issueCode: null };
+  const recipientLookup = await callCheckbookApi(
+    `/v3/recipient/${encodeURIComponent(normalized)}`,
+  );
+  if (!recipientLookup.response.ok) {
+    const issue = classifyCheckbookDestinationIssue(recipientLookup.parsed, recipientLookup.text);
+    return {
+      destinationId: null,
+      issueCode: issue ? issue.code : "checkbook_recipient_lookup_failed",
+    };
+  }
+  const recipientParsed = recipientLookup.parsed as unknown;
+  const direct = coerceToDestinationId(extractCheckbookDestinationId(recipientParsed));
+  if (direct) return { destinationId: direct, issueCode: null };
+  const deepDestinationId = extractDestinationIdFromObjectDeep(
+    recipientParsed,
+    0,
+    true,
+  );
+  const resolved = coerceToDestinationId(deepDestinationId);
+  if (resolved) return { destinationId: resolved, issueCode: null };
+  return {
+    destinationId: null,
+    issueCode: "checkbook_destination_not_found",
+  };
+};
+
+const isInvalidRecipientError = (
+  parsed: Record<string, unknown>,
+  text: string,
+) => {
+  const candidate = String(
+    parsed?.message ||
+      parsed?.error ||
+      (Array.isArray(parsed?.errors) ? parsed.errors[0]?.message : "") ||
+      text ||
       "",
-  ).trim() || null;
+  )
+    .trim()
+    .toLowerCase();
+  if (!candidate) return false;
+  return candidate.includes("invalid recipient") ||
+    candidate.includes("recipient not found") ||
+    candidate.includes("invalid destination") ||
+    candidate.includes("destination not found") ||
+    candidate.includes("invalid account");
+};
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+};
+
+const toCleanId = (value: unknown) => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "object") return null;
+  const text = String(value).trim();
+  if (!text || text === "null" || text === "undefined" || text === "[object Object]") {
+    return null;
+  }
+  return text.length > 0 ? text : null;
+};
+
+const extractDestinationIdFromStringValue = (value: unknown): string | null => {
+  const candidate = toCleanId(value);
+  if (!candidate) return null;
+  return coerceToDestinationId(candidate) || coerceToDestinationId(candidate.toLowerCase());
+};
+
+const extractDestinationLikeIdFromNodeValue = (
+  value: unknown,
+  allowRecipient = false,
+): string | null => {
+  const direct = extractDestinationIdFromStringValue(value);
+  if (direct) return direct;
+
+  if (allowRecipient && typeof value === "string") {
+    const recipient = coerceToRecipientOrDestinationId(value);
+    if (recipient) return recipient;
+  }
+
+  return null;
+};
+
+const extractIdFromRecord = (record: Record<string, unknown>, keys: string[]) => {
+  for (const key of keys) {
+    const id = toCleanId(getPath(record, [key]));
+    if (id) return id;
+  }
+  return null;
+};
+
+const extractIdFromCollection = (
+  candidates: unknown,
+  keys: Array<string[]>,
+) => {
+  if (!Array.isArray(candidates)) return null;
+  for (const item of candidates) {
+    if (!isPlainObject(item)) continue;
+    for (const keyPath of keys) {
+      const value = keyPath.length === 1 ? item[keyPath[0]] : getPath(item, keyPath);
+      const id = toCleanId(value);
+      const destinationLikeId = coerceToDestinationId(id);
+      if (destinationLikeId) return destinationLikeId;
+    }
+    const nestedDestination = coerceToDestinationId(
+      toCleanId(getPath(item, ["destination", "id"])),
+    );
+    if (nestedDestination) return nestedDestination;
+    const nestedRecipient = coerceToDestinationId(
+      toCleanId(getPath(item, ["recipient", "id"])),
+    );
+    if (nestedRecipient) return nestedRecipient;
+  }
+  return null;
+};
+
+const extractDestinationIdFromObjectDeep = (
+  node: unknown,
+  depth = 0,
+  allowRecipient = false,
+): string | null => {
+  if (depth > 6 || !node || typeof node !== "object") return null;
+  const record = node as Record<string, unknown>;
+  const directCandidate = (
+    candidate: unknown,
+    allowRecipientValue = false,
+  ): string | null => {
+    if (allowRecipientValue) {
+      const recipientId = coerceToRecipientOrDestinationId(candidate);
+      if (recipientId) return recipientId;
+    }
+    return coerceToDestinationId(candidate);
+  };
+  const topPriority = extractIdFromRecord(record, [
+    "id",
+    "destination_id",
+    "destinationId",
+    "default_destination_id",
+    "defaultDestinationId",
+    "default_bank_account_id",
+    "defaultBankAccountId",
+    "default_bank_account",
+    "defaultBankAccount",
+    "bank_account_id",
+    "bankAccountId",
+    "account_id",
+    "accountId",
+    "bank_account",
+    "bankAccount",
+    "account",
+    "accountId",
+    "destination",
+    "destinationId",
+    "external_account_id",
+    "externalAccountId",
+    "default_account_id",
+    "defaultAccountId",
+  ]);
+  const topPriorityDestination = coerceToDestinationId(topPriority);
+  if (topPriorityDestination) return topPriorityDestination;
+
+  const recipientPriority = allowRecipient ? extractIdFromRecord(record, [
+    "recipient_id",
+    "recipientId",
+    "id",
+  ]) : extractIdFromRecord(record, ["recipient_id", "recipientId"]);
+  if (recipientPriority) {
+    const destinationLikeRecipientId = directCandidate(recipientPriority, true);
+    if (destinationLikeRecipientId) return destinationLikeRecipientId;
+  }
+
+  const nestedSearchKeys = [
+    "recipient",
+    "destinations",
+    "default_destination",
+    "defaultDestination",
+    "banks",
+    "defaultBankAccounts",
+    "default_bank_accounts",
+    "default_bank_account",
+    "defaultBankAccount",
+    "bank_accounts",
+    "accounts",
+    "destination",
+    "bank_account",
+    "account",
+    "data",
+    "result",
+  ];
+  for (const key of nestedSearchKeys) {
+    const nested = record[key];
+    if (nested === undefined || nested === null) continue;
+    if (Array.isArray(nested)) {
+      for (const item of nested) {
+        const itemId = extractDestinationIdFromObjectDeep(
+          item,
+          depth + 1,
+          true,
+        );
+        if (itemId) return itemId;
+      }
+    } else if (isPlainObject(nested) || Array.isArray(nested)) {
+      const nestedId = extractDestinationIdFromObjectDeep(
+        nested,
+        depth + 1,
+        true,
+      );
+      if (nestedId) return nestedId;
+    }
+  }
+
+  for (const [key, value] of Object.entries(record)) {
+    if (value === undefined || value === null) continue;
+    const normalizedKey = String(key || "").toLowerCase();
+    if (
+      normalizedKey === "metadata" ||
+      normalizedKey === "status" ||
+      normalizedKey === "message" ||
+      normalizedKey === "error" ||
+      normalizedKey === "errors" ||
+      normalizedKey === "created" ||
+      normalizedKey === "updated" ||
+      normalizedKey === "name" ||
+      normalizedKey === "email"
+    ) continue;
+    const nestedId = directCandidate(value, allowRecipient);
+    if (nestedId) return nestedId;
+    if (isPlainObject(value) || Array.isArray(value)) {
+      const nested = extractDestinationIdFromObjectDeep(
+        value,
+        depth + 1,
+        allowRecipient,
+      );
+      if (nested) return nested;
+    }
+  }
+
+  return null;
+};
+
+const extractCheckbookDestinationFromIavPayloadWithMeta = async (
+  iavParsed: unknown,
+  fallbackRecipientEmail: string,
+) => {
+  const payload = iavParsed || {};
+  const directId = extractCheckbookDestinationId(payload);
+  if (directId) {
+    const directLookup = await resolveCheckbookDestinationByIdentifierWithMeta(directId);
+    if (directLookup.destinationId) return {
+      destinationId: directLookup.destinationId,
+      issueCode: null,
+    };
+    if (directLookup.issueCode && directLookup.issueCode !== "checkbook_destination_not_found") {
+      return { destinationId: null, issueCode: directLookup.issueCode };
+    }
+  }
+
+  const rawRecipient = toCleanId((payload as Record<string, unknown>).recipient);
+  if (rawRecipient) {
+    const directRawRecipientDestination = await resolveCheckbookDestinationByIdentifierWithMeta(
+      rawRecipient,
+    );
+    if (directRawRecipientDestination.destinationId) {
+      return {
+        destinationId: directRawRecipientDestination.destinationId,
+        issueCode: null,
+      };
+    }
+    if (!directRawRecipientDestination.issueCode) {
+      const directRawId = coerceToDestinationId(rawRecipient);
+      if (directRawId) return { destinationId: directRawId, issueCode: null };
+      const rawRecipientIdentifier = coerceToRecipientOrDestinationId(rawRecipient);
+      if (rawRecipientIdentifier) {
+        return {
+          destinationId: rawRecipientIdentifier,
+          issueCode: null,
+        };
+      }
+    } else if (
+      directRawRecipientDestination.issueCode !== "checkbook_destination_not_found"
+    ) {
+      return {
+        destinationId: null,
+        issueCode: directRawRecipientDestination.issueCode,
+      };
+    }
+  }
+
+  const fallbackDestination = await resolveCheckbookRecipientDestinationByEmail(
+    fallbackRecipientEmail,
+  );
+  if (fallbackDestination) return { destinationId: fallbackDestination, issueCode: null };
+
+  const fallbackPaths: string[][] = [
+    ["recipient", "id"],
+    ["recipient", "bank_account_id"],
+    ["recipient", "bankAccountId"],
+    ["recipient", "default_destination_id"],
+    ["recipient", "defaultDestinationId"],
+    ["recipient", "default_bank_account_id"],
+    ["recipient", "defaultBankAccountId"],
+    ["recipient", "default_bank_account"],
+    ["recipient", "defaultBankAccount"],
+    ["recipient", "destination_id"],
+    ["recipient", "destinationId"],
+    ["recipient", "bank_account", "id"],
+    ["recipient", "bankAccount", "id"],
+    ["recipient", "account", "id"],
+    ["recipient", "accountId"],
+    ["recipient", "destination", "id"],
+    ["recipient", "destinationId"],
+    ["data", "recipient", "id"],
+    ["data", "recipient", "bank_account_id"],
+    ["data", "recipient", "bankAccountId"],
+    ["data", "recipient", "default_destination_id"],
+    ["data", "recipient", "defaultDestinationId"],
+    ["data", "recipient", "destination_id"],
+    ["data", "recipient", "destinationId"],
+    ["data", "recipient", "bank_account", "id"],
+    ["data", "recipient", "bankAccount", "id"],
+    ["result", "recipient", "id"],
+    ["result", "recipient", "bank_account_id"],
+    ["result", "recipient", "bankAccountId"],
+    ["result", "recipient", "default_destination_id"],
+    ["result", "recipient", "defaultDestinationId"],
+    ["result", "recipient", "destination_id"],
+    ["result", "recipient", "destinationId"],
+    ["result", "recipient", "bank_account", "id"],
+    ["result", "recipient", "bankAccount", "id"],
+    ["result", "recipient", "default_bank_account_id"],
+    ["result", "recipient", "defaultBankAccountId"],
+    ["result", "recipient", "default_bank_account"],
+    ["result", "recipient", "defaultBankAccount"],
+  ];
+  for (const path of fallbackPaths) {
+    const id = toCleanId(getPath(payload, path));
+    if (!id) continue;
+    const destinationFromId = await resolveCheckbookDestinationByIdentifierWithMeta(id);
+    if (destinationFromId.destinationId) {
+      return {
+        destinationId: destinationFromId.destinationId,
+        issueCode: null,
+      };
+    }
+    if (
+      destinationFromId.issueCode &&
+      destinationFromId.issueCode !== "checkbook_destination_not_found" &&
+      destinationFromId.issueCode !== "checkbook_recipient_lookup_failed"
+    ) {
+      return { destinationId: null, issueCode: destinationFromId.issueCode };
+    }
+  }
+
+  const collectionKeys = [
+    ["id"],
+    ["destinationId"],
+    ["defaultDestinationId"],
+    ["default_destination_id"],
+    ["recipient_id"],
+    ["recipientId"],
+    ["recipient", "id"],
+    ["recipient", "recipientId"],
+    ["recipient", "destination_id"],
+    ["recipient", "destinationId"],
+    ["bank_account_id"],
+    ["bankAccountId"],
+    ["account_id"],
+    ["accountId"],
+    ["destination_id"],
+    ["destinationId"],
+    ["destination", "id"],
+    ["destination", "destinationId"],
+    ["bank_account", "id"],
+    ["bankAccount", "id"],
+    ["account", "id"],
+    ["accountId"],
+    ["destination", "account", "id"],
+    ["default_bank_account_id"],
+    ["defaultBankAccountId"],
+    ["default_bank_account", "id"],
+    ["defaultBankAccount", "id"],
+  ];
+  const collections = [
+    getPath(payload, ["destinations"]),
+    getPath(payload, ["recipient"]),
+    getPath(payload, ["bank_accounts"]),
+    getPath(payload, ["accounts"]),
+    getPath(payload, ["data", "destinations"]),
+    getPath(payload, ["data", "recipients"]),
+    getPath(payload, ["data", "bank_accounts"]),
+    getPath(payload, ["data", "accounts"]),
+    getPath(payload, ["result", "destinations"]),
+    getPath(payload, ["result", "recipients"]),
+    getPath(payload, ["result", "bank_accounts"]),
+    getPath(payload, ["result", "accounts"]),
+    getPath(payload, ["result", "banks"]),
+  ];
+  for (const collection of collections) {
+    const id = extractIdFromCollection(collection, collectionKeys);
+    if (!id) continue;
+    const destinationFromCollection = await resolveCheckbookDestinationByIdentifierWithMeta(id);
+    if (destinationFromCollection.destinationId) {
+      return {
+        destinationId: destinationFromCollection.destinationId,
+        issueCode: null,
+      };
+    }
+    if (
+      destinationFromCollection.issueCode &&
+      destinationFromCollection.issueCode !== "checkbook_destination_not_found" &&
+      destinationFromCollection.issueCode !== "checkbook_recipient_lookup_failed"
+    ) {
+      return { destinationId: null, issueCode: destinationFromCollection.issueCode };
+    }
+  }
+
+  const normalizedEmail = String(fallbackRecipientEmail || "").trim();
+  if (!normalizedEmail) {
+    return {
+      destinationId: null,
+      issueCode: "checkbook_recipient_lookup_failed",
+    };
+  }
+  const recipientLookup = await callCheckbookApi(
+    `/v3/recipient/${encodeURIComponent(normalizedEmail)}`,
+  );
+  if (!recipientLookup.response.ok) {
+    const issue = classifyCheckbookDestinationIssue(recipientLookup.parsed, recipientLookup.text);
+    return {
+      destinationId: null,
+      issueCode: issue ? issue.code : "checkbook_recipient_lookup_failed",
+    };
+  }
+  const emailParsedDestination = coerceToDestinationId(
+    extractCheckbookDestinationId(recipientLookup.parsed as Record<string, unknown>),
+  );
+  return {
+    destinationId: emailParsedDestination,
+    issueCode: emailParsedDestination ? null : "checkbook_destination_not_found",
+  };
+};
+
+const extractCheckbookDestinationFromIavPayload = async (
+  iavParsed: unknown,
+  fallbackRecipientEmail: string,
+) => {
+  const result = await extractCheckbookDestinationFromIavPayloadWithMeta(
+    iavParsed,
+    fallbackRecipientEmail,
+  );
+  return result.destinationId;
+};
+
+const issueAwareResolve = async (
+  identifier: string,
+): Promise<{ destinationId: string | null; issueCode: string | null }> => {
+  const resolved = await resolveCheckbookDestinationByIdentifierWithMeta(identifier);
+  if (resolved.destinationId) return resolved;
+  return {
+    destinationId: null,
+    issueCode: resolved.issueCode || "checkbook_destination_missing",
+  };
+};
+
+const formatIssueMessage = (
+  issueCode: string | null,
+  fallback: string,
+) => {
+  if (!issueCode) return fallback;
+  const normalized = String(issueCode || "").toLowerCase();
+  if (normalized === "checkbook_direct_deposit_limit_issue") {
+    return "This bank account cannot be linked for direct deposit right now because direct-deposit transfer limits are not available. Please choose another account.";
+  }
+  if (normalized === "checkbook_direct_deposit_not_supported") {
+    return "This bank account is not configured for direct deposit. Please choose another bank account.";
+  }
+  if (normalized === "checkbook_recipient_invalid" || normalized === "checkbook_recipient_lookup_failed") {
+    return "Bank recipient information is not available in Checkbook. Please re-link your bank account.";
+  }
+  if (normalized === "checkbook_recipient_id_returned") {
+    return "No valid direct-deposit destination is available for the linked bank. Please re-link it.";
+  }
+  return fallback;
+};
+
+const extractCheckbookDestinationId = (parsed: unknown) => {
+  const candidatePaths: Array<string[]> = [
+    ["id"],
+    ["destination_id"],
+    ["destinationId"],
+    ["default_destination_id"],
+    ["defaultDestinationId"],
+    ["default_bank_account_id"],
+    ["defaultBankAccountId"],
+    ["bank_account_id"],
+    ["bankAccountId"],
+    ["account_id"],
+    ["accountId"],
+    ["destinationType"],
+    ["external_account_id"],
+    ["externalAccountId"],
+    ["default_account_id"],
+    ["defaultAccountId"],
+    ["default_bank_account"],
+    ["defaultBankAccount"],
+    ["default_bank"],
+    ["defaultBank"],
+    ["bank_account", "id"],
+    ["bankAccount", "id"],
+    ["account", "id"],
+    ["accountId"],
+    ["destination", "id"],
+    ["destinationId"],
+    ["destination", "destination_id"],
+    ["destination", "destinationId"],
+    ["data", "id"],
+    ["data", "recipient_id"],
+    ["data", "recipientId"],
+    ["data", "destination_id"],
+    ["data", "destinationId"],
+    ["data", "bank_account_id"],
+    ["data", "bankAccountId"],
+    ["data", "account_id"],
+    ["data", "accountId"],
+    ["data", "default_destination_id"],
+    ["data", "defaultDestinationId"],
+    ["data", "default_bank_account_id"],
+    ["data", "defaultBankAccountId"],
+    ["data", "destination"],
+    ["data", "recipient"],
+    ["data", "bank_account", "id"],
+    ["data", "bankAccount", "id"],
+    ["data", "account", "id"],
+    ["data", "accountId"],
+    ["data", "destination", "id"],
+    ["data", "destination", "destination_id"],
+    ["data", "destination", "destinationId"],
+    ["data", "recipient", "id"],
+    ["data", "recipient", "recipientId"],
+    ["recipient", "id"],
+    ["recipient", "recipientId"],
+    ["destination", "id"],
+    ["destination", "destinationId"],
+    ["destination", "default_destination_id"],
+    ["destination", "defaultDestinationId"],
+    ["recipient", "bank_account", "id"],
+    ["recipient", "bankAccount", "id"],
+    ["recipient", "account", "id"],
+    ["recipient", "accountId"],
+    ["recipient", "default_destination_id"],
+    ["recipient", "defaultDestinationId"],
+    ["recipient", "default_bank_account_id"],
+    ["recipient", "defaultBankAccountId"],
+    ["recipient", "default_bank_account"],
+    ["recipient", "defaultBankAccount"],
+    ["recipient", "default_bank", "id"],
+    ["recipient", "defaultBank", "id"],
+    ["result", "destination_id"],
+    ["result", "destinationId"],
+    ["result", "defaultDestinationId"],
+    ["result", "default_destination_id"],
+    ["result", "recipient_id"],
+    ["result", "recipientId"],
+    ["result", "bank_account_id"],
+    ["result", "bankAccountId"],
+    ["result", "account_id"],
+    ["result", "accountId"],
+    ["result", "destination", "id"],
+    ["result", "destination", "destination_id"],
+    ["result", "destination", "destinationId"],
+    ["result", "recipient", "id"],
+    ["result", "recipient", "recipientId"],
+    ["result", "recipient", "default_destination_id"],
+    ["result", "recipient", "defaultDestinationId"],
+    ["result", "recipient", "default_bank_account_id"],
+    ["result", "recipient", "defaultBankAccountId"],
+    ["result", "recipient", "default_bank_account"],
+    ["result", "recipient", "defaultBankAccount"],
+    ["result", "id"],
+  ];
+
+  for (const path of candidatePaths) {
+    const direct = toCleanId(getPath(parsed, path));
+    const directDestination = coerceToDestinationId(direct);
+    if (directDestination) return directDestination;
+  }
+
+  const collectionCandidates = [
+    getPath(parsed, ["destinations"]),
+    getPath(parsed, ["recipients"]),
+    getPath(parsed, ["bank_accounts"]),
+    getPath(parsed, ["accounts"]),
+    getPath(parsed, ["banks"]),
+    getPath(parsed, ["data", "destinations"]),
+    getPath(parsed, ["data", "recipients"]),
+    getPath(parsed, ["data", "bank_accounts"]),
+    getPath(parsed, ["data", "accounts"]),
+    getPath(parsed, ["data", "banks"]),
+  ];
+  for (const candidate of collectionCandidates) {
+    if (!Array.isArray(candidate) || candidate.length === 0) continue;
+    for (const first of candidate) {
+      if (!first || typeof first !== "object" || Array.isArray(first)) continue;
+      const row = first as Record<string, unknown>;
+      const id = toCleanId(row?.id);
+      const idDestination = coerceToDestinationId(id);
+      if (idDestination) return idDestination;
+      const nestedDestinationId = toCleanId(getPath(row, ["destination", "id"]));
+      const nestedDestination = coerceToDestinationId(nestedDestinationId);
+      if (nestedDestination) return nestedDestination;
+      const nestedRecipientId = toCleanId(getPath(row, ["recipient", "id"]));
+      const nestedRecipient = coerceToDestinationId(nestedRecipientId);
+      if (nestedRecipient) return nestedRecipient;
+      const nestedDefaultDestinationId = coerceToDestinationId(
+        toCleanId(getPath(row, ["default_destination_id"])),
+      );
+      if (nestedDefaultDestinationId) return nestedDefaultDestinationId;
+      const nestedDefaultDestinationId2 = coerceToDestinationId(
+        toCleanId(getPath(row, ["defaultDestinationId"])),
+      );
+      if (nestedDefaultDestinationId2) return nestedDefaultDestinationId2;
+      const nestedDefaultBankId = coerceToDestinationId(
+        toCleanId(getPath(row, ["default_bank_account_id"])),
+      );
+      if (nestedDefaultBankId) return nestedDefaultBankId;
+      const nestedDefaultBankId2 = coerceToDestinationId(
+        toCleanId(getPath(row, ["defaultBankAccountId"])),
+      );
+      if (nestedDefaultBankId2) return nestedDefaultBankId2;
+      const nestedDefaultBankObjId = coerceToDestinationId(
+        toCleanId(getPath(row, ["default_bank_account", "id"])),
+      );
+      if (nestedDefaultBankObjId) return nestedDefaultBankObjId;
+      const nestedDefaultBankObjId2 = coerceToDestinationId(
+        toCleanId(getPath(row, ["defaultBankAccount", "id"])),
+      );
+      if (nestedDefaultBankObjId2) return nestedDefaultBankObjId2;
+      const nestedBankId = coerceToDestinationId(
+        toCleanId(getPath(row, ["bank_account_id"])),
+      );
+      if (nestedBankId) return nestedBankId;
+      const nestedBankId2 = coerceToDestinationId(
+        toCleanId(getPath(row, ["bankAccountId"])),
+      );
+      if (nestedBankId2) return nestedBankId2;
+      const nestedBankObjId = coerceToDestinationId(
+        toCleanId(getPath(row, ["bank_account", "id"])),
+      );
+      if (nestedBankObjId) return nestedBankObjId;
+      const nestedBankObjId2 = coerceToDestinationId(
+        toCleanId(getPath(row, ["bankAccount", "id"])),
+      );
+      if (nestedBankObjId2) return nestedBankObjId2;
+      const nestedAccountId = coerceToDestinationId(
+        toCleanId(getPath(row, ["account_id"])),
+      );
+      if (nestedAccountId) return nestedAccountId;
+      const nestedAccountId2 = coerceToDestinationId(
+        toCleanId(getPath(row, ["accountId"])),
+      );
+      if (nestedAccountId2) return nestedAccountId2;
+      const nestedAccountObjId = coerceToDestinationId(
+        toCleanId(getPath(row, ["account", "id"])),
+      );
+      if (nestedAccountObjId) return nestedAccountObjId;
+      const nestedFromRecord = extractDestinationIdFromObjectDeep(row, 0, false);
+      if (nestedFromRecord) return nestedFromRecord;
+    }
+  }
+  const deepDestinationId = extractDestinationIdFromObjectDeep(parsed, 0, false);
+  if (deepDestinationId) return deepDestinationId;
+  return null;
+};
+
+const resolveCheckbookRecipientDestinationByEmail = async (
+  email: string,
+) => {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) return null;
+  return resolveCheckbookDestinationByIdentifier(normalizedEmail);
+};
+
+const resolveCheckbookRecipientDestinationForTransfer = async (
+  supabase: ReturnType<typeof createAdminSupabase>,
+  userId: string,
+  recipientId: string | null,
+  preferredPlaidAccountId: string | null,
+  profile: { email: string; fullName: string },
+) => {
+  const resolveDestinationByRecipientId = async (candidate: string | null) => {
+    const normalized = String(candidate || "").trim();
+    if (!normalized) return null;
+    const directDestination = coerceToDestinationId(normalized);
+    if (directDestination) return directDestination;
+    return resolveCheckbookDestinationByIdentifier(normalized);
+  };
+
+  const directCandidate = String(recipientId || "").trim() || null;
+  if (directCandidate) {
+    const directRecipientDestination = await resolveDestinationByRecipientId(directCandidate);
+    if (directRecipientDestination) return directRecipientDestination;
+  }
+
+  const cachedByPreferredAccount = await resolveCachedCheckbookIdsForPlaidAccount(
+    supabase,
+    userId,
+    preferredPlaidAccountId,
+  );
+  if (cachedByPreferredAccount.destinationId) return cachedByPreferredAccount.destinationId;
+  if (cachedByPreferredAccount.recipientId && !directCandidate) {
+    const cachedDestination = await resolveDestinationByRecipientId(
+      cachedByPreferredAccount.recipientId,
+    );
+    if (cachedDestination) return cachedDestination;
+  }
+
+  const cachedByRecipient = await resolveCachedCheckbookIdsFromRecipient(
+    supabase,
+    userId,
+  );
+  if (cachedByRecipient.destinationId) return cachedByRecipient.destinationId;
+  if (cachedByRecipient.recipientId) {
+    const cachedRecipientDestination = await resolveDestinationByRecipientId(
+      cachedByRecipient.recipientId,
+    );
+    if (cachedRecipientDestination) return cachedRecipientDestination;
+  }
+
+  const emailFallback = await resolveCheckbookRecipientDestinationByEmail(profile.email);
+  if (emailFallback) {
+    if (!directCandidate || directCandidate !== emailFallback) {
+      await supabase
+        .from("cashout_recipients")
+        .upsert(
+          {
+            user_id: userId,
+            provider: "checkbook",
+            recipient_provider_id: emailFallback,
+            recipient_status: "linked",
+            last_synced_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id" },
+        );
+    }
+    return emailFallback;
+  }
+
+  const activeAccountsResult = await supabase
+    .from("plaid_linked_accounts")
+    .select("plaid_account_id")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .order("updated_at", { ascending: false });
+
+  if (!activeAccountsResult.error) {
+    const activeAccounts = Array.isArray(activeAccountsResult.data) ? activeAccountsResult.data : [];
+    const accountIds = new Set<string>();
+    const preferred = String(preferredPlaidAccountId || "").trim();
+    if (preferred) {
+      accountIds.add(preferred);
+    }
+    for (const row of activeAccounts) {
+      const plaidAccountId = String(row?.plaid_account_id || "").trim();
+      if (plaidAccountId) {
+        accountIds.add(plaidAccountId);
+      }
+    }
+
+    for (const plaidAccountId of accountIds) {
+      const cachedByFallbackAccount = await resolveCachedCheckbookIdsForPlaidAccount(
+        supabase,
+        userId,
+        plaidAccountId,
+      );
+      if (cachedByFallbackAccount.destinationId) return cachedByFallbackAccount.destinationId;
+      if (cachedByFallbackAccount.recipientId && !directCandidate) {
+        const fallbackRecipientDestination = await resolveDestinationByRecipientId(
+          cachedByFallbackAccount.recipientId,
+        );
+        if (fallbackRecipientDestination) return fallbackRecipientDestination;
+      }
+    }
+  }
+
+  if (preferredPlaidAccountId) {
+    try {
+      const refreshed = await refreshCheckbookRecipientFromStoredPlaid(
+        supabase,
+        userId,
+        profile,
+        preferredPlaidAccountId,
+      );
+      const refreshedRecipient = String(refreshed.recipientId || "").trim();
+      if (refreshedRecipient) {
+        const refreshedDestination = await resolveDestinationByRecipientId(refreshedRecipient);
+        if (refreshedDestination) return refreshedDestination;
+      }
+    } catch {
+      // Keep behavior deterministic: caller handles missing destination.
+    }
+  }
+
+  try {
+    const refreshed = await refreshCheckbookRecipientFromStoredPlaid(
+      supabase,
+      userId,
+      profile,
+    );
+    const refreshedRecipient = String(refreshed.recipientId || "").trim();
+    if (refreshedRecipient) {
+      const refreshedDestination = await resolveDestinationByRecipientId(refreshedRecipient);
+      if (refreshedDestination) return refreshedDestination;
+    }
+  } catch {
+    // Keep behavior deterministic: caller handles missing destination.
+  }
+
+  return null;
+};
 
 const extractCheckObject = (parsed: Record<string, unknown>) => {
   const object = getPath(parsed, ["check"]) ||
@@ -549,6 +1613,75 @@ const getPlaidCashoutLinkState = async (
   };
 };
 
+const resolveCachedCheckbookIdsForPlaidAccount = async (
+  supabase: ReturnType<typeof createAdminSupabase>,
+  userId: string,
+  plaidAccountId: string | null,
+) => {
+  const normalizedAccountId = String(plaidAccountId || "").trim();
+  if (!normalizedAccountId) return { recipientId: null, destinationId: null };
+  const { data, error } = await supabase
+    .from("plaid_linked_accounts")
+    .select("checkbook_recipient_id, checkbook_destination_id")
+    .eq("user_id", userId)
+    .eq("plaid_account_id", normalizedAccountId)
+    .eq("status", "active")
+    .maybeSingle();
+  if (error) return { recipientId: null, destinationId: null };
+  const row = (data as Record<string, unknown>) || {};
+  return {
+    recipientId: coerceToRecipientOrDestinationId(row?.checkbook_recipient_id),
+    destinationId: coerceToDestinationId(row?.checkbook_destination_id),
+  };
+};
+
+const resolveCachedCheckbookIdsFromRecipient = async (
+  supabase: ReturnType<typeof createAdminSupabase>,
+  userId: string,
+) => {
+  const { data, error } = await supabase
+    .from("cashout_recipients")
+    .select("checkbook_recipient_id, checkbook_destination_id")
+    .eq("user_id", userId)
+    .eq("provider", "checkbook")
+    .maybeSingle();
+  if (error || !data) return { recipientId: null, destinationId: null };
+  const row = (data as Record<string, unknown>) || {};
+  return {
+    recipientId: coerceToRecipientOrDestinationId(row?.checkbook_recipient_id),
+    destinationId: coerceToDestinationId(row?.checkbook_destination_id),
+  };
+};
+
+const persistCheckbookRecipientCache = async (
+  supabase: ReturnType<typeof createAdminSupabase>,
+  userId: string,
+  options: {
+    recipientProviderId?: string | null;
+    recipientId?: string | null;
+    destinationId?: string | null;
+    bankSummary?: string | null;
+    recipientStatus?: string | null;
+  },
+) => {
+  const record = {
+    user_id: userId,
+    provider: "checkbook" as const,
+    recipient_provider_id: String(
+      options.recipientProviderId || options.recipientId || options.destinationId || "",
+    ).trim(),
+    recipient_status: String(options.recipientStatus || "linked").trim() || "linked",
+    bank_summary: options.bankSummary || null,
+    last_synced_at: new Date().toISOString(),
+    checkbook_recipient_id: options.recipientId || null,
+    checkbook_destination_id: options.destinationId || null,
+  };
+  if (!record.recipient_provider_id) return;
+  await supabase
+    .from("cashout_recipients")
+    .upsert(record, { onConflict: "user_id" });
+};
+
 const upsertLinkedPlaidData = async (
   supabase: ReturnType<typeof createAdminSupabase>,
   userId: string,
@@ -668,25 +1801,34 @@ const upsertLinkedPlaidData = async (
   }
 };
 
-const linkCheckbookRecipientFromPlaid = async (
+const linkCheckbookRecipientFromPlaidAccess = async (
   supabase: ReturnType<typeof createAdminSupabase>,
   userId: string,
   profile: { email: string; fullName: string },
-  payload: { publicToken: string; plaidAccountId: string | null },
+  payload: { itemId: string; accessToken: string; plaidAccountId: string | null },
 ) => {
-  const exchange = await plaidExchangePublicToken(payload.publicToken);
-  const item = await plaidGetItem(exchange.access_token);
-  const accountsRes = await plaidGetAccounts(exchange.access_token);
+  const itemId = String(payload.itemId || "").trim();
+  const accessToken = String(payload.accessToken || "").trim();
+  if (!itemId || !accessToken) {
+    throw new HttpError("Unable to prepare bank account for transfer.", 400, {
+      reason: "plaid_link_data_missing",
+    });
+  }
+  const item = await plaidGetItem(accessToken);
+  const accountsRes = await plaidGetAccounts(accessToken);
   const accounts = (Array.isArray(accountsRes.accounts)
     ? accountsRes.accounts
     : []) as Array<Record<string, unknown>>;
-  if (!accounts.length) {
+  const eligibleAccounts = accounts.filter((account) =>
+    isPlaidPayoutEligibleAccount(account)
+  );
+  if (!eligibleAccounts.length) {
     throw new HttpError("No bank account was shared from Plaid.", 400, {
       reason: "plaid_no_accounts",
     });
   }
   const selectedAccount = pickPreferredPlaidAccount(
-    accounts,
+    eligibleAccounts,
     payload.plaidAccountId || "",
   );
   if (!selectedAccount) {
@@ -713,8 +1855,8 @@ const linkCheckbookRecipientFromPlaid = async (
   await upsertLinkedPlaidData(
     supabase,
     userId,
-    exchange.item_id,
-    exchange.access_token,
+    itemId,
+    accessToken,
     institutionId,
     institutionName,
     accounts,
@@ -722,7 +1864,7 @@ const linkCheckbookRecipientFromPlaid = async (
   );
 
   const processor = await plaidCreateProcessorToken(
-    exchange.access_token,
+    accessToken,
     plaidAccountId,
     CHECKBOOK_PLAID_PROCESSOR || "checkbook",
   );
@@ -733,7 +1875,7 @@ const linkCheckbookRecipientFromPlaid = async (
     });
   }
 
-  const auth = await plaidGetAuthNumbers(exchange.access_token, plaidAccountId);
+  const auth = await plaidGetAuthNumbers(accessToken, plaidAccountId);
   const achRows = Array.isArray(auth?.numbers?.ach) ? auth.numbers.ach : [];
   const achRow = achRows.find((row) =>
     String(row?.account_id || "").trim() === plaidAccountId
@@ -783,13 +1925,97 @@ const linkCheckbookRecipientFromPlaid = async (
     );
   }
 
-  const recipientId = String(
-    iavResponse.parsed?.id ||
-      getPath(iavResponse.parsed, ["bank_account", "id"]) ||
-      getPath(iavResponse.parsed, ["account", "id"]) ||
-      getPath(iavResponse.parsed, ["data", "id"]) ||
-      "",
-  ).trim() || await deriveUuidFromKey(`checkbook:${userId}:${plaidAccountId}`);
+  const iavResolution = await extractCheckbookDestinationFromIavPayloadWithMeta(
+    iavResponse.parsed,
+    profile.email,
+  );
+  if (!iavResolution.destinationId) {
+    const issueCode = iavResolution.issueCode || "checkbook_destination_missing";
+    throw new HttpError(
+      formatIssueMessage(
+        issueCode,
+        "This bank account cannot be linked for direct deposit right now. Try another account.",
+      ),
+      400,
+      {
+        reason: issueCode,
+        checkbookResponseKeys: Object.keys(iavResponse.parsed || {}).slice(0, 20),
+      },
+    );
+  }
+  const recipientId = iavResolution.destinationId;
+
+  const parsedIav = iavResponse.parsed as unknown;
+  const parsedRecipientId = coerceToRecipientOrDestinationId(
+    extractCheckbookRecipientFromParsed(parsedIav),
+  );
+  const iavRecipient = parsedRecipientId || null;
+  const iavDestination = recipientId;
+
+  let destinationId = iavDestination || null;
+  let destinationFromRecipient: string | null = null;
+  if (destinationId && !coerceToDestinationId(destinationId)) {
+    destinationFromRecipient = await resolveCheckbookDestinationByIdentifier(
+      destinationId,
+    );
+    if (!destinationFromRecipient) {
+      throw new HttpError(
+        "This bank account cannot be linked for direct deposit right now. Try another account.",
+        400,
+        {
+          reason: "checkbook_destination_missing",
+          checkbookResponseKeys: Object.keys(iavResponse.parsed || {}).slice(0, 20),
+        },
+      );
+    }
+    destinationId = destinationFromRecipient;
+  }
+
+  const resolvedRecipientId = coerceToRecipientOrDestinationId(iavRecipient) ||
+    coerceToRecipientOrDestinationId(recipientId);
+  const resolvedDestinationId = coerceToDestinationId(destinationId);
+
+  if (!resolvedDestinationId) {
+    throw new HttpError(
+      "This bank account cannot be linked for direct deposit right now. Try another account.",
+      400,
+      {
+        reason: "checkbook_destination_missing",
+        checkbookResponseKeys: Object.keys(iavResponse.parsed || {}).slice(0, 20),
+      },
+    );
+  }
+
+  await persistCheckbookRecipientCache(
+    supabase,
+    userId,
+    {
+      recipientProviderId:
+        profile.email ||
+        recipientId ||
+        iavRecipient ||
+        String((iavResponse.parsed as Record<string, unknown>)?.recipient_provider_id || ""),
+      recipientId: resolvedRecipientId || null,
+      destinationId: resolvedDestinationId,
+      recipientStatus: "linked",
+      bankSummary,
+    },
+  );
+
+  const { error: plaidAccountCacheUpdateError } = await supabase
+    .from("plaid_linked_accounts")
+    .update({
+      checkbook_recipient_id: resolvedRecipientId || null,
+      checkbook_destination_id: resolvedDestinationId || null,
+    })
+    .eq("user_id", userId)
+    .eq("plaid_item_id", itemId)
+    .eq("plaid_account_id", plaidAccountId)
+    .eq("status", "active");
+  if (plaidAccountCacheUpdateError) {
+    // Keep payout behavior resilient if schema migration is not yet fully rolled out.
+    // Best effort only, do not fail linking.
+  }
 
   await supabase
     .from("cashout_recipients")
@@ -797,7 +2023,7 @@ const linkCheckbookRecipientFromPlaid = async (
       {
         user_id: userId,
         provider: "checkbook",
-        recipient_provider_id: recipientId,
+        recipient_provider_id: resolvedDestinationId || resolvedRecipientId || "",
         recipient_status: "linked",
         bank_summary: bankSummary || "Linked via Plaid",
         last_synced_at: new Date().toISOString(),
@@ -808,7 +2034,7 @@ const linkCheckbookRecipientFromPlaid = async (
   await supabase
     .from("profiles")
     .update({
-      stripe_cashout_plaid_item_id: exchange.item_id,
+      stripe_cashout_plaid_item_id: itemId,
       stripe_cashout_plaid_account_id: plaidAccountId,
       stripe_cashout_account_label: bankSummary || "Linked via Plaid",
       stripe_cashout_bank_synced_at: new Date().toISOString(),
@@ -821,6 +2047,156 @@ const linkCheckbookRecipientFromPlaid = async (
     selectedPayoutAccountId: plaidAccountId,
     selectedPayoutLabel: bankSummary || "Linked via Plaid",
   };
+};
+
+const linkCheckbookRecipientFromPlaid = async (
+  supabase: ReturnType<typeof createAdminSupabase>,
+  userId: string,
+  profile: { email: string; fullName: string },
+  payload: { publicToken: string; plaidAccountId: string | null },
+) => {
+  const exchange = await plaidExchangePublicToken(payload.publicToken);
+  return linkCheckbookRecipientFromPlaidAccess(
+    supabase,
+    userId,
+    profile,
+    {
+      itemId: String(exchange.item_id || "").trim(),
+      accessToken: String(exchange.access_token || "").trim(),
+      plaidAccountId: payload.plaidAccountId,
+    },
+  );
+};
+
+const refreshCheckbookRecipientFromStoredPlaid = async (
+  supabase: ReturnType<typeof createAdminSupabase>,
+  userId: string,
+  profile: { email: string; fullName: string },
+  preferredPlaidAccountId?: string | null,
+) => {
+  const [{ data: profileRow }, { data: linkedAccounts, error: linkedAccountsError }] =
+    await Promise.all([
+      supabase
+        .from("profiles")
+        .select("stripe_cashout_plaid_account_id")
+        .eq("id", userId)
+        .maybeSingle(),
+      supabase
+        .from("plaid_linked_accounts")
+        .select(
+          "id, plaid_item_id, plaid_account_id, account_subtype, account_type, link_purposes, updated_at",
+        )
+        .eq("user_id", userId)
+        .eq("status", "active")
+        .order("updated_at", { ascending: false }),
+    ]);
+  if (linkedAccountsError) {
+    throw new HttpError(
+      linkedAccountsError.message || "Unable to load linked bank accounts.",
+      500,
+      { reason: "plaid_account_state_lookup_failed" },
+    );
+  }
+  const accounts = (Array.isArray(linkedAccounts) ? linkedAccounts : [])
+    .filter((row) =>
+      isPlaidPayoutEligibleAccount({
+        subtype: row?.account_subtype,
+        type: row?.account_type,
+      })
+    );
+  if (!accounts.length) {
+    throw new HttpError("Link a bank account before requesting bank transfer cashout.", 400, {
+      reason: "bank_not_linked",
+    });
+  }
+  const preferredAccountId = String(preferredPlaidAccountId || "").trim();
+  const selectedAccountId = String(
+    profileRow?.stripe_cashout_plaid_account_id || "",
+  ).trim();
+  const preferred = preferredAccountId
+    ? accounts.find((row) => String(row?.plaid_account_id || "").trim() === preferredAccountId)
+    : null;
+  if (preferredAccountId && !preferred) {
+    throw new HttpError("Selected payout bank is no longer linked.", 400, {
+      reason: "plaid_account_not_found",
+    });
+  }
+  const selectedOrFallback = preferred ||
+    (selectedAccountId
+      ? accounts.find((row) => String(row?.plaid_account_id || "").trim() === selectedAccountId)
+      : null) ||
+    accounts[0];
+  if (selectedOrFallback?.id) {
+    const mergedAccountPurposes = mergePlaidLinkPurposes(
+      selectedOrFallback?.link_purposes,
+      ["cashout"],
+    );
+    const { error: accountPurposeError } = await supabase
+      .from("plaid_linked_accounts")
+      .update({ link_purposes: mergedAccountPurposes })
+      .eq("id", selectedOrFallback.id)
+      .eq("user_id", userId);
+    if (accountPurposeError) {
+      throw new HttpError(
+        accountPurposeError.message || "Unable to activate selected bank for cashout.",
+        500,
+        { reason: "plaid_account_purpose_update_failed" },
+      );
+    }
+  }
+  const plaidItemId = String(selectedOrFallback?.plaid_item_id || "").trim();
+  const plaidAccountId = String(selectedOrFallback?.plaid_account_id || "").trim();
+  if (!plaidItemId || !plaidAccountId) {
+    throw new HttpError("Unable to load linked bank account details.", 400, {
+      reason: "plaid_link_data_missing",
+    });
+  }
+  const { data: itemRow, error: itemError } = await supabase
+    .from("plaid_linked_items")
+    .select("id, plaid_item_id, plaid_access_token, link_purposes")
+    .eq("user_id", userId)
+    .eq("plaid_item_id", plaidItemId)
+    .eq("status", "active")
+    .maybeSingle();
+  if (itemError) {
+    throw new HttpError(itemError.message || "Unable to load linked bank item.", 500, {
+      reason: "plaid_item_lookup_failed",
+    });
+  }
+  if (itemRow?.id) {
+    const mergedItemPurposes = mergePlaidLinkPurposes(
+      itemRow?.link_purposes,
+      ["cashout"],
+    );
+    const { error: itemPurposeError } = await supabase
+      .from("plaid_linked_items")
+      .update({ link_purposes: mergedItemPurposes })
+      .eq("id", itemRow.id)
+      .eq("user_id", userId);
+    if (itemPurposeError) {
+      throw new HttpError(
+        itemPurposeError.message || "Unable to activate selected institution for cashout.",
+        500,
+        { reason: "plaid_item_purpose_update_failed" },
+      );
+    }
+  }
+  const accessToken = String(itemRow?.plaid_access_token || "").trim();
+  if (!accessToken) {
+    throw new HttpError("Reconnect your bank account before requesting transfer.", 400, {
+      reason: "plaid_access_token_missing",
+    });
+  }
+  return linkCheckbookRecipientFromPlaidAccess(
+    supabase,
+    userId,
+    profile,
+    {
+      itemId: plaidItemId,
+      accessToken,
+      plaidAccountId,
+    },
+  );
 };
 
 export const createCheckbookBankLinkHandler =
@@ -861,10 +2237,14 @@ export const createCheckbookBankLinkHandler =
       const forceRelink = /^(1|true|yes|on)$/i.test(
         String(body?.forceRelink || body?.force_relink || "").trim(),
       );
+      const selectOnly = /^(1|true|yes|on)$/i.test(
+        String(body?.selectOnly || body?.select_only || "").trim(),
+      );
 
       if (
         !publicToken &&
         !forceRelink &&
+        !plaidAccountId &&
         existing.recipientId &&
         ["linked", "verified", "active"].includes(existing.recipientStatus) &&
         plaidState.hasActivePlaidAccount &&
@@ -878,6 +2258,170 @@ export const createCheckbookBankLinkHandler =
           bankSummary: existing.bankSummary,
           selectedPayoutAccountId: plaidState.selectedPlaidAccountId,
           selectedPayoutLabel: existing.bankSummary,
+        }, 200);
+      }
+
+      if (!publicToken && selectOnly && plaidAccountId) {
+        const { data: accountRows, error: accountLookupError } = await supabase
+          .from("plaid_linked_accounts")
+          .select(
+            "id, plaid_item_id, plaid_account_id, account_name, account_mask, account_subtype, link_purposes, updated_at",
+          )
+          .eq("user_id", userId)
+          .eq("plaid_account_id", plaidAccountId)
+          .eq("status", "active")
+          .order("updated_at", { ascending: false });
+        if (accountLookupError) {
+          throw new HttpError(
+            accountLookupError.message || "Unable to load linked bank account.",
+            500,
+            { reason: "plaid_account_lookup_failed" },
+          );
+        }
+        const accountCandidates = Array.isArray(accountRows) ? accountRows : [];
+        const selectedAccount = accountCandidates.length > 0 ? accountCandidates[0] : null;
+        if (!selectedAccount) {
+          throw new HttpError("Selected payout bank is no longer linked.", 400, {
+            reason: "plaid_account_not_found",
+          });
+        }
+
+        const plaidItemId = String(selectedAccount?.plaid_item_id || "").trim();
+        if (!plaidItemId) {
+          throw new HttpError("Unable to load linked bank account details.", 400, {
+            reason: "plaid_link_data_missing",
+          });
+        }
+        const { data: itemRows, error: itemLookupError } = await supabase
+          .from("plaid_linked_items")
+          .select("id, institution_name, link_purposes, updated_at")
+          .eq("user_id", userId)
+          .eq("plaid_item_id", plaidItemId)
+          .eq("status", "active")
+          .order("updated_at", { ascending: false });
+        if (itemLookupError) {
+          throw new HttpError(
+            itemLookupError.message || "Unable to load linked institution.",
+            500,
+            { reason: "plaid_item_lookup_failed" },
+          );
+        }
+        const itemCandidates = Array.isArray(itemRows) ? itemRows : [];
+        const selectedItem = itemCandidates.length > 0 ? itemCandidates[0] : null;
+        if (!selectedItem) {
+          throw new HttpError("Selected payout bank is no longer linked.", 400, {
+            reason: "plaid_item_not_found",
+          });
+        }
+
+        const mergedAccountPurposes = mergePlaidLinkPurposes(
+          selectedAccount?.link_purposes,
+          ["cashout"],
+        );
+        const mergedItemPurposes = mergePlaidLinkPurposes(
+          selectedItem?.link_purposes,
+          ["cashout"],
+        );
+        if (selectedAccount?.id) {
+          const { error: accountPurposeError } = await supabase
+            .from("plaid_linked_accounts")
+            .update({ link_purposes: mergedAccountPurposes })
+            .eq("id", selectedAccount.id)
+            .eq("user_id", userId);
+          if (accountPurposeError) {
+            throw new HttpError(
+              accountPurposeError.message || "Unable to update payout bank permissions.",
+              500,
+              { reason: "plaid_account_purpose_update_failed" },
+            );
+          }
+        }
+        if (selectedItem?.id) {
+          const { error: itemPurposeError } = await supabase
+            .from("plaid_linked_items")
+            .update({ link_purposes: mergedItemPurposes })
+            .eq("id", selectedItem.id)
+            .eq("user_id", userId);
+          if (itemPurposeError) {
+            throw new HttpError(
+              itemPurposeError.message || "Unable to update payout institution permissions.",
+              500,
+              { reason: "plaid_item_purpose_update_failed" },
+            );
+          }
+        }
+
+        const bankSummary = formatPlaidBankSummary(
+          String(selectedItem?.institution_name || "").trim() || null,
+          String(
+            selectedAccount?.account_name ||
+              selectedAccount?.account_subtype ||
+              "Bank account",
+          ).trim(),
+          String(selectedAccount?.account_mask || "").trim() || null,
+        );
+
+        const nowIso = new Date().toISOString();
+        const { error: profileUpdateError } = await supabase
+          .from("profiles")
+          .update({
+            stripe_cashout_plaid_item_id: plaidItemId,
+            stripe_cashout_plaid_account_id: plaidAccountId,
+            stripe_cashout_account_label: bankSummary || null,
+            stripe_cashout_bank_synced_at: nowIso,
+          })
+          .eq("id", userId);
+        if (profileUpdateError) {
+          throw new HttpError(
+            profileUpdateError.message || "Unable to save selected payout bank.",
+            500,
+            { reason: "profile_payout_selection_update_failed" },
+          );
+        }
+
+        if (existing.recipientId) {
+          await supabase
+            .from("cashout_recipients")
+            .update({
+              bank_summary: bankSummary || existing.bankSummary || "Linked via Plaid",
+              last_synced_at: nowIso,
+            })
+            .eq("user_id", userId)
+            .eq("provider", "checkbook");
+        }
+
+        return json({
+          ok: true,
+          status: existing.recipientId ? "linked" : "selected",
+          mode: "selection_only",
+          linkToken: null,
+          recipientId: existing.recipientId,
+          bankSummary: bankSummary || existing.bankSummary,
+          selectedPayoutAccountId: plaidAccountId,
+          selectedPayoutLabel: bankSummary || existing.bankSummary,
+          copy: {
+            primary: "Payout bank updated.",
+            secondary: "Bank selection saved. You can request transfer when ready.",
+          },
+        }, 200);
+      }
+
+      if (!publicToken && (forceRelink || plaidAccountId)) {
+        const linked = await refreshCheckbookRecipientFromStoredPlaid(
+          supabase,
+          userId,
+          profile,
+          plaidAccountId,
+        );
+        return json({
+          ok: true,
+          status: "linked",
+          mode: "plaid_link",
+          linkToken: null,
+          recipientId: linked.recipientId,
+          bankSummary: linked.bankSummary,
+          selectedPayoutAccountId: linked.selectedPayoutAccountId || null,
+          selectedPayoutLabel: linked.selectedPayoutLabel || linked.bankSummary,
         }, 200);
       }
 
@@ -1006,35 +2550,78 @@ export const createCheckbookCashoutHandler =
           duplicate: true,
         }, 200);
       }
-      const recipient = await supabase
-        .from("cashout_recipients")
-        .select("recipient_provider_id, recipient_status, bank_summary")
-        .eq("user_id", userId)
-        .eq("provider", "checkbook")
-        .maybeSingle();
-      if (!recipient.data?.recipient_provider_id) {
+      const plaidState = await getPlaidCashoutLinkState(supabase, userId);
+      const profile = await resolveProfile(supabase, userId);
+      let recipientId: string | null = null;
+      let recipientStatus = "";
+      let recipientBankSummary: string | null = null;
+      {
+        const recipientRow = await supabase
+          .from("cashout_recipients")
+          .select("recipient_provider_id, recipient_status, bank_summary")
+          .eq("user_id", userId)
+          .eq("provider", "checkbook")
+          .maybeSingle();
+        recipientId = String(recipientRow.data?.recipient_provider_id || "").trim() || null;
+        recipientStatus = String(recipientRow.data?.recipient_status || "")
+          .trim()
+          .toLowerCase() || "linked";
+        recipientBankSummary = String(recipientRow.data?.bank_summary || "").trim() || null;
+      }
+
+      {
+        const isRecipientUsable = Boolean(
+          recipientId && ["linked", "verified", "active"].includes(recipientStatus),
+        );
+        const shouldRefreshRecipient = !isRecipientUsable;
+        if (shouldRefreshRecipient) {
+          const preferredAccountId = plaidState.selectedPlaidAccountActive
+            ? plaidState.selectedPlaidAccountId || null
+            : null;
+          const linked = await refreshCheckbookRecipientFromStoredPlaid(
+            supabase,
+            userId,
+            profile,
+            preferredAccountId,
+          );
+          recipientId = String(linked.recipientId || "").trim() || null;
+          recipientStatus = recipientId ? "linked" : recipientStatus;
+          recipientBankSummary = String(linked.bankSummary || "").trim() || recipientBankSummary;
+        }
+      }
+
+      const preferredAccountId = plaidState.selectedPlaidAccountActive
+        ? plaidState.selectedPlaidAccountId || null
+        : null;
+      const resolvedRecipientId = await resolveCheckbookRecipientDestinationForTransfer(
+        supabase,
+        userId,
+        recipientId,
+        preferredAccountId,
+        profile,
+      );
+      if (!resolvedRecipientId) {
+        const fallbackResolution = await issueAwareResolve(recipientId || "");
+        const issueCode = fallbackResolution.issueCode || "checkbook_destination_missing";
+        throw new HttpError(
+          formatIssueMessage(
+            issueCode,
+            "This bank account cannot be linked for direct deposit right now. Try another account.",
+          ),
+          400,
+          {
+            reason: issueCode,
+          },
+        );
+      }
+      recipientId = resolvedRecipientId;
+
+      if (!recipientId) {
         throw new HttpError("Link a bank account before requesting bank transfer cashout.", 400, {
           reason: "bank_not_linked",
         });
       }
-      const recipientStatus = String(recipient.data?.recipient_status || "")
-        .trim()
-        .toLowerCase();
       if (!["linked", "verified", "active"].includes(recipientStatus)) {
-        throw new HttpError("Complete bank setup before requesting bank transfer cashout.", 400, {
-          reason: "bank_setup_incomplete",
-        });
-      }
-      const plaidState = await getPlaidCashoutLinkState(supabase, userId);
-      if (!plaidState.hasActivePlaidAccount) {
-        throw new HttpError("Link a bank account with Plaid before requesting bank transfer cashout.", 400, {
-          reason: "bank_not_linked",
-        });
-      }
-      if (
-        plaidState.selectedPlaidAccountId &&
-        !plaidState.selectedPlaidAccountActive
-      ) {
         throw new HttpError("Complete bank setup before requesting bank transfer cashout.", 400, {
           reason: "bank_setup_incomplete",
         });
@@ -1052,8 +2639,8 @@ export const createCheckbookCashoutHandler =
           status: "pending",
           idempotency_key: idempotencyKey,
           provider_status: "awaiting_admin_approval",
-          recipient_provider_id: String(recipient.data?.recipient_provider_id || ""),
-          bank_summary: String(recipient.data?.bank_summary || "").trim() || null,
+          recipient_provider_id: recipientId,
+          bank_summary: recipientBankSummary,
         })
         .select("id")
         .maybeSingle();
@@ -1195,13 +2782,35 @@ export const createCheckbookAdminDecisionHandler =
         return json({ ok: true, action: "reject", payoutId, status: "failed" }, 200);
       }
 
-      const recipientId = String(row.recipient_provider_id || "").trim();
-      if (!recipientId) {
-        throw new HttpError("Missing linked recipient for this payout.", 400, {
-          reason: "missing_recipient",
-        });
-      }
+      let recipientId = String(row.recipient_provider_id || "").trim();
       const profile = await resolveProfile(supabase, String(row.user_id || "").trim());
+      const payoutUserId = String(row.user_id || "").trim();
+      const plaidState = await getPlaidCashoutLinkState(supabase, payoutUserId);
+      const preferredAccountId = plaidState.selectedPlaidAccountActive
+        ? plaidState.selectedPlaidAccountId || null
+        : null;
+      const resolvedRecipientId = await resolveCheckbookRecipientDestinationForTransfer(
+        supabase,
+        payoutUserId,
+        recipientId,
+        preferredAccountId,
+        profile,
+      );
+      if (resolvedRecipientId) {
+        recipientId = resolvedRecipientId;
+      }
+      if (!recipientId) {
+        const fallbackResolution = await issueAwareResolve(row.recipient_provider_id || "");
+        const issueCode = fallbackResolution.issueCode || "checkbook_destination_missing";
+        throw new HttpError(
+          formatIssueMessage(
+            issueCode,
+            "Missing linked bank destination for this payout.",
+          ),
+          400,
+          { reason: issueCode },
+        );
+      }
       const reqId = await deriveUuidFromKey(`checkbook:approve:${payoutId}:${Date.now()}`);
       const amountDollars = Number(
         (Math.max(0, Number(row.amount_cents) || 0) / 100).toFixed(2),
@@ -1213,43 +2822,44 @@ export const createCheckbookAdminDecisionHandler =
         metadata: {
           payoutId,
           userId: row.user_id,
-          recipientId,
+          destination: recipientId,
         },
       };
-      const directPayload = {
-        ...basePayload,
-        recipient: recipientId,
-        deposit_options: CHECKBOOK_DIRECT_DEPOSIT_OPTIONS,
-      };
-      const legacyEmailPayload = {
+      const buildDirectPayload = (currentRecipientId: string) => ({
         ...basePayload,
         recipient: profile.email,
-      };
+        destination: currentRecipientId,
+      });
 
       let upstream = await callCheckbookApi("/v3/check/digital", {
         method: "POST",
         headers: {
           "Idempotency-Key": reqId,
         },
-        body: JSON.stringify(
-          CHECKBOOK_DIRECT_RECIPIENT_PAYOUT_ENABLED
-            ? directPayload
-            : legacyEmailPayload,
-        ),
+        body: JSON.stringify(buildDirectPayload(recipientId)),
       });
 
       if (
-        CHECKBOOK_DIRECT_RECIPIENT_PAYOUT_ENABLED &&
         !upstream.response.ok &&
-        CHECKBOOK_DIRECT_RECIPIENT_EMAIL_FALLBACK
+        isInvalidRecipientError(upstream.parsed, upstream.text)
       ) {
-        upstream = await callCheckbookApi("/v3/check/digital", {
-          method: "POST",
-          headers: {
-            "Idempotency-Key": reqId,
-          },
-          body: JSON.stringify(legacyEmailPayload),
-        });
+        const refreshed = await resolveCheckbookRecipientDestinationForTransfer(
+          supabase,
+          payoutUserId,
+          recipientId,
+          preferredAccountId,
+          profile,
+        );
+        if (refreshed) {
+          recipientId = refreshed;
+          upstream = await callCheckbookApi("/v3/check/digital", {
+            method: "POST",
+            headers: {
+              "Idempotency-Key": reqId,
+            },
+            body: JSON.stringify(buildDirectPayload(recipientId)),
+          });
+        }
       }
 
       if (!upstream.response.ok) {
@@ -1257,9 +2867,7 @@ export const createCheckbookAdminDecisionHandler =
           parseCheckbookError(upstream.parsed, upstream.text, upstream.response.status || null),
           upstream.response.status || 502,
           {
-            reason: CHECKBOOK_DIRECT_RECIPIENT_PAYOUT_ENABLED
-              ? "checkbook_direct_payout_release_failed"
-              : "checkbook_payout_release_failed",
+            reason: "checkbook_direct_payout_release_failed",
           },
         );
       }
@@ -1299,6 +2907,7 @@ export const createCheckbookAdminDecisionHandler =
           provider_reward_id: providerReferenceId,
           provider_claim_url: providerClaimUrl,
           provider_status: providerStatus,
+          recipient_provider_id: recipientId,
           released_by: actorId,
           released_at: new Date().toISOString(),
           failure_reason: null,
