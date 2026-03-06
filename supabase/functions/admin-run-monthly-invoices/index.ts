@@ -16,6 +16,7 @@ const SUPABASE_ANON_KEY =
   Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
   "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
+const BIWEEKLY_PERIOD_DAYS = 14;
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
@@ -54,8 +55,13 @@ const createAuthClient = () =>
 
 const getDefaultPeriod = () => {
   const now = new Date();
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const end = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() + 1,
+  ));
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - BIWEEKLY_PERIOD_DAYS);
   return { start, end };
 };
 

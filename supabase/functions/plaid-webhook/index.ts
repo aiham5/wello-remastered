@@ -17,6 +17,7 @@ type PlaidWebhookPayload = {
   webhook_type?: string | null;
   webhook_code?: string | null;
   item_id?: string | null;
+  removed_transactions?: string[] | null;
   error?: {
     error_type?: string | null;
     error_code?: string | null;
@@ -32,10 +33,20 @@ const PLAID_WEBHOOK_MAX_AGE_SECONDS = Math.max(
   Number(Deno.env.get("PLAID_WEBHOOK_MAX_AGE_SECONDS") || 300) || 300,
   30,
 );
+const RESEND_API_KEY = String(Deno.env.get("RESEND_API_KEY") || "").trim();
+const RESEND_FROM_EMAIL = String(
+  Deno.env.get("RESEND_FROM_EMAIL") || "Wello <no-reply@wellopartners.com>",
+).trim();
+const WITHDRAWAL_ADMIN_EMAIL = String(
+  Deno.env.get("WITHDRAWAL_ADMIN_EMAIL") || "",
+).trim();
 
 const textEncoder = new TextEncoder();
 type PlaidVerificationKey = Awaited<ReturnType<typeof importJWK>>;
-const webhookKeyCache = new Map<string, { key: PlaidVerificationKey; expiresAtMs: number }>();
+const webhookKeyCache = new Map<
+  string,
+  { key: PlaidVerificationKey; expiresAtMs: number }
+>();
 
 const toHex = (value: ArrayBuffer) =>
   Array.from(new Uint8Array(value))
@@ -45,12 +56,17 @@ const toHex = (value: ArrayBuffer) =>
 const constantTimeEqual = (a: string, b: string) => {
   if (!a || !b || a.length !== b.length) return false;
   let mismatch = 0;
-  for (let i = 0; i < a.length; i += 1) mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  for (let i = 0; i < a.length; i += 1) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
   return mismatch === 0;
 };
 
 const sha256Hex = async (value: string) => {
-  const digest = await crypto.subtle.digest("SHA-256", textEncoder.encode(value));
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    textEncoder.encode(value),
+  );
   return toHex(digest);
 };
 
@@ -69,7 +85,9 @@ const getPlaidVerificationToken = (req: Request) =>
   ).trim();
 
 const parseEpochSeconds = (value: unknown): number | null => {
-  if (typeof value === "number" && Number.isFinite(value)) return Math.floor(value);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.floor(value);
+  }
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -442,6 +460,40 @@ const revokeItem = async (
   }
 };
 
+const sendChargebackAdminAlert = async (input: {
+  purchaseVerificationId: string;
+  redemptionId: string;
+  userId: string;
+  plaidTransactionId: string;
+  amountCents: number | null;
+}) => {
+  if (!RESEND_API_KEY || !WITHDRAWAL_ADMIN_EMAIL || !RESEND_FROM_EMAIL) {
+    return;
+  }
+  const amountLabel = Number.isFinite(Number(input.amountCents))
+    ? `$${((Number(input.amountCents) || 0) / 100).toFixed(2)}`
+    : "unknown";
+  await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: RESEND_FROM_EMAIL,
+      to: [WITHDRAWAL_ADMIN_EMAIL],
+      subject: `[Wello] Chargeback flagged - ${amountLabel}`,
+      html:
+        `<p><strong>Plaid reported TRANSACTIONS_REMOVED for a previously confirmed redemption.</strong></p>` +
+        `<p>Purchase Verification ID: ${input.purchaseVerificationId}</p>` +
+        `<p>Redemption ID: ${input.redemptionId}</p>` +
+        `<p>User ID: ${input.userId}</p>` +
+        `<p>Plaid Transaction ID: ${input.plaidTransactionId}</p>` +
+        `<p>Amount: ${amountLabel}</p>`,
+    }),
+  }).catch(() => null);
+};
+
 serve(async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -455,7 +507,9 @@ serve(async (req) => {
     // - Legacy fallback: shared secret via custom header only (never query param).
     const legacyHeaderSecret = getLegacyHeaderWebhookSecret(req);
     if (legacyHeaderSecret) {
-      if (!PLAID_WEBHOOK_SECRET || legacyHeaderSecret !== PLAID_WEBHOOK_SECRET) {
+      if (
+        !PLAID_WEBHOOK_SECRET || legacyHeaderSecret !== PLAID_WEBHOOK_SECRET
+      ) {
         throw new HttpError("Unauthorized webhook request.", 401, {
           reason: "invalid_webhook_secret",
         });
@@ -511,6 +565,138 @@ serve(async (req) => {
     await logWebhookEvent("webhook_received", "info", {
       hasErrorPayload: Boolean(payload?.error),
     });
+
+    if (webhookType === "TRANSACTIONS") {
+      if (webhookCode === "TRANSACTIONS_REMOVED") {
+        const removedTransactions = Array.isArray(payload?.removed_transactions)
+          ? payload.removed_transactions
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+          : [];
+        let flaggedCount = 0;
+
+        for (const transactionId of removedTransactions) {
+          const { data: verification, error: verificationError } =
+            await supabase
+              .from("purchase_verifications")
+              .select(
+                "id, redemption_id, user_id, matched_amount_cents, chargeback_flagged",
+              )
+              .eq("matched_plaid_transaction_id", transactionId)
+              .eq("status", "confirmed")
+              .maybeSingle();
+          if (verificationError) {
+            throw new HttpError(
+              verificationError.message ||
+                "Unable to load verification record.",
+              500,
+              { reason: "chargeback_lookup_failed", transactionId },
+            );
+          }
+          if (!verification?.id || verification.chargeback_flagged) {
+            continue;
+          }
+
+          const nowIso = new Date().toISOString();
+          await supabase
+            .from("purchase_verifications")
+            .update({
+              chargeback_flagged: true,
+              chargeback_flagged_at: nowIso,
+              last_checked_at: nowIso,
+              updated_at: nowIso,
+            })
+            .eq("id", verification.id);
+
+          const redemptionId = String(verification.redemption_id || "").trim();
+          if (redemptionId) {
+            const { data: paidCashback } = await supabase
+              .from("cashback_events")
+              .select("id")
+              .eq("redemption_id", redemptionId)
+              .eq("status", "paid")
+              .limit(1)
+              .maybeSingle();
+            const alreadyWithdrawn = Boolean(paidCashback?.id);
+
+            const { data: redemption } = await supabase
+              .from("redemptions")
+              .select("id")
+              .eq("id", redemptionId)
+              .maybeSingle();
+            if (redemption?.id && alreadyWithdrawn) {
+              await supabase
+                .from("redemptions")
+                .update({ cashback_status: "withdrawn" })
+                .eq("id", redemption.id);
+            } else if (redemption?.id) {
+              await supabase
+                .from("redemptions")
+                .update({ cashback_status: "frozen" })
+                .eq("id", redemption.id)
+                .neq("cashback_status", "withdrawn");
+            }
+          }
+
+          await supabase.rpc("increment_fraud_score", {
+            p_user_id: verification.user_id,
+            p_increment: 10,
+            p_reason: "chargeback_transaction_removed",
+          });
+
+          await supabase.from("system_logs").insert({
+            event_type: "chargeback_flagged",
+            details: {
+              purchase_verification_id: verification.id,
+              redemption_id: verification.redemption_id,
+              user_id: verification.user_id,
+              plaid_transaction_id: transactionId,
+              cashback_amount_cents: verification.matched_amount_cents ?? null,
+              timestamp: nowIso,
+            },
+          });
+
+          await sendChargebackAdminAlert({
+            purchaseVerificationId: verification.id,
+            redemptionId: String(verification.redemption_id || ""),
+            userId: String(verification.user_id || ""),
+            plaidTransactionId: transactionId,
+            amountCents:
+              Number.isFinite(Number(verification.matched_amount_cents))
+                ? Number(verification.matched_amount_cents)
+                : null,
+          });
+
+          flaggedCount += 1;
+        }
+
+        await logWebhookEvent("transactions_removed_handled", "warn", {
+          handled: true,
+          removedCount: removedTransactions.length,
+          flaggedCount,
+        });
+        return json({
+          received: true,
+          handled: true,
+          webhookType,
+          webhookCode,
+          plaidItemId,
+          removedCount: removedTransactions.length,
+          flaggedCount,
+        });
+      }
+
+      await logWebhookEvent("transactions_webhook_acknowledged", "info", {
+        handled: false,
+      });
+      return json({
+        received: true,
+        handled: false,
+        webhookType,
+        webhookCode,
+        plaidItemId,
+      });
+    }
 
     if (webhookType === "ITEM" && webhookCode === "NEW_ACCOUNTS_AVAILABLE") {
       await markNewAccountsAvailable(supabase, plaidItemId, webhookCode);

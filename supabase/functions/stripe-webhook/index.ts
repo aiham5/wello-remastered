@@ -14,6 +14,15 @@ const STRIPE_WEBHOOK_SECRET = Deno.env.get("STRIPE_WEBHOOK_SECRET") ?? "";
 const STRIPE_WEBHOOK_TOLERANCE_SECONDS = Number(
   Deno.env.get("STRIPE_WEBHOOK_TOLERANCE_SECONDS") ?? "300",
 );
+const BREVO_API_KEY = (Deno.env.get("BREVO_API_KEY") ?? "").trim();
+const BREVO_FROM_EMAIL = (Deno.env.get("BREVO_FROM_EMAIL") ?? "support@wellopartners.com")
+  .trim();
+const RESEND_API_KEY = (Deno.env.get("RESEND_API_KEY") ?? "").trim();
+const RESEND_FROM_EMAIL = (Deno.env.get("RESEND_FROM_EMAIL") ?? "Wello <noreply@wellopartners.com>")
+  .trim();
+const WITHDRAWAL_ADMIN_EMAIL = (
+  Deno.env.get("WITHDRAWAL_ADMIN_EMAIL") ?? "admin@wellopartners.com"
+).trim();
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -22,6 +31,12 @@ const stripe = new Stripe(STRIPE_SECRET_KEY, {
 const asNonEmptyString = (value: unknown): string | null => {
   const normalized = typeof value === "string" ? value.trim() : "";
   return normalized.length > 0 ? normalized : null;
+};
+
+const moneyLabelFromCents = (amountCents: unknown) => {
+  const value = Number(amountCents);
+  if (!Number.isFinite(value)) return "0.00";
+  return (value / 100).toFixed(2);
 };
 
 const getExternalBankSnapshot = (account: Stripe.Account) => {
@@ -161,6 +176,182 @@ const clearBusinessPaymentMethodFromCustomer = async (
       .filter((value): value is string => Boolean(value))
     : [];
   await pauseActiveOffersForBusinesses(supabase, businessIds);
+};
+
+type BusinessNotificationTarget = {
+  id: string;
+  name: string;
+  email: string | null;
+};
+
+const loadBusinessNotificationTarget = async (
+  supabase: any,
+  invoiceCustomerId: string | null,
+  businessIdHint: string | null,
+): Promise<BusinessNotificationTarget | null> => {
+  let businessRow: { id?: string | null; name?: string | null; owner_id?: string | null } | null =
+    null;
+
+  if (businessIdHint) {
+    const { data } = await supabase
+      .from("businesses")
+      .select("id, name, owner_id")
+      .eq("id", businessIdHint)
+      .maybeSingle();
+    businessRow = data || null;
+  }
+
+  if (!businessRow && invoiceCustomerId) {
+    const { data } = await supabase
+      .from("businesses")
+      .select("id, name, owner_id")
+      .eq("stripe_customer_id", invoiceCustomerId)
+      .maybeSingle();
+    businessRow = data || null;
+  }
+
+  const businessId = asNonEmptyString(businessRow?.id);
+  if (!businessId) return null;
+
+  const ownerId = asNonEmptyString(businessRow?.owner_id);
+  let email: string | null = null;
+  if (ownerId) {
+    const { data: ownerProfile } = await supabase
+      .from("profiles")
+      .select("email")
+      .eq("id", ownerId)
+      .maybeSingle();
+    email = asNonEmptyString(ownerProfile?.email);
+  }
+
+  return {
+    id: businessId,
+    name: asNonEmptyString(businessRow?.name) || "Wello business",
+    email,
+  };
+};
+
+const updateOffersStatusForBusiness = async (
+  supabase: any,
+  businessId: string,
+  fromStatus: string,
+  toStatus: string,
+  activeFlag: boolean,
+) => {
+  const payload = {
+    status: toStatus,
+    active: activeFlag,
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await supabase
+    .from("offers")
+    .update(payload)
+    .eq("business_id", businessId)
+    .eq("status", fromStatus);
+  if (!error) return;
+
+  // Fallback for environments where status column migration is not yet applied.
+  const code = String((error as { code?: string } | null)?.code || "");
+  if (code === "42703") {
+    const fallback = await supabase
+      .from("offers")
+      .update({ active: activeFlag, updated_at: new Date().toISOString() })
+      .eq("business_id", businessId)
+      .eq("active", !activeFlag);
+    if (!fallback.error) return;
+    throw new Error(fallback.error.message || "Failed to update offers state.");
+  }
+  throw new Error(error.message || "Failed to update offers state.");
+};
+
+const insertBusinessPaymentEvent = async (
+  supabase: any,
+  row: {
+    business_id: string;
+    stripe_customer_id: string | null;
+    stripe_invoice_id: string;
+    event_type: string;
+    amount: number;
+    status: string;
+  },
+) => {
+  const { error } = await supabase.from("business_payment_events").insert(row);
+  if (error) {
+    console.warn("stripe-webhook business_payment_events insert failed", {
+      message: error.message,
+      code: (error as { code?: string } | null)?.code || null,
+      eventType: row.event_type,
+      businessId: row.business_id,
+    });
+  }
+};
+
+const sendBrevoEmail = async (
+  payload: { to: string | null; subject: string; html: string },
+) => {
+  const recipient = asNonEmptyString(payload.to);
+  if (!recipient || !BREVO_API_KEY) return { delivered: false };
+  try {
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": BREVO_API_KEY,
+      },
+      body: JSON.stringify({
+        sender: { email: BREVO_FROM_EMAIL, name: "Wello" },
+        to: [{ email: recipient }],
+        subject: payload.subject,
+        htmlContent: payload.html,
+      }),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      console.warn("stripe-webhook brevo email failed", {
+        status: response.status,
+        responseText: text.slice(0, 500),
+      });
+      return { delivered: false };
+    }
+    return { delivered: true };
+  } catch (error) {
+    console.warn("stripe-webhook brevo email exception", error);
+    return { delivered: false };
+  }
+};
+
+const sendResendEmail = async (
+  payload: { to: string | null; subject: string; html: string },
+) => {
+  const recipient = asNonEmptyString(payload.to);
+  if (!recipient || !RESEND_API_KEY) return { delivered: false };
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: RESEND_FROM_EMAIL,
+        to: [recipient],
+        subject: payload.subject,
+        html: payload.html,
+      }),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      console.warn("stripe-webhook resend email failed", {
+        status: response.status,
+        responseText: text.slice(0, 500),
+      });
+      return { delivered: false };
+    }
+    return { delivered: true };
+  } catch (error) {
+    console.warn("stripe-webhook resend email exception", error);
+    return { delivered: false };
+  }
 };
 
 serve(async (req) => {
@@ -366,6 +557,7 @@ serve(async (req) => {
     event.type === "invoice.finalized" ||
     event.type === "invoice.payment_succeeded" ||
     event.type === "invoice.payment_failed" ||
+    event.type === "invoice.payment_action_required" ||
     event.type === "invoice.voided"
   ) {
     const invoice = event.data.object as Stripe.Invoice;
@@ -447,6 +639,131 @@ serve(async (req) => {
         } else {
           await updateQuery;
         }
+      }
+
+      try {
+        const paymentBusiness = await loadBusinessNotificationTarget(
+          supabase,
+          asNonEmptyString(customerId),
+          asNonEmptyString(businessId),
+        );
+        if (!paymentBusiness) {
+          return new Response(JSON.stringify({ received: true }), { status: 200 });
+        }
+
+        if (event.type === "invoice.payment_failed") {
+          await updateOffersStatusForBusiness(
+            supabase,
+            paymentBusiness.id,
+            "active",
+            "paused",
+            false,
+          );
+          await insertBusinessPaymentEvent(supabase, {
+            business_id: paymentBusiness.id,
+            stripe_customer_id: asNonEmptyString(customerId),
+            stripe_invoice_id: invoiceId,
+            event_type: "payment_failed",
+            amount: Number((Number(invoice.amount_due || 0) / 100).toFixed(2)),
+            status: "failed",
+          });
+          await sendBrevoEmail({
+            to: paymentBusiness.email,
+            subject: "Action Required - Your Wello Offers Have Been Paused",
+            html: `
+              <p>Hi ${paymentBusiness.name},</p>
+              <p>We were unable to process your recent Wello invoice of <strong>$${moneyLabelFromCents(invoice.amount_due || 0)}</strong>.</p>
+              <p>Your active offers on Wello have been temporarily paused and are no longer visible to users.</p>
+              <p>To reactivate your offers, please update your payment method in your Wello business dashboard.</p>
+              <p>Once payment is processed, your offers will be automatically reactivated within minutes.</p>
+              <p>Questions? Email us at support@wellopartners.com</p>
+              <p>- The Wello Team</p>
+            `,
+          });
+          await sendResendEmail({
+            to: WITHDRAWAL_ADMIN_EMAIL,
+            subject: `[Wello] Payment Failed - ${paymentBusiness.name}`,
+            html: `
+              <p>Business: ${paymentBusiness.name}</p>
+              <p>Business ID: ${paymentBusiness.id}</p>
+              <p>Stripe Customer: ${asNonEmptyString(customerId) || ""}</p>
+              <p>Invoice ID: ${invoiceId}</p>
+              <p>Amount: $${moneyLabelFromCents(invoice.amount_due || 0)}</p>
+              <p>Their offers have been automatically paused.</p>
+            `,
+          });
+        }
+
+        if (event.type === "invoice.payment_succeeded") {
+          const { data: priorFailure } = await supabase
+            .from("business_payment_events")
+            .select("id")
+            .eq("business_id", paymentBusiness.id)
+            .eq("event_type", "payment_failed")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (priorFailure?.id) {
+            await updateOffersStatusForBusiness(
+              supabase,
+              paymentBusiness.id,
+              "paused",
+              "active",
+              true,
+            );
+            await insertBusinessPaymentEvent(supabase, {
+              business_id: paymentBusiness.id,
+              stripe_customer_id: asNonEmptyString(customerId),
+              stripe_invoice_id: invoiceId,
+              event_type: "payment_recovered",
+              amount: Number((Number(invoice.amount_paid || 0) / 100).toFixed(2)),
+              status: "paid",
+            });
+            await sendBrevoEmail({
+              to: paymentBusiness.email,
+              subject: "Payment Confirmed - Your Wello Offers Are Live Again",
+              html: `
+                <p>Hi ${paymentBusiness.name},</p>
+                <p>Your payment has been processed successfully.</p>
+                <p>Your offers are now active again and visible to Wello users.</p>
+                <p>Thank you for being a Wello partner.</p>
+                <p>- The Wello Team</p>
+              `,
+            });
+          }
+        }
+
+        if (event.type === "invoice.payment_action_required") {
+          await insertBusinessPaymentEvent(supabase, {
+            business_id: paymentBusiness.id,
+            stripe_customer_id: asNonEmptyString(customerId),
+            stripe_invoice_id: invoiceId,
+            event_type: "payment_action_required",
+            amount: Number((Number(invoice.amount_due || 0) / 100).toFixed(2)),
+            status: "action_required",
+          });
+          await sendBrevoEmail({
+            to: paymentBusiness.email,
+            subject: "Action Required - Complete Your Wello Payment",
+            html: `
+              <p>Hi ${paymentBusiness.name},</p>
+              <p>Your recent Wello payment requires additional authentication to complete.</p>
+              <p>Please log into your Wello business dashboard and complete the payment verification.</p>
+              <p>Your offers will remain active while you complete this step.</p>
+              <p>Questions? Email us at support@wellopartners.com</p>
+              <p>- The Wello Team</p>
+            `,
+          });
+        }
+      } catch (paymentStateError) {
+        console.warn("stripe-webhook payment lifecycle extension failed", {
+          invoiceId,
+          customerId,
+          eventType: event.type,
+          message: (paymentStateError as { message?: string } | null)?.message ||
+            String(paymentStateError),
+        });
       }
     }
   }

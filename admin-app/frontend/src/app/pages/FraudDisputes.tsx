@@ -44,6 +44,83 @@ interface ReceiptDetail {
   business?: { name?: string | null } | null;
 }
 
+interface DisputeEvidence {
+  report?: {
+    id?: string | null;
+    created_at?: string | null;
+    status?: string | null;
+  } | null;
+  receipt?: {
+    id?: string | null;
+    review_status?: string | null;
+    uploaded_at?: string | null;
+    receipt_total_cents?: number | null;
+    image_hash?: string | null;
+    redemption_id?: string | null;
+    user_id?: string | null;
+  } | null;
+  verification?: {
+    id?: string | null;
+    status?: string | null;
+    source?: string | null;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    expected_amount_cents?: number | null;
+    matched_plaid_transaction_id?: string | null;
+    matched_plaid_item_id?: string | null;
+    matched_amount_cents?: number | null;
+    expected_merchant?: string | null;
+    matched_posted_on?: string | null;
+    expected_posted_on?: string | null;
+    matched_merchant?: string | null;
+    last_checked_at?: string | null;
+    confirmed_at?: string | null;
+    rejected_at?: string | null;
+    chargeback_flagged?: boolean | null;
+    chargeback_flagged_at?: string | null;
+  } | null;
+  redemption?: {
+    id?: string | null;
+    cashback_status?: string | null;
+    created_at?: string | null;
+    offer?: { title?: string | null } | null;
+  } | null;
+  cashbackEvent?: {
+    id?: string | null;
+    amount_cents?: number | null;
+    status?: string | null;
+    created_at?: string | null;
+  } | null;
+  userProfile?: {
+    id?: string | null;
+    full_name?: string | null;
+    fraud_score?: number | null;
+    fraud_flagged?: boolean | null;
+    first_redemption_bonus_paid?: boolean | null;
+  } | null;
+}
+
+function EvidenceRow({
+  label,
+  value,
+  highlight = false,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+}) {
+  return (
+    <div
+      className={`flex items-start justify-between gap-3 py-1.5 border-b border-gray-100 last:border-b-0 ${
+        highlight ? "text-red-700" : "text-gray-800"
+      }`}
+    >
+      <span className="text-xs uppercase tracking-wide text-gray-500">{label}</span>
+      <span className="text-sm font-medium text-right break-all">{value}</span>
+    </div>
+  );
+}
+
 const reasonToLabel = (reason?: string | null) =>
   String(reason || "report").replace(/_/g, " ");
 
@@ -64,6 +141,10 @@ export function FraudDisputes() {
   const [rows, setRows] = useState<ReceiptReport[]>([]);
   const [message, setMessage] = useState("");
   const [workingId, setWorkingId] = useState<string | null>(null);
+  const [expandedEvidence, setExpandedEvidence] = useState<Record<string, boolean>>({});
+  const [evidenceByReportId, setEvidenceByReportId] = useState<Record<string, DisputeEvidence>>({});
+  const [loadingEvidenceId, setLoadingEvidenceId] = useState<string | null>(null);
+  const [disputeActionId, setDisputeActionId] = useState<string | null>(null);
 
   const [selectedReport, setSelectedReport] = useState<ReceiptReport | null>(null);
   const [receiptDetail, setReceiptDetail] = useState<ReceiptDetail | null>(null);
@@ -92,7 +173,7 @@ export function FraudDisputes() {
       ["suspicious_activity", "duplicate_receipt"].includes(String(row.reason || "").toLowerCase()),
     ).length;
     const resolved = rows.filter((row) =>
-      ["resolved", "dismissed"].includes(String(row.status || "").toLowerCase()),
+      ["resolved", "dismissed", "disputed"].includes(String(row.status || "").toLowerCase()),
     ).length;
     const fraudRate = rows.length ? ((highRisk / rows.length) * 100).toFixed(2) : "0.00";
     return { open, highRisk, resolved, fraudRate };
@@ -165,6 +246,69 @@ export function FraudDisputes() {
     setViewerOpen(true);
   };
 
+  const toggleEvidence = async (row: ReceiptReport) => {
+    const reportId = String(row?.id || "").trim();
+    if (!reportId) return;
+    const currentlyOpen = Boolean(expandedEvidence[reportId]);
+    setExpandedEvidence((prev) => ({ ...prev, [reportId]: !currentlyOpen }));
+    if (currentlyOpen || evidenceByReportId[reportId] || loadingEvidenceId === reportId) return;
+    setLoadingEvidenceId(reportId);
+    const res = await apiRequest<DisputeEvidence>(
+      `/api/admin/receipt-reports/${encodeURIComponent(reportId)}/evidence`,
+    );
+    if (res.error || !res.data) {
+      setMessage(summarizeError(res.error, "Unable to load dispute evidence."));
+    } else {
+      setEvidenceByReportId((prev) => ({ ...prev, [reportId]: res.data as DisputeEvidence }));
+      setMessage("");
+    }
+    setLoadingEvidenceId(null);
+  };
+
+  const handleDisputeAction = async (
+    row: ReceiptReport,
+    action: "approve" | "reject",
+  ) => {
+    const reportId = String(row?.id || "").trim();
+    if (!reportId) return;
+    const confirmed = window.confirm(
+      action === "approve"
+        ? "Approve this dispute? This freezes cashback and increases fraud score."
+        : "Reject this dispute?",
+    );
+    if (!confirmed) return;
+
+    setDisputeActionId(`${reportId}:${action}`);
+    const res = await apiRequest(
+      `/api/admin/receipt-reports/${encodeURIComponent(reportId)}/dispute`,
+      { method: "POST", body: { action } },
+    );
+    if (res.error) {
+      setMessage(summarizeError(res.error, "Unable to update dispute."));
+      setDisputeActionId(null);
+      return;
+    }
+
+    const nextStatus = String(res.data?.status || "resolved");
+    const nextNotes = String(res.data?.resolution_notes || "").trim() || null;
+    setRows((prev) =>
+      prev.map((item) =>
+        item.id === reportId
+          ? { ...item, status: nextStatus, resolution_notes: nextNotes }
+          : item,
+      ),
+    );
+    if (selectedReport?.id === reportId) {
+      setSelectedReport((prev) =>
+        prev
+          ? { ...prev, status: nextStatus, resolution_notes: nextNotes }
+          : prev,
+      );
+    }
+    setMessage(action === "approve" ? "Dispute approved." : "Dispute rejected.");
+    setDisputeActionId(null);
+  };
+
   return (
     <div className="space-y-6">
       {message ? (
@@ -211,6 +355,19 @@ export function FraudDisputes() {
               const kind = case_.business?.name ? "Business" : "User";
               const name = case_.business?.name || "Receipt reporter";
               const reportedReceiptId = case_.receipt_upload_id || case_.receipt?.id || "--";
+              const evidenceOpen = Boolean(expandedEvidence[case_.id]);
+              const evidenceLoading = loadingEvidenceId === case_.id;
+              const evidence = evidenceByReportId[case_.id];
+              const fraudScore = Number(evidence?.userProfile?.fraud_score || 0);
+              const receiptHash = String(evidence?.receipt?.image_hash || "").trim();
+              const receiptHashShort = receiptHash
+                ? `...${receiptHash.slice(-8)}`
+                : "N/A";
+              const verificationReason = String(
+                evidence?.verification?.reason_detail ||
+                  evidence?.verification?.reason_code ||
+                  "N/A",
+              );
               return (
                 <div key={case_.id} className="p-6 hover:bg-gray-50 transition-colors">
                   <div className="flex items-start justify-between gap-4">
@@ -251,6 +408,146 @@ export function FraudDisputes() {
                           Business input: {getBusinessReasonDetail(case_)}
                         </p>
                         <p className="text-xs text-gray-500">{formatRelativeTime(case_.created_at)}</p>
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={() => void toggleEvidence(case_)}
+                            className="px-3 py-1.5 text-xs border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+                          >
+                            {evidenceOpen ? "Hide evidence" : "View evidence"}
+                          </button>
+                        </div>
+                        {evidenceOpen ? (
+                          <div className="mt-3 border border-gray-200 rounded-lg bg-white p-3 space-y-2">
+                            {evidenceLoading ? (
+                              <p className="text-xs text-gray-500">Loading evidence...</p>
+                            ) : (
+                              <>
+                                <EvidenceRow
+                                  label="Verification"
+                                  value={String(
+                                    evidence?.verification?.source ||
+                                      evidence?.verification?.status ||
+                                      "Unknown",
+                                  )}
+                                />
+                                <EvidenceRow
+                                  label="Verification Reason"
+                                  value={verificationReason}
+                                />
+                                <EvidenceRow
+                                  label="Plaid Item"
+                                  value={String(
+                                    evidence?.verification?.matched_plaid_item_id ||
+                                      "N/A",
+                                  )}
+                                />
+                                <EvidenceRow
+                                  label="Plaid Txn ID"
+                                  value={String(
+                                    evidence?.verification?.matched_plaid_transaction_id ||
+                                      "N/A",
+                                  )}
+                                />
+                                <EvidenceRow
+                                  label="Plaid Amount"
+                                  value={
+                                    evidence?.verification?.matched_amount_cents != null
+                                      ? formatCurrencyFromCents(
+                                        Number(evidence.verification.matched_amount_cents || 0),
+                                      )
+                                      : "N/A"
+                                  }
+                                />
+                                <EvidenceRow
+                                  label="Expected Amount"
+                                  value={
+                                    evidence?.verification?.expected_amount_cents != null
+                                      ? formatCurrencyFromCents(
+                                        Number(evidence.verification.expected_amount_cents || 0),
+                                      )
+                                      : "N/A"
+                                  }
+                                />
+                                <EvidenceRow
+                                  label="Plaid Date"
+                                  value={String(evidence?.verification?.matched_posted_on || "N/A")}
+                                />
+                                <EvidenceRow
+                                  label="Expected Date"
+                                  value={String(evidence?.verification?.expected_posted_on || "N/A")}
+                                />
+                                <EvidenceRow
+                                  label="Plaid Merchant"
+                                  value={String(evidence?.verification?.matched_merchant || "N/A")}
+                                />
+                                <EvidenceRow
+                                  label="Expected Merchant"
+                                  value={String(evidence?.verification?.expected_merchant || "N/A")}
+                                />
+                                <EvidenceRow
+                                  label="Cashback Amount"
+                                  value={
+                                    evidence?.cashbackEvent?.amount_cents != null
+                                      ? formatCurrencyFromCents(
+                                        Number(evidence.cashbackEvent.amount_cents || 0),
+                                      )
+                                      : "N/A"
+                                  }
+                                />
+                                <EvidenceRow
+                                  label="Cashback Status"
+                                  value={String(evidence?.redemption?.cashback_status || "N/A")}
+                                />
+                                <EvidenceRow
+                                  label="Fraud Score"
+                                  value={String(fraudScore)}
+                                  highlight={fraudScore >= 30}
+                                />
+                                <EvidenceRow
+                                  label="Account Flagged"
+                                  value={evidence?.userProfile?.fraud_flagged ? "YES" : "No"}
+                                  highlight={Boolean(evidence?.userProfile?.fraud_flagged)}
+                                />
+                                <EvidenceRow
+                                  label="Chargeback Flagged"
+                                  value={evidence?.verification?.chargeback_flagged ? "YES" : "No"}
+                                  highlight={Boolean(evidence?.verification?.chargeback_flagged)}
+                                />
+                                <EvidenceRow
+                                  label="Chargeback Flagged At"
+                                  value={String(evidence?.verification?.chargeback_flagged_at || "N/A")}
+                                />
+                                <EvidenceRow
+                                  label="First Redemption Bonus"
+                                  value={evidence?.userProfile?.first_redemption_bonus_paid ? "YES" : "No"}
+                                />
+                                <EvidenceRow
+                                  label="Receipt Hash"
+                                  value={receiptHashShort}
+                                />
+                                <div className="flex items-center gap-2 pt-2">
+                                  <button
+                                    type="button"
+                                    disabled={disputeActionId === `${case_.id}:approve`}
+                                    onClick={() => void handleDisputeAction(case_, "approve")}
+                                    className="px-3 py-1.5 text-xs bg-red-50 text-red-700 rounded-md border border-red-200 hover:bg-red-100 transition-colors disabled:opacity-60"
+                                  >
+                                    Approve Dispute
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={disputeActionId === `${case_.id}:reject`}
+                                    onClick={() => void handleDisputeAction(case_, "reject")}
+                                    className="px-3 py-1.5 text-xs bg-gray-100 text-gray-800 rounded-md border border-gray-300 hover:bg-gray-200 transition-colors disabled:opacity-60"
+                                  >
+                                    Reject Dispute
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                     <div className="flex gap-2 flex-wrap">

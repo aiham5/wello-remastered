@@ -16,17 +16,17 @@ Stripe (commission billing):
   - `stripe-create-account-link`
   - `stripe-create-setup-session`
   - `stripe-webhook`
-  - `stripe-create-monthly-invoices` (optional scheduled billing)
+  - `stripe-create-monthly-invoices` (optional scheduled billing; bi-weekly period window)
 - Set these secrets in Supabase:
   - `STRIPE_SECRET_KEY`
   - `STRIPE_WEBHOOK_SECRET`
-  - `BILLING_CRON_SECRET` (or `PUSH_CRON_SECRET`) for scheduled monthly invoice runs
+  - `BILLING_CRON_SECRET` (or `PUSH_CRON_SECRET`) for scheduled bi-weekly invoice runs
   - `STRIPE_CONNECT_REFRESH_URL`
   - `STRIPE_CONNECT_RETURN_URL`
   - `STRIPE_CHECKOUT_SUCCESS_URL`
   - `STRIPE_CHECKOUT_CANCEL_URL`
 - In Stripe, add the webhook URL for `stripe-webhook`.
-- Schedule `stripe-create-monthly-invoices` monthly (Supabase scheduled functions), sending header `x-cron-secret: <BILLING_CRON_SECRET>`.
+- Schedule `stripe-create-monthly-invoices` bi-weekly (Supabase scheduled functions), sending header `x-cron-secret: <BILLING_CRON_SECRET>`.
 
 Plaid webhooks:
 - Deploy `plaid-webhook`.

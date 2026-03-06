@@ -1666,7 +1666,7 @@ const routeExplicit = async (ctx, request, segments) => {
       table: "receipt_reports",
       action: "select",
       select:
-        "id,receipt_upload_id,business_id,reporter_id,reason,details,metadata,status,resolution_notes,resolved_by,resolved_at,created_at,updated_at,business:businesses(id,name),receipt:receipt_uploads(id,review_status,uploaded_at,receipt_total_cents)",
+        "id,receipt_upload_id,business_id,reporter_id,reason,details,metadata,status,resolution_notes,resolved_by,resolved_at,created_at,updated_at,business:businesses(id,name),receipt:receipt_uploads(id,review_status,uploaded_at,receipt_total_cents,image_hash,redemption_id,user_id)",
       order: [{ column: "created_at", ascending: false }],
       limit: Math.max(1, Math.min(200, Number(new URL(request.url).searchParams.get("limit") || 30) || 30)),
       filters: [],
@@ -1683,6 +1683,278 @@ const routeExplicit = async (ctx, request, segments) => {
         p_resolved_by: body?.resolvedBy || ctx.profile.id,
       },
     });
+  }
+
+  if (segments.length === 3 && segments[0] === "receipt-reports" && segments[2] === "evidence" && method === "GET") {
+    const reportId = String(segments[1] || "").trim();
+    if (!reportId) {
+      return json(
+        { ok: false, error: { code: "invalid_report_id", message: "Report id is required." } },
+        400,
+      );
+    }
+
+    const reportRes = await runQuery({
+      table: "receipt_reports",
+      action: "select",
+      select:
+        "id,receipt_upload_id,business_id,reporter_id,reason,details,metadata,status,resolution_notes,resolved_by,resolved_at,created_at,updated_at,business:businesses(id,name)",
+      filters: [{ column: "id", op: "eq", value: reportId }],
+      single: "maybe",
+      limit: 1,
+    });
+    if (!reportRes.ok) return json(reportRes.payload, reportRes.status || 500);
+
+    const report = reportRes.payload?.data || null;
+    if (!report?.id) {
+      return json(
+        { ok: false, error: { code: "report_not_found", message: "Report not found." } },
+        404,
+      );
+    }
+
+    let receipt = null;
+    let verification = null;
+    let redemption = null;
+    let cashbackEvent = null;
+    let userProfile = null;
+
+    const receiptId = String(report.receipt_upload_id || "").trim();
+    if (receiptId) {
+      const receiptRes = await runQuery({
+        table: "receipt_uploads",
+        action: "select",
+        select:
+          "id,review_status,uploaded_at,receipt_total_cents,image_hash,storage_path,redemption_id,user_id,business_id",
+        filters: [{ column: "id", op: "eq", value: receiptId }],
+        single: "maybe",
+        limit: 1,
+      });
+      if (receiptRes.ok) {
+        receipt = receiptRes.payload?.data || null;
+      }
+    }
+
+    const redemptionId = String(receipt?.redemption_id || "").trim();
+    if (redemptionId) {
+      const verificationRes = await runQuery({
+        table: "purchase_verifications",
+        action: "select",
+        select:
+          "id,status,source,reason_code,reason_detail,expected_amount_cents,matched_amount_cents,expected_merchant,matched_merchant,expected_posted_on,matched_posted_on,matched_plaid_item_id,matched_plaid_transaction_id,chargeback_flagged,chargeback_flagged_at,last_checked_at,confirmed_at,rejected_at",
+        filters: [{ column: "redemption_id", op: "eq", value: redemptionId }],
+        order: [{ column: "updated_at", ascending: false }],
+        single: "maybe",
+        limit: 1,
+      });
+      if (verificationRes.ok) {
+        verification = verificationRes.payload?.data || null;
+      }
+
+      const redemptionRes = await runQuery({
+        table: "redemptions",
+        action: "select",
+        select: "id,cashback_status,created_at,scanned_by,offer:offers(id,title)",
+        filters: [{ column: "id", op: "eq", value: redemptionId }],
+        single: "maybe",
+        limit: 1,
+      });
+      if (redemptionRes.ok) {
+        redemption = redemptionRes.payload?.data || null;
+      }
+
+      const cashbackRes = await runQuery({
+        table: "cashback_events",
+        action: "select",
+        select: "id,amount_cents,status,created_at",
+        filters: [{ column: "redemption_id", op: "eq", value: redemptionId }],
+        order: [{ column: "created_at", ascending: false }],
+        single: "maybe",
+        limit: 1,
+      });
+      if (cashbackRes.ok) {
+        cashbackEvent = cashbackRes.payload?.data || null;
+      }
+    }
+
+    const profileId = String(
+      receipt?.user_id || redemption?.scanned_by || report.reporter_id || "",
+    ).trim();
+    if (profileId) {
+      const profileRes = await runQuery({
+        table: "profiles",
+        action: "select",
+        select: "id,full_name,fraud_score,fraud_flagged,first_redemption_bonus_paid",
+        filters: [{ column: "id", op: "eq", value: profileId }],
+        single: "maybe",
+        limit: 1,
+      });
+      if (profileRes.ok) {
+        userProfile = profileRes.payload?.data || null;
+      }
+    }
+
+    return json(
+      {
+        ok: true,
+        data: {
+          report,
+          receipt,
+          verification,
+          redemption,
+          cashbackEvent,
+          userProfile,
+        },
+      },
+      200,
+    );
+  }
+
+  if (segments.length === 3 && segments[0] === "receipt-reports" && segments[2] === "dispute" && method === "POST") {
+    const reportId = String(segments[1] || "").trim();
+    const action = String(body?.action || "").trim().toLowerCase();
+    if (!reportId) {
+      return json(
+        { ok: false, error: { code: "invalid_report_id", message: "Report id is required." } },
+        400,
+      );
+    }
+    if (!["approve", "reject"].includes(action)) {
+      return json(
+        { ok: false, error: { code: "invalid_dispute_action", message: "Invalid dispute action." } },
+        400,
+      );
+    }
+
+    const reportRes = await runQuery({
+      table: "receipt_reports",
+      action: "select",
+      select: "id,status,receipt_upload_id,reporter_id,resolution_notes",
+      filters: [{ column: "id", op: "eq", value: reportId }],
+      single: "maybe",
+      limit: 1,
+    });
+    if (!reportRes.ok) return json(reportRes.payload, reportRes.status || 500);
+    const report = reportRes.payload?.data || null;
+    if (!report?.id) {
+      return json(
+        { ok: false, error: { code: "report_not_found", message: "Report not found." } },
+        404,
+      );
+    }
+
+    let redemptionId = null;
+    let profileId = String(report.reporter_id || "").trim() || null;
+    const receiptId = String(report.receipt_upload_id || "").trim();
+    if (receiptId) {
+      const receiptRes = await runQuery({
+        table: "receipt_uploads",
+        action: "select",
+        select: "id,redemption_id,user_id",
+        filters: [{ column: "id", op: "eq", value: receiptId }],
+        single: "maybe",
+        limit: 1,
+      });
+      if (receiptRes.ok) {
+        const receipt = receiptRes.payload?.data || null;
+        redemptionId = String(receipt?.redemption_id || "").trim() || null;
+        profileId = String(receipt?.user_id || profileId || "").trim() || null;
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    if (action === "approve" && redemptionId) {
+      await runQuery({
+        table: "redemptions",
+        action: "update",
+        body: { cashback_status: "frozen" },
+        select: "id,cashback_status",
+        filters: [
+          { column: "id", op: "eq", value: redemptionId },
+          { column: "cashback_status", op: "neq", value: "withdrawn" },
+        ],
+        single: "maybe",
+        limit: 1,
+      });
+    }
+
+    if (action === "approve" && profileId) {
+      const rpcResponse = await ctx.supabaseRequest("/rest/v1/rpc/increment_fraud_score", {
+        method: "POST",
+        body: JSON.stringify({
+          p_user_id: profileId,
+          p_increment: 20,
+          p_reason: "merchant_dispute_upheld",
+        }),
+      });
+      if (!rpcResponse.ok) {
+        const parsed = await parseResponseBody(rpcResponse);
+        return json(
+          {
+            ok: false,
+            error: {
+              code: "fraud_score_update_failed",
+              message: String(parsed?.message || "Unable to update fraud score."),
+              status: rpcResponse.status,
+            },
+          },
+          rpcResponse.status,
+        );
+      }
+    }
+
+    const baseNote = action === "approve"
+      ? "Merchant dispute approved. Cashback was frozen and fraud score increased."
+      : "Merchant dispute rejected after admin review.";
+    const resolutionNotes = [
+      String(body?.resolutionNotes || "").trim(),
+      baseNote,
+    ].filter(Boolean).join("\n");
+
+    const reportUpdate = await runQuery({
+      table: "receipt_reports",
+      action: "update",
+      body: {
+        status: action === "approve" ? "disputed" : "resolved",
+        resolution_notes: resolutionNotes,
+        resolved_by: ctx.profile.id,
+        resolved_at: nowIso,
+        updated_at: nowIso,
+      },
+      select: "id,status,resolution_notes,resolved_by,resolved_at,updated_at",
+      filters: [{ column: "id", op: "eq", value: reportId }],
+      single: "maybe",
+      limit: 1,
+    });
+    if (!reportUpdate.ok) return json(reportUpdate.payload, reportUpdate.status || 500);
+
+    if (action === "reject") {
+      await ctx.supabaseRequest("/rest/v1/system_logs", {
+        method: "POST",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({
+          event_type: "dispute_rejected",
+          details: {
+            report_id: reportId,
+            reviewed_by: ctx.profile.id,
+            reviewed_at: nowIso,
+          },
+        }),
+      });
+    }
+
+    await logAdminActionInternal(ctx, {
+      action: action === "approve" ? "dispute_approved" : "dispute_rejected",
+      entity: "receipt_report",
+      entityId: reportId,
+      status: "success",
+      meta: {
+        redemptionId,
+        profileId,
+      },
+    });
+
+    return json({ ok: true, data: reportUpdate.payload?.data || null }, 200);
   }
 
   if (segments.length === 1 && segments[0] === "account-deletion-requests" && method === "GET") {
@@ -2605,7 +2877,12 @@ const routeExplicit = async (ctx, request, segments) => {
     return handleInvokeFunction(ctx, "admin-send-promo-push", body || {});
   }
 
-  if (segments.length === 2 && segments[0] === "billing" && segments[1] === "run-monthly" && method === "POST") {
+  if (
+    segments.length === 2 &&
+    segments[0] === "billing" &&
+    (segments[1] === "run-monthly" || segments[1] === "run-biweekly") &&
+    method === "POST"
+  ) {
     return handleInvokeFunction(ctx, "admin-run-monthly-invoices", body || {});
   }
 

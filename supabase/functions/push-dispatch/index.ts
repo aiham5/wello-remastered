@@ -57,7 +57,12 @@ const chunk = <T>(arr: T[], size: number) => {
   return out;
 };
 
-type Kind = "new_offer" | "expiring_offer" | "nearby_offer";
+type Kind =
+  | "new_offer"
+  | "expiring_offer"
+  | "nearby_offer"
+  | "cashback_unlocked"
+  | "monthly_summary";
 
 type DispatchRequest = {
   kinds?: Kind[];
@@ -366,6 +371,59 @@ async function getNearbyDigest(
   return { count: Number.isFinite(count) ? count : 0, offerTitle, businessName, offerId, businessId };
 }
 
+const formatDollarsFromCents = (cents: number) =>
+  (Math.max(0, Number(cents) || 0) / 100).toFixed(2);
+
+async function getUserCashbackUnlockedSince(
+  admin: ReturnType<typeof createAdminClient>,
+  userId: string,
+  since: Date,
+): Promise<{ count: number; totalCents: number; exampleBusinessName: string | null }> {
+  const { data, error } = await admin
+    .from("cashback_events")
+    .select("amount_cents, updated_at, business:businesses(name)")
+    .eq("user_id", userId)
+    .eq("status", "available")
+    .gte("updated_at", since.toISOString())
+    .order("updated_at", { ascending: false })
+    .limit(1000);
+  if (error) throw new Error(error.message || "Failed to load unlocked cashback.");
+  const rows = Array.isArray(data) ? data : [];
+  let totalCents = 0;
+  let exampleBusinessName: string | null = null;
+  for (const row of rows) {
+    totalCents += Math.max(0, Number((row as any)?.amount_cents) || 0);
+    if (!exampleBusinessName) {
+      const business = Array.isArray((row as any)?.business)
+        ? (row as any).business[0]
+        : (row as any)?.business;
+      const name = String(business?.name || "").trim();
+      if (name) exampleBusinessName = name;
+    }
+  }
+  return { count: rows.length, totalCents, exampleBusinessName };
+}
+
+async function getUserMonthlyEarnings(
+  admin: ReturnType<typeof createAdminClient>,
+  userId: string,
+  periodStart: Date,
+  periodEnd: Date,
+): Promise<number> {
+  const { data, error } = await admin
+    .from("cashback_events")
+    .select("amount_cents")
+    .eq("user_id", userId)
+    .in("status", ["available", "reserved", "paid"])
+    .gte("created_at", periodStart.toISOString())
+    .lt("created_at", periodEnd.toISOString())
+    .limit(5000);
+  if (error) throw new Error(error.message || "Failed to load monthly earnings.");
+  return (Array.isArray(data) ? data : []).reduce((sum, row) => {
+    return sum + Math.max(0, Number((row as any)?.amount_cents) || 0);
+  }, 0);
+}
+
 async function sendExpo(messages: any[], dryRun: boolean) {
   if (dryRun) {
     return { ok: true, tickets: messages.map(() => ({ status: "ok", id: "dry_run" })) };
@@ -422,6 +480,29 @@ Deno.serve(async (req) => {
       const since = stateLast && !Number.isNaN(stateLast.getTime())
         ? stateLast
         : new Date(now.getTime() - 60 * 60 * 1000);
+      const monthlyPeriodStart = new Date(Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth() - 1,
+        1,
+        0,
+        0,
+        0,
+        0,
+      ));
+      const monthlyPeriodEnd = new Date(Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        1,
+        0,
+        0,
+        0,
+        0,
+      ));
+      const monthlyLabel = monthlyPeriodStart.toLocaleString("en-US", {
+        month: "long",
+        year: "numeric",
+        timeZone: "UTC",
+      });
 
       let globalCount = 0;
       let digest: {
@@ -449,14 +530,63 @@ Deno.serve(async (req) => {
 
       const toSend: any[] = [];
       for (const r of recipients) {
-        const pref =
-          kind === "new_offer"
-            ? r.new_offer
-            : kind === "expiring_offer"
-              ? r.expiring_offer
-              : r.nearby_offer;
+        const pref = kind === "new_offer"
+          ? r.new_offer
+          : kind === "expiring_offer"
+          ? r.expiring_offer
+          : kind === "nearby_offer"
+          ? r.nearby_offer
+          : null;
         const enabled = pref == null ? true : Boolean(pref);
         if (!enabled) continue;
+
+        if (kind === "cashback_unlocked") {
+          const unlocked = await getUserCashbackUnlockedSince(admin, r.user_id, since);
+          if (!unlocked.count || unlocked.totalCents <= 0) continue;
+          globalCount += unlocked.count;
+          const amountLabel = formatDollarsFromCents(unlocked.totalCents);
+          const bodyText = unlocked.exampleBusinessName
+            ? `$${amountLabel} from ${unlocked.exampleBusinessName} is ready to withdraw.`
+            : `$${amountLabel} is ready to withdraw.`;
+          toSend.push({
+            to: r.expo_push_token,
+            title: "Your cashback is ready!",
+            body: bodyText,
+            sound: "default",
+            data: {
+              kind,
+              amountCents: unlocked.totalCents,
+              unlockedCount: unlocked.count,
+              screen: "Wallet",
+            },
+          });
+          continue;
+        }
+
+        if (kind === "monthly_summary") {
+          const monthlyTotalCents = await getUserMonthlyEarnings(
+            admin,
+            r.user_id,
+            monthlyPeriodStart,
+            monthlyPeriodEnd,
+          );
+          if (monthlyTotalCents <= 0) continue;
+          globalCount += 1;
+          const amountLabel = formatDollarsFromCents(monthlyTotalCents);
+          toSend.push({
+            to: r.expo_push_token,
+            title: "Your Wello earnings last month",
+            body: `${monthlyLabel}: you earned $${amountLabel} in cashback.`,
+            sound: "default",
+            data: {
+              kind,
+              totalEarnedCents: monthlyTotalCents,
+              month: monthlyLabel,
+              screen: "Wallet",
+            },
+          });
+          continue;
+        }
 
         let count = globalCount;
         if (kind === "nearby_offer") {

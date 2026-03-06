@@ -399,12 +399,23 @@ serve(async (req) => {
       });
       consumedSwitchEventId = String(consumeRow?.event_id || "").trim() || null;
       if (!consumeRow?.allowed) {
+        const monthResetsAtMs = Date.parse(
+          String(switchPolicy?.monthResetsAt || ""),
+        );
+        const daysRemaining = Number.isFinite(monthResetsAtMs)
+          ? Math.max(
+            1,
+            Math.ceil((monthResetsAtMs - Date.now()) / (1000 * 60 * 60 * 24)),
+          )
+          : null;
         throw new HttpError(
           "You can change your payout bank up to 2 times per month.",
           429,
           {
             reason: "cashout_switch_limit_reached",
             payoutSwitchPolicy: switchPolicy,
+            error: "RELINK_RATE_LIMITED",
+            days_remaining: daysRemaining,
           },
         );
       }

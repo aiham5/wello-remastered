@@ -96,6 +96,35 @@ serve(async (req) => {
       );
     }
 
+    const { data: existingBankAccount, error: existingBankAccountError } =
+      await supabase
+        .from("user_bank_accounts")
+        .select("user_id")
+        .eq("plaid_item_id", exchange.item_id)
+        .neq("user_id", userId)
+        .maybeSingle();
+    if (existingBankAccountError) {
+      const message = String(existingBankAccountError.message || "")
+        .toLowerCase();
+      if (!message.includes("plaid_item_id")) {
+        throw new HttpError(
+          existingBankAccountError.message ||
+            "Unable to validate bank account ownership.",
+          500,
+        );
+      }
+    }
+    if (String(existingBankAccount?.user_id || "").trim()) {
+      throw new HttpError(
+        "This bank account is already linked to another Wello account.",
+        409,
+        {
+          reason: "bank_already_linked",
+          error: "BANK_ALREADY_LINKED",
+        },
+      );
+    }
+
     const mergedItemPurposes = mergePlaidLinkPurposes(
       existingItem?.link_purposes,
       purposes,
@@ -203,6 +232,24 @@ serve(async (req) => {
           .from("plaid_linked_accounts")
           .update({ status: "revoked" })
           .in("id", staleIds);
+      }
+
+      const { error: userBankAccountError } = await supabase
+        .from("user_bank_accounts")
+        .update({
+          plaid_item_id: exchange.item_id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", userId);
+      if (userBankAccountError) {
+        const message = String(userBankAccountError.message || "").toLowerCase();
+        if (!message.includes("plaid_item_id")) {
+          throw new HttpError(
+            userBankAccountError.message ||
+              "Unable to update linked bank cross-reference.",
+            500,
+          );
+        }
       }
 
       const { data: profile } = await supabase

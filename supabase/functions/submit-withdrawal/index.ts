@@ -76,9 +76,13 @@ const reserveCashbackForPayout = async (
     .eq("status", "available")
     .is("payout_id", null);
   if (error) {
-    throw new HttpError(error.message || "Unable to load cashback balance.", 500, {
-      reason: "cashback_balance_load_failed",
-    });
+    throw new HttpError(
+      error.message || "Unable to load cashback balance.",
+      500,
+      {
+        reason: "cashback_balance_load_failed",
+      },
+    );
   }
 
   const rows = Array.isArray(data) ? data : [];
@@ -87,18 +91,28 @@ const reserveCashbackForPayout = async (
     0,
   );
   if (availableCents <= 0) {
-    throw new HttpError("Your available balance is too low for this withdrawal.", 400, {
-      reason: "no_cashback_balance",
-    });
+    throw new HttpError(
+      "Your available balance is too low for this withdrawal.",
+      400,
+      {
+        reason: "no_cashback_balance",
+      },
+    );
   }
   if (amountCents > availableCents) {
-    throw new HttpError("Your available balance is too low for this withdrawal.", 400, {
-      reason: "amount_exceeds_available",
-      availableCents,
-    });
+    throw new HttpError(
+      "Your available balance is too low for this withdrawal.",
+      400,
+      {
+        reason: "amount_exceeds_available",
+        availableCents,
+      },
+    );
   }
 
-  const selected: Array<{ id: string; amount: number; businessId: string | null }> = [];
+  const selected: Array<
+    { id: string; amount: number; businessId: string | null }
+  > = [];
   let selectedSum = 0;
   const sorted = [...rows].sort((a, b) => {
     const aMs = Date.parse(String(a?.created_at || "")) || 0;
@@ -120,10 +134,14 @@ const reserveCashbackForPayout = async (
   }
 
   if (!selected.length || selectedSum < amountCents) {
-    throw new HttpError("Your available balance is too low for this withdrawal.", 400, {
-      reason: "insufficient_cashback_events",
-      availableCents,
-    });
+    throw new HttpError(
+      "Your available balance is too low for this withdrawal.",
+      400,
+      {
+        reason: "insufficient_cashback_events",
+        availableCents,
+      },
+    );
   }
 
   const { data: reservedRows, error: reserveError } = await supabase
@@ -140,7 +158,9 @@ const reserveCashbackForPayout = async (
       { reason: "cashback_reserve_failed" },
     );
   }
-  if ((Array.isArray(reservedRows) ? reservedRows.length : 0) !== selected.length) {
+  if (
+    (Array.isArray(reservedRows) ? reservedRows.length : 0) !== selected.length
+  ) {
     throw new HttpError(
       "Cashback balance changed. Please try again.",
       409,
@@ -267,6 +287,53 @@ serve(async (req) => {
     const auth = await authenticateRequest(req);
     userId = auth.userId;
 
+    const { count: frozenCashbackCount, error: frozenCashbackError } =
+      await supabase
+        .from("redemptions")
+        .select("id", { count: "exact", head: true })
+        .eq("scanned_by", userId)
+        .eq("cashback_status", "frozen");
+    if (frozenCashbackError) {
+      throw new HttpError(
+        frozenCashbackError.message || "Unable to validate cashback status.",
+        500,
+        { reason: "cashback_frozen_check_failed" },
+      );
+    }
+    if ((Number(frozenCashbackCount) || 0) > 0) {
+      throw new HttpError(
+        "Your cashback is temporarily on hold pending a review. Please contact support@wellopartners.com",
+        400,
+        {
+          reason: "CASHBACK_FROZEN",
+          code: "CASHBACK_FROZEN",
+        },
+      );
+    }
+
+    const { data: fraudProfile, error: fraudProfileError } = await supabase
+      .from("profiles")
+      .select("fraud_flagged")
+      .eq("id", userId)
+      .maybeSingle();
+    if (fraudProfileError) {
+      throw new HttpError(
+        fraudProfileError.message || "Unable to validate account status.",
+        500,
+        { reason: "fraud_flag_check_failed" },
+      );
+    }
+    if (fraudProfile?.fraud_flagged === true) {
+      throw new HttpError(
+        "Your account is under review. Please contact support@wellopartners.com",
+        400,
+        {
+          reason: "ACCOUNT_FLAGGED",
+          code: "ACCOUNT_FLAGGED",
+        },
+      );
+    }
+
     await enforceRateLimit({
       req,
       scope: "cashout:submit-withdrawal",
@@ -333,18 +400,28 @@ serve(async (req) => {
 
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
-      .select("full_name, email, cashout_terms_accepted_at, stripe_cashout_plaid_account_id")
+      .select(
+        "full_name, email, cashout_terms_accepted_at, stripe_cashout_plaid_account_id",
+      )
       .eq("id", userId)
       .maybeSingle();
     if (profileError) {
-      throw new HttpError(profileError.message || "Unable to load profile.", 500, {
-        reason: "profile_load_failed",
-      });
+      throw new HttpError(
+        profileError.message || "Unable to load profile.",
+        500,
+        {
+          reason: "profile_load_failed",
+        },
+      );
     }
     if (!profile?.cashout_terms_accepted_at) {
-      throw new HttpError("Accept cashout terms before requesting withdrawal.", 400, {
-        reason: "cashout_terms_not_accepted",
-      });
+      throw new HttpError(
+        "Accept cashout terms before requesting withdrawal.",
+        400,
+        {
+          reason: "cashout_terms_not_accepted",
+        },
+      );
     }
 
     const profileName = normalizeName(profile?.full_name || "");
@@ -356,13 +433,14 @@ serve(async (req) => {
     const cutoffIso = new Date(
       Date.now() - RATE_LIMIT_WINDOW_HOURS * 60 * 60 * 1000,
     ).toISOString();
-    const { data: recentRequestRows, error: recentRequestError } = await supabase
-      .from("withdrawal_requests")
-      .select("id, created_at")
-      .eq("user_id", userId)
-      .gte("created_at", cutoffIso)
-      .order("created_at", { ascending: false })
-      .limit(1);
+    const { data: recentRequestRows, error: recentRequestError } =
+      await supabase
+        .from("withdrawal_requests")
+        .select("id, created_at")
+        .eq("user_id", userId)
+        .gte("created_at", cutoffIso)
+        .order("created_at", { ascending: false })
+        .limit(1);
     if (recentRequestError) {
       throw new HttpError(
         recentRequestError.message || "Unable to validate withdrawal window.",
@@ -390,15 +468,23 @@ serve(async (req) => {
 
     const linkedBank = await getUserBankAccountSecure(supabase, userId);
     if (!linkedBank) {
-      throw new HttpError("Link your bank account before requesting a withdrawal.", 400, {
-        reason: "bank_account_not_linked",
-      });
+      throw new HttpError(
+        "Link your bank account before requesting a withdrawal.",
+        400,
+        {
+          reason: "bank_account_not_linked",
+        },
+      );
     }
 
     if (profileName) {
-      const bankHolderName = normalizeBankNameMatch(linkedBank.accountHolderName);
+      const bankHolderName = normalizeBankNameMatch(
+        linkedBank.accountHolderName,
+      );
       const profileNameNorm = normalizeBankNameMatch(profileName);
-      if (bankHolderName && profileNameNorm && bankHolderName !== profileNameNorm) {
+      if (
+        bankHolderName && profileNameNorm && bankHolderName !== profileNameNorm
+      ) {
         throw new HttpError(
           "Bank account holder name must match your profile name.",
           400,
@@ -413,7 +499,8 @@ serve(async (req) => {
     ].filter(Boolean);
     const bankSummary = bankSummaryParts.join(" - ").slice(0, 180);
     const legacyStripeAccountId = String(
-      profile?.stripe_cashout_plaid_account_id || linkedBank.id || "manual_bank_transfer",
+      profile?.stripe_cashout_plaid_account_id || linkedBank.id ||
+        "manual_bank_transfer",
     ).trim() || "manual_bank_transfer";
 
     const { data: payoutInsertRows, error: payoutInsertError } = await supabase
@@ -494,15 +581,18 @@ serve(async (req) => {
           .eq("id", payoutId)
           .neq("status", "paid");
         await releaseReservedCashback(supabase, payoutId);
-        throw new HttpError("Unable to send admin withdrawal notification.", 502, {
-          reason: notification.reason || "admin_notification_failed",
-        });
+        throw new HttpError(
+          "Unable to send admin withdrawal notification.",
+          502,
+          {
+            reason: notification.reason || "admin_notification_failed",
+          },
+        );
       }
 
-      const appendNote =
-        notification.reason === "resend_key_missing"
-          ? "[System] Admin email alert not configured."
-          : "[System] Admin email alert failed.";
+      const appendNote = notification.reason === "resend_key_missing"
+        ? "[System] Admin email alert not configured."
+        : "[System] Admin email alert failed.";
       await supabase
         .from("withdrawal_requests")
         .update({
@@ -559,7 +649,8 @@ serve(async (req) => {
     });
     return json(
       {
-        error: "Something went wrong on our end. Please try again in a few minutes.",
+        error:
+          "Something went wrong on our end. Please try again in a few minutes.",
       },
       500,
     );

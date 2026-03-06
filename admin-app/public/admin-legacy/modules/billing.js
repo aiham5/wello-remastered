@@ -2,13 +2,18 @@
 import { formatCurrencyFromCents } from "../lib/format.js";
 
 const getPeriodBounds = (dateValue) => {
-  const date = dateValue ? new Date(dateValue) : new Date();
+  const date = dateValue ? new Date(`${dateValue}T00:00:00Z`) : new Date();
   if (Number.isNaN(date.getTime())) return null;
-  const year = date.getUTCFullYear();
-  const month = date.getUTCMonth();
+  const end = new Date(Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate() + 1,
+  ));
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 14);
   return {
-    start: new Date(Date.UTC(year, month, 1)),
-    end: new Date(Date.UTC(year, month + 1, 1)),
+    start,
+    end,
   };
 };
 
@@ -32,7 +37,7 @@ export const billingModule = {
           <div><span class="test-label">Invoiced</span><span id="bill-invoiced">$0.00</span></div>
           <div><span class="test-label">Paid</span><span id="bill-paid">$0.00</span></div>
         </div>
-        <div class="cta-row"><button class="button primary" id="bill-charge-now">Run monthly invoice</button></div>
+        <div class="cta-row"><button class="button primary" id="bill-charge-now">Run bi-weekly invoice</button></div>
         <p class="notice" id="bill-status"></p>
       </section>
       <section class="panel-card">
@@ -134,7 +139,7 @@ export const billingModule = {
       }
 
       ui.run.disabled = true;
-      setStatus("Running monthly invoice...");
+      setStatus("Running bi-weekly invoice...");
       try {
         const result = await runtime.invokeFunction("admin-run-monthly-invoices", {
           businessId,
@@ -145,11 +150,11 @@ export const billingModule = {
         else if (result?.totalCents === 0) setStatus("No pending charges for selected period.");
         else {
           setStatus(`Invoice processed: ${formatCurrencyFromCents(result?.totalCents || 0)}.`);
-          await runtime.logAction({ action: "billing_run_monthly_invoice", entity: "commission_invoices", entityId: String(result?.invoiceId || ""), meta: result });
+          await runtime.logAction({ action: "billing_run_biweekly_invoice", entity: "commission_invoices", entityId: String(result?.invoiceId || ""), meta: result });
         }
         await loadTotals();
       } catch (error) {
-        setStatus(runtime.normalizeSupabaseError(error, "Unable to run monthly invoice."), true);
+        setStatus(runtime.normalizeSupabaseError(error, "Unable to run bi-weekly invoice."), true);
       } finally {
         ui.run.disabled = false;
       }

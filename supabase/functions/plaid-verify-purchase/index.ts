@@ -1,16 +1,16 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import Stripe from "npm:stripe@14.25.0";
 import {
-  HttpError,
   authenticateRequest,
   createAdminSupabase,
+  HttpError,
   json,
 } from "../_shared/auth.ts";
 import { hasPlaidLinkPurpose } from "../_shared/plaidLinkPurposes.ts";
 import {
-  PlaidTransaction,
   plaidGetIdentity,
   plaidGetTransactions,
+  PlaidTransaction,
 } from "../_shared/plaid.ts";
 import { syncStripeCustomerIdentity } from "../_shared/stripeCustomer.ts";
 import { enforceRateLimit } from "../_shared/rateLimit.ts";
@@ -326,8 +326,8 @@ const syncCommissionEventToDraftInvoice = async (
   );
 
   const updatedInvoice = await stripe.invoices.retrieve(invoiceId);
-  const invoiceTotal =
-    updatedInvoice.amount_due || updatedInvoice.total || amountCents;
+  const invoiceTotal = updatedInvoice.amount_due || updatedInvoice.total ||
+    amountCents;
 
   await supabase
     .from("commission_invoices")
@@ -386,16 +386,18 @@ serve(async (req) => {
       Number.isFinite(expectedAmountRaw) && expectedAmountRaw > 0
         ? Math.round(expectedAmountRaw)
         : null;
-    const requestedPurchaseDate =
-      toDateOnly(body?.purchaseDate) || toDateOnly(body?.purchase_date);
-    const requestedMerchant = String(body?.merchantName || body?.merchant_name || "")
+    const requestedPurchaseDate = toDateOnly(body?.purchaseDate) ||
+      toDateOnly(body?.purchase_date);
+    const requestedMerchant = String(
+      body?.merchantName || body?.merchant_name || "",
+    )
       .trim();
     const normalizedRequestedMerchant = requestedMerchant.slice(0, 160);
 
     const { data: redemption, error: redemptionError } = await supabase
       .from("redemptions")
       .select(
-        "id, scanned_by, business_id, created_at, business:businesses(id, name, merchant_descriptor_aliases), receipt_uploads(id, review_status, uploaded_at, receipt_total_cents)",
+        "id, scanned_by, business_id, offer_id, created_at, offer:offers(id, active, status, expires_at, approval_status), business:businesses(id, name, merchant_descriptor_aliases), receipt_uploads(id, review_status, uploaded_at, receipt_total_cents)",
       )
       .eq("id", redemptionId)
       .maybeSingle();
@@ -407,14 +409,52 @@ serve(async (req) => {
       throw new HttpError("Forbidden", 403, { reason: "redemption_not_owned" });
     }
 
+    const offerRelation =
+      Array.isArray((redemption as Record<string, unknown>).offer)
+        ? ((redemption as Record<string, unknown>).offer as unknown[])[0]
+        : (redemption as Record<string, unknown>).offer;
+    const offerRecord = (offerRelation ?? null) as {
+      id?: string | null;
+      active?: boolean | null;
+      status?: string | null;
+      expires_at?: string | null;
+      approval_status?: string | null;
+    } | null;
+    const offerStatus = String(offerRecord?.status || "").trim().toLowerCase();
+    const offerApproved =
+      String(offerRecord?.approval_status || "").trim().toLowerCase() ===
+        "approved";
+    const offerActive = offerRecord?.active !== false;
+    const offerExpiresAtMs = offerRecord?.expires_at
+      ? Date.parse(String(offerRecord.expires_at))
+      : null;
+    const offerIsExpired = Number.isFinite(offerExpiresAtMs) &&
+      Number(offerExpiresAtMs) <= Date.now();
+    if (
+      !offerRecord?.id ||
+      !offerApproved ||
+      !offerActive ||
+      (offerStatus && offerStatus !== "active") ||
+      offerIsExpired
+    ) {
+      return json(
+        {
+          success: false,
+          error: "OFFER_UNAVAILABLE",
+          message: "This offer is temporarily unavailable.",
+        },
+        400,
+      );
+    }
+
     const businessId = String(redemption.business_id || "").trim();
     const businessRelation = Array.isArray(redemption.business)
       ? redemption.business[0]
       : redemption.business;
     const businessName = String(businessRelation?.name || "").trim();
     const descriptorAliases = Array.isArray(
-      businessRelation?.merchant_descriptor_aliases,
-    )
+        businessRelation?.merchant_descriptor_aliases,
+      )
       ? businessRelation.merchant_descriptor_aliases
       : [];
     const expectedMerchantCandidates = uniqueNonEmptyStrings([
@@ -422,13 +462,14 @@ serve(async (req) => {
       businessName,
       ...descriptorAliases,
     ]);
-    const expectedMerchant =
-      expectedMerchantCandidates[0] || normalizedRequestedMerchant || businessName;
-    const expectedDate =
-      requestedPurchaseDate ||
+    const expectedMerchant = expectedMerchantCandidates[0] ||
+      normalizedRequestedMerchant || businessName;
+    const expectedDate = requestedPurchaseDate ||
       toDateOnly(redemption.created_at) ||
       toDateOnly(new Date().toISOString());
-    const redemptionCreatedAtMs = Date.parse(String(redemption.created_at || ""));
+    const redemptionCreatedAtMs = Date.parse(
+      String(redemption.created_at || ""),
+    );
 
     const receipt = Array.isArray(redemption.receipt_uploads)
       ? redemption.receipt_uploads[0]
@@ -436,7 +477,9 @@ serve(async (req) => {
     const existingReceiptStatus = String(receipt?.review_status || "").trim();
     const existingReceiptId = receipt?.id || null;
 
-    const createOrUpdateVerification = async (payload: Record<string, unknown>) => {
+    const createOrUpdateVerification = async (
+      payload: Record<string, unknown>,
+    ) => {
       const { data, error } = await supabase
         .from("purchase_verifications")
         .upsert(
@@ -480,8 +523,8 @@ serve(async (req) => {
         reason_code: reasonCode,
         expected_amount_cents: expectedAmountCents,
         matched_amount_cents: details.matched?.amountCents || null,
-        expected_merchant:
-          details.matched?.expectedMerchantMatch || expectedMerchant || null,
+        expected_merchant: details.matched?.expectedMerchantMatch ||
+          expectedMerchant || null,
         matched_merchant: details.matched?.merchant || null,
         expected_posted_on: expectedDate || null,
         matched_posted_on: details.matched?.postedOn || null,
@@ -541,13 +584,14 @@ serve(async (req) => {
         reason_code: "receipt_under_review",
         reason_detail: "Receipt uploaded and awaiting review.",
         receipt_upload_id: existingReceiptId,
-        expected_amount_cents:
-          expectedAmountCents || Number(receipt?.receipt_total_cents) || null,
+        expected_amount_cents: expectedAmountCents ||
+          Number(receipt?.receipt_total_cents) || null,
         matched_amount_cents: Number(receipt?.receipt_total_cents) || null,
         expected_merchant: expectedMerchant || null,
         matched_merchant: expectedMerchant || null,
         expected_posted_on: expectedDate || null,
-        matched_posted_on: toDateOnly(receipt?.uploaded_at) || expectedDate || null,
+        matched_posted_on: toDateOnly(receipt?.uploaded_at) || expectedDate ||
+          null,
         last_checked_at: new Date().toISOString(),
       });
       await insertAttempt("no_match", "receipt_under_review", {
@@ -572,13 +616,14 @@ serve(async (req) => {
         reason_code: "receipt_approved",
         reason_detail: "Receipt approved.",
         receipt_upload_id: existingReceiptId,
-        expected_amount_cents:
-          expectedAmountCents || Number(receipt?.receipt_total_cents) || null,
+        expected_amount_cents: expectedAmountCents ||
+          Number(receipt?.receipt_total_cents) || null,
         matched_amount_cents: Number(receipt?.receipt_total_cents) || null,
         expected_merchant: expectedMerchant || null,
         matched_merchant: expectedMerchant || null,
         expected_posted_on: expectedDate || null,
-        matched_posted_on: toDateOnly(receipt?.uploaded_at) || expectedDate || null,
+        matched_posted_on: toDateOnly(receipt?.uploaded_at) || expectedDate ||
+          null,
         last_checked_at: new Date().toISOString(),
         confirmed_at: new Date().toISOString(),
       });
@@ -602,7 +647,10 @@ serve(async (req) => {
       .eq("status", "active");
 
     if (linkedError) {
-      throw new HttpError(linkedError.message || "Unable to load linked banks.", 500);
+      throw new HttpError(
+        linkedError.message || "Unable to load linked banks.",
+        500,
+      );
     }
 
     const activeLinkedItems = (Array.isArray(linkedItems) ? linkedItems : [])
@@ -638,26 +686,42 @@ serve(async (req) => {
       });
     }
 
-    const startDate = addDays(expectedDate || toDateOnly(new Date().toISOString())!, -7);
-    const endDate = addDays(expectedDate || toDateOnly(new Date().toISOString())!, 7);
+    const startDate = addDays(
+      expectedDate || toDateOnly(new Date().toISOString())!,
+      -7,
+    );
+    const endDate = addDays(
+      expectedDate || toDateOnly(new Date().toISOString())!,
+      7,
+    );
 
     const allCandidates: Candidate[] = [];
     let lastRequestId: string | null = null;
+    let amountHardRejectedCount = 0;
     for (const item of activeLinkedItems) {
       const accessToken = String(item?.plaid_access_token || "").trim();
       try {
-        const result = await plaidGetTransactions(accessToken, startDate, endDate);
+        const result = await plaidGetTransactions(
+          accessToken,
+          startDate,
+          endDate,
+        );
         lastRequestId = result.requestId || lastRequestId;
 
-        const rows = Array.isArray(result.transactions) ? result.transactions : [];
+        const rows = Array.isArray(result.transactions)
+          ? result.transactions
+          : [];
         rows.forEach((txn: PlaidTransaction) => {
-          const amountCents = Math.round(Math.abs(Number(txn.amount || 0)) * 100);
+          const amountCents = Math.round(
+            Math.abs(Number(txn.amount || 0)) * 100,
+          );
           if (!txn.transaction_id || !amountCents) return;
           const merchantCandidates = uniqueNonEmptyStrings([
             txn.merchant_name,
             txn.name,
           ]);
-          const fallbackMerchant = String(txn.merchant_name || txn.name || "").trim();
+          const fallbackMerchant = String(txn.merchant_name || txn.name || "")
+            .trim();
           let merchant = merchantCandidates[0] || fallbackMerchant;
           let merchantScore = 0;
           let expectedMerchantMatch = expectedMerchant || "";
@@ -672,10 +736,13 @@ serve(async (req) => {
               expectedMerchantMatch = match.expectedMerchant;
             }
           });
-          const amountDiff =
-            expectedAmountCents !== null
-              ? Math.abs(amountCents - expectedAmountCents)
-              : null;
+          const amountDiff = expectedAmountCents !== null
+            ? Math.abs(amountCents - expectedAmountCents)
+            : null;
+          if (amountDiff !== null && amountDiff > 1000) {
+            amountHardRejectedCount += 1;
+            return;
+          }
           const postedOn = toDateOnly(txn.date);
           const occurredAtMs = parseTransactionOccurredAtMs(txn);
           const daysDiff = daysBetween(expectedDate, postedOn);
@@ -685,7 +752,7 @@ serve(async (req) => {
             if (amountDiff === 0) score += 55;
             else if (amountDiff !== null && amountDiff <= 100) score += 45;
             else if (amountDiff !== null && amountDiff <= 300) score += 28;
-            else if (amountDiff !== null && amountDiff <= 1000) score += 10;
+            else if (amountDiff !== null && amountDiff <= 1000) score += 3;
             else score -= 30;
           } else {
             score += 10;
@@ -699,6 +766,9 @@ serve(async (req) => {
           }
 
           score += txn.pending ? -4 : 8;
+          if (amountDiff !== null && amountDiff > 300 && amountDiff <= 1000) {
+            score = Math.min(score, 65);
+          }
 
           allCandidates.push({
             plaidItemId: item.plaid_item_id,
@@ -736,11 +806,15 @@ serve(async (req) => {
       }
     }
 
-    const postedCandidates = allCandidates.filter((candidate) => !candidate.pending);
+    const postedCandidates = allCandidates.filter((candidate) =>
+      !candidate.pending
+    );
     const sorted = [...allCandidates].sort((a, b) => b.score - a.score);
     const best = sorted[0] || null;
     const second = sorted[1] || null;
-    const postedSorted = [...postedCandidates].sort((a, b) => b.score - a.score);
+    const postedSorted = [...postedCandidates].sort((a, b) =>
+      b.score - a.score
+    );
     const bestPosted = postedSorted[0] || null;
 
     const selectBestCandidate = () => {
@@ -768,22 +842,25 @@ serve(async (req) => {
       const hasMerchantish = allCandidates.some(
         (candidate) => candidate.merchantScore >= 20,
       );
-      const hasAmountish =
-        expectedAmountCents !== null
-          ? allCandidates.some(
-              (candidate) =>
-                candidate.amountDiff !== null && candidate.amountDiff <= 300,
-            )
-          : false;
+      const hasAmountish = expectedAmountCents !== null
+        ? allCandidates.some(
+          (candidate) =>
+            candidate.amountDiff !== null && candidate.amountDiff <= 300,
+        )
+        : false;
       const reasonCode = hasPending
         ? "transaction_pending"
+        : expectedAmountCents !== null &&
+            amountHardRejectedCount > 0 &&
+            allCandidates.length === 0
+        ? "amount_mismatch"
         : hasMerchantish && !hasAmountish && expectedAmountCents !== null
-          ? "amount_mismatch"
-          : hasAmountish && !hasMerchantish
-            ? "merchant_mismatch"
-            : allCandidates.length === 0
-              ? "transaction_delayed"
-              : "transaction_not_found";
+        ? "amount_mismatch"
+        : hasAmountish && !hasMerchantish
+        ? "merchant_mismatch"
+        : allCandidates.length === 0
+        ? "transaction_delayed"
+        : "transaction_not_found";
 
       const verification = await createOrUpdateVerification({
         source: "plaid",
@@ -795,8 +872,9 @@ serve(async (req) => {
         expected_merchant: expectedMerchant || null,
         expected_posted_on: expectedDate || null,
         last_checked_at: new Date().toISOString(),
-        rejected_at:
-          reasonCode === "transaction_pending" ? null : new Date().toISOString(),
+        rejected_at: reasonCode === "transaction_pending"
+          ? null
+          : new Date().toISOString(),
       });
       await insertAttempt(
         reasonCode === "transaction_pending" ? "matched_pending" : "no_match",
@@ -811,8 +889,9 @@ serve(async (req) => {
       );
 
       return json({
-        verificationStatus:
-          reasonCode === "transaction_pending" ? "pending" : "rejected",
+        verificationStatus: reasonCode === "transaction_pending"
+          ? "pending"
+          : "rejected",
         reasonCode,
         message: reasonMessage(reasonCode),
         fallbackRequired: true,
@@ -884,8 +963,12 @@ serve(async (req) => {
       }
     }
 
-    if (selected.pending || (bestPosted && bestPosted.score > selected.score + 6)) {
-      const pendingCandidate = selected.pending ? selected : bestPosted || selected;
+    if (
+      selected.pending || (bestPosted && bestPosted.score > selected.score + 6)
+    ) {
+      const pendingCandidate = selected.pending
+        ? selected
+        : bestPosted || selected;
       const verification = await createOrUpdateVerification({
         source: "plaid",
         status: "pending",
@@ -975,7 +1058,8 @@ serve(async (req) => {
       .maybeSingle();
     if (existingClaimError) {
       throw new HttpError(
-        existingClaimError.message || "Unable to check transaction eligibility.",
+        existingClaimError.message ||
+          "Unable to check transaction eligibility.",
         500,
       );
     }
@@ -1015,7 +1099,8 @@ serve(async (req) => {
       });
     }
 
-    const autoStoragePath = `plaid/verified/${businessId}/${redemptionId}/${selected.transactionId}.json`;
+    const autoStoragePath =
+      `plaid/verified/${businessId}/${redemptionId}/${selected.transactionId}.json`;
     const upsertReceiptPayload = {
       redemption_id: redemptionId,
       business_id: businessId,
@@ -1024,8 +1109,7 @@ serve(async (req) => {
       uploaded_at: nowIso,
       receipt_total_cents: selected.amountCents,
       review_status: "pending",
-      review_notes:
-        "Auto-verification started from Plaid transaction match.",
+      review_notes: "Auto-verification started from Plaid transaction match.",
       verification_source: "plaid",
       verification_reference: selected.transactionId,
     };
@@ -1149,13 +1233,56 @@ serve(async (req) => {
       "matched_posted",
       null,
       {
-      verificationId: verification?.id || null,
-      candidateCount: allCandidates.length,
-      postedCandidateCount: postedCandidates.length,
-      bestScore: selected.score,
-      matched: selected,
+        verificationId: verification?.id || null,
+        candidateCount: allCandidates.length,
+        postedCandidateCount: postedCandidates.length,
+        bestScore: selected.score,
+        matched: selected,
       },
     );
+
+    let firstRedemptionBonusEarned = false;
+    try {
+      const { count: confirmedCount, error: confirmedCountError } =
+        await supabase
+          .from("purchase_verifications")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .eq("status", "confirmed");
+      if (confirmedCountError) {
+        console.warn("plaid-verify-purchase first bonus count check failed", {
+          userId,
+          redemptionId,
+          message: confirmedCountError.message,
+        });
+      } else if ((Number(confirmedCount) || 0) === 1) {
+        const { data: bonusApplied, error: bonusError } = await supabase.rpc(
+          "add_cashback_bonus",
+          {
+            p_user_id: userId,
+            p_amount: 1.00,
+            p_reason: "first_redemption_bonus",
+          },
+        );
+        if (bonusError) {
+          console.warn("plaid-verify-purchase first bonus apply failed", {
+            userId,
+            redemptionId,
+            message: bonusError.message,
+          });
+        } else {
+          firstRedemptionBonusEarned = Boolean(bonusApplied);
+        }
+      }
+    } catch (bonusError) {
+      console.warn("plaid-verify-purchase first bonus error", {
+        userId,
+        redemptionId,
+        message: bonusError instanceof Error
+          ? bonusError.message
+          : String(bonusError),
+      });
+    }
 
     return json({
       verificationStatus: "confirmed",
@@ -1164,6 +1291,7 @@ serve(async (req) => {
       fallbackRequired: false,
       receiptUploadId: receiptUpsert.id,
       requestId: selected.requestId || lastRequestId || null,
+      firstRedemptionBonusEarned,
       stripeDraftSync,
       copy: {
         primary: AUTO_COPY,

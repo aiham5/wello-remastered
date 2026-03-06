@@ -1071,6 +1071,8 @@ const mapSupabaseOffer = (row) => ({
   offerType: row.offer_type || "",
   imageUrl: row.image_url || "",
   active: row.active ?? true,
+  status: row.status || "active",
+  expiresAt: row.expires_at ? new Date(row.expires_at).getTime() : null,
   approvalStatus: row.approval_status || "approved",
   redemptionLimitPeriod: row.redemption_limit_period || null,
   redemptionLimitCount: Number.isFinite(Number(row.redemption_limit_count))
@@ -1638,6 +1640,146 @@ const resolveOfferTypeDraftValue = (typePreset, typeCustom) => {
     return normalizeOfferTypeSelection(typeCustom);
   }
   return normalizeOfferTypeSelection(typePreset);
+};
+
+const OFFER_RENEW_WINDOW_MS = 5 * 24 * 60 * 60 * 1000;
+const OFFER_EXPIRY_DEFAULT_TIME = "17:00";
+
+const padDatePart = (value) => String(value).padStart(2, "0");
+
+const buildOfferExpiryDateOptions = (daysAhead = 365) => {
+  const options = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  for (let index = 0; index <= daysAhead; index += 1) {
+    const valueDate = new Date(today);
+    valueDate.setDate(today.getDate() + index);
+    const dateValue = [
+      valueDate.getFullYear(),
+      padDatePart(valueDate.getMonth() + 1),
+      padDatePart(valueDate.getDate()),
+    ].join("-");
+    const dateLabel = valueDate.toLocaleDateString([], {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+    const label =
+      index === 0
+        ? `Today (${dateLabel})`
+        : index === 1
+          ? `Tomorrow (${dateLabel})`
+          : dateLabel;
+    options.push({ value: dateValue, label });
+  }
+  return options;
+};
+
+const OFFER_EXPIRY_TIME_OPTIONS = Array.from({ length: 48 }, (_, index) => {
+  const hours = Math.floor(index / 2);
+  const minutes = index % 2 === 0 ? 0 : 30;
+  const value = `${padDatePart(hours)}:${padDatePart(minutes)}`;
+  const sampleDate = new Date(2020, 0, 1, hours, minutes, 0, 0);
+  const label = sampleDate.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return { value, label };
+});
+
+const parseOfferExpiryIso = (dateValue, timeValue) => {
+  const safeDate = String(dateValue || "").trim();
+  const safeTime = String(timeValue || "").trim();
+  if (!safeDate && !safeTime) return { iso: null, valid: true };
+  if (!safeDate || !safeTime) return { iso: null, valid: false };
+  const dateMatch = safeDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const timeMatch = safeTime.match(/^(\d{2}):(\d{2})$/);
+  if (!dateMatch || !timeMatch) return { iso: null, valid: false };
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  const hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2]);
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return { iso: null, valid: false };
+  }
+  const parsed = new Date(year, month - 1, day, hours, minutes, 0, 0);
+  if (Number.isNaN(parsed.getTime())) return { iso: null, valid: false };
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return { iso: null, valid: false };
+  }
+  return { iso: parsed.toISOString(), valid: true };
+};
+
+const formatOfferExpiryLabel = (value) => {
+  if (!value) return "No expiration";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "No expiration";
+  const dateLabel = date.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const timeLabel = date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${dateLabel} at ${timeLabel}`;
+};
+
+const getOfferRenewWindowLabel = (expiresAt) => {
+  const expiryMs = Number(expiresAt);
+  if (!Number.isFinite(expiryMs)) return null;
+  const remainingMs = expiryMs - Date.now();
+  if (remainingMs <= 0 || remainingMs > OFFER_RENEW_WINDOW_MS) return null;
+  const remainingDays = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
+  if (remainingDays <= 1) return "under 1 day left";
+  return `${remainingDays} days left`;
+};
+
+const getOfferExpiryDraftFromTimestamp = (value) => {
+  const fallback = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  fallback.setHours(17, 0, 0, 0);
+  const date =
+    Number.isFinite(Number(value)) && Number(value) > Date.now()
+      ? new Date(Number(value))
+      : fallback;
+  if (Number.isNaN(date.getTime())) {
+    return {
+      expiresDate: "",
+      expiresTime: "",
+    };
+  }
+  const roundedMinutes = date.getMinutes() >= 30 ? 30 : 0;
+  return {
+    expiresDate: [
+      date.getFullYear(),
+      padDatePart(date.getMonth() + 1),
+      padDatePart(date.getDate()),
+    ].join("-"),
+    expiresTime: `${padDatePart(date.getHours())}:${padDatePart(
+      roundedMinutes,
+    )}`,
+  };
 };
 
 const normalizeTagsInput = (value) =>
@@ -3460,6 +3602,33 @@ const uploadReceiptImage = async (image, businessId, redemptionId) => {
   }
 };
 
+const computeReceiptImageHash = async (base64Value) => {
+  const normalizedBase64 = String(base64Value || "")
+    .trim()
+    .split(",")
+    .pop();
+  if (!normalizedBase64) return null;
+  const bytes = toByteArray(normalizedBase64);
+  if (!bytes?.length) return null;
+  if (globalThis?.crypto?.subtle?.digest) {
+    try {
+      const digestBuffer = await globalThis.crypto.subtle.digest(
+        "SHA-256",
+        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      );
+      return Array.from(new Uint8Array(digestBuffer))
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+    } catch {}
+  }
+  let hash = 2166136261;
+  for (let index = 0; index < bytes.length; index += 1) {
+    hash ^= bytes[index];
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a_${(hash >>> 0).toString(16).padStart(8, "0")}_${bytes.length}`;
+};
+
 const createReceiptSignedUrl = async (path) => {
   const normalizedPath = String(path || "").trim();
   if (!normalizedPath) return null;
@@ -3488,6 +3657,7 @@ const insertReceiptUploadRecord = async ({
   businessId,
   userId,
   storagePath,
+  imageHash = null,
   allowRetryResubmit = false,
 }) => {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -3524,6 +3694,7 @@ const insertReceiptUploadRecord = async ({
       business_id: businessId,
       user_id: userId,
       storage_path: storagePath,
+      image_hash: imageHash || null,
     };
     const insertResponse = await withTimeout(
       restClient
@@ -3546,6 +3717,32 @@ const insertReceiptUploadRecord = async ({
       insertResponse.error?.message ||
       `Unable to save receipt (${insertResponse.status || "no-status"}).`;
     const lowered = String(message).toLowerCase();
+    const errorCode = String(insertResponse.error?.code || "").trim().toUpperCase();
+    const duplicateReceiptRaised =
+      lowered === "duplicate_receipt" ||
+      (errorCode === "P0001" && lowered.includes("duplicate_receipt"));
+    if (duplicateReceiptRaised) {
+      return {
+        data: null,
+        error: "This receipt has already been submitted.",
+        reason: "DUPLICATE_RECEIPT",
+        status: 400,
+      };
+    }
+    const errorDetails = String(insertResponse.error?.details || "").toLowerCase();
+    const imageHashDuplicate =
+      lowered.includes("image_hash") ||
+      lowered.includes("idx_unique_receipt_image_hash") ||
+      errorDetails.includes("image_hash") ||
+      errorDetails.includes("idx_unique_receipt_image_hash");
+    if (imageHashDuplicate) {
+      return {
+        data: null,
+        error: "This receipt has already been submitted.",
+        reason: "DUPLICATE_RECEIPT",
+        status: 400,
+      };
+    }
     if (
       insertResponse.status === 409 ||
       insertResponse.error?.code === "23505" ||
@@ -3580,6 +3777,7 @@ const insertReceiptUploadRecord = async ({
             return {
               data: null,
               error: "Retry upload is disabled for this rejected receipt.",
+              reason: "RETRY_NOT_ALLOWED",
               status: retryRpc.status ?? 403,
             };
           }
@@ -3587,12 +3785,14 @@ const insertReceiptUploadRecord = async ({
             return {
               data: null,
               error: "Only rejected receipts can be retried.",
+              reason: "RECEIPT_NOT_REJECTED",
               status: retryRpc.status ?? 409,
             };
           }
           return {
             data: null,
             error: retryRpc.error.message || "Unable to retry receipt upload.",
+            reason: null,
             status: retryRpc.status ?? insertResponse.status,
           };
         }
@@ -3623,6 +3823,7 @@ const insertReceiptUploadRecord = async ({
     return {
       data: null,
       error: error?.message || "Unable to save receipt.",
+      reason: null,
       status: null,
     };
   }
@@ -4466,11 +4667,17 @@ export default function App() {
     description: "",
     typePreset: "Discount",
     typeCustom: "",
+    expiresDate: "",
+    expiresTime: "",
     redemptionLimitMode: "unlimited", // unlimited | day | week | custom
     redemptionLimitCount: "1",
     redemptionLimitPeriod: "day", // day | week (custom only)
   });
   const [createOfferTypeMenuOpen, setCreateOfferTypeMenuOpen] = useState(false);
+  const [createOfferExpiryDateMenuOpen, setCreateOfferExpiryDateMenuOpen] =
+    useState(false);
+  const [createOfferExpiryTimeMenuOpen, setCreateOfferExpiryTimeMenuOpen] =
+    useState(false);
   const [offerImage, setOfferImage] = useState(null);
   const [offerCreateHonorChecked, setOfferCreateHonorChecked] = useState(false);
   const [offerCropModal, setOfferCropModal] = useState({
@@ -4501,6 +4708,17 @@ export default function App() {
     loading: false,
     error: null,
   });
+  const [renewOfferDraft, setRenewOfferDraft] = useState({
+    visible: false,
+    offerId: null,
+    offerTitle: "",
+    expiresDate: "",
+    expiresTime: "",
+    saving: false,
+    error: null,
+  });
+  const [renewOfferDateMenuOpen, setRenewOfferDateMenuOpen] = useState(false);
+  const [renewOfferTimeMenuOpen, setRenewOfferTimeMenuOpen] = useState(false);
   const [offerImageStatus, setOfferImageStatus] = useState({
     uploading: false,
     error: null,
@@ -4988,6 +5206,11 @@ export default function App() {
   const [offerBusy, setOfferBusy] = useState(false);
   const [offerError, setOfferError] = useState(null);
   const [offerNotice, setOfferNotice] = useState(null);
+  const offerExpiryDateOptions = useMemo(
+    () => buildOfferExpiryDateOptions(365),
+    [],
+  );
+  const offerExpiryTimeOptions = OFFER_EXPIRY_TIME_OPTIONS;
   const [formMessage, setFormMessage] = useState(null);
   const [addressResults, setAddressResults] = useState([]);
   const [addressLoading, setAddressLoading] = useState(false);
@@ -6014,6 +6237,7 @@ export default function App() {
       {
         platform: Platform.OS,
         purpose: "cashout",
+        forceRelink: forceLink,
         ...(Platform.OS === "android" && PLAID_ANDROID_PACKAGE_NAME
           ? { androidPackageName: PLAID_ANDROID_PACKAGE_NAME }
           : {}),
@@ -7772,6 +7996,36 @@ export default function App() {
         cashoutIdempotencyKeyRef.current = null;
         return;
       }
+      const payoutReasonCode = String(
+        details?.reason ||
+          data?.reason ||
+          details?.code ||
+          details?.error ||
+          data?.error ||
+          "",
+      )
+        .trim()
+        .toUpperCase();
+      if (payoutReasonCode === "CASHBACK_FROZEN") {
+        cashoutIdempotencyKeyRef.current = null;
+        setCashoutActionStatus({
+          loading: false,
+          error:
+            "Your cashback is temporarily on hold pending a review. Contact support@wellopartners.com",
+          success: null,
+        });
+        return;
+      }
+      if (payoutReasonCode === "ACCOUNT_FLAGGED") {
+        cashoutIdempotencyKeyRef.current = null;
+        setCashoutActionStatus({
+          loading: false,
+          error:
+            "Your account is under review. Contact support@wellopartners.com",
+          success: null,
+        });
+        return;
+      }
       const rawError =
         typeof error === "string"
           ? error
@@ -8694,7 +8948,12 @@ export default function App() {
   const publicOffers = useMemo(
     () =>
       offers.filter(
-        (offer) => offer.active && offer.approvalStatus === "approved",
+        (offer) =>
+          offer.active &&
+          offer.approvalStatus === "approved" &&
+          String(offer.status || "active").toLowerCase() === "active" &&
+          (!Number.isFinite(Number(offer.expiresAt)) ||
+            Number(offer.expiresAt) > Date.now()),
       ),
     [offers],
   );
@@ -12115,12 +12374,16 @@ export default function App() {
       description: "",
       typePreset: "Discount",
       typeCustom: "",
+      expiresDate: "",
+      expiresTime: "",
       redemptionLimitMode: "unlimited",
       redemptionLimitCount: "1",
       redemptionLimitPeriod: "day",
     });
     setOfferCreateHonorChecked(false);
     setCreateOfferTypeMenuOpen(false);
+    setCreateOfferExpiryDateMenuOpen(false);
+    setCreateOfferExpiryTimeMenuOpen(false);
     setOfferImage(null);
     setOfferError(null);
     setOfferBusy(false);
@@ -13797,6 +14060,8 @@ export default function App() {
               "offer_type",
               "image_url",
               "active",
+              "status",
+              "expires_at",
               "approval_status",
               "redemption_limit_period",
               "redemption_limit_count",
@@ -13806,6 +14071,7 @@ export default function App() {
           )
           .eq("active", true)
           .eq("approval_status", "approved")
+          .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
           .order("created_at", { ascending: false });
         if (error) {
           if (!silent) {
@@ -13906,6 +14172,8 @@ export default function App() {
             "offer_type",
             "image_url",
             "active",
+            "status",
+            "expires_at",
             "approval_status",
             "redemption_limit_period",
             "redemption_limit_count",
@@ -13995,6 +14263,8 @@ export default function App() {
           "offer_type",
           "image_url",
           "active",
+          "status",
+          "expires_at",
           "approval_status",
           "redemption_limit_period",
           "redemption_limit_count",
@@ -14031,6 +14301,8 @@ export default function App() {
           "offer_type",
           "image_url",
           "active",
+          "status",
+          "expires_at",
           "approval_status",
           "redemption_limit_period",
           "redemption_limit_count",
@@ -14065,6 +14337,8 @@ export default function App() {
           "offer_type",
           "image_url",
           "active",
+          "status",
+          "expires_at",
           "approval_status",
           "redemption_limit_period",
           "redemption_limit_count",
@@ -14868,8 +15142,25 @@ export default function App() {
         const reason = String(
           details?.reason || data?.reason || "",
         ).trim().toLowerCase();
+        const errorCode = String(
+          details?.error || data?.error || "",
+        ).trim().toUpperCase();
+        const daysRemainingRaw = Number(
+          details?.days_remaining ?? data?.days_remaining,
+        );
+        const daysRemaining = Number.isFinite(daysRemainingRaw) &&
+            daysRemainingRaw > 0
+          ? Math.max(1, Math.ceil(daysRemainingRaw))
+          : null;
+        const isRelinkRateLimited =
+          errorCode === "RELINK_RATE_LIMITED" ||
+          reason === "cashout_switch_limit_reached";
         const fallbackMessage =
-          reason === "bank_not_linked" ||
+          isRelinkRateLimited
+            ? `You can update your bank account up to 2 times per month. You can change it again in ${
+              daysRemaining ?? "a few"
+            } day${daysRemaining === 1 ? "" : "s"}.`
+            : reason === "bank_not_linked" ||
             reason === "plaid_access_token_missing" ||
             reason === "checkbook_recipient_missing"
             ? "Reconnect this bank to use it for cashout."
@@ -14937,6 +15228,61 @@ export default function App() {
       loadPlaidLinkState,
     ],
   );
+
+  const handleUnlinkCashoutBank = useCallback(async () => {
+    if (!isSignedIn) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Sign in to manage payout banks.",
+        success: null,
+      });
+      return;
+    }
+
+    const selectedItemId = String(
+      cashoutLinkedPayoutAccounts.find((account) => account.selectedForPayout)
+        ?.itemId || "",
+    ).trim();
+
+    setCashoutActionStatus({
+      loading: true,
+      error: null,
+      success: null,
+    });
+
+    const { data, error } = await callPlaidFunction("plaid-unlink-bank", {
+      purpose: "cashout",
+      ...(selectedItemId ? { itemId: selectedItemId } : {}),
+    });
+
+    if (error) {
+      setCashoutActionStatus({
+        loading: false,
+        error: toUserFacingError(error, "Unable to unlink bank right now."),
+        success: null,
+      });
+      return;
+    }
+
+    await Promise.all([
+      loadPlaidLinkState({ silent: true }),
+      loadCashoutCatalog({ page: 0, append: false }),
+    ]);
+
+    setCashoutShowAllLinkedAccounts(false);
+    setCashoutActionStatus({
+      loading: false,
+      error: null,
+      success:
+        String(data?.copy?.primary || "").trim() || "Bank unlinked.",
+    });
+  }, [
+    isSignedIn,
+    cashoutLinkedPayoutAccounts,
+    callPlaidFunction,
+    loadPlaidLinkState,
+    loadCashoutCatalog,
+  ]);
 
   const setHistoryVerificationNotice = useCallback(
     (entry, title, message, variant = "info") => {
@@ -15117,19 +15463,34 @@ export default function App() {
                   });
                   return;
                 }
-                const { data: exchangeData, error: exchangeError } =
+                const { data: exchangeData, error: exchangeError, details } =
                   await callPlaidFunction("plaid-exchange-public-token", {
                     publicToken,
                     purpose: "receipt_verification",
                   });
                 if (exchangeError) {
+                  const reasonCode = String(
+                    details?.reason || exchangeData?.reason || "",
+                  )
+                    .trim()
+                    .toLowerCase();
+                  const errorCode = String(
+                    details?.error || exchangeData?.error || "",
+                  )
+                    .trim()
+                    .toUpperCase();
+                  const bankAlreadyLinked =
+                    errorCode === "BANK_ALREADY_LINKED" ||
+                    reasonCode === "bank_already_linked";
                   settle(() => {
                     clearLaunchWatchdog();
                     setPlaidLinkAction("idle");
                     setPlaidLinkState((prev) => ({
                       ...prev,
                       loading: false,
-                      error: exchangeError,
+                      error: bankAlreadyLinked
+                        ? "This bank account is already connected to another Wello account. Please use a different account or contact support@wellopartners.com"
+                        : exchangeError,
                     }));
                   });
                   return;
@@ -15344,23 +15705,35 @@ export default function App() {
         entry.businessName ||
         entry.business?.title ||
         "";
-      const { data, error } = await callPlaidFunction("plaid-verify-purchase", {
+      const { data, error, details } = await callPlaidFunction(
+        "plaid-verify-purchase",
+        {
         redemptionId: entry.id,
         purchaseDate,
         merchantName,
-      });
+        },
+      );
       if (error) {
+        const errorCode = String(details?.error || details?.code || "").trim();
+        const offerUnavailableMessage =
+          "This offer is temporarily unavailable. Check back soon or explore other offers nearby.";
+        const resolvedError =
+          errorCode === "OFFER_UNAVAILABLE" ? offerUnavailableMessage : error;
         setPurchaseVerifyStatus({
           loading: false,
           targetId: null,
-          error: interactive ? error : null,
+          error: interactive ? resolvedError : null,
           success: null,
         });
         if (!interactive) {
           setHistoryVerificationNotice(
             entry,
-            "Auto verification unavailable",
-            "Automatic verification is temporarily unavailable. Upload a receipt to continue.",
+            errorCode === "OFFER_UNAVAILABLE"
+              ? "Offer unavailable"
+              : "Auto verification unavailable",
+            errorCode === "OFFER_UNAVAILABLE"
+              ? offerUnavailableMessage
+              : "Automatic verification is temporarily unavailable. Upload a receipt to continue.",
             "warning",
           );
         }
@@ -15372,15 +15745,24 @@ export default function App() {
       const fallbackMessage =
         data?.fallbackMessage || data?.message || PLAID_FALLBACK_COPY;
       if (status === "confirmed") {
+        const firstBonusEarned = Boolean(data?.firstRedemptionBonusEarned);
         setPurchaseVerifyStatus({
           loading: false,
           targetId: null,
           error: null,
-          success:
-            source === "auto"
+          success: firstBonusEarned
+            ? "Purchase verified. First redemption bonus applied: +$1.00."
+            : source === "auto"
               ? "Purchase automatically verified. Cashback will follow normal payout rules."
               : "Purchase verified. Cashback will follow normal payout rules.",
         });
+        if (firstBonusEarned && interactive) {
+          showAppDialog({
+            title: "First redemption bonus",
+            message: "$1.00 has been added to your cashback balance.",
+            options: [{ label: "Nice", variant: "primary" }],
+          });
+        }
         if (source === "auto") {
           setHistoryVerifyNotice(null);
           setHighlightedHistoryEntryId(null);
@@ -15462,6 +15844,7 @@ export default function App() {
       loadRedemptions,
       loadCashbackBalance,
       setHistoryVerificationNotice,
+      showAppDialog,
     ],
   );
 
@@ -15664,6 +16047,15 @@ export default function App() {
           });
           return;
         }
+        const imageHash = await computeReceiptImageHash(normalized.image.base64);
+        if (!imageHash) {
+          setReceiptUploadStatus({
+            uploading: false,
+            error: "Unable to process the receipt image.",
+            targetId: null,
+          });
+          return;
+        }
         setReceiptUploadStatus({
           uploading: true,
           error: null,
@@ -15705,12 +16097,14 @@ export default function App() {
         const {
           data,
           error: insertError,
+          reason: insertReason,
           status: insertStatus,
         } = await insertReceiptUploadRecord({
           redemptionId: entry.id,
           businessId: entry.businessId,
           userId: authUserId,
           storagePath: path,
+          imageHash,
           allowRetryResubmit: canResubmitRejectedReceipt,
         });
         logReceiptUploadDebug("insertResult", {
@@ -15725,15 +16119,22 @@ export default function App() {
               `receipt insert failed (${insertStatus ?? "no-status"}): ${insertError}`,
             );
           }
+          const duplicateReceiptError =
+            String(insertReason || "").toUpperCase() === "DUPLICATE_RECEIPT";
+          const finalInsertMessage = duplicateReceiptError
+            ? "This receipt has already been submitted."
+            : insertError || "Unable to save receipt.";
           setReceiptUploadStatus({
             uploading: false,
-            error: insertError || "Unable to save receipt.",
+            error: finalInsertMessage,
             targetId: null,
           });
           showReceiptOverlay(
             "error",
             "Upload failed",
-            insertError || "Unable to save receipt. Please try again.",
+            duplicateReceiptError
+              ? "This receipt has already been submitted."
+              : insertError || "Unable to save receipt. Please try again.",
             { autoHideMs: 2200 },
           );
           return;
@@ -15985,7 +16386,11 @@ export default function App() {
             "offer_type",
             "image_url",
             "active",
+            "status",
+            "expires_at",
             "approval_status",
+            "redemption_limit_period",
+            "redemption_limit_count",
             "created_at",
           ].join(","),
         )
@@ -16423,6 +16828,19 @@ export default function App() {
       setOfferError("Description is required.");
       return;
     }
+    const parsedExpiration = parseOfferExpiryIso(
+      offerForm.expiresDate,
+      offerForm.expiresTime,
+    );
+    if (!parsedExpiration.valid) {
+      setOfferError("Choose both expiration date and time, or leave both blank.");
+      return;
+    }
+    const expirationIso = parsedExpiration.iso;
+    if (expirationIso && new Date(expirationIso).getTime() <= Date.now()) {
+      setOfferError("Expiration must be in the future.");
+      return;
+    }
     if (!offerImage?.uri) {
       setOfferError("Offer photo is required.");
       return;
@@ -16498,6 +16916,7 @@ export default function App() {
         offer_type: normalizedType,
         image_url: imageUrl,
         active: true,
+        expires_at: expirationIso,
         approval_status: "pending",
         offer_honor_commitment_accepted: true,
         offer_honor_commitment_version: OFFER_HONOR_POLICY_VERSION,
@@ -16519,6 +16938,8 @@ export default function App() {
           "offer_type",
           "image_url",
           "active",
+          "status",
+          "expires_at",
           "approval_status",
           "redemption_limit_period",
           "redemption_limit_count",
@@ -16542,11 +16963,15 @@ export default function App() {
       description: "",
       typePreset: "Discount",
       typeCustom: "",
+      expiresDate: "",
+      expiresTime: "",
       redemptionLimitMode: "unlimited",
       redemptionLimitCount: "1",
       redemptionLimitPeriod: "day",
     });
     setCreateOfferTypeMenuOpen(false);
+    setCreateOfferExpiryDateMenuOpen(false);
+    setCreateOfferExpiryTimeMenuOpen(false);
     setOfferImage(null);
     setOfferCreateHonorChecked(false);
     if (SUPABASE_URL && SUPABASE_ANON_KEY) {
@@ -16706,6 +17131,161 @@ export default function App() {
           textAlignVertical="top"
           maxLength={360}
         />
+        <Text style={styles.formLabel}>Expiration (optional)</Text>
+        <View style={styles.formRow}>
+          <View style={styles.formField}>
+            <TouchableOpacity
+              style={[styles.formInput, styles.selectInput]}
+              onPress={() => {
+                setCreateOfferExpiryDateMenuOpen((prev) => !prev);
+                setCreateOfferExpiryTimeMenuOpen(false);
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.selectInputText}>
+                {offerForm.expiresDate
+                  ? offerExpiryDateOptions.find(
+                      (option) => option.value === offerForm.expiresDate,
+                    )?.label || offerForm.expiresDate
+                  : "No expiration"}
+              </Text>
+              <Ionicons
+                name={createOfferExpiryDateMenuOpen ? "chevron-up" : "chevron-down"}
+                size={16}
+                color={COLORS.muted}
+              />
+            </TouchableOpacity>
+            {createOfferExpiryDateMenuOpen && (
+              <View style={styles.selectMenu}>
+                <TouchableOpacity
+                  style={[
+                    styles.selectMenuOption,
+                    !offerForm.expiresDate && styles.selectMenuOptionActive,
+                  ]}
+                  onPress={() => {
+                    setOfferForm((prev) => ({
+                      ...prev,
+                      expiresDate: "",
+                      expiresTime: "",
+                    }));
+                    setCreateOfferExpiryDateMenuOpen(false);
+                    setCreateOfferExpiryTimeMenuOpen(false);
+                    if (offerError) setOfferError(null);
+                    if (offerNotice) setOfferNotice(null);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.selectMenuOptionText,
+                      !offerForm.expiresDate && styles.selectMenuOptionTextActive,
+                    ]}
+                  >
+                    No expiration
+                  </Text>
+                </TouchableOpacity>
+                {offerExpiryDateOptions.map((option) => {
+                  const active = offerForm.expiresDate === option.value;
+                  return (
+                    <TouchableOpacity
+                      key={option.value}
+                      style={[
+                        styles.selectMenuOption,
+                        active && styles.selectMenuOptionActive,
+                      ]}
+                      onPress={() => {
+                        setOfferForm((prev) => ({
+                          ...prev,
+                          expiresDate: option.value,
+                          expiresTime:
+                            prev.expiresTime || OFFER_EXPIRY_DEFAULT_TIME,
+                        }));
+                        setCreateOfferExpiryDateMenuOpen(false);
+                        if (offerError) setOfferError(null);
+                        if (offerNotice) setOfferNotice(null);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.selectMenuOptionText,
+                          active && styles.selectMenuOptionTextActive,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+          </View>
+          <View style={styles.formField}>
+            <TouchableOpacity
+              style={[
+                styles.formInput,
+                styles.selectInput,
+                !offerForm.expiresDate && styles.formInputDisabled,
+              ]}
+              onPress={() => {
+                if (!offerForm.expiresDate) return;
+                setCreateOfferExpiryTimeMenuOpen((prev) => !prev);
+                setCreateOfferExpiryDateMenuOpen(false);
+              }}
+              activeOpacity={0.8}
+              disabled={!offerForm.expiresDate}
+            >
+              <Text style={styles.selectInputText}>
+                {offerForm.expiresDate
+                  ? offerExpiryTimeOptions.find(
+                      (option) => option.value === offerForm.expiresTime,
+                    )?.label || "Select time"
+                  : "Choose date first"}
+              </Text>
+              <Ionicons
+                name={createOfferExpiryTimeMenuOpen ? "chevron-up" : "chevron-down"}
+                size={16}
+                color={COLORS.muted}
+              />
+            </TouchableOpacity>
+            {createOfferExpiryTimeMenuOpen && offerForm.expiresDate && (
+              <View style={styles.selectMenu}>
+                {offerExpiryTimeOptions.map((option) => {
+                  const active = offerForm.expiresTime === option.value;
+                  return (
+                    <TouchableOpacity
+                      key={option.value}
+                      style={[
+                        styles.selectMenuOption,
+                        active && styles.selectMenuOptionActive,
+                      ]}
+                      onPress={() => {
+                        setOfferForm((prev) => ({
+                          ...prev,
+                          expiresTime: option.value,
+                        }));
+                        setCreateOfferExpiryTimeMenuOpen(false);
+                        if (offerError) setOfferError(null);
+                        if (offerNotice) setOfferNotice(null);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.selectMenuOptionText,
+                          active && styles.selectMenuOptionTextActive,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+          </View>
+        </View>
+        <Text style={styles.formHint}>
+          Optional. If set, this offer will stop showing after the selected
+          date and time.
+        </Text>
         <Text style={styles.formLabel}>Redemption limit</Text>
         <View style={styles.limitOptionRow}>
           {[
@@ -16999,7 +17579,11 @@ export default function App() {
           "offer_type",
           "image_url",
           "active",
+          "status",
+          "expires_at",
           "approval_status",
+          "redemption_limit_period",
+          "redemption_limit_count",
           "created_at",
         ].join(","),
       )
@@ -17012,6 +17596,125 @@ export default function App() {
     mergeOffers([mapSupabaseOffer(data)]);
     setOfferBusy(false);
   };
+
+  const closeRenewOfferModal = useCallback(() => {
+    setRenewOfferDraft({
+      visible: false,
+      offerId: null,
+      offerTitle: "",
+      expiresDate: "",
+      expiresTime: "",
+      saving: false,
+      error: null,
+    });
+    setRenewOfferDateMenuOpen(false);
+    setRenewOfferTimeMenuOpen(false);
+  }, []);
+
+  const openRenewOfferModal = useCallback((offer) => {
+    if (!offer?.id) return;
+    const nextDraft = getOfferExpiryDraftFromTimestamp(offer.expiresAt);
+    setRenewOfferDraft({
+      visible: true,
+      offerId: offer.id,
+      offerTitle: offer.title || "Offer",
+      expiresDate: nextDraft.expiresDate || "",
+      expiresTime: nextDraft.expiresTime || OFFER_EXPIRY_DEFAULT_TIME,
+      saving: false,
+      error: null,
+    });
+    setRenewOfferDateMenuOpen(false);
+    setRenewOfferTimeMenuOpen(false);
+  }, []);
+
+  const handleSubmitOfferRenewal = useCallback(async () => {
+    if (!renewOfferDraft.offerId) return;
+    if (!ownerBusiness?.id) {
+      setRenewOfferDraft((prev) => ({
+        ...prev,
+        error: "Business profile is required.",
+      }));
+      return;
+    }
+    const parsedExpiration = parseOfferExpiryIso(
+      renewOfferDraft.expiresDate,
+      renewOfferDraft.expiresTime,
+    );
+    if (!parsedExpiration.valid || !parsedExpiration.iso) {
+      setRenewOfferDraft((prev) => ({
+        ...prev,
+        error: "Choose a valid expiration date and time.",
+      }));
+      return;
+    }
+    if (new Date(parsedExpiration.iso).getTime() <= Date.now()) {
+      setRenewOfferDraft((prev) => ({
+        ...prev,
+        error: "Expiration must be in the future.",
+      }));
+      return;
+    }
+    if (
+      !ensureSupabaseReady((message) =>
+        setRenewOfferDraft((prev) => ({
+          ...prev,
+          saving: false,
+          error: message,
+        })),
+      )
+    ) {
+      return;
+    }
+    setRenewOfferDraft((prev) => ({ ...prev, saving: true, error: null }));
+    const { data, error } = await supabase
+      .from("offers")
+      .update({ expires_at: parsedExpiration.iso })
+      .eq("id", renewOfferDraft.offerId)
+      .eq("business_id", ownerBusiness.id)
+      .select(
+        [
+          "id",
+          "business_id",
+          "title",
+          "description",
+          "offer_type",
+          "image_url",
+          "active",
+          "status",
+          "expires_at",
+          "approval_status",
+          "redemption_limit_period",
+          "redemption_limit_count",
+          "created_at",
+        ].join(","),
+      )
+      .maybeSingle();
+    if (error || !data) {
+      setRenewOfferDraft((prev) => ({
+        ...prev,
+        saving: false,
+        error: error?.message || "Unable to renew offer.",
+      }));
+      return;
+    }
+    const mapped = mapSupabaseOffer(data);
+    mergeOffers([mapped]);
+    setOwnerOffersList((prev) =>
+      prev.map((entry) => (entry.id === mapped.id ? mapped : entry)),
+    );
+    setOfferNotice({
+      type: "success",
+      text: "Offer renewed with the new expiration date and time.",
+    });
+    closeRenewOfferModal();
+    loadRemoteOffers({ silent: true });
+  }, [
+    ownerBusiness?.id,
+    renewOfferDraft,
+    mergeOffers,
+    loadRemoteOffers,
+    closeRenewOfferModal,
+  ]);
 
   const handleDeleteOffer = async (offer) => {
     if (!offer?.id) return;
@@ -17553,6 +18256,8 @@ export default function App() {
             "offer_type",
             "image_url",
             "active",
+            "status",
+            "expires_at",
             "approval_status",
             "created_at",
           ].join(","),
@@ -17560,6 +18265,7 @@ export default function App() {
         .eq("business_id", businessId)
         .eq("active", true)
         .eq("approval_status", "approved")
+        .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
         .order("created_at", { ascending: false });
       if (error) {
         if (!silent) {
@@ -17795,6 +18501,19 @@ export default function App() {
     if (accountRole !== "consumer") return;
     loadPlaidLinkState({ silent: true });
   }, [activeTab, isSignedIn, accountRole, loadPlaidLinkState]);
+
+  useEffect(() => {
+    if (!cashoutBankModalVisible) return;
+    if (!isSignedIn || accountRole !== "consumer") return;
+    loadPlaidLinkState({ silent: true });
+    loadCashoutCatalog({ page: 0, append: false });
+  }, [
+    cashoutBankModalVisible,
+    isSignedIn,
+    accountRole,
+    loadPlaidLinkState,
+    loadCashoutCatalog,
+  ]);
 
   useEffect(() => {
     if (!isSignedIn || !showHistoryTab) {
@@ -20609,7 +21328,8 @@ export default function App() {
                     </TouchableOpacity>
                   </View>
                   <Text style={styles.editOfferSubtitle}>
-                    Tap an offer to view full details or request edits.
+                    Tap an offer to view full details, request edits, or renew
+                    near expiration.
                   </Text>
                   <ScrollView
                     style={styles.editOfferBody}
@@ -20650,6 +21370,13 @@ export default function App() {
                             ? normalizeOfferType(offer.offerType)
                             : "Offer";
                           const canEdit = offer.approvalStatus !== "pending";
+                          const expirationLabel = formatOfferExpiryLabel(
+                            offer.expiresAt,
+                          );
+                          const renewWindowLabel = getOfferRenewWindowLabel(
+                            offer.expiresAt,
+                          );
+                          const canRenew = Boolean(renewWindowLabel);
                           return (
                             <View key={offer.id} style={styles.ownerOfferCard}>
                               <TouchableOpacity
@@ -20668,6 +21395,7 @@ export default function App() {
                                   <Text style={styles.offerStatus}>
                                     {offer.active ? "Active" : "Paused"}{" "}
                                     {"\u00b7"} {statusLabel}
+                                    {canRenew ? " \u00b7 Renew" : ""}
                                   </Text>
                                 </View>
                                 <Ionicons
@@ -20723,7 +21451,15 @@ export default function App() {
                                     <Text style={styles.detailOfferMeta}>
                                       {offerTypeLabel}
                                     </Text>
+                                    <Text style={styles.detailOfferMeta}>
+                                      {expirationLabel}
+                                    </Text>
                                   </View>
+                                  {canRenew ? (
+                                    <Text style={styles.offerRenewHint}>
+                                      Renew available ({renewWindowLabel})
+                                    </Text>
+                                  ) : null}
                                   <View style={styles.offerActionsRow}>
                                     <TouchableOpacity
                                       style={[
@@ -20747,6 +21483,18 @@ export default function App() {
                                         {offer.active ? "Pause" : "Activate"}
                                       </Text>
                                     </TouchableOpacity>
+                                    {canRenew ? (
+                                      <TouchableOpacity
+                                        style={styles.offerActionGhost}
+                                        onPress={() => openRenewOfferModal(offer)}
+                                      >
+                                        <Text
+                                          style={styles.offerActionTextGhost}
+                                        >
+                                          Renew
+                                        </Text>
+                                      </TouchableOpacity>
+                                    ) : null}
                                     <TouchableOpacity
                                       style={styles.offerActionGhost}
                                       onPress={() => handleDeleteOffer(offer)}
@@ -20766,6 +21514,180 @@ export default function App() {
                   </ScrollView>
                 </SafeAreaView>
               </SafeAreaProvider>
+            </Modal>
+
+            <Modal
+              visible={renewOfferDraft.visible}
+              animationType="slide"
+              presentationStyle="fullScreen"
+              onRequestClose={closeRenewOfferModal}
+            >
+              <SafeAreaView
+                style={styles.editOfferScreen}
+                edges={["top", "bottom"]}
+              >
+                <View style={styles.editOfferHeader}>
+                  <Text style={styles.editOfferTitle}>Renew offer</Text>
+                  <TouchableOpacity
+                    style={styles.receiptsClose}
+                    onPress={closeRenewOfferModal}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  >
+                    <Ionicons name="close" size={18} color={COLORS.ink} />
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.editOfferSubtitle}>
+                  Set a new expiration date and time for{" "}
+                  {renewOfferDraft.offerTitle || "this offer"}.
+                </Text>
+                <ScrollView
+                  style={styles.editOfferBody}
+                  contentContainerStyle={styles.editOfferBodyContent}
+                  showsVerticalScrollIndicator={false}
+                >
+                  <Text style={styles.formLabel}>Expiration date</Text>
+                  <TouchableOpacity
+                    style={[styles.formInput, styles.selectInput]}
+                    onPress={() => {
+                      setRenewOfferDateMenuOpen((prev) => !prev);
+                      setRenewOfferTimeMenuOpen(false);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.selectInputText}>
+                      {offerExpiryDateOptions.find(
+                        (option) =>
+                          option.value === String(renewOfferDraft.expiresDate),
+                      )?.label || "Select date"}
+                    </Text>
+                    <Ionicons
+                      name={renewOfferDateMenuOpen ? "chevron-up" : "chevron-down"}
+                      size={16}
+                      color={COLORS.muted}
+                    />
+                  </TouchableOpacity>
+                  {renewOfferDateMenuOpen && (
+                    <View style={styles.selectMenu}>
+                      {offerExpiryDateOptions.map((option) => {
+                        const active =
+                          renewOfferDraft.expiresDate === option.value;
+                        return (
+                          <TouchableOpacity
+                            key={option.value}
+                            style={[
+                              styles.selectMenuOption,
+                              active && styles.selectMenuOptionActive,
+                            ]}
+                            onPress={() => {
+                              setRenewOfferDraft((prev) => ({
+                                ...prev,
+                                expiresDate: option.value,
+                                expiresTime:
+                                  prev.expiresTime || OFFER_EXPIRY_DEFAULT_TIME,
+                                error: null,
+                              }));
+                              setRenewOfferDateMenuOpen(false);
+                            }}
+                          >
+                            <Text
+                              style={[
+                                styles.selectMenuOptionText,
+                                active && styles.selectMenuOptionTextActive,
+                              ]}
+                            >
+                              {option.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
+
+                  <Text style={styles.formLabel}>Expiration time</Text>
+                  <TouchableOpacity
+                    style={[styles.formInput, styles.selectInput]}
+                    onPress={() => {
+                      setRenewOfferTimeMenuOpen((prev) => !prev);
+                      setRenewOfferDateMenuOpen(false);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.selectInputText}>
+                      {offerExpiryTimeOptions.find(
+                        (option) =>
+                          option.value === String(renewOfferDraft.expiresTime),
+                      )?.label || "Select time"}
+                    </Text>
+                    <Ionicons
+                      name={renewOfferTimeMenuOpen ? "chevron-up" : "chevron-down"}
+                      size={16}
+                      color={COLORS.muted}
+                    />
+                  </TouchableOpacity>
+                  {renewOfferTimeMenuOpen && (
+                    <View style={styles.selectMenu}>
+                      {offerExpiryTimeOptions.map((option) => {
+                        const active =
+                          renewOfferDraft.expiresTime === option.value;
+                        return (
+                          <TouchableOpacity
+                            key={option.value}
+                            style={[
+                              styles.selectMenuOption,
+                              active && styles.selectMenuOptionActive,
+                            ]}
+                            onPress={() => {
+                              setRenewOfferDraft((prev) => ({
+                                ...prev,
+                                expiresTime: option.value,
+                                error: null,
+                              }));
+                              setRenewOfferTimeMenuOpen(false);
+                            }}
+                          >
+                            <Text
+                              style={[
+                                styles.selectMenuOptionText,
+                                active && styles.selectMenuOptionTextActive,
+                              ]}
+                            >
+                              {option.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
+                  <Text style={styles.formHint}>
+                    Renew updates this offer's expiration for when customers can
+                    still redeem it.
+                  </Text>
+                  {renewOfferDraft.error ? (
+                    <Text style={styles.formError}>{renewOfferDraft.error}</Text>
+                  ) : null}
+                  <View style={styles.formActions}>
+                    <TouchableOpacity
+                      style={styles.secondaryButton}
+                      onPress={closeRenewOfferModal}
+                      disabled={renewOfferDraft.saving}
+                    >
+                      <Text style={styles.secondaryButtonText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.primaryButton,
+                        renewOfferDraft.saving && styles.primaryButtonDisabled,
+                      ]}
+                      onPress={handleSubmitOfferRenewal}
+                      disabled={renewOfferDraft.saving}
+                    >
+                      <Text style={styles.primaryButtonText}>
+                        {renewOfferDraft.saving ? "Saving..." : "Save renewal"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+              </SafeAreaView>
             </Modal>
 
             <Modal
@@ -21567,6 +22489,9 @@ export default function App() {
                           );
                         })}
                       </View>
+                      <Text style={styles.cashoutAmountHint}>
+                        Cashout minimum is {formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.
+                      </Text>
                     </View>
                     <View style={styles.cashoutDeliveryEmailGroup}>
                       <Text style={styles.cashoutDeliveryEmailLabel}>Delivery email</Text>
@@ -21728,6 +22653,9 @@ export default function App() {
                           );
                         })}
                       </View>
+                      <Text style={styles.cashoutAmountHint}>
+                        Cashout minimum is {formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.
+                      </Text>
                     </View>
                     <View style={styles.cashoutSheetSummaryRows}>
                       <View style={styles.cashoutSheetSummaryRow}>
@@ -21875,6 +22803,22 @@ export default function App() {
                         color={COLORS.ink}
                       />
                     </TouchableOpacity>
+                    {cashoutLinkedPayoutAccounts.length > 0 ? (
+                      <TouchableOpacity
+                        style={styles.cashoutUnlinkBankButton}
+                        onPress={handleUnlinkCashoutBank}
+                        disabled={cashoutActionStatus.loading}
+                      >
+                        <Text style={styles.cashoutUnlinkBankButtonText}>
+                          Unlink selected bank
+                        </Text>
+                        <Ionicons
+                          name="trash-outline"
+                          size={14}
+                          color="#B42318"
+                        />
+                      </TouchableOpacity>
+                    ) : null}
                     {cashoutBankLinkInlineError ? (
                       <Text style={styles.formError}>{cashoutBankLinkInlineError}</Text>
                     ) : null}
@@ -38378,6 +39322,23 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
+  cashoutUnlinkBankButton: {
+    marginTop: 8,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(180, 35, 24, 0.24)",
+    backgroundColor: "#FFF7F7",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  cashoutUnlinkBankButtonText: {
+    fontSize: 12,
+    color: "#B42318",
+    fontFamily: FONT_MEDIUM,
+  },
   cashoutLinkedAccountOptions: {
     gap: 8,
   },
@@ -38886,6 +39847,12 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginTop: 8,
+  },
+  offerRenewHint: {
+    fontSize: 11,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+    marginTop: 2,
   },
   offerActions: {
     alignItems: "flex-end",
