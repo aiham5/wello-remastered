@@ -6,7 +6,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "backgroundColor": "#FFF03B",
-    "icon": "./assets/logo/logo.png",
+    "icon": "./assets/logo/app-icon.png",
     "notification": {
       "icon": "./assets/logo/notification-icon.png",
       "color": "#0B2147"
@@ -21,7 +21,7 @@
     ],
     "ios": {
       "bundleIdentifier": "com.wellopartners.wello",
-      "icon": "./assets/logo/logo.png",
+      "icon": "./assets/logo/app-icon.png",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSLocationWhenInUseUsageDescription": "Wello uses your location to show nearby businesses and offers.",
@@ -37,7 +37,7 @@
       }
     },
     "android": {
-      "icon": "./assets/logo/logo.png",
+      "icon": "./assets/logo/app-icon.png",
       "permissions": [
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",

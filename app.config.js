@@ -9,6 +9,7 @@ const googleMapsApiKey =
   process.env.EXPO_PUBLIC_GOOGLE_PLACES_API_KEY;
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+const APP_ICON_PATH = "./assets/logo/app-icon.png";
 const APP_LOGO_PATH = "./assets/logo/logo.png";
 const APP_NOTIFICATION_ICON_PATH = "./assets/logo/notification-icon.png";
 const DEFAULT_BRAND_BACKGROUND = "#FFF03B";
@@ -83,7 +84,7 @@ const mergePlugins = (plugins) => {
 
 export default ({ config }) => ({
   ...config,
-  icon: APP_LOGO_PATH,
+  icon: APP_ICON_PATH,
   notification: {
     ...(config.notification ?? {}),
     icon: APP_NOTIFICATION_ICON_PATH,
@@ -104,7 +105,7 @@ export default ({ config }) => ({
     ...config.android,
     permissions: ANDROID_REQUIRED_PERMISSIONS,
     blockedPermissions: ANDROID_BLOCKED_PERMISSIONS,
-    icon: APP_LOGO_PATH,
+    icon: APP_ICON_PATH,
     notification: {
       ...(config.android?.notification ?? {}),
       icon: APP_NOTIFICATION_ICON_PATH,
@@ -127,7 +128,7 @@ export default ({ config }) => ({
   },
   ios: {
     ...config.ios,
-    icon: APP_LOGO_PATH,
+    icon: APP_ICON_PATH,
     associatedDomains: uniqueValues([
       ...(Array.isArray(config.ios?.associatedDomains)
         ? config.ios.associatedDomains
