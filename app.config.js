@@ -10,6 +10,7 @@ const googleMapsApiKey =
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 const APP_LOGO_PATH = "./assets/logo/logo.png";
+const APP_NOTIFICATION_ICON_PATH = "./assets/logo/notification-icon.png";
 const DEFAULT_BRAND_BACKGROUND = "#FFF03B";
 const DEFAULT_NOTIFICATION_COLOR = "#0B2147";
 const ANDROID_REQUIRED_PERMISSIONS = [
@@ -72,7 +73,7 @@ const mergePlugins = (plugins) => {
   output.push([
     "expo-notifications",
     {
-      icon: APP_LOGO_PATH,
+      icon: APP_NOTIFICATION_ICON_PATH,
       color: DEFAULT_NOTIFICATION_COLOR,
     },
   ]);
@@ -85,7 +86,7 @@ export default ({ config }) => ({
   icon: APP_LOGO_PATH,
   notification: {
     ...(config.notification ?? {}),
-    icon: APP_LOGO_PATH,
+    icon: APP_NOTIFICATION_ICON_PATH,
     color: DEFAULT_NOTIFICATION_COLOR,
   },
   splash: {
@@ -106,7 +107,7 @@ export default ({ config }) => ({
     icon: APP_LOGO_PATH,
     notification: {
       ...(config.android?.notification ?? {}),
-      icon: APP_LOGO_PATH,
+      icon: APP_NOTIFICATION_ICON_PATH,
       color: DEFAULT_NOTIFICATION_COLOR,
     },
     adaptiveIcon: {

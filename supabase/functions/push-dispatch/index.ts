@@ -546,11 +546,11 @@ Deno.serve(async (req) => {
           globalCount += unlocked.count;
           const amountLabel = formatDollarsFromCents(unlocked.totalCents);
           const bodyText = unlocked.exampleBusinessName
-            ? `$${amountLabel} from ${unlocked.exampleBusinessName} is ready to withdraw.`
-            : `$${amountLabel} is ready to withdraw.`;
+            ? `Your $${amountLabel} from ${unlocked.exampleBusinessName} is ready to cash out.`
+            : `Your $${amountLabel} is ready to cash out.`;
           toSend.push({
             to: r.expo_push_token,
-            title: "Your cashback is ready!",
+            title: "Cashback unlocked",
             body: bodyText,
             sound: "default",
             data: {
@@ -575,7 +575,7 @@ Deno.serve(async (req) => {
           const amountLabel = formatDollarsFromCents(monthlyTotalCents);
           toSend.push({
             to: r.expo_push_token,
-            title: "Your Wello earnings last month",
+            title: "Your Wello cashback recap",
             body: `${monthlyLabel}: you earned $${amountLabel} in cashback.`,
             sound: "default",
             data: {

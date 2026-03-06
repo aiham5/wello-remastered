@@ -10842,7 +10842,9 @@ export default function App() {
       }
       if (finalStatus !== "granted") {
         setNotificationPermissionStatus("denied");
-        setTokenError("Notifications are disabled. Enable them in Settings.");
+        setTokenError(
+          "Turn on notifications in Settings to get nearby offers, expiring deals, and cashback updates.",
+        );
         return;
       }
       setNotificationPermissionStatus("granted");
@@ -10882,8 +10884,8 @@ export default function App() {
             title: "Receipt upload needed",
             body:
               pendingCount === 1
-                ? "You have 1 redemption that needs a receipt upload within 24 hours."
-                : `You have ${pendingCount} redemptions that need receipt uploads within 24 hours.`,
+                ? "Upload your receipt within 24 hours to keep this cashback on track."
+                : `Upload the receipts for ${pendingCount} redemptions within 24 hours to keep your cashback on track.`,
             data: {
               type: "receipt_upload_needed",
               pendingReceiptCount: pendingCount,
@@ -22870,7 +22872,7 @@ export default function App() {
                     </TouchableOpacity>
                   </View>
                   <Text style={styles.modalSubtitle}>
-                    Choose which alerts you want to receive.
+                    Get nearby offers, expiring deal reminders, and cashback updates.
                   </Text>
                   {preferencesStatus.loading ? (
                     <Text style={styles.formHint}>Saving preferences...</Text>
@@ -22929,7 +22931,7 @@ export default function App() {
                         color={COLORS.ink}
                       />
                       <Text style={styles.pushTokenRefreshText}>
-                        Open phone settings
+                        Open notification settings
                       </Text>
                     </TouchableOpacity>
                   ) : null}

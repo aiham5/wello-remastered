@@ -44,6 +44,12 @@ const getPeriod = () => {
   return { start, end };
 };
 
+const getInvoiceIdempotencyKey = (
+  businessId: string,
+  periodStart: string,
+  periodEnd: string,
+) => `commission_invoice_${businessId}_${periodStart}_${periodEnd}`;
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -175,6 +181,12 @@ Deno.serve(async (req) => {
             period_end: periodEnd,
             mode: "scheduled",
           },
+        }, {
+          idempotencyKey: getInvoiceIdempotencyKey(
+            businessId,
+            periodStart,
+            periodEnd,
+          ),
         });
         invoiceId = invoice.id;
         await supabase.from("commission_invoices").insert({

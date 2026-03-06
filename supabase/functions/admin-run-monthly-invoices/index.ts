@@ -65,6 +65,12 @@ const getDefaultPeriod = () => {
   return { start, end };
 };
 
+const getInvoiceIdempotencyKey = (
+  businessId: string,
+  periodStart: string,
+  periodEnd: string,
+) => `commission_invoice_${businessId}_${periodStart}_${periodEnd}`;
+
 Deno.serve(async (req) => {
   const corsHeaders = getCorsHeaders(req);
   if (!corsHeaders) {
@@ -122,6 +128,12 @@ Deno.serve(async (req) => {
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
       return new Response(
         JSON.stringify({ error: "Invalid period dates." }),
+        { status: 400, headers: corsHeaders },
+      );
+    }
+    if (start.getTime() >= end.getTime()) {
+      return new Response(
+        JSON.stringify({ error: "periodStart must be before periodEnd." }),
         { status: 400, headers: corsHeaders },
       );
     }
@@ -222,7 +234,6 @@ Deno.serve(async (req) => {
         );
       }
 
-      const description = `Wello verified redemptions (${periodStart} to ${periodEnd})`;
       const invoice = await stripe.invoices.create({
         customer: business.stripe_customer_id,
         collection_method: "charge_automatically",
@@ -231,8 +242,14 @@ Deno.serve(async (req) => {
           business_id: businessId,
           period_start: periodStart,
           period_end: periodEnd,
-          test_run: "true",
+          mode: "manual",
         },
+      }, {
+        idempotencyKey: getInvoiceIdempotencyKey(
+          businessId,
+          periodStart,
+          periodEnd,
+        ),
       });
 
       invoiceId = invoice.id;
