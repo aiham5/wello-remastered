@@ -517,9 +517,9 @@ const OFFERS_REFRESH_INTERVAL_MS = 1000 * 60 * 2;
 const REFRESH_MIN_INTERVAL_MS = 1000 * 15;
 const LIVE_POLL_MS = 1000 * 30;
 const LIVE_DEBOUNCE_MS = 1200;
-const INITIAL_SESSION_FALLBACK_MS = 1500;
-const SESSION_TOKEN_TIMEOUT_MS = 4500;
-const SESSION_USER_TIMEOUT_MS = 3500;
+const INITIAL_SESSION_FALLBACK_MS = 500;
+const SESSION_TOKEN_TIMEOUT_MS = 1800;
+const SESSION_USER_TIMEOUT_MS = 1200;
 const RECEIPT_PREVIEW_HEIGHT = Math.min(SCREEN_HEIGHT * 0.78, 760);
 const RECEIPT_PREVIEW_WIDTH = Math.min(SCREEN_WIDTH - 24, 720);
 const RECEIPT_PREVIEW_MAX_ZOOM = 6;
@@ -4225,6 +4225,8 @@ export default function App() {
   const [navRowWidth, setNavRowWidth] = useState(0);
   const activeTabRef = useRef("discover");
   const tabIndicatorIndex = useRef(new Animated.Value(0)).current;
+  const launchOverlayOpacity = useRef(new Animated.Value(1)).current;
+  const authHydrationUserIdRef = useRef(null);
   const tabFocusAnimRef = useRef({});
   const [discoverDemoLayout, setDiscoverDemoLayout] =
     useState("editorial_split");
@@ -4253,6 +4255,7 @@ export default function App() {
         null;
   const [isSignedIn, setIsSignedIn] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
+  const [showLaunchOverlay, setShowLaunchOverlay] = useState(true);
   const [authEmail, setAuthEmail] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authCreatedAtMs, setAuthCreatedAtMs] = useState(null);
@@ -5805,6 +5808,63 @@ export default function App() {
     [upsertProfileWithRetry, hasActiveSessionForUser],
   );
 
+  const finalizeSignedInUser = useCallback(
+    async (user) => {
+      if (!user?.id) return "consumer";
+      const userId = String(user.id);
+      const email = user.email || "";
+
+      setIsSignedIn(true);
+      setAuthUserId(userId);
+      setAuthCreatedAtMs(parseTimestampMs(user?.created_at));
+      if (email) {
+        setAuthEmail(email);
+        setProfileEmail(email);
+        setProfileName(formatDisplayName(email));
+      }
+      setAccountRole("consumer");
+      setAuthView("menu");
+      setSignInError(null);
+      setSessionReady(true);
+
+      if (authHydrationUserIdRef.current === userId) {
+        return "consumer";
+      }
+      authHydrationUserIdRef.current = userId;
+
+      try {
+        const nextRole = await hydrateProfile(user);
+        const stillActive = await hasActiveSessionForUser(userId);
+        if (!stillActive) return nextRole;
+        if (nextRole === "consumer") {
+          loadPromoStatus().catch(() => {});
+          loadReferralStatus().catch(() => {});
+        } else {
+          setPromoState((prev) => ({
+            ...prev,
+            loading: false,
+            error: null,
+            success: null,
+            code: null,
+            cashbackRateBps: DEFAULT_CASHBACK_RATE_BPS,
+          }));
+          setReferralState(createInitialReferralState());
+        }
+        return nextRole;
+      } finally {
+        if (authHydrationUserIdRef.current === userId) {
+          authHydrationUserIdRef.current = null;
+        }
+      }
+    },
+    [
+      hasActiveSessionForUser,
+      hydrateProfile,
+      loadPromoStatus,
+      loadReferralStatus,
+    ],
+  );
+
   const loadGlobalCashbackRate = useCallback(
     async ({ silent = false } = {}) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -6880,6 +6940,7 @@ export default function App() {
   }, []);
 
   const resetAuthState = useCallback(() => {
+    authHydrationUserIdRef.current = null;
     setIsSignedIn(false);
     setAccountRole("consumer");
     setAuthUserId(null);
@@ -6926,6 +6987,13 @@ export default function App() {
     setBusinessVerifyPassword("");
     setBusinessVerifyPasswordConfirm("");
     setBusinessPendingSignup(null);
+  }, []);
+
+  useEffect(() => {
+    WebBrowser.warmUpAsync?.().catch(() => null);
+    return () => {
+      WebBrowser.coolDownAsync?.().catch(() => null);
+    };
   }, []);
 
   const forceSignOut = useCallback(
@@ -7013,10 +7081,15 @@ export default function App() {
         }
         if (!isMounted) return;
         if (sessionUser?.id) {
+          setIsSignedIn(true);
+          setAuthUserId(sessionUser.id);
+          if (sessionUser.email) {
+            setAuthEmail(sessionUser.email);
+          }
+          setSessionReady(true);
           const nextRole = await hydrateProfile(sessionUser);
           const stillActive = await hasActiveSessionForUser(sessionUser.id);
           if (!isMounted || !stillActive) return;
-          setIsSignedIn(true);
           if (nextRole === "consumer") {
             loadPromoStatus().catch(() => {});
             loadReferralStatus().catch(() => {});
@@ -7058,24 +7131,13 @@ export default function App() {
               setAuthView("signin");
               return;
             }
-            const nextRole = await hydrateProfile(session.user);
-            const stillActive = await hasActiveSessionForUser(session.user.id);
-            if (!isMounted || !stillActive) return;
             setIsSignedIn(true);
-            if (nextRole === "consumer") {
-              loadPromoStatus().catch(() => {});
-              loadReferralStatus().catch(() => {});
-            } else {
-              setPromoState((prev) => ({
-                ...prev,
-                loading: false,
-                error: null,
-                success: null,
-                code: null,
-                cashbackRateBps: DEFAULT_CASHBACK_RATE_BPS,
-              }));
-              setReferralState(createInitialReferralState());
+            setAuthUserId(session.user.id);
+            if (session.user.email) {
+              setAuthEmail(session.user.email);
             }
+            setSessionReady(true);
+            finalizeSignedInUser(session.user).catch(() => null);
           } else {
             if (passwordRecoveryModeRef.current) {
               setIsSignedIn(false);
@@ -7093,6 +7155,7 @@ export default function App() {
     };
   }, [
     enterPasswordRecoveryMode,
+    finalizeSignedInUser,
     hydrateProfile,
     resetAuthState,
     loadPromoStatus,
@@ -9631,6 +9694,27 @@ export default function App() {
     }).start();
   }, [activeTab, tabIndicatorIndex, visibleTabs]);
   useEffect(() => {
+    if (!sessionReady) {
+      launchOverlayOpacity.stopAnimation();
+      launchOverlayOpacity.setValue(1);
+      setShowLaunchOverlay(true);
+      return;
+    }
+    const animation = Animated.timing(launchOverlayOpacity, {
+      toValue: 0,
+      duration: 650,
+      useNativeDriver: true,
+    });
+    animation.start(({ finished }) => {
+      if (finished) {
+        setShowLaunchOverlay(false);
+      }
+    });
+    return () => {
+      animation.stop();
+    };
+  }, [launchOverlayOpacity, sessionReady]);
+  useEffect(() => {
     if (!visibleTabs.length) return;
     const animations = visibleTabs.map((tab) =>
       Animated.timing(getTabFocusAnim(tab.key), {
@@ -10739,39 +10823,13 @@ export default function App() {
           return;
         }
 
-        const sessionEmail = sessionUser.email || "";
-        setAuthUserId(sessionUser.id);
-        setAuthCreatedAtMs(parseTimestampMs(sessionUser?.created_at));
-        setAuthEmail(sessionEmail);
-        if (sessionEmail) {
-          setProfileEmail(sessionEmail);
-          setProfileName(formatDisplayName(sessionEmail));
-        }
         if (callbackFlow === "recovery") {
           enterPasswordRecoveryMode();
           return;
         }
-
-        setAccountRole("consumer");
-        setIsSignedIn(true);
-        setAuthView("menu");
-        setSignInError(null);
-
-        const nextRole = await hydrateProfile(sessionUser);
-        if (nextRole === "consumer") {
-          loadPromoStatus().catch(() => {});
-          loadReferralStatus().catch(() => {});
-        } else {
-          setPromoState((prev) => ({
-            ...prev,
-            loading: false,
-            error: null,
-            success: null,
-            code: null,
-            cashbackRateBps: DEFAULT_CASHBACK_RATE_BPS,
-          }));
-          setReferralState(createInitialReferralState());
-        }
+        setSessionReady(true);
+        void finalizeSignedInUser(sessionUser);
+        return;
       } catch (callbackError) {
         if (callbackFlow === "recovery") {
           passwordRecoveryModeRef.current = false;
@@ -10792,11 +10850,8 @@ export default function App() {
       claimReferralCode,
       ensureSupabaseReady,
       enterPasswordRecoveryMode,
-      hydrateProfile,
+      finalizeSignedInUser,
       isSignedIn,
-      loadPromoStatus,
-      loadReferralStatus,
-      loadCashoutStatus,
       resolveStripeBusiness,
     ],
   );
@@ -19023,7 +19078,7 @@ export default function App() {
     });
   };
 
-  if (!sessionReady) {
+  if (!sessionReady && showLaunchOverlay) {
     return (
       <View style={styles.loadingScreen}>
         <StatusBar
@@ -19031,13 +19086,11 @@ export default function App() {
           translucent
           backgroundColor="transparent"
         />
-        <View style={styles.loadingScreenInner}>
-          <Image
-            source={require("./assets/logo/logo.png")}
-            style={styles.loadingLogo}
-            resizeMode="contain"
-          />
-        </View>
+        <Image
+          source={require("./assets/logo/logo.png")}
+          style={styles.loadingScreenImage}
+          resizeMode="cover"
+        />
       </View>
     );
   }
@@ -31755,6 +31808,20 @@ export default function App() {
                 </KeyboardAvoidingView>
               )}
             </BottomSheet>
+            {showLaunchOverlay && (
+              <Animated.View
+                style={[
+                  styles.loadingScreenOverlay,
+                  { opacity: launchOverlayOpacity },
+                ]}
+              >
+                <Image
+                  source={require("./assets/logo/logo.png")}
+                  style={styles.loadingScreenImage}
+                  resizeMode="cover"
+                />
+              </Animated.View>
+            )}
           </View>
         </SafeAreaView>
       </SafeAreaProvider>
@@ -31774,13 +31841,35 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   loadingScreenInner: {
+    flex: 1,
+    width: "100%",
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 20,
+    paddingBottom: SCREEN_HEIGHT * 0.18,
+  },
+  loadingScreenOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: LOADING_BRAND_YELLOW,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 100,
   },
   loadingLogo: {
     width: 220,
     height: 220,
+  },
+  loadingScreenImage: {
+    width: "100%",
+    height: "100%",
+  },
+  loadingWordmark: {
+    fontSize: Math.round(Math.min(190, SCREEN_WIDTH * 0.34)),
+    lineHeight: Math.round(Math.min(190, SCREEN_WIDTH * 0.34)),
+    color: COLORS.ink,
+    fontFamily: FONT_BOLD,
+    letterSpacing: -6,
+    textAlign: "center",
   },
   container: {
     flex: 1,
