@@ -4194,6 +4194,7 @@ export default function App() {
   const sheetScrollRef = useRef(null);
   const bottomSheetRef = useRef(null);
   const sheetIndexRef = useRef(0);
+  const pendingMapCollapseClearRef = useRef(false);
   const discoverScrollDebugRef = useRef({
     sessionId: `${Date.now().toString(36)}-${Math.random()
       .toString(36)
@@ -4222,7 +4223,6 @@ export default function App() {
   const [demoSearchFocused, setDemoSearchFocused] = useState(false);
   const [activeTab, setActiveTab] = useState("discover");
   const [navRowWidth, setNavRowWidth] = useState(0);
-  const [bottomNavHostHeight, setBottomNavHostHeight] = useState(0);
   const activeTabRef = useRef("discover");
   const tabIndicatorIndex = useRef(new Animated.Value(0)).current;
   const tabFocusAnimRef = useRef({});
@@ -5483,6 +5483,12 @@ export default function App() {
     (index) => {
       const nextIndex = Number.isFinite(index) ? index : 0;
       sheetIndexRef.current = nextIndex;
+      if (nextIndex === 0 && pendingMapCollapseClearRef.current) {
+        pendingMapCollapseClearRef.current = false;
+        setMarkerFocusedBusinessId(null);
+        setSelectedId(null);
+        setSelectedOfferCardId(null);
+      }
       logDiscoverGestureDebug("sheetChange", {
         index: nextIndex,
         activeTouchSeq: discoverScrollDebugRef.current.activeTouchSeq ?? null,
@@ -5536,23 +5542,63 @@ export default function App() {
     logDiscoverScrollSnapshot("discoverTabActive");
   }, [activeTab, logDiscoverScrollSnapshot]);
   const renderSheetHandle = useCallback(() => {
-    const hint =
-      activeTab === "admin"
-        ? "Swipe up for admin review tools"
-        : activeTab === "profile"
-          ? "Swipe up to manage your profile"
-          : activeTab === "history"
-            ? "Swipe up to review your history"
-            : activeTab === "cashout"
-              ? "Swipe up to manage your cashout"
-              : "Swipe up to explore offers";
     return (
       <View style={styles.sheetHandle}>
         <View style={styles.handleBar} />
-        <Text style={styles.sheetHint}>{hint}</Text>
+        <View style={styles.sheetTabsRail}>
+          {visibleTabs.map((tab) => {
+            const isActive = activeTab === tab.key;
+            const iconName = isActive ? tab.iconActive || tab.icon : tab.icon;
+            return (
+              <TouchableOpacity
+                key={`sheet-tab-${tab.key}`}
+                style={[
+                  styles.sheetTabButton,
+                  isActive && styles.sheetTabButtonActive,
+                ]}
+                onPress={() => {
+                  setShowFilters(false);
+                  setShowDemoFilters(false);
+                  setDiscoverSearchFocused(false);
+                  setDemoSearchFocused(false);
+                  setActiveTab(tab.key);
+                  bottomSheetRef.current?.snapToIndex(1);
+                }}
+                activeOpacity={0.88}
+              >
+                <View style={styles.sheetTabIconWrap}>
+                  <Ionicons
+                    name={iconName}
+                    size={18}
+                    color={isActive ? COLORS.ink : "#8A94A6"}
+                  />
+                </View>
+                {tab.key === "history" && pendingHistoryCount > 0 ? (
+                  <View style={styles.sheetTabBadge}>
+                    <Text style={styles.sheetTabBadgeText}>
+                      {pendingHistoryCount > 9 ? "9+" : pendingHistoryCount}
+                    </Text>
+                  </View>
+                ) : null}
+                <Text
+                  style={[
+                    styles.sheetTabLabel,
+                    isActive && styles.sheetTabLabelActive,
+                  ]}
+                >
+                  {tab.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
       </View>
     );
-  }, [activeTab]);
+  }, [
+    activeTab,
+    pendingHistoryCount,
+    visibleTabs,
+  ]);
   const receiptPinchScale = useRef(new Animated.Value(1)).current;
   const receiptBaseScale = useRef(new Animated.Value(1)).current;
   const receiptPanX = useRef(new Animated.Value(0)).current;
@@ -7067,6 +7113,7 @@ export default function App() {
       try {
         if (USE_FAKE_LOCATION) {
           if (!isMounted) return;
+          upsertUserLocation(DEMO_MAP_REGION);
           setMapRegion(DEMO_MAP_REGION);
           animateMapToRegion(DEMO_MAP_REGION, 700);
           return;
@@ -7094,6 +7141,7 @@ export default function App() {
           longitudeDelta: MAP_REGION.longitudeDelta,
         };
         setMapRegion(nextRegion);
+        upsertUserLocation(position.coords);
         animateMapToRegion(nextRegion, 700);
       } catch (error) {
         // Keep default region if location lookup fails.
@@ -7103,7 +7151,7 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, [animateMapToRegion]);
+  }, [animateMapToRegion, upsertUserLocation]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -8952,7 +9000,8 @@ export default function App() {
           offer.active &&
           offer.approvalStatus === "approved" &&
           String(offer.status || "active").toLowerCase() === "active" &&
-          (!Number.isFinite(Number(offer.expiresAt)) ||
+          (offer.expiresAt == null ||
+            !Number.isFinite(Number(offer.expiresAt)) ||
             Number(offer.expiresAt) > Date.now()),
       ),
     [offers],
@@ -8995,13 +9044,18 @@ export default function App() {
         const openFromHours = isBusinessOpenNow(business.hours);
         const isOpen =
           openFromHours === null ? (business.isOpen ?? true) : openFromHours;
+        const coordinateLatitude = Number(
+          business?.coordinate?.latitude ?? business?.latitude,
+        );
+        const coordinateLongitude = Number(
+          business?.coordinate?.longitude ?? business?.longitude,
+        );
         const businessCoordinate =
-          business?.coordinate &&
-          Number.isFinite(Number(business.coordinate?.latitude)) &&
-          Number.isFinite(Number(business.coordinate?.longitude))
+          Number.isFinite(coordinateLatitude) &&
+          Number.isFinite(coordinateLongitude)
             ? {
-                latitude: Number(business.coordinate.latitude),
-                longitude: Number(business.coordinate.longitude),
+                latitude: coordinateLatitude,
+                longitude: coordinateLongitude,
               }
             : null;
         const distanceMeters =
@@ -9514,7 +9568,8 @@ export default function App() {
     [isOwner, isStaff, showHistoryTab, showCashoutTab],
   );
   const navContainerWidth = useMemo(() => {
-    return SCREEN_WIDTH;
+    const horizontalInset = IS_COMPACT ? 24 : 32;
+    return Math.max(260, SCREEN_WIDTH - horizontalInset);
   }, []);
   const navNeedsTightFit = useMemo(() => {
     const count = visibleTabs.length || 1;
@@ -9565,11 +9620,6 @@ export default function App() {
       centeredOffset,
     );
   }, [navIndicatorWidth, navSlotWidth, tabIndicatorIndex]);
-  const bottomNavHostBottomPad = useMemo(() => {
-    const measuredHeight = Number(bottomNavHostHeight) > 0 ? bottomNavHostHeight : 0;
-    const fallbackHeight = IS_COMPACT ? 64 : 72;
-    return measuredHeight > 0 ? measuredHeight : fallbackHeight;
-  }, [bottomNavHostHeight]);
   useEffect(() => {
     if (!visibleTabs.length) return;
     const nextIndex = visibleTabs.findIndex((tab) => tab.key === activeTab);
@@ -10986,9 +11036,6 @@ export default function App() {
     let cancelled = false;
     if (!isSignedIn || !authUserId || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setNearbyOriginLoading(false);
-      if (!isSignedIn) {
-        setNearbyOrigin(null);
-      }
       return () => {
         cancelled = true;
       };
@@ -13117,16 +13164,11 @@ export default function App() {
     }
     const business = resolveBusinessFromCard(card);
     if (!business) return;
-    const wasSelected = Boolean(
-      offerCardKey && selectedOfferCardId === offerCardKey,
-    );
     trackOfferView(business.id, card?.offerId || card?.id);
     setSelectedId(business.id);
     setSelectedOfferCardId(offerCardKey || null);
     openSheet("discover");
-    if (wasSelected) {
-      openBusinessDetail(business);
-    }
+    openBusinessDetail(business);
     let coordinate = getBusinessCoordinate(business);
     if (!coordinate && business.address) {
       const cached = geocodeCacheRef.current.get(business.id);
@@ -13159,6 +13201,11 @@ export default function App() {
 
   const handleMapPress = useCallback(() => {
     if (Date.now() - markerPressAtRef.current < 250) return;
+    if (sheetIndexRef.current > 0) {
+      pendingMapCollapseClearRef.current = true;
+      bottomSheetRef.current?.snapToIndex(0);
+      return;
+    }
     setMarkerFocusedBusinessId(null);
     setSelectedId(null);
     setSelectedOfferCardId(null);
@@ -19148,146 +19195,6 @@ export default function App() {
                 )}
               </View>
             </View>
-            <View
-              style={styles.bottomNavHost}
-              onLayout={(event) => {
-                const nextHeight = Number(
-                  event?.nativeEvent?.layout?.height || 0,
-                );
-                if (!Number.isFinite(nextHeight)) return;
-                setBottomNavHostHeight((prev) =>
-                  Math.abs(prev - nextHeight) < 1 ? prev : nextHeight,
-                );
-              }}
-            >
-              <View
-                style={[
-                  styles.navContainer,
-                  navNeedsTightFit && styles.navContainerTight,
-                  { width: navContainerWidth },
-                ]}
-              >
-                <View
-                  style={[
-                    styles.navRow,
-                    navNeedsTightFit && styles.navRowTight,
-                  ]}
-                  onLayout={handleNavRowLayout}
-                >
-                  {navRowWidth > 0 && navIndicatorWidth > 0 ? (
-                    <Animated.View
-                      pointerEvents="none"
-                      style={[
-                        styles.navIndicator,
-                        {
-                          width: navIndicatorWidth,
-                          transform: [{ translateX: navIndicatorTranslateX }],
-                        },
-                      ]}
-                    />
-                  ) : null}
-                  {visibleTabs.map((tab, index) => {
-                    const isActive = activeTab === tab.key;
-                    const iconName = isActive
-                      ? tab.iconActive || tab.icon
-                      : tab.icon;
-                    const focusAnim = getTabFocusAnim(tab.key);
-                    const iconSize = navNeedsTightFit
-                      ? IS_COMPACT
-                        ? 17
-                        : 18
-                      : IS_COMPACT
-                        ? 19
-                        : 20;
-                    return (
-                      <TouchableOpacity
-                        key={tab.key}
-                        style={[
-                          styles.navPill,
-                          navNeedsTightFit && styles.navPillTight,
-                          index > 0 &&
-                            (navNeedsTightFit
-                              ? styles.navPillSpacedTight
-                              : styles.navPillSpaced),
-                        ]}
-                        onPress={() => openSheet(tab.key)}
-                        activeOpacity={0.86}
-                        accessibilityRole="button"
-                        accessibilityState={{ selected: isActive }}
-                        accessibilityLabel={`${tab.label} tab`}
-                        accessibilityHint={
-                          isActive ? "Current tab" : `Open ${tab.label}`
-                        }
-                      >
-                        <Animated.View
-                          style={[
-                            styles.navPillContent,
-                            {
-                              opacity: 1,
-                              transform: [
-                                {
-                                  translateY: focusAnim.interpolate({
-                                    inputRange: [0, 1],
-                                    outputRange: [0, -5],
-                                  }),
-                                },
-                                {
-                                  scale: focusAnim.interpolate({
-                                    inputRange: [0, 1],
-                                    outputRange: [1, 1.14],
-                                  }),
-                                },
-                              ],
-                            },
-                          ]}
-                        >
-                          <View
-                            style={[
-                              styles.navIconOrb,
-                              isActive && styles.navIconOrbActive,
-                            ]}
-                          >
-                            <Ionicons
-                              name={iconName}
-                              size={iconSize}
-                              style={[
-                                styles.navPillIcon,
-                                isActive && styles.navPillIconActive,
-                              ]}
-                            />
-                          </View>
-                          <Text
-                            style={[
-                              styles.navPillText,
-                              styles.navPillLabel,
-                              navNeedsTightFit && styles.navPillTextTight,
-                              isActive && styles.navPillTextActive,
-                            ]}
-                            numberOfLines={1}
-                            adjustsFontSizeToFit
-                            minimumFontScale={0.78}
-                            maxFontSizeMultiplier={1}
-                            allowFontScaling={false}
-                          >
-                            {tab.label}
-                          </Text>
-                        </Animated.View>
-                        {tab.key === "history" && pendingHistoryCount > 0 && (
-                          <View style={styles.navPillBadge}>
-                            <Text style={styles.navPillBadgeText}>
-                              {pendingHistoryCount > 9
-                                ? "9+"
-                                : pendingHistoryCount}
-                            </Text>
-                          </View>
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </View>
-            </View>
-
             <Modal
               transparent
               visible={Boolean(infoTooltip)}
@@ -23182,7 +23089,7 @@ export default function App() {
             <BottomSheet
               ref={bottomSheetRef}
               snapPoints={sheetSnapPoints}
-              bottomInset={bottomNavHostBottomPad}
+              bottomInset={0}
               onChange={handleSheetChange}
               onAnimate={handleSheetAnimate}
               handleComponent={renderSheetHandle}
@@ -23290,7 +23197,7 @@ export default function App() {
                       <Ionicons
                         name="options-outline"
                         size={16}
-                        color={showFilters ? COLORS.white : "#6E788E"}
+                        color={showFilters ? COLORS.pine : "#8A94A6"}
                       />
                     </TouchableOpacity>
                   </View>
@@ -23762,7 +23669,7 @@ export default function App() {
                       <Ionicons
                         name="options-outline"
                         size={14}
-                        color={showDemoFilters ? COLORS.white : "#6E788E"}
+                        color={showDemoFilters ? COLORS.pine : "#8A94A6"}
                       />
                       <Text
                         style={[
@@ -32277,29 +32184,21 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
   },
-  bottomNavHost: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
+  topNavHost: {
     alignItems: "center",
     zIndex: 30,
+    paddingTop: IS_COMPACT ? 8 : 10,
+    paddingHorizontal: IS_COMPACT ? 12 : 16,
   },
   navContainer: {
     alignSelf: "center",
     backgroundColor: COLORS.white,
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
-    borderBottomLeftRadius: 0,
-    borderBottomRightRadius: 0,
+    borderRadius: 34,
     paddingHorizontal: IS_COMPACT ? 10 : 14,
     paddingBottom: SAFE_BOTTOM + (IS_COMPACT ? 6 : 8),
     paddingTop: IS_COMPACT ? 6 : 8,
     borderWidth: 1,
     borderColor: "rgba(148, 163, 184, 0.22)",
-    borderTopWidth: 1,
-    borderLeftWidth: 0,
-    borderRightWidth: 0,
     overflow: "visible",
     shadowColor: "rgba(15, 23, 42, 0.25)",
     shadowOffset: { width: 0, height: -6 },
@@ -32307,9 +32206,20 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     elevation: 22,
   },
+  navContainerTop: {
+    borderTopLeftRadius: 34,
+    borderTopRightRadius: 34,
+    borderBottomLeftRadius: 34,
+    borderBottomRightRadius: 34,
+    paddingBottom: IS_COMPACT ? 6 : 8,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    shadowOffset: { width: 0, height: 6 },
+  },
   navContainerTight: {
     paddingHorizontal: 8,
-    paddingBottom: SAFE_BOTTOM + 4,
     paddingTop: 6,
   },
   navRow: {
@@ -32317,10 +32227,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     paddingTop: 2,
     paddingBottom: 2,
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
-    borderBottomLeftRadius: 0,
-    borderBottomRightRadius: 0,
+    borderRadius: 28,
     backgroundColor: "transparent",
     borderWidth: 0,
     position: "relative",
@@ -33403,14 +33310,77 @@ const styles = StyleSheet.create({
   sheetHandle: {
     alignItems: "center",
     paddingTop: 12,
-    paddingBottom: 14,
+    paddingBottom: 16,
+    paddingHorizontal: 18,
   },
   handleBar: {
-    width: 74,
-    height: 7,
+    width: 52,
+    height: 5,
     borderRadius: RADII.pill,
     backgroundColor: "#C6CDD9",
-    marginBottom: 10,
+    marginBottom: 14,
+  },
+  sheetTabsRail: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 6,
+    padding: 6,
+    borderRadius: 24,
+    backgroundColor: "#EFF1F5",
+    borderWidth: 1,
+    borderColor: "#E0E4EB",
+  },
+  sheetTabButton: {
+    flex: 1,
+    minHeight: 62,
+    borderRadius: 18,
+    position: "relative",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  sheetTabButtonActive: {
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: "#DFE4EC",
+    shadowColor: "rgba(15, 23, 42, 0.12)",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.16,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  sheetTabIconWrap: {
+    marginBottom: 6,
+  },
+  sheetTabLabel: {
+    fontSize: 14,
+    color: "#8A94A6",
+    fontFamily: FONT_MEDIUM,
+    textAlign: "center",
+  },
+  sheetTabLabelActive: {
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  sheetTabBadge: {
+    position: "absolute",
+    top: 7,
+    right: 7,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 5,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FF3B30",
+  },
+  sheetTabBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontFamily: FONT_BOLD,
+    lineHeight: 11,
   },
   sheetHint: {
     fontSize: IS_COMPACT ? 17 : 18,
@@ -33422,8 +33392,8 @@ const styles = StyleSheet.create({
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    marginBottom: 14,
+    gap: 12,
+    marginBottom: 16,
   },
   searchRowCompact: {
     flexDirection: "row",
@@ -33433,21 +33403,16 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F8FAFC",
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    minHeight: IS_COMPACT ? 42 : 44,
+    backgroundColor: "#F2F3F7",
+    borderRadius: 24,
+    paddingHorizontal: 16,
+    minHeight: IS_COMPACT ? 46 : 50,
     borderWidth: 1,
-    borderColor: "#D3D8E2",
-    shadowColor: "rgba(15, 23, 42, 0.16)",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 6,
+    borderColor: "#E1E5EC",
   },
   searchInputWrapFocused: {
-    borderColor: "#B9C2D3",
-    shadowOpacity: 0.2,
+    borderColor: "#C9D1DD",
+    backgroundColor: "#F7F8FB",
   },
   searchIcon: {
     marginRight: 10,
@@ -33457,7 +33422,7 @@ const styles = StyleSheet.create({
     paddingVertical: IS_COMPACT ? 5 : 6,
     fontFamily: FONT_TEXT,
     fontSize: IS_COMPACT ? 14 : 15,
-    color: "#8B97A9",
+    color: "#8A94A6",
   },
   searchClearButton: {
     marginLeft: 8,
@@ -33465,40 +33430,40 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   filterButton: {
-    backgroundColor: "#F8FAFC",
-    width: IS_COMPACT ? 42 : 44,
-    minWidth: IS_COMPACT ? 42 : 44,
-    minHeight: IS_COMPACT ? 42 : 44,
+    backgroundColor: "#F7F8FB",
+    width: IS_COMPACT ? 48 : 52,
+    minWidth: IS_COMPACT ? 48 : 52,
+    minHeight: IS_COMPACT ? 48 : 52,
     paddingVertical: 0,
     paddingHorizontal: 0,
-    borderRadius: 16,
+    borderRadius: 26,
     borderWidth: 1,
-    borderColor: "#D3D8E2",
+    borderColor: "#D7DDE7",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 0,
-    shadowColor: "rgba(15, 23, 42, 0.16)",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 6,
+    shadowColor: "rgba(15, 23, 42, 0.08)",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 3,
   },
   filterButtonCompact: {
     width: IS_COMPACT ? 90 : 96,
     minWidth: IS_COMPACT ? 90 : 96,
   },
   filterButtonActive: {
-    backgroundColor: COLORS.pine,
-    borderColor: COLORS.pine,
+    backgroundColor: "#EEF3F8",
+    borderColor: "#C5D1DF",
   },
   filterButtonText: {
-    color: COLORS.ink,
+    color: "#8A94A6",
     fontFamily: FONT_MEDIUM,
     fontSize: IS_COMPACT ? 14 : 15,
   },
   filterButtonTextActive: {
-    color: COLORS.white,
+    color: COLORS.pine,
   },
   statCard: {
     flex: 1,
