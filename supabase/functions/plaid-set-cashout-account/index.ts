@@ -14,7 +14,7 @@ export const config = { verify_jwt: false };
 
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 const DEFAULT_MONTHLY_SWITCH_LIMIT = Math.max(
-  Number(Deno.env.get("CASHOUT_BANK_SWITCH_MONTHLY_LIMIT") || 2) || 2,
+  Number(Deno.env.get("CASHOUT_BANK_SWITCH_MONTHLY_LIMIT") || 1) || 1,
   1,
 );
 const CASHOUT_SWITCH_LIMIT_DISABLED = /^(1|true|yes|on)$/i.test(
@@ -409,7 +409,7 @@ serve(async (req) => {
           )
           : null;
         throw new HttpError(
-          "You can change your payout bank up to 2 times per month.",
+          "You can change your payout bank once every 30 days.",
           429,
           {
             reason: "cashout_switch_limit_reached",

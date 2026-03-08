@@ -82,6 +82,15 @@ const ADMIN_DECISION_BEARER_KEY = envString(
   envString("SUPABASE_SECRET_KEY", SUPABASE_SERVICE_ROLE_KEY),
 );
 const CASHOUT_MANUAL_MODE = envFlag("CASHOUT_MANUAL_MODE", true);
+const DEFAULT_MONTHLY_SWITCH_LIMIT = Math.max(
+  envNumber("CASHOUT_BANK_SWITCH_MONTHLY_LIMIT", 1) || 1,
+  1,
+);
+const CASHOUT_SWITCH_LIMIT_DISABLED = envFlag(
+  "CASHOUT_BANK_SWITCH_LIMIT_DISABLED",
+  false,
+);
+const TEST_UNLIMITED_SWITCH_LIMIT = 9999;
 
 const normalizeEmail = (value: unknown) =>
   String(value || "")
@@ -165,6 +174,42 @@ const pickPreferredPlaidAccount = (
     return subtype === "checking" || subtype === "savings";
   });
   return preferred || accountPool[0] || null;
+};
+type PayoutSwitchPolicy = {
+  monthlyLimit: number;
+  switchesUsed: number;
+  switchesRemaining: number;
+  monthResetsAt: string | null;
+  canSwitch: boolean;
+};
+const parseSwitchPolicyRow = (
+  row: Record<string, unknown> | null | undefined,
+): PayoutSwitchPolicy => {
+  if (CASHOUT_SWITCH_LIMIT_DISABLED) {
+    return {
+      monthlyLimit: TEST_UNLIMITED_SWITCH_LIMIT,
+      switchesUsed: 0,
+      switchesRemaining: TEST_UNLIMITED_SWITCH_LIMIT,
+      monthResetsAt: null,
+      canSwitch: true,
+    };
+  }
+  const monthlyLimit = Math.max(
+    Number(row?.monthly_limit) || DEFAULT_MONTHLY_SWITCH_LIMIT,
+    1,
+  );
+  const switchesUsed = Math.max(Number(row?.switches_used) || 0, 0);
+  const switchesRemaining =
+    row?.switches_remaining != null
+      ? Math.max(Number(row.switches_remaining) || 0, 0)
+      : Math.max(monthlyLimit - switchesUsed, 0);
+  return {
+    monthlyLimit,
+    switchesUsed,
+    switchesRemaining,
+    monthResetsAt: row?.month_resets_at ? String(row.month_resets_at) : null,
+    canSwitch: switchesRemaining > 0,
+  };
 };
 const deriveUuidFromKey = async (value: string) => {
   const hash = await sha256Hex(String(value || "").trim().toLowerCase());
@@ -2272,6 +2317,64 @@ export const createCheckbookBankLinkHandler =
       const selectOnly = /^(1|true|yes|on)$/i.test(
         String(body?.selectOnly || body?.select_only || "").trim(),
       );
+      const enforceCashoutSwitchPolicy = async (
+        fromPlaidAccountId: string | null,
+        toPlaidAccountId: string | null,
+      ) => {
+        const previousAccountId = String(fromPlaidAccountId || "").trim() || null;
+        const nextAccountId = String(toPlaidAccountId || "").trim() || null;
+        if (
+          CASHOUT_SWITCH_LIMIT_DISABLED ||
+          !previousAccountId ||
+          !nextAccountId ||
+          previousAccountId === nextAccountId
+        ) {
+          return null;
+        }
+        const { data: consumeRows, error: consumeError } = await supabase.rpc(
+          "consume_cashout_bank_switch",
+          {
+            p_user_id: userId,
+            p_from_plaid_account_id: previousAccountId,
+            p_to_plaid_account_id: nextAccountId,
+            p_monthly_limit: DEFAULT_MONTHLY_SWITCH_LIMIT,
+          },
+        );
+        if (consumeError) {
+          throw new HttpError(
+            consumeError.message || "Unable to enforce payout switch policy.",
+            500,
+            { reason: "cashout_switch_policy_unavailable" },
+          );
+        }
+        const consumeRow = Array.isArray(consumeRows) ? consumeRows[0] : consumeRows;
+        const switchPolicy = parseSwitchPolicyRow({
+          monthly_limit: consumeRow?.monthly_limit,
+          switches_used: consumeRow?.switches_used,
+          switches_remaining: consumeRow?.switches_remaining,
+          month_resets_at: consumeRow?.month_resets_at,
+        });
+        if (!consumeRow?.allowed) {
+          const monthResetsAtMs = Date.parse(String(switchPolicy?.monthResetsAt || ""));
+          const daysRemaining = Number.isFinite(monthResetsAtMs)
+            ? Math.max(
+              1,
+              Math.ceil((monthResetsAtMs - Date.now()) / (1000 * 60 * 60 * 24)),
+            )
+            : null;
+          throw new HttpError(
+            "You can change your payout bank once every 30 days.",
+            429,
+            {
+              reason: "cashout_switch_limit_reached",
+              payoutSwitchPolicy: switchPolicy,
+              error: "RELINK_RATE_LIMITED",
+              days_remaining: daysRemaining,
+            },
+          );
+        }
+        return switchPolicy;
+      };
 
       const hasLinkedRecipient = existing.recipientId &&
         ["linked", "verified", "active"].includes(existing.recipientStatus);
@@ -2349,7 +2452,6 @@ export const createCheckbookBankLinkHandler =
             reason: "plaid_item_not_found",
           });
         }
-
         const mergedAccountPurposes = mergePlaidLinkPurposes(
           selectedAccount?.link_purposes,
           ["cashout"],
@@ -2490,6 +2592,10 @@ export const createCheckbookBankLinkHandler =
       }
 
       if (!publicToken) {
+        await enforceCashoutSwitchPolicy(
+          plaidState.selectedPlaidAccountId,
+          forceRelink ? plaidAccountId : null,
+        );
         const linkTokenPayload = await plaidCreateLinkToken({
           userId,
           email: profile.email,

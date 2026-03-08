@@ -10,7 +10,7 @@ import { enforceRateLimit } from "../_shared/rateLimit.ts";
 
 export const config = { verify_jwt: false };
 const DEFAULT_MONTHLY_SWITCH_LIMIT = Math.max(
-  Number(Deno.env.get("CASHOUT_BANK_SWITCH_MONTHLY_LIMIT") || 2) || 2,
+  Number(Deno.env.get("CASHOUT_BANK_SWITCH_MONTHLY_LIMIT") || 1) || 1,
   1,
 );
 const CASHOUT_SWITCH_LIMIT_DISABLED = /^(1|true|yes|on)$/i.test(

@@ -8,7 +8,7 @@
     "backgroundColor": "#FFF03B",
     "icon": "./assets/logo/app-icon.png",
     "notification": {
-      "icon": "./assets/logo/notification-icon.png",
+      "icon": "./assets/logo/tinyico.png",
       "color": "#0B2147"
     },
     "splash": {
@@ -51,7 +51,7 @@
       },
       "package": "com.wellopartners.wello",
       "notification": {
-        "icon": "./assets/logo/notification-icon.png",
+        "icon": "./assets/logo/tinyico.png",
         "color": "#0B2147"
       },
       "googleServicesFile": "./google-services.json",
@@ -64,7 +64,7 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/logo/notification-icon.png",
+          "icon": "./assets/logo/tinyico.png",
           "color": "#0B2147"
         }
       ]
