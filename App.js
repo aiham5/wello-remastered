@@ -260,6 +260,8 @@ const EMAIL_ADDRESS_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PLAID_LINK_CONSENT_VERSION = "2026-02-19";
 const getPlaidLinkConsentKey = (userId) =>
   `wello_plaid_link_consent_v${PLAID_LINK_CONSENT_VERSION}:${String(userId || "").trim() || "anon"}`;
+const getReceiptUploadReminderKey = (userId) =>
+  `wello:receipt-upload-reminder:${String(userId || "").trim() || "guest"}`;
 const REFERRAL_LANDING_URL = "https://www.wellopartners.com/referral";
 const SUPPORT_EMAIL_ADDRESS = "support@wellopartners.com";
 const OFFER_HONOR_POLICY_VERSION = "2026-02-17";
@@ -830,7 +832,7 @@ const BUSINESSES = [
   {
     id: "3",
     name: "Cedar Auto Spa",
-    category: "Carwash / Auto Cosmetic",
+    category: "Autocare",
     categoryKey: "auto",
     offer: "Deluxe wash w/ ceramic coat",
     qrCode: "WELLO-3-7P2X5N9C",
@@ -890,7 +892,7 @@ const BUSINESSES = [
   {
     id: "6",
     name: "Steel & Stone Auto Detail",
-    category: "Carwash / Auto Cosmetic",
+    category: "Autocare",
     categoryKey: "auto",
     offer: "Bundle any 2 services",
     qrCode: "WELLO-6-J5C1Y8W3",
@@ -1150,6 +1152,354 @@ const mapSupabaseRedemption = (row) => ({
     };
   })(),
 });
+
+const SCREENSHOT_MOCK_MODE = false;
+const SCREENSHOT_MOCK_CENTER = {
+  latitude: 41.8837,
+  longitude: -87.6316,
+};
+const SCREENSHOT_MOCK_MAP_REGION = {
+  latitude: SCREENSHOT_MOCK_CENTER.latitude,
+  longitude: SCREENSHOT_MOCK_CENTER.longitude,
+  latitudeDelta: 0.024,
+  longitudeDelta: 0.024,
+};
+const SCREENSHOT_MOCK_IMAGE_URLS = {
+  cafe:
+    "https://images.unsplash.com/photo-1749104953222-9d6ed76e4bf0?auto=format&fit=crop&fm=jpg&ixlib=rb-4.1.0&q=80&w=1600",
+  restaurant:
+    "https://images.unsplash.com/photo-1646388036110-d3af85b364e7?auto=format&fit=crop&fm=jpg&ixlib=rb-4.1.0&q=80&w=1600",
+  auto:
+    "https://images.unsplash.com/photo-1762604462421-fff920b0c418?auto=format&fit=crop&fm=jpg&ixlib=rb-4.1.0&q=80&w=1600",
+  beauty:
+    "https://images.unsplash.com/photo-1693776528752-87380377775a?auto=format&fit=crop&fm=jpg&ixlib=rb-4.1.0&q=80&w=1600",
+};
+const SCREENSHOT_MOCK_COORDINATES = [
+  { latitude: 41.8841, longitude: -87.631 },
+  { latitude: 41.8828, longitude: -87.6324 },
+  { latitude: 41.8833, longitude: -87.6298 },
+  { latitude: 41.885, longitude: -87.6331 },
+];
+const SCREENSHOT_MOCK_BUSINESSES = [
+  {
+    ...BUSINESSES[0],
+    id: "ss-1",
+    name: "Corner Matcha",
+    category: "Cafe",
+    categoryKey: "cafe",
+    offer: "BOGO matcha latte",
+    distance: "0.4 mi",
+    rating: 4.9,
+    tags: ["matcha", "new", "open"],
+    isOpen: true,
+    hours: "Mon-Sun | 12:00 AM - 12:00 AM",
+    createdAt: daysAgo(1),
+    coordinate: SCREENSHOT_MOCK_COORDINATES[0],
+    fallbackCoordinate: SCREENSHOT_MOCK_COORDINATES[0],
+    hasCoordinates: true,
+    imageUrl: SCREENSHOT_MOCK_IMAGE_URLS.cafe,
+    approved: true,
+    rejected: false,
+    commissionRateCents: 200,
+    commissionEnabled: true,
+    source: "screenshot",
+  },
+  {
+    ...BUSINESSES[7],
+    id: "ss-2",
+    name: "North Table",
+    category: "Restaurant",
+    categoryKey: "restaurant",
+    offer: "Free appetizer with 2 entrees",
+    distance: "0.7 mi",
+    rating: 4.8,
+    tags: ["dinner", "date-night", "open"],
+    isOpen: true,
+    hours: "Mon-Sun | 12:00 AM - 12:00 AM",
+    createdAt: daysAgo(3),
+    coordinate: SCREENSHOT_MOCK_COORDINATES[1],
+    fallbackCoordinate: SCREENSHOT_MOCK_COORDINATES[1],
+    hasCoordinates: true,
+    imageUrl: SCREENSHOT_MOCK_IMAGE_URLS.restaurant,
+    approved: true,
+    rejected: false,
+    commissionRateCents: 200,
+    commissionEnabled: true,
+    source: "screenshot",
+  },
+  {
+    ...BUSINESSES[2],
+    id: "ss-3",
+    name: "Metro Lube Express",
+    category: "Oil Change",
+    categoryKey: "auto",
+    offer: "Full synthetic oil change for $39",
+    distance: "0.9 mi",
+    rating: 4.7,
+    tags: ["auto", "express", "open"],
+    isOpen: true,
+    hours: "Mon-Sun | 12:00 AM - 12:00 AM",
+    createdAt: daysAgo(5),
+    coordinate: SCREENSHOT_MOCK_COORDINATES[2],
+    fallbackCoordinate: SCREENSHOT_MOCK_COORDINATES[2],
+    hasCoordinates: true,
+    imageUrl: SCREENSHOT_MOCK_IMAGE_URLS.auto,
+    approved: true,
+    rejected: false,
+    commissionRateCents: 150,
+    commissionEnabled: true,
+    source: "screenshot",
+  },
+  {
+    ...BUSINESSES[3],
+    id: "ss-4",
+    name: "Luna Gloss Bar",
+    category: "Beauty",
+    categoryKey: "barbersalon",
+    offer: "Free gloss with any set",
+    distance: "1.2 mi",
+    rating: 4.9,
+    tags: ["beauty", "gloss", "new"],
+    isOpen: true,
+    hours: "Mon-Sun | 12:00 AM - 12:00 AM",
+    createdAt: daysAgo(2),
+    coordinate: SCREENSHOT_MOCK_COORDINATES[3],
+    fallbackCoordinate: SCREENSHOT_MOCK_COORDINATES[3],
+    hasCoordinates: true,
+    imageUrl: SCREENSHOT_MOCK_IMAGE_URLS.beauty,
+    approved: true,
+    rejected: false,
+    commissionRateCents: 150,
+    commissionEnabled: true,
+    source: "screenshot",
+  },
+];
+const SCREENSHOT_MOCK_OFFERS = [
+  {
+    id: "ss-offer-1",
+    businessId: "ss-1",
+    title: "BOGO matcha latte",
+    description: "Buy one iced matcha latte and get the second free.",
+    offerType: "bogo",
+    imageUrl: SCREENSHOT_MOCK_IMAGE_URLS.cafe,
+    active: true,
+    status: "active",
+    expiresAt: null,
+    approvalStatus: "approved",
+    redemptionLimitPeriod: "day",
+    redemptionLimitCount: 1,
+    createdAt: daysAgo(1),
+    business: SCREENSHOT_MOCK_BUSINESSES[0],
+  },
+  {
+    id: "ss-offer-2",
+    businessId: "ss-2",
+    title: "Free appetizer with 2 entrees",
+    description: "Start dinner with a complimentary appetizer when two entrees are ordered.",
+    offerType: "bonus",
+    imageUrl: SCREENSHOT_MOCK_IMAGE_URLS.restaurant,
+    active: true,
+    status: "active",
+    expiresAt: null,
+    approvalStatus: "approved",
+    redemptionLimitPeriod: "week",
+    redemptionLimitCount: 1,
+    createdAt: daysAgo(3),
+    business: SCREENSHOT_MOCK_BUSINESSES[1],
+  },
+  {
+    id: "ss-offer-3",
+    businessId: "ss-3",
+    title: "Full synthetic oil change for $39",
+    description: "Includes oil, filter, and a quick multi-point check before you drive out.",
+    offerType: "discount",
+    imageUrl: SCREENSHOT_MOCK_IMAGE_URLS.auto,
+    active: true,
+    status: "active",
+    expiresAt: null,
+    approvalStatus: "approved",
+    redemptionLimitPeriod: null,
+    redemptionLimitCount: null,
+    createdAt: daysAgo(5),
+    business: SCREENSHOT_MOCK_BUSINESSES[2],
+  },
+  {
+    id: "ss-offer-4",
+    businessId: "ss-4",
+    title: "Free gloss with any set",
+    description: "Add a complimentary gloss finish to any manicure booking.",
+    offerType: "bonus",
+    imageUrl: SCREENSHOT_MOCK_IMAGE_URLS.beauty,
+    active: true,
+    status: "active",
+    expiresAt: null,
+    approvalStatus: "approved",
+    redemptionLimitPeriod: "week",
+    redemptionLimitCount: 1,
+    createdAt: daysAgo(2),
+    business: SCREENSHOT_MOCK_BUSINESSES[3],
+  },
+];
+const SCREENSHOT_MOCK_REDEMPTIONS = [
+  {
+    id: "ss-redemption-1",
+    createdAt: daysAgo(1),
+    businessId: "ss-1",
+    offerId: "ss-offer-1",
+    offer: {
+      id: "ss-offer-1",
+      title: "BOGO matcha latte",
+      description: "Buy one iced matcha latte and get the second free.",
+      offer_type: "bogo",
+      image_url: SCREENSHOT_MOCK_IMAGE_URLS.cafe,
+    },
+    business: {
+      id: "ss-1",
+      name: "Corner Matcha",
+      category_key: "cafe",
+      category_label: "Cafe",
+    },
+    purchaseVerification: {
+      id: "ss-pv-1",
+      source: "plaid",
+      status: "confirmed",
+      reasonCode: null,
+      reasonDetail: null,
+      lastCheckedAt: daysAgo(1),
+      confirmedAt: daysAgo(1),
+      rejectedAt: null,
+    },
+    receipt: {
+      id: "ss-receipt-1",
+      storagePath: "",
+      verificationSource: "plaid",
+      verificationReference: "demo-plaid-1",
+      reviewStatus: "approved",
+      retryAllowed: false,
+      reviewNotes: null,
+      uploadedAt: daysAgo(1),
+      cashbackCents: 850,
+      cashbackStatus: "available",
+    },
+  },
+  {
+    id: "ss-redemption-2",
+    createdAt: daysAgo(3),
+    businessId: "ss-2",
+    offerId: "ss-offer-2",
+    offer: {
+      id: "ss-offer-2",
+      title: "Free appetizer with 2 entrees",
+      description:
+        "Start dinner with a complimentary appetizer when two entrees are ordered.",
+      offer_type: "bonus",
+      image_url: SCREENSHOT_MOCK_IMAGE_URLS.restaurant,
+    },
+    business: {
+      id: "ss-2",
+      name: "North Table",
+      category_key: "restaurant",
+      category_label: "Restaurant",
+    },
+    purchaseVerification: {
+      id: "ss-pv-2",
+      source: "plaid",
+      status: "confirmed",
+      reasonCode: null,
+      reasonDetail: null,
+      lastCheckedAt: daysAgo(3),
+      confirmedAt: daysAgo(3),
+      rejectedAt: null,
+    },
+    receipt: {
+      id: "ss-receipt-2",
+      storagePath: "",
+      verificationSource: "plaid",
+      verificationReference: "demo-plaid-2",
+      reviewStatus: "approved",
+      retryAllowed: false,
+      reviewNotes: null,
+      uploadedAt: daysAgo(3),
+      cashbackCents: 1200,
+      cashbackStatus: "available",
+    },
+  },
+  {
+    id: "ss-redemption-3",
+    createdAt: daysAgo(6),
+    businessId: "ss-3",
+    offerId: "ss-offer-3",
+    offer: {
+      id: "ss-offer-3",
+      title: "Full synthetic oil change for $39",
+      description:
+        "Includes oil, filter, and a quick multi-point check before you drive out.",
+      offer_type: "discount",
+      image_url: SCREENSHOT_MOCK_IMAGE_URLS.auto,
+    },
+    business: {
+      id: "ss-3",
+      name: "Metro Lube Express",
+      category_key: "auto",
+      category_label: "Oil Change",
+    },
+    purchaseVerification: {
+      id: "ss-pv-3",
+      source: "plaid",
+      status: "confirmed",
+      reasonCode: null,
+      reasonDetail: null,
+      lastCheckedAt: daysAgo(6),
+      confirmedAt: daysAgo(6),
+      rejectedAt: null,
+    },
+    receipt: {
+      id: "ss-receipt-3",
+      storagePath: "",
+      verificationSource: "plaid",
+      verificationReference: "demo-plaid-3",
+      reviewStatus: "approved",
+      retryAllowed: false,
+      reviewNotes: null,
+      uploadedAt: daysAgo(6),
+      cashbackCents: 640,
+      cashbackStatus: "paid",
+    },
+  },
+];
+const SCREENSHOT_MOCK_CASHBACK_BALANCE = {
+  availableCents: 2485,
+  paidCents: 1640,
+  totalCents: 4125,
+};
+const SCREENSHOT_MOCK_PAYOUT_HISTORY = [
+  {
+    id: "ss-payout-1",
+    amountCents: 1500,
+    status: "paid",
+    provider: "manual",
+    methodType: "bank_transfer",
+    approvalStatus: "paid",
+    catalogItemName: null,
+    catalogImageUrl: null,
+    createdAt: daysAgo(9),
+    processedAt: daysAgo(8),
+    claimUrl: null,
+  },
+  {
+    id: "ss-payout-2",
+    amountCents: 2500,
+    status: "pending",
+    provider: "manual",
+    methodType: "bank_transfer",
+    approvalStatus: "submitted",
+    catalogItemName: null,
+    catalogImageUrl: null,
+    createdAt: daysAgo(1),
+    processedAt: null,
+    claimUrl: null,
+  },
+];
 
 const mapSupabaseReview = (row) => ({
   id: String(row.id),
@@ -3171,7 +3521,7 @@ const CATEGORY_OPTIONS = [
   { key: "restaurant", label: "Restaurants/Food" },
   { key: "barbersalon", label: "Barbershops/Salons" },
   { key: "activity", label: "Activities/Entertainment" },
-  { key: "auto", label: "Carwash/Auto Cosmetic" },
+  { key: "auto", label: "Autocare" },
 ];
 const CATEGORY_OTHER_KEY = "other";
 const CATEGORY_OPTIONS_WITH_OTHER = [
@@ -3216,7 +3566,7 @@ const CATEGORY_CONFIG = {
   auto: {
     label: "AU",
     color: "#1E3A8A",
-    display: "Carwash / Auto Cosmetic",
+    display: "Autocare",
     icon: "car",
   },
   default: {
@@ -4050,6 +4400,8 @@ const readAnimatedValueNow = async (animatedValue, fallback = 0) => {
 
 function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
   const category = getCategoryConfig(item.categoryKey);
+  const offerTitle = String(item?.offerTitle || item?.offer || "Offer").trim();
+  const businessName = String(item?.name || item?.business?.name || "Business").trim();
   const ratingNumeric = Number(item?.rating);
   const ratingLabel =
     Number.isFinite(ratingNumeric) && ratingNumeric > 0
@@ -4153,7 +4505,13 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
           </View>
           <View style={styles.liveEditorialStackHeadlineWrap}>
             <Text style={styles.liveEditorialStackName} numberOfLines={1}>
-              {item.name}
+              {offerTitle}
+            </Text>
+            <Text
+              style={styles.liveEditorialStackBusinessName}
+              numberOfLines={1}
+            >
+              {businessName}
             </Text>
             <View style={styles.liveEditorialStackHeadlineMetaRow}>
               <Ionicons
@@ -4261,11 +4619,23 @@ export default function App() {
   const [selectedOfferCardId, setSelectedOfferCardId] = useState(null);
   const [markerFocusedBusinessId, setMarkerFocusedBusinessId] = useState(null);
   const markerPressAtRef = useRef(0);
-  const [mapRegion, setMapRegion] = useState(MAP_REGION);
-  const [nearbyOrigin, setNearbyOrigin] = useState(null);
+  const [mapRegion, setMapRegion] = useState(
+    SCREENSHOT_MOCK_MODE ? SCREENSHOT_MOCK_MAP_REGION : MAP_REGION,
+  );
+  const [nearbyOrigin, setNearbyOrigin] = useState(
+    SCREENSHOT_MOCK_MODE ? SCREENSHOT_MOCK_CENTER : null,
+  );
   const [nearbyOriginLoading, setNearbyOriginLoading] = useState(false);
-  const initialBusinesses = SUPABASE_URL && SUPABASE_ANON_KEY ? [] : BUSINESSES;
-  const initialOffers = SUPABASE_URL && SUPABASE_ANON_KEY ? [] : OFFER_SEEDS;
+  const initialBusinesses = SCREENSHOT_MOCK_MODE
+    ? SCREENSHOT_MOCK_BUSINESSES
+    : SUPABASE_URL && SUPABASE_ANON_KEY
+      ? []
+      : BUSINESSES;
+  const initialOffers = SCREENSHOT_MOCK_MODE
+    ? SCREENSHOT_MOCK_OFFERS
+    : SUPABASE_URL && SUPABASE_ANON_KEY
+      ? []
+      : OFFER_SEEDS;
   const [businesses, setBusinesses] = useState(initialBusinesses);
   const [offers, setOffers] = useState(initialOffers);
   const defaultOwnerId =
@@ -4536,7 +4906,9 @@ export default function App() {
     loading: false,
     error: null,
   });
-  const [redemptionHistory, setRedemptionHistory] = useState([]);
+  const [redemptionHistory, setRedemptionHistory] = useState(
+    SCREENSHOT_MOCK_MODE ? SCREENSHOT_MOCK_REDEMPTIONS : [],
+  );
   const [expandedHistoryGroups, setExpandedHistoryGroups] = useState({});
   const [historySummaryFilter, setHistorySummaryFilter] = useState("earned");
   const [reviewStatus, setReviewStatus] = useState({
@@ -4571,7 +4943,9 @@ export default function App() {
     });
   const [receiptNoticeOpen, setReceiptNoticeOpen] = useState(false);
   const receiptNoticeShownRef = useRef(false);
-  const lastReceiptUploadAlertCountRef = useRef(0);
+  const lastReceiptUploadReminderFingerprintRef = useRef("");
+  const [receiptUploadReminderHydrated, setReceiptUploadReminderHydrated] =
+    useState(false);
   const [expandedAdminEdits, setExpandedAdminEdits] = useState({});
   const [expandedAdminOffers, setExpandedAdminOffers] = useState({});
   const [expandedAdminBusinesses, setExpandedAdminBusinesses] = useState({});
@@ -4793,12 +5167,20 @@ export default function App() {
     requirementsDue: [],
     disabledReason: null,
   });
-  const [cashbackBalance, setCashbackBalance] = useState({
-    availableCents: 0,
-    paidCents: 0,
-    totalCents: 0,
-    updatedAt: null,
-  });
+  const [cashoutTermsAcceptedAt, setCashoutTermsAcceptedAt] = useState(null);
+  const [cashbackBalance, setCashbackBalance] = useState(
+    SCREENSHOT_MOCK_MODE
+      ? {
+          ...SCREENSHOT_MOCK_CASHBACK_BALANCE,
+          updatedAt: Date.now(),
+        }
+      : {
+          availableCents: 0,
+          paidCents: 0,
+          totalCents: 0,
+          updatedAt: null,
+        },
+  );
   const [cashbackBalanceState, setCashbackBalanceState] = useState({
     loading: false,
     error: null,
@@ -4831,7 +5213,9 @@ export default function App() {
   const [cashoutGiftCardRecipientEmail, setCashoutGiftCardRecipientEmail] =
     useState("");
   const [cashoutHistoryExpanded, setCashoutHistoryExpanded] = useState(false);
-  const [cashoutPayoutHistory, setCashoutPayoutHistory] = useState([]);
+  const [cashoutPayoutHistory, setCashoutPayoutHistory] = useState(
+    SCREENSHOT_MOCK_MODE ? SCREENSHOT_MOCK_PAYOUT_HISTORY : [],
+  );
   const [cashoutLinkedBanksPickerVisible, setCashoutLinkedBanksPickerVisible] =
     useState(false);
   const cashoutCatalogItems = useMemo(() => {
@@ -7708,6 +8092,22 @@ export default function App() {
 
   const loadCashoutStatus = useCallback(
     async ({ silent } = {}) => {
+      if (SCREENSHOT_MOCK_MODE) {
+        setCashoutStatus({
+          connected: true,
+          bankSelected: true,
+          payoutsEnabled: true,
+          detailsSubmitted: true,
+          accountId: "screenshot-cashout-account",
+          selectedPayoutAccountId: "screenshot-bank-1",
+          selectedPayoutLabel: "Chase Personal Checking • ****4821",
+          selectedPayoutSyncedAt: daysAgo(2),
+          requirementsDue: [],
+          disabledReason: null,
+        });
+        setCashoutStatusState({ loading: false, error: null });
+        return;
+      }
       if (!isSignedIn) return;
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
       if (!silent) {
@@ -7767,6 +8167,15 @@ export default function App() {
 
   const loadCashbackBalance = useCallback(
     async ({ silent } = {}) => {
+      if (SCREENSHOT_MOCK_MODE) {
+        setCashbackBalance({
+          ...SCREENSHOT_MOCK_CASHBACK_BALANCE,
+          updatedAt: Date.now(),
+        });
+        setCashoutPayoutHistory(SCREENSHOT_MOCK_PAYOUT_HISTORY);
+        setCashbackBalanceState({ loading: false, error: null });
+        return;
+      }
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
       if (!isSignedIn || !authUserId) {
         setCashbackBalance({
@@ -8063,6 +8472,12 @@ export default function App() {
       await handleCashoutBankTilePress();
       return;
     }
+    if (methodType === "bank_transfer") {
+      const accepted = await ensureCashoutTermsAccepted();
+      if (!accepted) {
+        return;
+      }
+    }
     if ((Number(cashbackBalance.availableCents) || 0) <= 0) {
       setCashoutActionStatus({
         loading: false,
@@ -8269,6 +8684,14 @@ export default function App() {
         });
         return;
       }
+      if (payoutReasonCode === "CASHOUT_TERMS_NOT_ACCEPTED") {
+        cashoutIdempotencyKeyRef.current = null;
+        const accepted = await promptCashoutTermsAcceptance();
+        if (accepted) {
+          await handleCashoutPayout();
+          return;
+        }
+      }
       const rawError =
         typeof error === "string"
           ? error
@@ -8367,8 +8790,10 @@ export default function App() {
     cashoutAmountText,
     cashoutGiftCardRecipientEmail,
     handleCashoutBankTilePress,
+    ensureCashoutTermsAccepted,
     loadCashbackBalance,
     openCashoutHostedFlow,
+    promptCashoutTermsAcceptance,
     selectedCashoutCatalogItem?.code,
     selectedCashoutCatalogItem?.imageUrl,
     selectedCashoutCatalogItem?.name,
@@ -8429,6 +8854,9 @@ export default function App() {
 
   const trackOfferView = useCallback(
     async (businessId, offerId) => {
+      if (SCREENSHOT_MOCK_MODE || String(businessId || "").startsWith("ss-")) {
+        return;
+      }
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
       if (!authUserId || !businessId || !offerId) return;
       const key = String(offerId);
@@ -8449,6 +8877,10 @@ export default function App() {
 
   const loadBillingMetrics = useCallback(
     async (businessId, { silent } = {}) => {
+      if (SCREENSHOT_MOCK_MODE || String(businessId || "").startsWith("ss-")) {
+        setBillingStatus({ loading: false, error: null });
+        return;
+      }
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !businessId) return;
       if (!silent) {
         setBillingStatus({ loading: true, error: null });
@@ -8564,6 +8996,30 @@ export default function App() {
 
   const loadOwnerAnalytics = useCallback(
     async (businessId, { silent } = {}) => {
+      if (SCREENSHOT_MOCK_MODE || String(businessId || "").startsWith("ss-")) {
+        const fallbackBusiness = SCREENSHOT_MOCK_BUSINESSES.find(
+          (business) => business.id === businessId,
+        );
+        const fallbackOfferIds = new Set(
+          SCREENSHOT_MOCK_OFFERS.filter((offer) => offer.businessId === businessId).map(
+            (offer) => offer.id,
+          ),
+        );
+        const redemptionCount = SCREENSHOT_MOCK_REDEMPTIONS.filter(
+          (entry) => entry.businessId === businessId,
+        ).length;
+        setOwnerAnalytics({
+          redemptions: redemptionCount,
+          views:
+            Number(BUSINESS_ANALYTICS?.[fallbackBusiness?.id]?.views) ||
+            redemptionCount * 18,
+          reach:
+            Number(BUSINESS_ANALYTICS?.[fallbackBusiness?.id]?.reach) ||
+            Math.max(12, redemptionCount * 9),
+        });
+        setOwnerAnalyticsStatus({ loading: false, error: null });
+        return;
+      }
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !businessId) return;
       if (!silent) {
         setOwnerAnalyticsStatus({ loading: true, error: null });
@@ -8616,11 +9072,26 @@ export default function App() {
 
   const loadOfferViewsBreakdown = useCallback(
     async (businessIdOverride = null) => {
+      const targetBusinessId =
+        businessIdOverride || ownerBusiness?.id || ownerBusinessId;
+      if (
+        SCREENSHOT_MOCK_MODE ||
+        String(targetBusinessId || "").startsWith("ss-")
+      ) {
+        const items = SCREENSHOT_MOCK_OFFERS.filter(
+          (offer) => offer.businessId === targetBusinessId,
+        ).map((offer, index) => ({
+          offerId: String(offer.id),
+          title: offer.title || "Offer",
+          views: 32 - index * 7,
+        }));
+        setViewsBreakdown(items);
+        setViewsBreakdownStatus({ loading: false, error: null });
+        return;
+      }
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         return;
       }
-      const targetBusinessId =
-        businessIdOverride || ownerBusiness?.id || ownerBusinessId;
       if (!targetBusinessId) {
         setViewsBreakdownStatus({
           loading: false,
@@ -8729,6 +9200,19 @@ export default function App() {
 
   const loadRemoteBusinesses = useCallback(
     async ({ silent } = {}) => {
+      if (SCREENSHOT_MOCK_MODE) {
+        setBusinesses(SCREENSHOT_MOCK_BUSINESSES);
+        hydrateBusinessCoordinatesRef.current?.(SCREENSHOT_MOCK_BUSINESSES);
+        setHasLoadedBusinessesOnce(true);
+        if (!silent) {
+          setRemoteStatus({ loading: false, error: null });
+        } else {
+          setRemoteStatus((prev) =>
+            prev.loading || prev.error ? { loading: false, error: null } : prev,
+          );
+        }
+        return;
+      }
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         setHasLoadedBusinessesOnce(true);
         if (!silent) {
@@ -8982,6 +9466,85 @@ export default function App() {
     },
     [],
   );
+
+  const promptCashoutTermsAcceptance = useCallback(
+    () =>
+      new Promise((resolve) => {
+        showAppDialog({
+          title: "Accept bank transfer terms",
+          message:
+            "By requesting a bank transfer, you authorize Wello to send your cashback to your selected bank account. Bank transfer requests usually process within 24-48 hours and cannot be canceled after submission.",
+          dismissOnBackdrop: false,
+          options: [
+            {
+              label: "Cancel",
+              variant: "ghost",
+              onPress: () => resolve(false),
+            },
+            {
+              label: "Accept",
+              variant: "primary",
+              onPress: async () => {
+                const acceptedAtIso = new Date().toISOString();
+                const { error } = await supabase
+                  .from("profiles")
+                  .update({ cashout_terms_accepted_at: acceptedAtIso })
+                  .eq("id", authUserId);
+                if (error) {
+                  setCashoutActionStatus({
+                    loading: false,
+                    error:
+                      error.message || "Unable to save cashout terms acceptance.",
+                    success: null,
+                  });
+                  resolve(false);
+                  return;
+                }
+                setCashoutTermsAcceptedAt(new Date(acceptedAtIso).getTime());
+                resolve(true);
+              },
+            },
+          ],
+        });
+      }),
+    [authUserId, showAppDialog],
+  );
+
+  const ensureCashoutTermsAccepted = useCallback(async () => {
+    if (SCREENSHOT_MOCK_MODE) return true;
+    if (cashoutTermsAcceptedAt) return true;
+    if (!authUserId || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setCashoutActionStatus({
+        loading: false,
+        error: "Cashout is temporarily unavailable right now.",
+        success: null,
+      });
+      return false;
+    }
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("cashout_terms_accepted_at")
+      .eq("id", authUserId)
+      .maybeSingle();
+    if (error) {
+      setCashoutActionStatus({
+        loading: false,
+        error: error.message || "Unable to load cashout terms.",
+        success: null,
+      });
+      return false;
+    }
+    const acceptedAtRaw = String(data?.cashout_terms_accepted_at || "").trim();
+    if (acceptedAtRaw) {
+      setCashoutTermsAcceptedAt(new Date(acceptedAtRaw).getTime());
+      return true;
+    }
+    return await promptCashoutTermsAcceptance();
+  }, [
+    authUserId,
+    cashoutTermsAcceptedAt,
+    promptCashoutTermsAcceptance,
+  ]);
 
   const handleAppDialogOptionPress = useCallback((option) => {
     setAppDialog((prev) => ({ ...prev, visible: false }));
@@ -10199,6 +10762,18 @@ export default function App() {
       }, 0),
     [redemptionHistory],
   );
+  const pendingReceiptReminderFingerprint = useMemo(() => {
+    return redemptionHistory
+      .filter((entry) => !entry.receipt?.id && isReceiptWindowOpen(entry))
+      .map((entry) => {
+        const entryId = String(entry?.id || "").trim();
+        const createdAt = Number(entry?.createdAt) || 0;
+        return entryId ? `${entryId}:${createdAt}` : null;
+      })
+      .filter(Boolean)
+      .sort()
+      .join("|");
+  }, [redemptionHistory, isReceiptWindowOpen]);
   const pendingHistoryCount = pendingReviewCount + pendingReceiptCount;
   const cashoutEarnedHistoryEntries = useMemo(() => {
     return [...redemptionHistory]
@@ -11218,6 +11793,9 @@ export default function App() {
 
   const upsertUserLocation = useCallback(
     async (coords) => {
+      if (SCREENSHOT_MOCK_MODE) {
+        return;
+      }
       const latitude = Number(coords?.latitude);
       const longitude = Number(coords?.longitude);
       if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
@@ -11247,6 +11825,12 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    if (SCREENSHOT_MOCK_MODE) {
+      setNearbyOriginLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
     if (!isSignedIn || !authUserId || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
       setNearbyOriginLoading(false);
       return () => {
@@ -13063,6 +13647,69 @@ export default function App() {
     setScannerMessage(null);
     try {
       const offerId = offerCard?.offerId || offerCard?.id || null;
+      if (SCREENSHOT_MOCK_MODE || String(business.id || "").startsWith("ss-")) {
+        const createdAt = Date.now();
+        const localRedemptionId = `ss-live-redemption-${business.id}-${createdAt}`;
+        const businessCategoryKey = String(
+          business?.categoryKey || offerCard?.categoryKey || "restaurant",
+        ).trim();
+        const businessCategoryLabel = String(
+          business?.category ||
+            getCategoryConfig(businessCategoryKey).display ||
+            "Local business",
+        ).trim();
+        const offerTitle = String(
+          offerCard?.offerTitle || offerCard?.offer || business?.offer || "Offer",
+        ).trim();
+        const offerDescription = String(
+          offerCard?.description || offerCard?.offerDescription || "",
+        ).trim();
+        const offerImageUrl = String(
+          offerCard?.imageUrl || business?.imageUrl || "",
+        ).trim();
+        setRedemptionHistory((prev) => [
+          {
+            id: localRedemptionId,
+            createdAt,
+            businessId: String(business.id),
+            offerId: offerId ? String(offerId) : null,
+            offer: {
+              id: offerId ? String(offerId) : localRedemptionId,
+              title: offerTitle,
+              description: offerDescription,
+              offer_type: String(
+                offerCard?.offerType || offerCard?.offer_type || "offer",
+              ).trim(),
+              image_url: offerImageUrl,
+            },
+            business: {
+              id: String(business.id),
+              name: String(business.name || "Wello business").trim(),
+              category_key: businessCategoryKey,
+              category_label: businessCategoryLabel,
+            },
+            purchaseVerification: {
+              id: `ss-pv-${createdAt}`,
+              source: hasLinkedPlaidBank ? "plaid" : "receipt",
+              status: hasLinkedPlaidBank ? "pending" : "needed",
+              reasonCode: hasLinkedPlaidBank ? "pending_review" : "receipt_required",
+              reasonDetail: hasLinkedPlaidBank
+                ? "Verification pending for screenshot mode."
+                : "Upload a receipt to continue.",
+              lastCheckedAt: createdAt,
+              confirmedAt: null,
+              rejectedAt: null,
+            },
+            receipt: null,
+          },
+          ...prev,
+        ]);
+        setScannerStatus("success");
+        if (!hasLinkedPlaidBank) {
+          setPostRedeemBankPromptOpen(true);
+        }
+        return true;
+      }
       const limitCount = Number(offerCard?.redemptionLimitCount);
       const limitPeriod = String(offerCard?.redemptionLimitPeriod || "").trim();
       const limitWindowMs =
@@ -14302,6 +14949,17 @@ export default function App() {
 
   const loadRemoteOffers = useCallback(
     async ({ silent } = {}) => {
+      if (SCREENSHOT_MOCK_MODE) {
+        setOffers(SCREENSHOT_MOCK_OFFERS);
+        if (!silent) {
+          setOfferStatus({ loading: false, error: null });
+        } else {
+          setOfferStatus((prev) =>
+            prev.loading || prev.error ? { loading: false, error: null } : prev,
+          );
+        }
+        return;
+      }
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         setOfferStatus({
           loading: false,
@@ -18157,6 +18815,11 @@ export default function App() {
 
   const loadRedemptions = useCallback(
     async ({ silent } = {}) => {
+      if (SCREENSHOT_MOCK_MODE) {
+        setRedemptionHistory(SCREENSHOT_MOCK_REDEMPTIONS);
+        setRedemptionStatus({ loading: false, error: null });
+        return;
+      }
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         setRedemptionStatus({
           loading: false,
@@ -18885,7 +19548,6 @@ export default function App() {
     if (!isSignedIn || !showHistoryTab) {
       receiptNoticeShownRef.current = false;
       setReceiptNoticeOpen(false);
-      lastReceiptUploadAlertCountRef.current = 0;
       return;
     }
     if (activeTab !== "history") return;
@@ -18896,22 +19558,71 @@ export default function App() {
   }, [activeTab, isSignedIn, showHistoryTab, pendingReceiptCount]);
 
   useEffect(() => {
-    if (!isSignedIn || !showHistoryTab) {
-      lastReceiptUploadAlertCountRef.current = 0;
+    let cancelled = false;
+
+    const hydrateReceiptReminderState = async () => {
+      if (!isSignedIn || !showHistoryTab || !authUserId) {
+        lastReceiptUploadReminderFingerprintRef.current = "";
+        if (!cancelled) setReceiptUploadReminderHydrated(true);
+        return;
+      }
+      try {
+        const stored = await AsyncStorage.getItem(
+          getReceiptUploadReminderKey(authUserId),
+        );
+        lastReceiptUploadReminderFingerprintRef.current = String(
+          stored || "",
+        ).trim();
+      } catch {
+        lastReceiptUploadReminderFingerprintRef.current = "";
+      }
+      if (!cancelled) setReceiptUploadReminderHydrated(true);
+    };
+
+    setReceiptUploadReminderHydrated(false);
+    hydrateReceiptReminderState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authUserId, isSignedIn, showHistoryTab]);
+
+  useEffect(() => {
+    if (!isSignedIn || !showHistoryTab || !authUserId) return;
+    if (!receiptUploadReminderHydrated) return;
+
+    const storageKey = getReceiptUploadReminderKey(authUserId);
+    const currentFingerprint = String(
+      pendingReceiptReminderFingerprint || "",
+    ).trim();
+    const lastFingerprint = String(
+      lastReceiptUploadReminderFingerprintRef.current || "",
+    ).trim();
+
+    if (!currentFingerprint) {
+      lastReceiptUploadReminderFingerprintRef.current = "";
+      void AsyncStorage.removeItem(storageKey).catch(() => null);
       return;
     }
-    if (pendingReceiptCount <= 0) {
-      lastReceiptUploadAlertCountRef.current = 0;
-      return;
-    }
-    const lastCount = Math.max(lastReceiptUploadAlertCountRef.current || 0, 0);
-    if (pendingReceiptCount <= lastCount) return;
-    lastReceiptUploadAlertCountRef.current = pendingReceiptCount;
+
+    const currentIds = new Set(currentFingerprint.split("|").filter(Boolean));
+    const lastIds = new Set(lastFingerprint.split("|").filter(Boolean));
+    const hasNewPendingReceipt = Array.from(currentIds).some(
+      (entryId) => !lastIds.has(entryId),
+    );
+
+    lastReceiptUploadReminderFingerprintRef.current = currentFingerprint;
+    void AsyncStorage.setItem(storageKey, currentFingerprint).catch(() => null);
+
+    if (!hasNewPendingReceipt) return;
     void scheduleReceiptUploadNeededNotification(pendingReceiptCount);
   }, [
+    authUserId,
     isSignedIn,
     showHistoryTab,
     pendingReceiptCount,
+    pendingReceiptReminderFingerprint,
+    receiptUploadReminderHydrated,
     scheduleReceiptUploadNeededNotification,
   ]);
 
@@ -35542,6 +36253,12 @@ const styles = StyleSheet.create({
     fontFamily: FONT_SEMIBOLD,
     letterSpacing: -0.2,
   },
+  liveEditorialStackBusinessName: {
+    marginTop: 3,
+    fontSize: 12,
+    color: "rgba(255,255,255,0.88)",
+    fontFamily: FONT_MEDIUM,
+  },
   liveEditorialStackHeadlineMetaRow: {
     marginTop: 6,
     flexDirection: "row",
@@ -39623,7 +40340,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   cashoutChangeBankButton: {
-    marginTop: 2,
+    marginTop: 14,
     paddingVertical: 14,
     paddingHorizontal: 14,
     borderRadius: 16,
@@ -39653,7 +40370,7 @@ const styles = StyleSheet.create({
     opacity: 0.56,
   },
   cashoutUnlinkBankButton: {
-    marginTop: 8,
+    marginTop: 16,
     paddingVertical: 9,
     paddingHorizontal: 12,
     borderRadius: 10,
@@ -39740,8 +40457,8 @@ const styles = StyleSheet.create({
     borderColor: "rgba(15, 23, 42, 0.10)",
     borderRadius: 12,
     backgroundColor: COLORS.white,
-    paddingVertical: 9,
-    paddingHorizontal: 11,
+    paddingVertical: 13,
+    paddingHorizontal: 14,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
