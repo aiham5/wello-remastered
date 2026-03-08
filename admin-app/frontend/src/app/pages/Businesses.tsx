@@ -27,6 +27,7 @@ interface BusinessRow {
   category_label?: string | null;
   approval_status?: string | null;
   status?: string | null;
+  commission_rate_cents?: number | null;
   created_at?: string | null;
   updated_at?: string | null;
   [key: string]: unknown;
@@ -116,12 +117,32 @@ export function Businesses() {
       `${nextStatus === "approved" ? "Approve" : "Reject"} business "${business.name}"?`,
     );
     if (!confirmed) return;
+    let commissionRateCents: number | null = null;
+    if (nextStatus === "approved") {
+      const input = window.prompt(
+        `Choose the commission plan for "${business.name}". Enter 15 or 20.`,
+        String(Number(business.commission_rate_cents || 150) / 10),
+      );
+      if (input == null) return;
+      const normalized = Number(String(input).trim());
+      if (normalized === 15) commissionRateCents = 150;
+      else if (normalized === 20) commissionRateCents = 200;
+      else {
+        setMessage("Commission plan must be 15 or 20.");
+        return;
+      }
+    }
     setWorkingId(business.id);
     const res = await apiRequest<BusinessRow>(
       `/api/admin/businesses/${encodeURIComponent(business.id)}/review`,
       {
         method: "POST",
-        body: { nextApprovalStatus: nextStatus },
+        body: {
+          nextApprovalStatus: nextStatus,
+          ...(commissionRateCents != null
+            ? { commissionRateCents }
+            : {}),
+        },
       },
     );
     if (res.error) {
@@ -134,6 +155,9 @@ export function Businesses() {
                 ...row,
                 approval_status: nextStatus,
                 status: nextStatus === "approved" ? "active" : "inactive",
+                ...(commissionRateCents != null
+                  ? { commission_rate_cents: commissionRateCents }
+                  : {}),
               }
             : row,
         ),
@@ -144,6 +168,9 @@ export function Businesses() {
               ...prev,
               approval_status: nextStatus,
               status: nextStatus === "approved" ? "active" : "inactive",
+              ...(commissionRateCents != null
+                ? { commission_rate_cents: commissionRateCents }
+                : {}),
             }
           : prev,
       );

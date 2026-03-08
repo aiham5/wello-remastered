@@ -90,7 +90,7 @@ alter table public.businesses
 
 alter table public.businesses
   add constraint businesses_commission_rate_cents_check
-  check (commission_rate_cents in (100, 150));
+  check (commission_rate_cents in (150, 200));
 
 create table if not exists public.offers (
   id uuid primary key default gen_random_uuid(),

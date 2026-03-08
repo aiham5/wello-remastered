@@ -76,6 +76,17 @@ const parseResponseBody = async (response) => {
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const BUSINESS_COMMISSION_RATE_VALUES = new Set([150, 200]);
+const normalizeBusinessCommissionRateCents = (value) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && BUSINESS_COMMISSION_RATE_VALUES.has(numeric)
+    ? numeric
+    : 150;
+};
+const resolveBusinessReceiptChargeRateCents = (value) =>
+  normalizeBusinessCommissionRateCents(value) >= 200 ? 150 : 100;
+const resolveBusinessDefaultCashbackRateBps = (value) =>
+  normalizeBusinessCommissionRateCents(value) >= 200 ? 1500 : 1000;
 
 const BUSINESS_SELECT_FIELDS = [
   "id",
@@ -279,8 +290,11 @@ const sanitizeBusinessUpdates = (payload) => {
 
   if ("commission_rate_cents" in body) {
     const value = toNullableInteger(body.commission_rate_cents);
-    if (value === "__invalid_number__" || (value != null && ![100, 150].includes(value))) {
-      errors.push("commission_rate_cents must be 100 or 150.");
+    if (
+      value === "__invalid_number__" ||
+      (value != null && !BUSINESS_COMMISSION_RATE_VALUES.has(value))
+    ) {
+      errors.push("commission_rate_cents must be 150 or 200.");
     } else {
       updates.commission_rate_cents = value;
       fields.push("commission_rate_cents");
@@ -907,7 +921,7 @@ const handleRpc = async (ctx, body) => {
       return json({ ok: false, error: { code: "receipt_not_found", message: "Receipt not found." } }, 404);
     }
 
-    let commissionRateCents = 150;
+    let businessCommissionRateCents = 150;
     const businessId = String(receiptRes.row.business_id || "").trim();
     if (businessId) {
       const businessRes = await selectOne({
@@ -917,21 +931,16 @@ const handleRpc = async (ctx, body) => {
       });
       if (!businessRes.error && businessRes.row?.id) {
         const candidate = Number(businessRes.row.commission_rate_cents || 0);
-        if ([100, 150].includes(candidate)) commissionRateCents = candidate;
+        if (BUSINESS_COMMISSION_RATE_VALUES.has(candidate)) {
+          businessCommissionRateCents = candidate;
+        }
       }
     }
+    const commissionRateCents =
+      resolveBusinessReceiptChargeRateCents(businessCommissionRateCents);
     const commissionRateBps = commissionRateCents * 10;
-
-    let defaultCashbackRateBps = 1000;
-    const settingsRes = await selectOne({
-      table: "app_settings",
-      select: "key,value_json",
-      filters: [{ column: "key", op: "eq", value: "consumer_cashback_rate_bps" }],
-    });
-    if (!settingsRes.error && settingsRes.row?.value_json) {
-      const parsedBps = Number(settingsRes.row.value_json?.bps || 0);
-      if (Number.isFinite(parsedBps) && parsedBps > 0) defaultCashbackRateBps = parsedBps;
-    }
+    const defaultCashbackRateBps =
+      resolveBusinessDefaultCashbackRateBps(businessCommissionRateCents);
 
     const commissionCents = Math.floor((totalCents * commissionRateBps) / 10000);
 
@@ -1239,17 +1248,35 @@ const handleRpc = async (ctx, body) => {
   if (name === "admin_review_business") {
     const businessId = String(args.p_business_id || "").trim();
     const nextStatus = String(args.p_next_approval_status || "").trim();
+    const requestedCommissionRateCents =
+      args.p_commission_rate_cents == null
+        ? null
+        : toNullableInteger(args.p_commission_rate_cents);
     if (!businessId) {
       return json({ ok: false, error: { code: "invalid_business_id", message: "Business id is required." } }, 400);
     }
     if (!["approved", "rejected"].includes(nextStatus)) {
       return json({ ok: false, error: { code: "invalid_business_status", message: "Invalid business status." } }, 400);
     }
+    if (
+      requestedCommissionRateCents === "__invalid_number__" ||
+      (requestedCommissionRateCents != null &&
+        !BUSINESS_COMMISSION_RATE_VALUES.has(requestedCommissionRateCents))
+    ) {
+      return json({ ok: false, error: { code: "invalid_commission_rate", message: "commission_rate_cents must be 150 or 200." } }, 400);
+    }
     const result = await updateOne({
       table: "businesses",
       updates: {
         approval_status: nextStatus,
         status: nextStatus === "approved" ? "active" : "inactive",
+        ...(nextStatus === "approved"
+          ? {
+              commission_rate_cents: normalizeBusinessCommissionRateCents(
+                requestedCommissionRateCents,
+              ),
+            }
+          : {}),
         updated_at: new Date().toISOString(),
       },
       filters: [
@@ -2228,6 +2255,7 @@ const routeExplicit = async (ctx, request, segments) => {
       args: {
         p_business_id: segments[1],
         p_next_approval_status: body?.nextApprovalStatus,
+        p_commission_rate_cents: body?.commissionRateCents ?? body?.commission_rate_cents,
       },
     });
   }

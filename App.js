@@ -187,8 +187,8 @@ const DISCOVER_DEMO_LAYOUTS = [
   { key: "editorial", label: "Editorial" },
 ];
 const BUSINESS_COMMISSION_OPTIONS = [
-  { label: "10%", value: 100 },
   { label: "15%", value: 150 },
+  { label: "20%", value: 200 },
 ];
 const BUSINESS_COMMISSION_VALUES = new Set(
   BUSINESS_COMMISSION_OPTIONS.map((option) => option.value),
@@ -200,8 +200,16 @@ const normalizeBusinessCommissionRateCents = (value) => {
   }
   return 150;
 };
+const resolveBusinessReceiptChargeRateCents = (value) =>
+  normalizeBusinessCommissionRateCents(value) >= 200 ? 150 : 100;
+const resolveBusinessDefaultCashbackRateBps = (value) =>
+  normalizeBusinessCommissionRateCents(value) >= 200 ? 1500 : 1000;
 const commissionRateCentsToPercent = (value) =>
   normalizeBusinessCommissionRateCents(value) / 10;
+const commissionRateCentsToChargePercent = (value) =>
+  resolveBusinessReceiptChargeRateCents(value) / 10;
+const commissionRateCentsToDefaultCashbackPercent = (value) =>
+  resolveBusinessDefaultCashbackRateBps(value) / 100;
 const formatPercentLabel = (value) => {
   if (!Number.isFinite(value)) return "--";
   const rounded = Math.round(value * 10) / 10;
@@ -4061,7 +4069,11 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
   const statusText = hoursStatus.statusText;
   const statusVariant = hoursStatus.statusVariant;
   const closedOverlayText = hoursStatus.closedOverlayText;
-  const cashbackLabel = "10%";
+  const cashbackLabel = `${formatPercentLabel(
+    commissionRateCentsToDefaultCashbackPercent(
+      item?.business?.commissionRateCents ?? item?.business?.commission_rate_cents,
+    ),
+  )}%`;
   return (
     <View style={styles.cardShell}>
       <TouchableOpacity
@@ -7345,9 +7357,19 @@ export default function App() {
       commissionRateCentsToPercent(resolvedOwnerBusiness?.commissionRateCents),
     [resolvedOwnerBusiness?.commissionRateCents],
   );
+  const ownerReceiptChargePercent = useMemo(
+    () =>
+      commissionRateCentsToChargePercent(
+        resolvedOwnerBusiness?.commissionRateCents,
+      ),
+    [resolvedOwnerBusiness?.commissionRateCents],
+  );
   const ownerDefaultCashbackPercent = useMemo(
-    () => globalCashbackRateBps / 100,
-    [globalCashbackRateBps],
+    () =>
+      commissionRateCentsToDefaultCashbackPercent(
+        resolvedOwnerBusiness?.commissionRateCents,
+      ),
+    [resolvedOwnerBusiness?.commissionRateCents],
   );
 
   const resolveStripeBusiness = useCallback(
@@ -12734,6 +12756,8 @@ export default function App() {
         distanceLabel,
         categoryLabel,
         statusLabel: isOpen ? "Open now" : "Closed",
+        businessCommissionRateCents:
+          business?.commissionRateCents ?? business?.commission_rate_cents ?? 150,
       },
     });
     setPostRedeemBankPromptOpen(false);
@@ -14170,7 +14194,7 @@ export default function App() {
               "redemption_limit_period",
               "redemption_limit_count",
               "created_at",
-              "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, is_open, approval_status, status)",
+              "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, is_open, approval_status, status, commission_rate_cents)",
             ].join(","),
           )
           .eq("active", true)
@@ -19469,7 +19493,14 @@ export default function App() {
                         </Text>
                       </View>
                       <View style={styles.offerActivationCashbackBadge}>
-                        <Text style={styles.offerActivationCashbackValue}>10%</Text>
+                        <Text style={styles.offerActivationCashbackValue}>
+                          {formatPercentLabel(
+                            commissionRateCentsToDefaultCashbackPercent(
+                              redeemActivationModal.card?.businessCommissionRateCents,
+                            ),
+                          )}
+                          %
+                        </Text>
                         <Text style={styles.offerActivationCashbackLabel}>
                           cashback
                         </Text>
@@ -24313,7 +24344,7 @@ export default function App() {
                                   onPress={() =>
                                     openInfoTooltip(
                                       "Payments",
-                                      `Commission is ${formatPercentLabel(ownerCommissionRatePercent)}% of each verified receipt total for your business. Customer cashback currently defaults to ${formatPercentLabel(ownerDefaultCashbackPercent)}% and promo codes can increase it. Your commission is billed monthly. The billing portal is for payment methods and invoices.`,
+                                      `Your business is on the ${formatPercentLabel(ownerCommissionRatePercent)}% plan. Verified receipts are billed at ${formatPercentLabel(ownerReceiptChargePercent)}% of receipt total, and your offers default to ${formatPercentLabel(ownerDefaultCashbackPercent)}% cashback. Promo codes can still increase customer cashback. Billing remains monthly.`,
                                     )
                                   }
                                   hitSlop={{
@@ -30945,7 +30976,7 @@ export default function App() {
                                             )}
                                           </View>
                                           <Text style={styles.adminMeta}>
-                                            This rate is applied on approval.
+                                            15% plan bills 10% / gives 10% cashback. 20% plan bills 15% / gives 15% cashback.
                                           </Text>
                                         </View>
                                         {hasDirectionsTarget && (
