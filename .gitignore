@@ -15,3 +15,4 @@ GoogleService-Info.plist
 **/GoogleService-Info.plist
 firebase-service-account*.json
 **/firebase-service-account*.json
+android/local.properties

@@ -3636,6 +3636,17 @@ const getImagePickerMediaTypes = () => {
   return ["images"];
 };
 
+const requestImageLibraryAccessAsync = async () => {
+  if (Platform.OS === "android") {
+    return {
+      granted: true,
+      status: "granted",
+      canAskAgain: true,
+    };
+  }
+  return ImagePicker.requestMediaLibraryPermissionsAsync();
+};
+
 const isImageAsset = (asset) => {
   if (!asset) return false;
   if (asset.type && asset.type !== "image") return false;
@@ -5510,10 +5521,14 @@ export default function App() {
     return Math.max(1, Math.ceil(msRemaining / (24 * 60 * 60 * 1000)));
   }, [cashoutPayoutSwitchResetAtMs]);
   const cashoutCanStartBankRelink = useMemo(() => {
+    if (cashoutPayoutSwitchResetAtMs && cashoutPayoutSwitchResetAtMs > Date.now()) {
+      return false;
+    }
     if (!cashoutHasLinkedBank) return true;
     return Boolean(plaidLinkState.payoutSwitchPolicy?.canSwitch);
   }, [
     cashoutHasLinkedBank,
+    cashoutPayoutSwitchResetAtMs,
     plaidLinkState.payoutSwitchPolicy?.canSwitch,
   ]);
   const plaidPromptCopy = useMemo(() => {
@@ -6834,18 +6849,16 @@ export default function App() {
         selectedPayoutAccountId: selectedAccountId || prev.selectedPayoutAccountId,
         selectedPayoutLabel: selectedAccountLabel || prev.selectedPayoutLabel,
       }));
-      await Promise.all([
-        loadPlaidLinkState({ silent: true }),
-        loadCashoutCatalog({ page: 0, append: false }),
-      ]);
       if (forceLink && authUserId) {
         const nextResetAtIso = new Date(
           Date.now() + 30 * 24 * 60 * 60 * 1000,
         ).toISOString();
-        AsyncStorage.setItem(
-          getCashoutPayoutSwitchLockKey(authUserId),
-          nextResetAtIso,
-        ).catch(() => null);
+        try {
+          await AsyncStorage.setItem(
+            getCashoutPayoutSwitchLockKey(authUserId),
+            nextResetAtIso,
+          );
+        } catch {}
         setPlaidLinkState((prev) => ({
           ...prev,
           payoutSwitchPolicy: {
@@ -6860,6 +6873,10 @@ export default function App() {
           },
         }));
       }
+      await Promise.all([
+        loadPlaidLinkState({ silent: true }),
+        loadCashoutCatalog({ page: 0, append: false }),
+      ]);
       setCashoutActionStatus({
         loading: false,
         error: null,
@@ -6987,18 +7004,16 @@ export default function App() {
                 selectedAccountId || prev.selectedPayoutAccountId,
               selectedPayoutLabel: selectedAccountLabel || prev.selectedPayoutLabel,
             }));
-            await Promise.all([
-              loadPlaidLinkState({ silent: true }),
-              loadCashoutCatalog({ page: 0, append: false }),
-            ]);
             if (authUserId) {
               const nextResetAtIso = new Date(
                 Date.now() + 30 * 24 * 60 * 60 * 1000,
               ).toISOString();
-              AsyncStorage.setItem(
-                getCashoutPayoutSwitchLockKey(authUserId),
-                nextResetAtIso,
-              ).catch(() => null);
+              try {
+                await AsyncStorage.setItem(
+                  getCashoutPayoutSwitchLockKey(authUserId),
+                  nextResetAtIso,
+                );
+              } catch {}
               setPlaidLinkState((prev) => ({
                 ...prev,
                 payoutSwitchPolicy: {
@@ -7013,6 +7028,10 @@ export default function App() {
                 },
               }));
             }
+            await Promise.all([
+              loadPlaidLinkState({ silent: true }),
+              loadCashoutCatalog({ page: 0, append: false }),
+            ]);
             settle(() => {
               setCashoutActionStatus({
                 loading: false,
@@ -15754,7 +15773,7 @@ export default function App() {
     }
     setOfferError(null);
     setOfferImageStatus({ uploading: false, error: null });
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const permission = await requestImageLibraryAccessAsync();
     const hasPermission = permission.granted || permission.status === "limited";
     if (!hasPermission) {
       setOfferImageStatus({
@@ -15812,7 +15831,7 @@ export default function App() {
 
   const handlePickEditOfferImage = async () => {
     setEditOfferStatus((prev) => ({ ...prev, error: null }));
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const permission = await requestImageLibraryAccessAsync();
     const hasPermission = permission.granted || permission.status === "limited";
     if (!hasPermission) {
       setEditOfferStatus({
@@ -16253,6 +16272,28 @@ export default function App() {
     loadPlaidLinkState,
     loadCashoutCatalog,
   ]);
+
+  const confirmUnlinkCashoutBank = useCallback(() => {
+    showAppDialog({
+      title: "Unlink selected bank?",
+      message:
+        "This will remove the currently selected payout bank from your cashout account. You can link it again later if needed.",
+      dismissOnBackdrop: false,
+      options: [
+        {
+          label: "Cancel",
+          variant: "ghost",
+        },
+        {
+          label: "Unlink bank",
+          variant: "danger",
+          onPress: () => {
+            void handleUnlinkCashoutBank();
+          },
+        },
+      ],
+    });
+  }, [handleUnlinkCashoutBank, showAppDialog]);
 
   const setHistoryVerificationNotice = useCallback(
     (entry, title, message, variant = "info") => {
@@ -16908,7 +16949,7 @@ export default function App() {
     const permission =
       source === "camera"
         ? await ImagePicker.requestCameraPermissionsAsync()
-        : await ImagePicker.requestMediaLibraryPermissionsAsync();
+        : await requestImageLibraryAccessAsync();
     const hasPermission = permission.granted || permission.status === "limited";
     logReceiptUploadDebug("permissionResult", {
       source,
@@ -23627,7 +23668,7 @@ export default function App() {
                         />
                       </View>
                       <Text style={styles.cashoutChangeBankButtonText}>
-                        {!cashoutCanStartBankRelink && cashoutHasLinkedBank
+                        {!cashoutCanStartBankRelink
                           ? "You can add or reconnect your payout bank once every 30 days"
                           : "Add or reconnect bank"}
                       </Text>
@@ -23644,7 +23685,7 @@ export default function App() {
                     {cashoutLinkedPayoutAccounts.length > 0 ? (
                       <TouchableOpacity
                         style={styles.cashoutUnlinkBankButton}
-                        onPress={handleUnlinkCashoutBank}
+                        onPress={confirmUnlinkCashoutBank}
                         disabled={cashoutActionStatus.loading}
                       >
                         <Text style={styles.cashoutUnlinkBankButtonText}>
