@@ -5,6 +5,17 @@ node_modules/
 !.env.example
 supabase/.temp/
 android/local.properties
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/app/.cxx/
+.git/
+dist/
+backups/
+.tmp/
+.tmp-export/
+admin-app/
 
 # Allow the Firebase config into EAS build uploads (keep it out of git).
 !android/app/google-services.json
