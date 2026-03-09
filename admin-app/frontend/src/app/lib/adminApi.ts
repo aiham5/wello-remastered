@@ -61,6 +61,12 @@ const normalizeApiError = (error: unknown, fallback = "Request failed."): string
   return message;
 };
 
+const redirectToAccessLogin = () => {
+  if (typeof window === "undefined") return;
+  const returnTo = encodeURIComponent(window.location.href);
+  window.location.assign(`/cdn-cgi/access/login?returnTo=${returnTo}`);
+};
+
 export const apiRequest = async <T>(
   path: string,
   options: RequestOptions = {},
@@ -92,6 +98,9 @@ export const apiRequest = async <T>(
           parsed?.message ||
           `Request failed (${response.status}).`,
       );
+      if (response.status === 401) {
+        redirectToAccessLogin();
+      }
       return {
         data: null,
         error: {
@@ -125,13 +134,17 @@ export const apiRequest = async <T>(
       count: Number(parsed?.count || 0),
     };
   } catch (error) {
+    const normalized = normalizeApiError(error, "Unable to contact admin API.");
+    if (normalized === "Access session expired. Re-authenticate through Cloudflare Access.") {
+      redirectToAccessLogin();
+    }
     return {
       data: null,
       error: {
         status: 0,
         code: "network_error",
         reason: "network_error",
-        message: normalizeApiError(error, "Unable to contact admin API."),
+        message: normalized,
       },
       count: 0,
     };
