@@ -48,10 +48,6 @@
         "backgroundColor": "#FFF03B"
       },
       "package": "com.wellopartners.wello",
-      "notification": {
-        "icon": "./assets/logo/tinyico.png",
-        "color": "#0B2147"
-      },
       "googleServicesFile": "./google-services.json",
       "runtimeVersion": "1.0.0"
     },

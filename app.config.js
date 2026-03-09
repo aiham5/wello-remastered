@@ -106,11 +106,6 @@ export default ({ config }) => ({
     permissions: ANDROID_REQUIRED_PERMISSIONS,
     blockedPermissions: ANDROID_BLOCKED_PERMISSIONS,
     icon: APP_ICON_PATH,
-    notification: {
-      ...(config.android?.notification ?? {}),
-      icon: APP_NOTIFICATION_ICON_PATH,
-      color: DEFAULT_NOTIFICATION_COLOR,
-    },
     adaptiveIcon: {
       ...(config.android?.adaptiveIcon ?? {}),
       foregroundImage: APP_LOGO_PATH,
