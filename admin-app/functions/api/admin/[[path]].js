@@ -1445,6 +1445,12 @@ const handleInvokeFunction = async (ctx, fnName, body) => {
       apikey: key,
       authorization: `Bearer ${key}`,
       "content-type": "application/json",
+      ...(ctx?.profile?.id
+        ? {
+          "x-admin-actor-id": String(ctx.profile.id),
+          "x-admin-actor-role": String(ctx.profile.role || ""),
+        }
+        : {}),
       ...(fnName === "cashout-bank-decision" && ctx.env.CASHOUT_ADMIN_DECISION_SECRET
         ? {
           "x-admin-decision-secret": String(

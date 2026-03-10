@@ -1,7 +1,10 @@
 // Sends a promo-code push notification to customer devices via Expo Push API.
 //
 // Auth:
-// - verify_jwt disabled (so cron/admin tools can call), but we still REQUIRE an Authorization Bearer user JWT
+// - verify_jwt disabled (so cron/admin tools can call)
+// - supports either:
+//   1. Authorization Bearer user JWT from a signed-in staff user
+//   2. Internal admin proxy calls that send a server key plus x-admin-actor-id
 // - only staff (admin/supervisor) can send
 //
 // Notes:
@@ -15,10 +18,12 @@ export const config = { verify_jwt: false };
 
 const SUPABASE_URL =
   Deno.env.get("EDGE_SUPABASE_URL") ?? Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_SERVICE_ROLE_KEY =
+const SUPABASE_SERVER_KEY =
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
   Deno.env.get("EDGE_SUPABASE_SERVICE_ROLE_KEY") ??
   Deno.env.get("EDGE_SERVICE_ROLE_KEY") ??
+  Deno.env.get("SUPABASE_SECRET_KEY") ??
+  Deno.env.get("ADMIN_SUPABASE_SECRET_KEY") ??
   "";
 const SUPABASE_ANON_KEY =
   Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("EDGE_SUPABASE_ANON_KEY") ?? "";
@@ -39,12 +44,12 @@ const json = (status: number, body: unknown) =>
   });
 
 const createAdminClient = () =>
-  createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  createClient(SUPABASE_URL, SUPABASE_SERVER_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
 const createAuthClient = () =>
-  createClient(SUPABASE_URL, SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY, {
+  createClient(SUPABASE_URL, SUPABASE_ANON_KEY || SUPABASE_SERVER_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
@@ -67,13 +72,30 @@ type RequestBody = {
 async function requireStaff(req: Request) {
   const authHeader = req.headers.get("authorization") || req.headers.get("Authorization") || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  const actorId = String(req.headers.get("x-admin-actor-id") || "").trim();
+  const admin = createAdminClient();
+
+  if (actorId && token && token === SUPABASE_SERVER_KEY) {
+    const { data: profile, error: profileError } = await admin
+      .from("profiles")
+      .select("id, role")
+      .eq("id", actorId)
+      .maybeSingle();
+
+    if (profileError || !profile) return { ok: false as const, status: 403, error: "Forbidden." };
+    const role = String((profile as any).role || "");
+    if (!["admin", "supervisor"].includes(role)) {
+      return { ok: false as const, status: 403, error: "Forbidden." };
+    }
+    return { ok: true as const, admin };
+  }
+
   if (!token) return { ok: false as const, status: 401, error: "Missing authorization." };
 
   const authClient = createAuthClient();
   const { data: authData, error: authError } = await authClient.auth.getUser(token);
   if (authError || !authData?.user?.id) return { ok: false as const, status: 401, error: "Invalid JWT." };
 
-  const admin = createAdminClient();
   const { data: profile, error: profileError } = await admin
     .from("profiles")
     .select("id, role")
@@ -103,7 +125,7 @@ async function sendExpo(messages: any[], dryRun: boolean) {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { status: 200, headers: corsHeaders });
   if (req.method !== "POST") return json(405, { error: "Method not allowed" });
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return json(500, { error: "Missing server configuration." });
+  if (!SUPABASE_URL || !SUPABASE_SERVER_KEY) return json(500, { error: "Missing server configuration." });
 
   try {
     const staff = await requireStaff(req);
