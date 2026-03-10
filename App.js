@@ -1529,6 +1529,23 @@ const formatDisplayName = (email) => {
     .join(" ");
 };
 
+const isGoogleAuthUser = (user) => {
+  if (!user) return false;
+  const appProvider = String(user?.app_metadata?.provider || "")
+    .trim()
+    .toLowerCase();
+  if (appProvider === "google") return true;
+  const identities = Array.isArray(user?.identities) ? user.identities : [];
+  return identities.some((identity) => {
+    const provider = String(
+      identity?.provider || identity?.identity_data?.provider || "",
+    )
+      .trim()
+      .toLowerCase();
+    return provider === "google";
+  });
+};
+
 const normalizePhoneDigits = (value) => String(value || "").replace(/\D/g, "");
 
 const isValidBusinessPhoneNumber = (value) => {
@@ -6178,7 +6195,9 @@ export default function App() {
       }
       setAuthUserId(user.id);
       setAuthCreatedAtMs(parseTimestampMs(user?.created_at));
-      const fallbackName = formatDisplayName(email);
+      const fallbackName = isGoogleAuthUser(user)
+        ? formatDisplayName(email)
+        : "";
       const { data, error } = await supabase
         .from("profiles")
         .select("full_name, email, role, phone, company")
@@ -6242,7 +6261,7 @@ export default function App() {
       if (!canCommitProfile) {
         return nextRole;
       }
-      setProfileName(fullName);
+      setProfileName(fullName || "");
       setProfileEmail(profileEmailValue);
       setProfilePhone(profilePhoneValue);
       setProfileCompany(profileCompanyValue);
@@ -6271,9 +6290,10 @@ export default function App() {
       if (email) {
         setAuthEmail(email);
         setProfileEmail(email);
-        setProfileName(formatDisplayName(email));
+        if (isGoogleAuthUser(user)) {
+          setProfileName(formatDisplayName(email));
+        }
       }
-      setAccountRole("consumer");
       setAuthView("menu");
       setSignInError(null);
       setSessionReady(true);
@@ -11948,7 +11968,9 @@ export default function App() {
       setAuthCreatedAtMs(parseTimestampMs(data?.user?.created_at));
       setAuthEmail(data.user.email || email);
       setProfileEmail(data.user.email || email);
-      setProfileName(formatDisplayName(data.user.email || email));
+      if (isGoogleAuthUser(data.user)) {
+        setProfileName(formatDisplayName(data.user.email || email));
+      }
       setProfilePhone("");
       setProfileCompany("");
       setSecurityEmailDraft(data.user.email || email);
@@ -28956,6 +28978,9 @@ export default function App() {
                                       placeholder="First name"
                                       placeholderTextColor={COLORS.muted}
                                       value={signUpNameParts.firstName}
+                                      autoComplete="off"
+                                      textContentType="none"
+                                      importantForAutofill="no"
                                       onChangeText={(value) =>
                                         setSignUpName(
                                           joinFullNameParts(
@@ -28972,6 +28997,9 @@ export default function App() {
                                       placeholder="Last name"
                                       placeholderTextColor={COLORS.muted}
                                       value={signUpNameParts.lastName}
+                                      autoComplete="off"
+                                      textContentType="none"
+                                      importantForAutofill="no"
                                       onChangeText={(value) =>
                                         setSignUpName(
                                           joinFullNameParts(
