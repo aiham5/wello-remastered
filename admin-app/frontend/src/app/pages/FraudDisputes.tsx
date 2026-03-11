@@ -79,6 +79,26 @@ interface DisputeEvidence {
     chargeback_flagged?: boolean | null;
     chargeback_flagged_at?: string | null;
   } | null;
+  plaidTransaction?: {
+    transactionId?: string | null;
+    plaidItemId?: string | null;
+    requestId?: string | null;
+    institutionName?: string | null;
+    amount?: number | null;
+    date?: string | null;
+    authorizedDate?: string | null;
+    pending?: boolean | null;
+    merchantName?: string | null;
+    name?: string | null;
+    notFound?: boolean | null;
+    account?: {
+      name?: string | null;
+      officialName?: string | null;
+      mask?: string | null;
+      subtype?: string | null;
+      type?: string | null;
+    } | null;
+  } | null;
   redemption?: {
     id?: string | null;
     cashback_status?: string | null;
@@ -368,6 +388,16 @@ export function FraudDisputes() {
                   evidence?.verification?.reason_code ||
                   "N/A",
               );
+              const plaidAccountLabel = [
+                String(evidence?.plaidTransaction?.account?.officialName || "").trim(),
+                String(evidence?.plaidTransaction?.account?.name || "").trim(),
+              ].filter(Boolean)[0] || "N/A";
+              const plaidAccountMeta = [
+                String(evidence?.plaidTransaction?.account?.subtype || "").trim(),
+                String(evidence?.plaidTransaction?.account?.mask || "").trim()
+                  ? `••••${String(evidence?.plaidTransaction?.account?.mask || "").trim()}`
+                  : "",
+              ].filter(Boolean).join(" • ") || "N/A";
               return (
                 <div key={case_.id} className="p-6 hover:bg-gray-50 transition-colors">
                   <div className="flex items-start justify-between gap-4">
@@ -450,14 +480,30 @@ export function FraudDisputes() {
                                   )}
                                 />
                                 <EvidenceRow
+                                  label="Plaid Txn Name"
+                                  value={String(evidence?.plaidTransaction?.name || "N/A")}
+                                />
+                                <EvidenceRow
+                                  label="Plaid Institution"
+                                  value={String(evidence?.plaidTransaction?.institutionName || "N/A")}
+                                />
+                                <EvidenceRow
+                                  label="Plaid Account"
+                                  value={plaidAccountLabel}
+                                />
+                                <EvidenceRow
+                                  label="Plaid Account Meta"
+                                  value={plaidAccountMeta}
+                                />
+                                <EvidenceRow
                                   label="Plaid Amount"
-                                  value={
-                                    evidence?.verification?.matched_amount_cents != null
-                                      ? formatCurrencyFromCents(
-                                        Number(evidence.verification.matched_amount_cents || 0),
-                                      )
-                                      : "N/A"
-                                  }
+                                  value={evidence?.plaidTransaction?.amount != null
+                                    ? `$${Number(evidence.plaidTransaction.amount || 0).toFixed(2)}`
+                                    : evidence?.verification?.matched_amount_cents != null
+                                    ? formatCurrencyFromCents(
+                                      Number(evidence.verification.matched_amount_cents || 0),
+                                    )
+                                    : "N/A"}
                                 />
                                 <EvidenceRow
                                   label="Expected Amount"
@@ -471,7 +517,15 @@ export function FraudDisputes() {
                                 />
                                 <EvidenceRow
                                   label="Plaid Date"
-                                  value={String(evidence?.verification?.matched_posted_on || "N/A")}
+                                  value={String(
+                                    evidence?.plaidTransaction?.date ||
+                                      evidence?.verification?.matched_posted_on ||
+                                      "N/A",
+                                  )}
+                                />
+                                <EvidenceRow
+                                  label="Plaid Authorized Date"
+                                  value={String(evidence?.plaidTransaction?.authorizedDate || "N/A")}
                                 />
                                 <EvidenceRow
                                   label="Expected Date"
@@ -479,11 +533,24 @@ export function FraudDisputes() {
                                 />
                                 <EvidenceRow
                                   label="Plaid Merchant"
-                                  value={String(evidence?.verification?.matched_merchant || "N/A")}
+                                  value={String(
+                                    evidence?.plaidTransaction?.merchantName ||
+                                      evidence?.verification?.matched_merchant ||
+                                      "N/A",
+                                  )}
+                                />
+                                <EvidenceRow
+                                  label="Plaid Pending"
+                                  value={evidence?.plaidTransaction?.pending ? "YES" : "No"}
                                 />
                                 <EvidenceRow
                                   label="Expected Merchant"
                                   value={String(evidence?.verification?.expected_merchant || "N/A")}
+                                />
+                                <EvidenceRow
+                                  label="Plaid Pull Status"
+                                  value={evidence?.plaidTransaction?.notFound ? "Not found in Plaid" : "Loaded"}
+                                  highlight={Boolean(evidence?.plaidTransaction?.notFound)}
                                 />
                                 <EvidenceRow
                                   label="Cashback Amount"

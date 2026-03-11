@@ -46,6 +46,7 @@ const ALLOWED_RPCS = new Set([
 const ALLOWED_FUNCTIONS = new Set([
   "admin-run-monthly-invoices",
   "admin-add-commission-to-stripe",
+  "admin-get-plaid-transaction",
   "admin-send-promo-push",
   "cashout-bank-decision",
 ]);
@@ -1470,6 +1471,50 @@ const handleInvokeFunction = async (ctx, fnName, body) => {
   return json({ ok: true, data: parsed ?? null }, 200);
 };
 
+const invokeEdgeFunctionData = async (ctx, fnName, body) => {
+  if (!ALLOWED_FUNCTIONS.has(fnName)) {
+    return { ok: false, status: 403, error: "Function is not allowed." };
+  }
+
+  const supabaseUrl = String(ctx.env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
+  const key = String(
+    ctx.env.ADMIN_SUPABASE_SECRET_KEY ||
+      ctx.env.SUPABASE_SECRET_KEY ||
+      ctx.env.SUPABASE_SERVICE_ROLE_KEY ||
+      "",
+  ).trim();
+  if (!key) {
+    return { ok: false, status: 500, error: "Server secret is not configured." };
+  }
+
+  const response = await fetch(`${supabaseUrl}/functions/v1/${encodeURIComponent(fnName)}`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+      ...(ctx?.profile?.id
+        ? {
+          "x-admin-actor-id": String(ctx.profile.id),
+          "x-admin-actor-role": String(ctx.profile.role || ""),
+        }
+        : {}),
+    },
+    body: JSON.stringify(body || {}),
+  });
+
+  const parsed = await parseResponseBody(response);
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      error: String(parsed?.message || parsed?.error || `Function ${fnName} failed.`),
+    };
+  }
+
+  return { ok: true, status: response.status, data: parsed?.data ?? parsed ?? null };
+};
+
 const handleLogAction = async (ctx, body) => {
   const payload = {
     actor_id: String(ctx.profile?.id || ""),
@@ -1827,6 +1872,16 @@ const routeExplicit = async (ctx, request, segments) => {
       }
     }
 
+    let plaidTransaction = null;
+    if (String(verification?.matched_plaid_transaction_id || "").trim()) {
+      const plaidRes = await invokeEdgeFunctionData(ctx, "admin-get-plaid-transaction", {
+        reportId,
+      });
+      if (plaidRes.ok) {
+        plaidTransaction = plaidRes.data || null;
+      }
+    }
+
     return json(
       {
         ok: true,
@@ -1834,6 +1889,7 @@ const routeExplicit = async (ctx, request, segments) => {
           report,
           receipt,
           verification,
+          plaidTransaction,
           redemption,
           cashbackEvent,
           userProfile,

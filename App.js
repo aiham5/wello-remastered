@@ -78,6 +78,12 @@ import {
 import { getEnv } from "./lib/env";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+Text.defaultProps = Text.defaultProps || {};
+Text.defaultProps.allowFontScaling = false;
+Text.defaultProps.maxFontSizeMultiplier = 1;
+TextInput.defaultProps = TextInput.defaultProps || {};
+TextInput.defaultProps.allowFontScaling = false;
+TextInput.defaultProps.maxFontSizeMultiplier = 1;
 if (__DEV__) {
   configureReanimatedLogger({
     level: ReanimatedLogLevel.warn,
