@@ -604,7 +604,7 @@ Deno.serve(async (req) => {
                   ? digest.offerTitle
                   : null;
             const bodyText = example
-              ? `${count} nearby offer${count === 1 ? "" : "s"}. Example: ${example}.`
+              ? `${count} nearby offer${count === 1 ? "" : "s"} available. ${example}.`
               : `${count} nearby offer${count === 1 ? "" : "s"} available.`;
 
             toSend.push({

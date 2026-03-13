@@ -1,7 +1,9 @@
 package com.wellopartners.wello
 
+import android.content.Context
 import android.os.Build
 import android.os.Bundle
+import android.content.res.Configuration
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -11,6 +13,27 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
+  private fun normalizedConfiguration(source: Configuration?): Configuration? {
+    if (source == null) return null
+    return Configuration(source).apply {
+      fontScale = 1.0f
+    }
+  }
+
+  override fun attachBaseContext(newBase: Context?) {
+    val normalized = normalizedConfiguration(newBase?.resources?.configuration)
+    val context = if (newBase != null && normalized != null) {
+      newBase.createConfigurationContext(normalized)
+    } else {
+      newBase
+    }
+    super.attachBaseContext(context)
+  }
+
+  override fun applyOverrideConfiguration(overrideConfiguration: Configuration?) {
+    super.applyOverrideConfiguration(normalizedConfiguration(overrideConfiguration))
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.

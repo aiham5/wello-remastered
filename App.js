@@ -19,6 +19,7 @@ import {
   Linking,
   Modal,
   NativeModules,
+  PixelRatio,
   Platform,
   Pressable,
   Share,
@@ -78,12 +79,93 @@ import {
 import { getEnv } from "./lib/env";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
-Text.defaultProps = Text.defaultProps || {};
-Text.defaultProps.allowFontScaling = false;
-Text.defaultProps.maxFontSizeMultiplier = 1;
-TextInput.defaultProps = TextInput.defaultProps || {};
-TextInput.defaultProps.allowFontScaling = false;
-TextInput.defaultProps.maxFontSizeMultiplier = 1;
+const DEVICE_FONT_SCALE = Math.max(Number(PixelRatio.getFontScale()) || 1, 1);
+const FONT_SCALING_LOCK_PROPS = {
+  allowFontScaling: false,
+  maxFontSizeMultiplier: 1,
+};
+
+const FONT_SCALING_LOCK_COMPONENTS = new Set();
+
+const lockFontScaling = (Component) => {
+  if (!Component) return;
+  FONT_SCALING_LOCK_COMPONENTS.add(Component);
+  Component.defaultProps = {
+    ...(Component.defaultProps || {}),
+    ...FONT_SCALING_LOCK_PROPS,
+  };
+  if (
+    typeof Component.render !== "function" ||
+    Component.__welloFontScalingLocked
+  ) {
+    return;
+  }
+  const originalRender = Component.render;
+  Component.render = function welloFontScalingLockedRender(...args) {
+    const rendered = originalRender.apply(this, args);
+    if (!React.isValidElement(rendered)) {
+      return rendered;
+    }
+    return React.cloneElement(rendered, {
+      ...rendered.props,
+      ...FONT_SCALING_LOCK_PROPS,
+    });
+  };
+  Component.__welloFontScalingLocked = true;
+};
+
+lockFontScaling(Text);
+lockFontScaling(TextInput);
+lockFontScaling(Animated?.Text);
+lockFontScaling(Animated?.TextInput);
+if (!React.__welloCreateElementFontLockPatched) {
+  const originalCreateElement = React.createElement;
+  React.createElement = function welloLockedCreateElement(
+    type,
+    props,
+    ...children
+  ) {
+    if (FONT_SCALING_LOCK_COMPONENTS.has(type)) {
+      return originalCreateElement(
+        type,
+        {
+          ...(props || {}),
+          ...FONT_SCALING_LOCK_PROPS,
+        },
+        ...children,
+      );
+    }
+    return originalCreateElement(type, props, ...children);
+  };
+  React.__welloCreateElementFontLockPatched = true;
+}
+if (!StyleSheet.__welloFontScaleNeutralized) {
+  const originalStyleSheetCreate = StyleSheet.create.bind(StyleSheet);
+  const neutralizeFontScalingInStyle = (value) => {
+    if (!value || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      return value.map((item) => neutralizeFontScalingInStyle(item));
+    }
+    const next = { ...value };
+    if (typeof next.fontSize === "number" && DEVICE_FONT_SCALE > 1) {
+      next.fontSize = next.fontSize / DEVICE_FONT_SCALE;
+    }
+    if (typeof next.lineHeight === "number" && DEVICE_FONT_SCALE > 1) {
+      next.lineHeight = next.lineHeight / DEVICE_FONT_SCALE;
+    }
+    Object.keys(next).forEach((key) => {
+      const child = next[key];
+      if (child && typeof child === "object") {
+        next[key] = neutralizeFontScalingInStyle(child);
+      }
+    });
+    return next;
+  };
+  StyleSheet.create = function welloNeutralizedStyleSheetCreate(styles) {
+    return originalStyleSheetCreate(neutralizeFontScalingInStyle(styles));
+  };
+  StyleSheet.__welloFontScaleNeutralized = true;
+}
 if (__DEV__) {
   configureReanimatedLogger({
     level: ReanimatedLogLevel.warn,
@@ -99,6 +181,7 @@ Notifications.setNotificationHandler({
   }),
 });
 const IS_COMPACT = SCREEN_WIDTH < 360;
+const IS_SMALL_PHONE = SCREEN_WIDTH <= 390;
 const IS_NARROW = SCREEN_WIDTH < 420;
 const IS_SHORT = SCREEN_HEIGHT < 700;
 const IS_SAMSUNG_ANDROID =
@@ -180,8 +263,8 @@ const PLAID_PENDING_COPY =
   "Verification is in progress. Cashback may appear as pending.";
 const RECEIPT_UPLOAD_WINDOW_COPY =
   "Upload receipts within 24 hours of redeeming offers.";
-const PLAID_VERIFY_WINDOW_COPY =
-  "For automatic bank verification, redeem within 5 hours of purchase.";
+const REDEEM_MENTION_WELLO_COPY =
+  "Show or mention Wello at checkout to receive this offer.";
 const PLAID_LINK_UNAVAILABLE_COPY =
   "Bank linking is temporarily unavailable right now. Please try again shortly.";
 const PLAID_LINK_OPEN_FAILED_COPY =
@@ -6031,6 +6114,8 @@ export default function App() {
                 key={`sheet-tab-${tab.key}`}
                 style={[
                   styles.sheetTabButton,
+                  IS_SMALL_PHONE && styles.sheetTabButtonSmallPhone,
+                  navNeedsTightFit && styles.sheetTabButtonTight,
                   isActive && styles.sheetTabButtonActive,
                 ]}
                 onPress={() => {
@@ -6043,10 +6128,15 @@ export default function App() {
                 }}
                 activeOpacity={0.88}
               >
-                <View style={styles.sheetTabIconWrap}>
+                <View
+                  style={[
+                    styles.sheetTabIconWrap,
+                    IS_SMALL_PHONE && styles.sheetTabIconWrapSmallPhone,
+                  ]}
+                >
                   <Ionicons
                     name={iconName}
-                    size={18}
+                    size={IS_SMALL_PHONE ? 17 : 18}
                     color={isActive ? COLORS.ink : "#8A94A6"}
                   />
                 </View>
@@ -6060,8 +6150,14 @@ export default function App() {
                 <Text
                   style={[
                     styles.sheetTabLabel,
+                    IS_SMALL_PHONE && styles.sheetTabLabelSmallPhone,
+                    navNeedsTightFit && styles.sheetTabLabelTight,
                     isActive && styles.sheetTabLabelActive,
                   ]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.78}
+                  ellipsizeMode="clip"
                 >
                   {tab.label}
                 </Text>
@@ -6073,6 +6169,7 @@ export default function App() {
     );
   }, [
     activeTab,
+    navNeedsTightFit,
     pendingHistoryCount,
     visibleTabs,
   ]);
@@ -20541,7 +20638,7 @@ export default function App() {
                   </View>
                   {redeemActivationModal.status === "success" ? (
                     <Text style={styles.offerActivationPolicyText}>
-                      {PLAID_VERIFY_WINDOW_COPY}
+                      {REDEEM_MENTION_WELLO_COPY}
                     </Text>
                   ) : null}
                 </Pressable>
@@ -34492,6 +34589,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 4,
   },
+  sheetTabButtonSmallPhone: {
+    minHeight: 58,
+    paddingVertical: 7,
+    paddingHorizontal: 3,
+  },
+  sheetTabButtonTight: {
+    paddingHorizontal: 2,
+  },
   sheetTabButtonActive: {
     backgroundColor: COLORS.white,
     borderWidth: 1,
@@ -34505,11 +34610,24 @@ const styles = StyleSheet.create({
   sheetTabIconWrap: {
     marginBottom: 6,
   },
+  sheetTabIconWrapSmallPhone: {
+    marginBottom: 4,
+  },
   sheetTabLabel: {
     fontSize: 14,
     color: "#8A94A6",
     fontFamily: FONT_MEDIUM,
     textAlign: "center",
+    includeFontPadding: false,
+  },
+  sheetTabLabelSmallPhone: {
+    fontSize: 12,
+    lineHeight: 14,
+  },
+  sheetTabLabelTight: {
+    fontSize: 11,
+    lineHeight: 13,
+    letterSpacing: -0.1,
   },
   sheetTabLabelActive: {
     color: COLORS.ink,
@@ -36240,36 +36358,36 @@ const styles = StyleSheet.create({
   },
   liveEditorialStackTopRow: {
     position: "absolute",
-    top: 12,
-    left: 12,
-    right: 12,
+    top: IS_SMALL_PHONE ? 10 : 12,
+    left: IS_SMALL_PHONE ? 10 : 12,
+    right: IS_SMALL_PHONE ? 10 : 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
+    gap: IS_SMALL_PHONE ? 6 : 8,
   },
   liveEditorialStackCategoryPill: {
     borderRadius: 14,
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.24)",
     backgroundColor: "rgba(255, 255, 255, 0.34)",
-    minHeight: 32,
+    minHeight: IS_SMALL_PHONE ? 30 : 32,
     maxWidth: "44%",
-    paddingHorizontal: 12,
+    paddingHorizontal: IS_SMALL_PHONE ? 10 : 12,
     alignItems: "center",
     justifyContent: "center",
   },
   liveEditorialStackCategoryText: {
-    fontSize: 11,
+    fontSize: IS_SMALL_PHONE ? 10 : 11,
     color: "#F8FAFC",
     fontFamily: FONT_SEMIBOLD,
   },
   liveEditorialStackOpenPill: {
     borderRadius: 14,
     borderWidth: 1,
-    minHeight: 32,
+    minHeight: IS_SMALL_PHONE ? 30 : 32,
     maxWidth: "44%",
-    paddingHorizontal: 12,
+    paddingHorizontal: IS_SMALL_PHONE ? 10 : 12,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -36286,7 +36404,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#6B7280",
   },
   liveEditorialStackOpenText: {
-    fontSize: 12,
+    fontSize: IS_SMALL_PHONE ? 11 : 12,
     color: COLORS.white,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -36318,35 +36436,35 @@ const styles = StyleSheet.create({
   },
   liveEditorialStackHeadlineWrap: {
     position: "absolute",
-    left: 16,
-    right: 16,
-    bottom: 12,
+    left: IS_SMALL_PHONE ? 14 : 16,
+    right: IS_SMALL_PHONE ? 14 : 16,
+    bottom: IS_SMALL_PHONE ? 10 : 12,
   },
   liveEditorialStackName: {
-    fontSize: 17,
+    fontSize: IS_SMALL_PHONE ? 15 : 17,
     color: COLORS.white,
     fontFamily: FONT_SEMIBOLD,
     letterSpacing: -0.2,
   },
   liveEditorialStackBusinessName: {
     marginTop: 3,
-    fontSize: 12,
+    fontSize: IS_SMALL_PHONE ? 11 : 12,
     color: "rgba(255,255,255,0.88)",
     fontFamily: FONT_MEDIUM,
   },
   liveEditorialStackHeadlineMetaRow: {
-    marginTop: 6,
+    marginTop: IS_SMALL_PHONE ? 5 : 6,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: IS_SMALL_PHONE ? 5 : 6,
   },
   liveEditorialStackHeadlineMeta: {
-    fontSize: 12,
+    fontSize: IS_SMALL_PHONE ? 11 : 12,
     color: "rgba(255,255,255,0.92)",
     fontFamily: FONT_SEMIBOLD,
   },
   liveEditorialStackHeadlineMetaDot: {
-    fontSize: 12,
+    fontSize: IS_SMALL_PHONE ? 11 : 12,
     color: "rgba(255,255,255,0.82)",
     fontFamily: FONT_MEDIUM,
     marginHorizontal: 2,
@@ -36489,32 +36607,32 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 0,
     backgroundColor: COLORS.white,
-    minHeight: 66,
+    minHeight: IS_SMALL_PHONE ? 62 : 66,
     paddingHorizontal: 8,
     paddingVertical: 4,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
+    gap: IS_SMALL_PHONE ? 8 : 10,
   },
   liveEditorialStackCashbackContent: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: IS_SMALL_PHONE ? 8 : 10,
     flex: 1,
     minWidth: 0,
   },
   liveEditorialStackCashbackIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: IS_SMALL_PHONE ? 36 : 40,
+    height: IS_SMALL_PHONE ? 36 : 40,
+    borderRadius: IS_SMALL_PHONE ? 18 : 20,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#E5F6EF",
   },
   liveEditorialStackCashbackPercentIcon: {
-    fontSize: 20,
-    lineHeight: 20,
+    fontSize: IS_SMALL_PHONE ? 18 : 20,
+    lineHeight: IS_SMALL_PHONE ? 18 : 20,
     color: "#059669",
     fontFamily: FONT_BOLD,
   },
@@ -36523,21 +36641,21 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   liveEditorialStackCashbackText: {
-    fontSize: 16,
+    fontSize: IS_SMALL_PHONE ? 15 : 16,
     color: "#059669",
     fontFamily: FONT_SEMIBOLD,
     letterSpacing: -0.2,
   },
   liveEditorialStackCashbackSubtext: {
     marginTop: 2,
-    fontSize: 11,
+    fontSize: IS_SMALL_PHONE ? 10 : 11,
     color: "#8B97A9",
     fontFamily: FONT_SEMIBOLD,
   },
   liveEditorialStackCashbackArrow: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: IS_SMALL_PHONE ? 36 : 40,
+    height: IS_SMALL_PHONE ? 36 : 40,
+    borderRadius: IS_SMALL_PHONE ? 18 : 20,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
