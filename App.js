@@ -3232,6 +3232,21 @@ const openMapsForBusiness = async (business) => {
   Linking.openURL(googleWebUrl).catch(() => null);
 };
 
+const openPhoneForBusiness = async (business) => {
+  if (!business) return;
+  const rawPhone = String(
+    business?.phone ||
+      business?.phoneNumber ||
+      business?.contactPhone ||
+      business?.business?.phone ||
+      "",
+  ).trim();
+  const digits = rawPhone.replace(/[^\d+]/g, "");
+  if (!digits) return;
+  const telUrl = `tel:${digits}`;
+  Linking.openURL(telUrl).catch(() => null);
+};
+
 const parseClockMinutes = (time, meridiem) => {
   if (!time) return null;
   const [hoursRaw, minutesRaw = "0"] = String(time).split(":");
@@ -20299,17 +20314,6 @@ export default function App() {
               })}
             </MapView>
 
-            <LinearGradient
-              pointerEvents="none"
-              colors={[
-                "rgba(244, 246, 249, 0.0)",
-                "rgba(244, 246, 249, 0.86)",
-                "rgba(244, 246, 249, 1)",
-              ]}
-              locations={[0.28, 0.72, 1]}
-              style={styles.mapShade}
-            />
-
             <View
               style={[styles.topMeta, { top: uiTopInset }]}
               pointerEvents="box-none"
@@ -20920,6 +20924,17 @@ export default function App() {
             >
               <View style={styles.detailOverlay}>
                 <View style={styles.detailCard}>
+                  {(() => {
+                    const businessPhone = String(
+                      businessDetail?.phone ||
+                        businessDetail?.phoneNumber ||
+                        businessDetail?.business?.phone ||
+                        "",
+                    ).trim();
+                    const hasBusinessPhone = Boolean(
+                      businessPhone.replace(/[^\d+]/g, ""),
+                    );
+                    return (
                   <View style={styles.detailHeader}>
                     <View>
                       <Text style={styles.detailTitle}>
@@ -20930,19 +20945,21 @@ export default function App() {
                       </Text>
                     </View>
                     <View style={styles.detailHeaderActions}>
-                      <TouchableOpacity
-                        style={styles.detailHeaderDirections}
-                        onPress={() => openMapsForBusiness(businessDetail)}
-                      >
-                        <Ionicons
-                          name="navigate-outline"
-                          size={14}
-                          color={COLORS.pine}
-                        />
-                        <Text style={styles.detailHeaderDirectionsText}>
-                          Directions
-                        </Text>
-                      </TouchableOpacity>
+                      {hasBusinessPhone ? (
+                        <TouchableOpacity
+                          style={styles.detailHeaderDirections}
+                          onPress={() => openPhoneForBusiness(businessDetail)}
+                        >
+                          <Ionicons
+                            name="call-outline"
+                            size={14}
+                            color={COLORS.pine}
+                          />
+                          <Text style={styles.detailHeaderDirectionsText}>
+                            Call
+                          </Text>
+                        </TouchableOpacity>
+                      ) : null}
                       <TouchableOpacity
                         style={styles.detailClose}
                         onPress={closeBusinessDetail}
@@ -20951,6 +20968,8 @@ export default function App() {
                       </TouchableOpacity>
                     </View>
                   </View>
+                    );
+                  })()}
 
                   <ScrollView
                     style={styles.detailBody}
