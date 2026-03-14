@@ -6,6 +6,7 @@
   useState,
 } from "react";
 import {
+  Alert,
   AppState,
   ActionSheetIOS,
   Animated,
@@ -290,7 +291,7 @@ const normalizeBusinessCommissionRateCents = (value) => {
   return 150;
 };
 const resolveBusinessReceiptChargeRateCents = (value) =>
-  normalizeBusinessCommissionRateCents(value) >= 200 ? 150 : 100;
+  normalizeBusinessCommissionRateCents(value);
 const resolveBusinessDefaultCashbackRateBps = (value) =>
   normalizeBusinessCommissionRateCents(value) >= 200 ? 1500 : 1000;
 const commissionRateCentsToPercent = (value) =>
@@ -1173,6 +1174,7 @@ const mapSupabaseOffer = (row) => ({
   imageUrl: row.image_url || "",
   active: row.active ?? true,
   status: row.status || "active",
+  startsAt: row.starts_at ? new Date(row.starts_at).getTime() : null,
   expiresAt: row.expires_at ? new Date(row.expires_at).getTime() : null,
   approvalStatus: row.approval_status || "approved",
   redemptionLimitPeriod: row.redemption_limit_period || null,
@@ -2162,7 +2164,70 @@ const OFFER_EXPIRY_TIME_OPTIONS = Array.from({ length: 48 }, (_, index) => {
   return { value, label };
 });
 
+const OFFER_MONTH_OPTIONS = Array.from({ length: 12 }, (_, index) => {
+  const monthIndex = index + 1;
+  const sampleDate = new Date(2020, index, 1);
+  return {
+    value: monthIndex,
+    label: sampleDate.toLocaleDateString([], { month: "long" }),
+  };
+});
+
+const getDaysInMonth = (year, month) => {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    month < 1 ||
+    month > 12
+  ) {
+    return 31;
+  }
+  return new Date(year, month, 0).getDate();
+};
+
 const parseOfferExpiryIso = (dateValue, timeValue) => {
+  const safeDate = String(dateValue || "").trim();
+  const safeTime = String(timeValue || "").trim();
+  if (!safeDate && !safeTime) return { iso: null, valid: true };
+  if (!safeDate || !safeTime) return { iso: null, valid: false };
+  const dateMatch = safeDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const timeMatch = safeTime.match(/^(\d{2}):(\d{2})$/);
+  if (!dateMatch || !timeMatch) return { iso: null, valid: false };
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  const hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2]);
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return { iso: null, valid: false };
+  }
+  const parsed = new Date(year, month - 1, day, hours, minutes, 0, 0);
+  if (Number.isNaN(parsed.getTime())) return { iso: null, valid: false };
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return { iso: null, valid: false };
+  }
+  return { iso: parsed.toISOString(), valid: true };
+};
+
+const parseOfferStartIso = (dateValue, timeValue) => {
   const safeDate = String(dateValue || "").trim();
   const safeTime = String(timeValue || "").trim();
   if (!safeDate && !safeTime) return { iso: null, valid: true };
@@ -4739,6 +4804,7 @@ export default function App() {
   const tabIndicatorIndex = useRef(new Animated.Value(0)).current;
   const launchOverlayOpacity = useRef(new Animated.Value(1)).current;
   const authHydrationUserIdRef = useRef(null);
+  const roleLaunchTabAppliedRef = useRef(null);
   const tabFocusAnimRef = useRef({});
   const [discoverDemoLayout, setDiscoverDemoLayout] =
     useState("editorial_split");
@@ -5198,6 +5264,8 @@ export default function App() {
     description: "",
     typePreset: "Discount",
     typeCustom: "",
+    startsDate: "",
+    startsTime: "",
     expiresDate: "",
     expiresTime: "",
     redemptionLimitMode: "unlimited", // unlimited | day | week | custom
@@ -5205,10 +5273,21 @@ export default function App() {
     redemptionLimitPeriod: "day", // day | week (custom only)
   });
   const [createOfferTypeMenuOpen, setCreateOfferTypeMenuOpen] = useState(false);
-  const [createOfferExpiryDateMenuOpen, setCreateOfferExpiryDateMenuOpen] =
-    useState(false);
-  const [createOfferExpiryTimeMenuOpen, setCreateOfferExpiryTimeMenuOpen] =
-    useState(false);
+  const [offerSchedulePicker, setOfferSchedulePicker] = useState({
+    visible: false,
+    title: "",
+    field: null,
+    options: [],
+    selectedValue: null,
+  });
+  const [offerDatePicker, setOfferDatePicker] = useState({
+    visible: false,
+    field: null,
+    year: new Date().getFullYear(),
+    month: null,
+    day: null,
+    step: "month",
+  });
   const [offerImage, setOfferImage] = useState(null);
   const [offerCreateHonorChecked, setOfferCreateHonorChecked] = useState(false);
   const [offerCropModal, setOfferCropModal] = useState({
@@ -5786,6 +5865,235 @@ export default function App() {
     [],
   );
   const offerExpiryTimeOptions = OFFER_EXPIRY_TIME_OPTIONS;
+  const getOfferDateOptionLabel = useCallback(
+    (value) => {
+      const safeValue = String(value || "").trim();
+      if (!safeValue) return "Select date";
+      const match = safeValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!match) return safeValue;
+      const parsed = new Date(
+        Number(match[1]),
+        Number(match[2]) - 1,
+        Number(match[3]),
+        12,
+        0,
+        0,
+        0,
+      );
+      if (Number.isNaN(parsed.getTime())) return safeValue;
+      return parsed.toLocaleDateString([], {
+        month: "short",
+        day: "numeric",
+      });
+    },
+    [],
+  );
+  const closeOfferSchedulePicker = useCallback(() => {
+    setOfferSchedulePicker({
+      visible: false,
+      title: "",
+      field: null,
+      options: [],
+      selectedValue: null,
+    });
+    setOfferDatePicker({
+      visible: false,
+      field: null,
+      year: new Date().getFullYear(),
+      month: null,
+      day: null,
+      step: "month",
+    });
+  }, []);
+  const closeOfferDatePicker = useCallback(() => {
+    setOfferDatePicker({
+      visible: false,
+      field: null,
+      year: new Date().getFullYear(),
+      month: null,
+      day: null,
+      step: "month",
+    });
+  }, []);
+  const openOfferDatePicker = useCallback((field) => {
+    const year = new Date().getFullYear();
+    const sourceValue = String(
+      field === "startDate" ? offerForm.startsDate : offerForm.expiresDate,
+    ).trim();
+    const match = sourceValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const month = match ? Number(match[2]) : null;
+    const day = match ? Number(match[3]) : null;
+    setOfferDatePicker({
+      visible: true,
+      field,
+      year,
+      month,
+      day,
+      step: month ? "day" : "month",
+    });
+  }, [offerForm.expiresDate, offerForm.startsDate]);
+  const handleOfferDatePickerMonthSelect = useCallback((monthValue) => {
+    const nextMonth = Number(monthValue);
+    if (!Number.isInteger(nextMonth) || nextMonth < 1 || nextMonth > 12) return;
+    setOfferDatePicker((prev) => {
+      const maxDays = getDaysInMonth(prev.year, nextMonth);
+      const nextDay =
+        Number.isInteger(prev.day) && prev.day <= maxDays ? prev.day : null;
+      return {
+        ...prev,
+        month: nextMonth,
+        day: nextDay,
+        step: "day",
+      };
+    });
+  }, []);
+  const handleOfferDatePickerDaySelect = useCallback((dayValue) => {
+    const nextDay = Number(dayValue);
+    setOfferDatePicker((prev) => {
+      if (
+        !Number.isInteger(nextDay) ||
+        !Number.isInteger(prev.month) ||
+        nextDay < 1 ||
+        nextDay > getDaysInMonth(prev.year, prev.month)
+      ) {
+        return prev;
+      }
+      const nextDateValue = [
+        prev.year,
+        padDatePart(prev.month),
+        padDatePart(nextDay),
+      ].join("-");
+      setOfferForm((current) => {
+        if (prev.field === "startDate") {
+          const nextEndDate =
+            current.expiresDate && current.expiresDate < nextDateValue
+              ? nextDateValue
+              : current.expiresDate;
+          return {
+            ...current,
+            startsDate: nextDateValue,
+            startsTime: current.startsTime || OFFER_EXPIRY_DEFAULT_TIME,
+            expiresDate: nextEndDate,
+            expiresTime:
+              nextEndDate && !current.expiresTime
+                ? OFFER_EXPIRY_DEFAULT_TIME
+                : current.expiresTime,
+          };
+        }
+        const fallbackStartDate = current.startsDate || nextDateValue;
+        const nextStartDate =
+          fallbackStartDate > nextDateValue ? nextDateValue : fallbackStartDate;
+        return {
+          ...current,
+          startsDate: nextStartDate,
+          startsTime: current.startsTime || OFFER_EXPIRY_DEFAULT_TIME,
+          expiresDate: nextDateValue,
+          expiresTime: current.expiresTime || OFFER_EXPIRY_DEFAULT_TIME,
+        };
+      });
+      if (offerError) setOfferError(null);
+      if (offerNotice) setOfferNotice(null);
+      return {
+        ...prev,
+        visible: false,
+        field: null,
+        month: null,
+        day: nextDay,
+        step: "month",
+      };
+    });
+  }, [offerError, offerNotice]);
+  const clearOfferEndDate = useCallback(() => {
+    setOfferForm((prev) => ({
+      ...prev,
+      startsDate: "",
+      startsTime: "",
+      expiresDate: "",
+      expiresTime: "",
+    }));
+    if (offerError) setOfferError(null);
+    if (offerNotice) setOfferNotice(null);
+    closeOfferDatePicker();
+  }, [closeOfferDatePicker, offerError, offerNotice]);
+  const openOfferTimePicker = useCallback((field = "endTime") => {
+    if (field === "startTime" && !offerForm.startsDate) return;
+    if (field === "endTime" && !offerForm.expiresDate) return;
+    setOfferSchedulePicker({
+      visible: true,
+      title: field === "startTime" ? "Select start time" : "Select end time",
+      field,
+      options: offerExpiryTimeOptions,
+      selectedValue:
+        field === "startTime"
+          ? offerForm.startsTime || ""
+          : offerForm.expiresTime || "",
+    });
+  }, [
+    offerExpiryTimeOptions,
+    offerForm.expiresDate,
+    offerForm.expiresTime,
+    offerForm.startsDate,
+    offerForm.startsTime,
+  ]);
+  const openOfferTypePicker = useCallback(
+    (mode = "create") => {
+      const isEdit = mode === "edit";
+      setOfferSchedulePicker({
+        visible: true,
+        title: "Select offer type",
+        field: isEdit ? "editOfferType" : "createOfferType",
+        options: OFFER_TYPE_DROPDOWN_OPTIONS,
+        selectedValue: isEdit
+          ? editOfferDraft.typePreset || ""
+          : offerForm.typePreset || "",
+      });
+    },
+    [editOfferDraft.typePreset, offerForm.typePreset],
+  );
+  const handleOfferSchedulePickerSelect = useCallback(
+    (value) => {
+      const nextValue = String(value || "").trim();
+      setOfferForm((prev) => {
+        if (offerSchedulePicker.field === "createOfferType") {
+          return {
+            ...prev,
+            typePreset: nextValue,
+            typeCustom:
+              nextValue === OFFER_TYPE_OTHER_KEY ? prev.typeCustom : "",
+          };
+        }
+        if (offerSchedulePicker.field === "startTime") {
+          return {
+            ...prev,
+            startsTime: nextValue,
+          };
+        }
+        if (offerSchedulePicker.field === "endTime") {
+          return {
+            ...prev,
+            expiresTime: nextValue,
+          };
+        }
+        return prev;
+      });
+      if (offerSchedulePicker.field === "editOfferType") {
+        setEditOfferDraft((prev) => ({
+          ...prev,
+          typePreset: nextValue,
+          typeCustom: nextValue === OFFER_TYPE_OTHER_KEY ? prev.typeCustom : "",
+        }));
+      }
+      if (offerError) setOfferError(null);
+      if (offerNotice) setOfferNotice(null);
+      closeOfferSchedulePicker();
+    },
+    [
+      closeOfferSchedulePicker,
+      offerError,
+      offerNotice,
+      offerSchedulePicker.field,
+    ],
+  );
   const [formMessage, setFormMessage] = useState(null);
   const [addressResults, setAddressResults] = useState([]);
   const [addressLoading, setAddressLoading] = useState(false);
@@ -7604,6 +7912,7 @@ export default function App() {
 
   const resetAuthState = useCallback(() => {
     authHydrationUserIdRef.current = null;
+    roleLaunchTabAppliedRef.current = null;
     setIsSignedIn(false);
     setAccountRole("consumer");
     setAuthUserId(null);
@@ -9627,6 +9936,43 @@ export default function App() {
   const promptCashoutTermsAcceptance = useCallback(
     () =>
       new Promise((resolve) => {
+        if (Platform.OS === "ios" && Alert?.alert) {
+          Alert.alert(
+            "Accept bank transfer terms",
+            "By requesting a bank transfer, you authorize Wello to send your cashback to your selected bank account. Bank transfer requests usually process within 24-48 hours and cannot be canceled after submission.",
+            [
+              {
+                text: "Cancel",
+                style: "cancel",
+                onPress: () => resolve(false),
+              },
+              {
+                text: "Accept",
+                onPress: async () => {
+                  const acceptedAtIso = new Date().toISOString();
+                  const { error } = await supabase
+                    .from("profiles")
+                    .update({ cashout_terms_accepted_at: acceptedAtIso })
+                    .eq("id", authUserId);
+                  if (error) {
+                    setCashoutActionStatus({
+                      loading: false,
+                      error:
+                        error.message || "Unable to save cashout terms acceptance.",
+                      success: null,
+                    });
+                    resolve(false);
+                    return;
+                  }
+                  setCashoutTermsAcceptedAt(new Date(acceptedAtIso).getTime());
+                  resolve(true);
+                },
+              },
+            ],
+            { cancelable: false },
+          );
+          return;
+        }
         showAppDialog({
           title: "Accept bank transfer terms",
           message:
@@ -11327,6 +11673,20 @@ export default function App() {
     }
   }, [activeTab, isOwner, isStaff]);
 
+  useEffect(() => {
+    if (!sessionReady || !isSignedIn || !authUserId) return;
+    const launchTab = isOwner ? "business" : isStaff ? "admin" : null;
+    if (!launchTab) return;
+    const launchKey = `${authUserId}:${launchTab}`;
+    if (roleLaunchTabAppliedRef.current === launchKey) return;
+    roleLaunchTabAppliedRef.current = launchKey;
+    setActiveTab((current) =>
+      current === "discover" || current === "history" || current === "cashout"
+        ? launchTab
+        : current,
+    );
+  }, [authUserId, isOwner, isSignedIn, isStaff, sessionReady]);
+
   const buildFormFromBusiness = (business) => ({
     name: business?.name || "",
     address: business?.address || "",
@@ -12099,7 +12459,6 @@ export default function App() {
       setSecurityActivePanel(null);
       setPendingEmailChange("");
       setSecurityStatus({ loading: false, type: null, message: null });
-      setAccountRole("consumer");
       setIsSignedIn(true);
       setSignInPassword("");
       setShowSignInPassword(false);
@@ -13379,6 +13738,8 @@ export default function App() {
       description: "",
       typePreset: "Discount",
       typeCustom: "",
+      startsDate: "",
+      startsTime: "",
       expiresDate: "",
       expiresTime: "",
       redemptionLimitMode: "unlimited",
@@ -13387,8 +13748,21 @@ export default function App() {
     });
     setOfferCreateHonorChecked(false);
     setCreateOfferTypeMenuOpen(false);
-    setCreateOfferExpiryDateMenuOpen(false);
-    setCreateOfferExpiryTimeMenuOpen(false);
+    setOfferSchedulePicker({
+      visible: false,
+      title: "",
+      field: null,
+      options: [],
+      selectedValue: null,
+    });
+    setOfferDatePicker({
+      visible: false,
+      field: null,
+      year: new Date().getFullYear(),
+      month: null,
+      day: null,
+      step: "month",
+    });
     setOfferImage(null);
     setOfferError(null);
     setOfferBusy(false);
@@ -15142,6 +15516,7 @@ export default function App() {
               "image_url",
               "active",
               "status",
+              "starts_at",
               "expires_at",
               "approval_status",
               "redemption_limit_period",
@@ -15152,6 +15527,7 @@ export default function App() {
           )
           .eq("active", true)
           .eq("approval_status", "approved")
+          .or(`starts_at.is.null,starts_at.lte.${new Date().toISOString()}`)
           .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
           .order("created_at", { ascending: false });
         if (error) {
@@ -15254,6 +15630,7 @@ export default function App() {
             "image_url",
             "active",
             "status",
+            "starts_at",
             "expires_at",
             "approval_status",
             "redemption_limit_period",
@@ -15345,6 +15722,7 @@ export default function App() {
           "image_url",
           "active",
           "status",
+          "starts_at",
           "expires_at",
           "approval_status",
           "redemption_limit_period",
@@ -15383,6 +15761,7 @@ export default function App() {
           "image_url",
           "active",
           "status",
+          "starts_at",
           "expires_at",
           "approval_status",
           "redemption_limit_period",
@@ -15419,6 +15798,7 @@ export default function App() {
           "image_url",
           "active",
           "status",
+          "starts_at",
           "expires_at",
           "approval_status",
           "redemption_limit_period",
@@ -16324,6 +16704,26 @@ export default function App() {
         ]);
       };
       if (selectedAccountId && selectedAccountId !== nextAccountId) {
+        if (Platform.OS === "ios" && Alert?.alert) {
+          Alert.alert(
+            "Switch payout bank?",
+            "This will change the bank account used for cashout.",
+            [
+              {
+                text: "Cancel",
+                style: "cancel",
+              },
+              {
+                text: "Switch bank",
+                onPress: () => {
+                  void submitPayoutBankSelection();
+                },
+              },
+            ],
+            { cancelable: true },
+          );
+          return;
+        }
         showAppDialog({
           title: "Switch payout bank?",
           message:
@@ -16357,6 +16757,51 @@ export default function App() {
       showAppDialog,
     ],
   );
+
+  const openCashoutLinkedBankSelector = useCallback(() => {
+    if (!cashoutLinkedPayoutAccounts.length) return;
+    if (
+      Platform.OS === "ios" &&
+      ActionSheetIOS &&
+      typeof ActionSheetIOS.showActionSheetWithOptions === "function"
+    ) {
+      const optionLabels = cashoutLinkedPayoutAccounts.map((account) => {
+        const parts = [
+          String(account.institutionName || "").trim(),
+          String(account.name || "").trim(),
+          account.mask ? `****${account.mask}` : "",
+        ].filter(Boolean);
+        return parts.join(" - ");
+      });
+      const selectedIndex = cashoutLinkedPayoutAccounts.findIndex(
+        (account) => account.selectedForPayout,
+      );
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: "Linked banks",
+          message: "Choose the bank account used for cashout.",
+          options: ["Cancel", ...optionLabels],
+          cancelButtonIndex: 0,
+        },
+        (buttonIndex) => {
+          if (buttonIndex <= 0) return;
+          const account = cashoutLinkedPayoutAccounts[buttonIndex - 1];
+          if (!account?.accountId) return;
+          if (selectedIndex === buttonIndex - 1) {
+            setCashoutActionStatus({
+              loading: false,
+              error: null,
+              success: "This bank is already selected for cashout.",
+            });
+            return;
+          }
+          void handleSelectCashoutPayoutAccount(account.accountId);
+        },
+      );
+      return;
+    }
+    setCashoutLinkedBanksPickerVisible(true);
+  }, [cashoutLinkedPayoutAccounts, handleSelectCashoutPayoutAccount]);
 
   const handleUnlinkCashoutBank = useCallback(async () => {
     if (!isSignedIn) {
@@ -17538,6 +17983,7 @@ export default function App() {
             "image_url",
             "active",
             "status",
+            "starts_at",
             "expires_at",
             "approval_status",
             "redemption_limit_period",
@@ -17979,17 +18425,46 @@ export default function App() {
       setOfferError("Description is required.");
       return;
     }
+    const hasScheduleInput = Boolean(
+      offerForm.startsDate ||
+        offerForm.startsTime ||
+        offerForm.expiresDate ||
+        offerForm.expiresTime,
+    );
+    const parsedStart = parseOfferStartIso(
+      offerForm.startsDate,
+      offerForm.startsTime,
+    );
     const parsedExpiration = parseOfferExpiryIso(
       offerForm.expiresDate,
       offerForm.expiresTime,
     );
-    if (!parsedExpiration.valid) {
-      setOfferError("Choose both expiration date and time, or leave both blank.");
+    if (
+      hasScheduleInput &&
+      (!parsedStart.valid ||
+        !parsedExpiration.valid ||
+        !parsedStart.iso ||
+        !parsedExpiration.iso)
+    ) {
+      setOfferError("Choose a valid start date, end date, and end time.");
       return;
     }
+    if (!hasScheduleInput && (!parsedStart.valid || !parsedExpiration.valid)) {
+      setOfferError("Choose a valid offer schedule.");
+      return;
+    }
+    const startIso = parsedStart.iso;
     const expirationIso = parsedExpiration.iso;
     if (expirationIso && new Date(expirationIso).getTime() <= Date.now()) {
       setOfferError("Expiration must be in the future.");
+      return;
+    }
+    if (
+      startIso &&
+      expirationIso &&
+      new Date(startIso).getTime() > new Date(expirationIso).getTime()
+    ) {
+      setOfferError("End date must be on or after the start date.");
       return;
     }
     if (!offerImage?.uri) {
@@ -18067,6 +18542,7 @@ export default function App() {
         offer_type: normalizedType,
         image_url: imageUrl,
         active: true,
+        starts_at: startIso,
         expires_at: expirationIso,
         approval_status: "pending",
         offer_honor_commitment_accepted: true,
@@ -18090,6 +18566,7 @@ export default function App() {
           "image_url",
           "active",
           "status",
+          "starts_at",
           "expires_at",
           "approval_status",
           "redemption_limit_period",
@@ -18114,6 +18591,8 @@ export default function App() {
       description: "",
       typePreset: "Discount",
       typeCustom: "",
+      startsDate: "",
+      startsTime: "",
       expiresDate: "",
       expiresTime: "",
       redemptionLimitMode: "unlimited",
@@ -18121,8 +18600,13 @@ export default function App() {
       redemptionLimitPeriod: "day",
     });
     setCreateOfferTypeMenuOpen(false);
-    setCreateOfferExpiryDateMenuOpen(false);
-    setCreateOfferExpiryTimeMenuOpen(false);
+    setOfferSchedulePicker({
+      visible: false,
+      title: "",
+      field: null,
+      options: [],
+      selectedValue: null,
+    });
     setOfferImage(null);
     setOfferCreateHonorChecked(false);
     if (SUPABASE_URL && SUPABASE_ANON_KEY) {
@@ -18196,56 +18680,14 @@ export default function App() {
             <Text style={styles.formLabel}>Offer type</Text>
             <TouchableOpacity
               style={[styles.formInput, styles.selectInput]}
-              onPress={() => setCreateOfferTypeMenuOpen((prev) => !prev)}
+              onPress={() => openOfferTypePicker("create")}
               activeOpacity={0.8}
             >
               <Text style={styles.selectInputText}>
                 {getOfferTypePickerLabel(offerForm.typePreset)}
               </Text>
-              <Ionicons
-                name={createOfferTypeMenuOpen ? "chevron-up" : "chevron-down"}
-                size={16}
-                color={COLORS.muted}
-              />
+              <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
             </TouchableOpacity>
-            {createOfferTypeMenuOpen && (
-              <View style={styles.selectMenu}>
-                {OFFER_TYPE_DROPDOWN_OPTIONS.map((option) => {
-                  const isActive = offerForm.typePreset === option.value;
-                  return (
-                    <TouchableOpacity
-                      key={option.value}
-                      style={[
-                        styles.selectMenuOption,
-                        isActive && styles.selectMenuOptionActive,
-                      ]}
-                      onPress={() => {
-                        setOfferForm((prev) => ({
-                          ...prev,
-                          typePreset: option.value,
-                          typeCustom:
-                            option.value === OFFER_TYPE_OTHER_KEY
-                              ? prev.typeCustom
-                              : "",
-                        }));
-                        setCreateOfferTypeMenuOpen(false);
-                        if (offerError) setOfferError(null);
-                        if (offerNotice) setOfferNotice(null);
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.selectMenuOptionText,
-                          isActive && styles.selectMenuOptionTextActive,
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            )}
             {offerForm.typePreset === OFFER_TYPE_OTHER_KEY && (
               <AutoFocusInput
                 style={styles.formInput}
@@ -18287,87 +18729,54 @@ export default function App() {
           <View style={styles.formField}>
             <TouchableOpacity
               style={[styles.formInput, styles.selectInput]}
-              onPress={() => {
-                setCreateOfferExpiryDateMenuOpen((prev) => !prev);
-                setCreateOfferExpiryTimeMenuOpen(false);
-              }}
+              onPress={() => openOfferDatePicker("startDate")}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.selectInputText}>
+                {offerForm.startsDate
+                  ? getOfferDateOptionLabel(offerForm.startsDate)
+                  : "Start date"}
+              </Text>
+              <Ionicons name="calendar-outline" size={16} color={COLORS.muted} />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.formField}>
+            <TouchableOpacity
+              style={[
+                styles.formInput,
+                styles.selectInput,
+                !offerForm.startsDate && styles.formInputDisabled,
+              ]}
+              onPress={() => openOfferTimePicker("startTime")}
+              activeOpacity={0.8}
+              disabled={!offerForm.startsDate}
+            >
+              <Text style={styles.selectInputText}>
+                {offerForm.startsDate
+                  ? offerExpiryTimeOptions.find(
+                      (option) => option.value === offerForm.startsTime,
+                    )?.label || "Start time"
+                  : "Start time"}
+              </Text>
+              <Ionicons name="time-outline" size={16} color={COLORS.muted} />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.formField}>
+            <TouchableOpacity
+              style={[
+                styles.formInput,
+                styles.selectInput,
+              ]}
+              onPress={() => openOfferDatePicker("endDate")}
               activeOpacity={0.8}
             >
               <Text style={styles.selectInputText}>
                 {offerForm.expiresDate
-                  ? offerExpiryDateOptions.find(
-                      (option) => option.value === offerForm.expiresDate,
-                    )?.label || offerForm.expiresDate
-                  : "No expiration"}
+                  ? getOfferDateOptionLabel(offerForm.expiresDate)
+                  : "End date"}
               </Text>
-              <Ionicons
-                name={createOfferExpiryDateMenuOpen ? "chevron-up" : "chevron-down"}
-                size={16}
-                color={COLORS.muted}
-              />
+              <Ionicons name="calendar-outline" size={16} color={COLORS.muted} />
             </TouchableOpacity>
-            {createOfferExpiryDateMenuOpen && (
-              <View style={styles.selectMenu}>
-                <TouchableOpacity
-                  style={[
-                    styles.selectMenuOption,
-                    !offerForm.expiresDate && styles.selectMenuOptionActive,
-                  ]}
-                  onPress={() => {
-                    setOfferForm((prev) => ({
-                      ...prev,
-                      expiresDate: "",
-                      expiresTime: "",
-                    }));
-                    setCreateOfferExpiryDateMenuOpen(false);
-                    setCreateOfferExpiryTimeMenuOpen(false);
-                    if (offerError) setOfferError(null);
-                    if (offerNotice) setOfferNotice(null);
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.selectMenuOptionText,
-                      !offerForm.expiresDate && styles.selectMenuOptionTextActive,
-                    ]}
-                  >
-                    No expiration
-                  </Text>
-                </TouchableOpacity>
-                {offerExpiryDateOptions.map((option) => {
-                  const active = offerForm.expiresDate === option.value;
-                  return (
-                    <TouchableOpacity
-                      key={option.value}
-                      style={[
-                        styles.selectMenuOption,
-                        active && styles.selectMenuOptionActive,
-                      ]}
-                      onPress={() => {
-                        setOfferForm((prev) => ({
-                          ...prev,
-                          expiresDate: option.value,
-                          expiresTime:
-                            prev.expiresTime || OFFER_EXPIRY_DEFAULT_TIME,
-                        }));
-                        setCreateOfferExpiryDateMenuOpen(false);
-                        if (offerError) setOfferError(null);
-                        if (offerNotice) setOfferNotice(null);
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.selectMenuOptionText,
-                          active && styles.selectMenuOptionTextActive,
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            )}
           </View>
           <View style={styles.formField}>
             <TouchableOpacity
@@ -18376,11 +18785,7 @@ export default function App() {
                 styles.selectInput,
                 !offerForm.expiresDate && styles.formInputDisabled,
               ]}
-              onPress={() => {
-                if (!offerForm.expiresDate) return;
-                setCreateOfferExpiryTimeMenuOpen((prev) => !prev);
-                setCreateOfferExpiryDateMenuOpen(false);
-              }}
+              onPress={() => openOfferTimePicker("endTime")}
               activeOpacity={0.8}
               disabled={!offerForm.expiresDate}
             >
@@ -18388,54 +18793,15 @@ export default function App() {
                 {offerForm.expiresDate
                   ? offerExpiryTimeOptions.find(
                       (option) => option.value === offerForm.expiresTime,
-                    )?.label || "Select time"
-                  : "Choose date first"}
+                    )?.label || "End time"
+                  : "End time"}
               </Text>
-              <Ionicons
-                name={createOfferExpiryTimeMenuOpen ? "chevron-up" : "chevron-down"}
-                size={16}
-                color={COLORS.muted}
-              />
+              <Ionicons name="time-outline" size={16} color={COLORS.muted} />
             </TouchableOpacity>
-            {createOfferExpiryTimeMenuOpen && offerForm.expiresDate && (
-              <View style={styles.selectMenu}>
-                {offerExpiryTimeOptions.map((option) => {
-                  const active = offerForm.expiresTime === option.value;
-                  return (
-                    <TouchableOpacity
-                      key={option.value}
-                      style={[
-                        styles.selectMenuOption,
-                        active && styles.selectMenuOptionActive,
-                      ]}
-                      onPress={() => {
-                        setOfferForm((prev) => ({
-                          ...prev,
-                          expiresTime: option.value,
-                        }));
-                        setCreateOfferExpiryTimeMenuOpen(false);
-                        if (offerError) setOfferError(null);
-                        if (offerNotice) setOfferNotice(null);
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.selectMenuOptionText,
-                          active && styles.selectMenuOptionTextActive,
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            )}
           </View>
         </View>
         <Text style={styles.formHint}>
-          Optional. If set, this offer will stop showing after the selected
-          date and time.
+          Optional. Set when this offer starts and ends, including both times.
         </Text>
         <Text style={styles.formLabel}>Redemption limit</Text>
         <View style={styles.limitOptionRow}>
@@ -18731,6 +19097,7 @@ export default function App() {
           "image_url",
           "active",
           "status",
+          "starts_at",
           "expires_at",
           "approval_status",
           "redemption_limit_period",
@@ -18832,6 +19199,7 @@ export default function App() {
           "image_url",
           "active",
           "status",
+          "starts_at",
           "expires_at",
           "approval_status",
           "redemption_limit_period",
@@ -19413,6 +19781,7 @@ export default function App() {
             "image_url",
             "active",
             "status",
+            "starts_at",
             "expires_at",
             "approval_status",
             "created_at",
@@ -19421,6 +19790,7 @@ export default function App() {
         .eq("business_id", businessId)
         .eq("active", true)
         .eq("approval_status", "approved")
+        .or(`starts_at.is.null,starts_at.lte.${new Date().toISOString()}`)
         .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
         .order("created_at", { ascending: false });
       if (error) {
@@ -20363,6 +20733,179 @@ export default function App() {
                   <Text style={styles.infoTooltipBody}>
                     {infoTooltip?.body || ""}
                   </Text>
+                </Pressable>
+              </Pressable>
+            </Modal>
+
+            <Modal
+              transparent
+              visible={offerDatePicker.visible}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={closeOfferDatePicker}
+            >
+              <Pressable
+                style={styles.optionPickerOverlay}
+                onPress={closeOfferDatePicker}
+              >
+                <Pressable style={styles.optionPickerCard} onPress={() => {}}>
+                  <View style={styles.optionPickerHeader}>
+                    <Text style={styles.optionPickerTitle}>
+                      {offerDatePicker.field === "startDate"
+                        ? "Select start date"
+                        : "Select end date"}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.optionPickerClose}
+                      onPress={closeOfferDatePicker}
+                    >
+                      <Ionicons name="close" size={16} color={COLORS.ink} />
+                    </TouchableOpacity>
+                  </View>
+                  <View style={styles.offerDatePickerYearRow}>
+                    <Text style={styles.offerDatePickerYearLabel}>Year</Text>
+                    <Text style={styles.offerDatePickerYearValue}>
+                      {offerDatePicker.year}
+                    </Text>
+                  </View>
+                  {offerDatePicker.field === "endDate" ? (
+                    <TouchableOpacity
+                      style={styles.offerDatePickerClearButton}
+                      onPress={clearOfferEndDate}
+                    >
+                      <Text style={styles.offerDatePickerClearButtonText}>
+                        No expiration
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  {offerDatePicker.step === "day" ? (
+                    <TouchableOpacity
+                      style={styles.offerDatePickerBackButton}
+                      onPress={() =>
+                        setOfferDatePicker((prev) => ({
+                          ...prev,
+                          step: "month",
+                        }))
+                      }
+                    >
+                      <Ionicons name="chevron-back" size={14} color={COLORS.pine} />
+                      <Text style={styles.offerDatePickerBackButtonText}>
+                        Change month
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  <ScrollView
+                    contentContainerStyle={styles.optionPickerList}
+                    showsVerticalScrollIndicator={false}
+                    keyboardShouldPersistTaps="handled"
+                  >
+                    {(offerDatePicker.step === "month"
+                      ? OFFER_MONTH_OPTIONS
+                      : Array.from(
+                          {
+                            length: getDaysInMonth(
+                              offerDatePicker.year,
+                              offerDatePicker.month,
+                            ),
+                          },
+                          (_, index) => ({
+                            value: index + 1,
+                            label: `${index + 1}`,
+                          }),
+                        )
+                    ).map((option) => {
+                      const active =
+                        offerDatePicker.step === "month"
+                          ? Number(offerDatePicker.month) === Number(option.value)
+                          : Number(offerDatePicker.day) === Number(option.value);
+                      return (
+                        <TouchableOpacity
+                          key={`offer-date-${offerDatePicker.step}-${option.value}`}
+                          style={[
+                            styles.optionPickerItem,
+                            active && styles.optionPickerItemActive,
+                          ]}
+                          onPress={() =>
+                            offerDatePicker.step === "month"
+                              ? handleOfferDatePickerMonthSelect(option.value)
+                              : handleOfferDatePickerDaySelect(option.value)
+                          }
+                        >
+                          <Text
+                            style={[
+                              styles.optionPickerText,
+                              active && styles.optionPickerTextActive,
+                            ]}
+                          >
+                            {option.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </Pressable>
+              </Pressable>
+            </Modal>
+
+            <Modal
+              transparent
+              visible={offerSchedulePicker.visible}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={closeOfferSchedulePicker}
+            >
+              <Pressable
+                style={styles.optionPickerOverlay}
+                onPress={closeOfferSchedulePicker}
+              >
+                <Pressable style={styles.optionPickerCard} onPress={() => {}}>
+                  <View style={styles.optionPickerHeader}>
+                    <Text style={styles.optionPickerTitle}>
+                      {offerSchedulePicker.title || "Select option"}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.optionPickerClose}
+                      onPress={closeOfferSchedulePicker}
+                    >
+                      <Ionicons name="close" size={16} color={COLORS.ink} />
+                    </TouchableOpacity>
+                  </View>
+                  <ScrollView
+                    contentContainerStyle={styles.optionPickerList}
+                    showsVerticalScrollIndicator={false}
+                    keyboardShouldPersistTaps="handled"
+                  >
+                    {(offerSchedulePicker.options || []).map((option) => {
+                      const active =
+                        String(offerSchedulePicker.selectedValue || "") ===
+                        String(option?.value || "");
+                      return (
+                        <TouchableOpacity
+                          key={`${offerSchedulePicker.field || "picker"}-${String(
+                            option?.value || "",
+                          )}`}
+                          style={[
+                            styles.optionPickerItem,
+                            active && styles.optionPickerItemActive,
+                          ]}
+                          onPress={() =>
+                            handleOfferSchedulePickerSelect(option?.value)
+                          }
+                        >
+                          <Text
+                            style={[
+                              styles.optionPickerText,
+                              active && styles.optionPickerTextActive,
+                            ]}
+                          >
+                            {option?.label || ""}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
                 </Pressable>
               </Pressable>
             </Modal>
@@ -22200,57 +22743,14 @@ export default function App() {
                   <Text style={styles.formLabel}>Offer type</Text>
                   <TouchableOpacity
                     style={[styles.formInput, styles.selectInput]}
-                    onPress={() => setEditOfferTypeMenuOpen((prev) => !prev)}
+                    onPress={() => openOfferTypePicker("edit")}
                     activeOpacity={0.8}
                   >
                     <Text style={styles.selectInputText}>
                       {getOfferTypePickerLabel(editOfferDraft.typePreset)}
                     </Text>
-                    <Ionicons
-                      name={
-                        editOfferTypeMenuOpen ? "chevron-up" : "chevron-down"
-                      }
-                      size={16}
-                      color={COLORS.muted}
-                    />
+                    <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
                   </TouchableOpacity>
-                  {editOfferTypeMenuOpen && (
-                    <View style={styles.selectMenu}>
-                      {OFFER_TYPE_DROPDOWN_OPTIONS.map((option) => {
-                        const isActive =
-                          editOfferDraft.typePreset === option.value;
-                        return (
-                          <TouchableOpacity
-                            key={option.value}
-                            style={[
-                              styles.selectMenuOption,
-                              isActive && styles.selectMenuOptionActive,
-                            ]}
-                            onPress={() => {
-                              setEditOfferDraft((prev) => ({
-                                ...prev,
-                                typePreset: option.value,
-                                typeCustom:
-                                  option.value === OFFER_TYPE_OTHER_KEY
-                                    ? prev.typeCustom
-                                    : "",
-                              }));
-                              setEditOfferTypeMenuOpen(false);
-                            }}
-                          >
-                            <Text
-                              style={[
-                                styles.selectMenuOptionText,
-                                isActive && styles.selectMenuOptionTextActive,
-                              ]}
-                            >
-                              {option.label}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  )}
                   {editOfferDraft.typePreset === OFFER_TYPE_OTHER_KEY && (
                     <AutoFocusInput
                       style={styles.formInput}
@@ -23767,7 +24267,7 @@ export default function App() {
                       <View style={styles.cashoutLinkedAccountOptions}>
                         <TouchableOpacity
                           style={styles.cashoutLinkedAccountsToggle}
-                          onPress={() => setCashoutLinkedBanksPickerVisible(true)}
+                          onPress={openCashoutLinkedBankSelector}
                           disabled={cashoutActionStatus.loading}
                         >
                           <View style={styles.cashoutLinkedAccountsToggleTextWrap}>
@@ -32123,7 +32623,7 @@ export default function App() {
                                             )}
                                           </View>
                                           <Text style={styles.adminMeta}>
-                                            15% plan bills 10% / gives 10% cashback. 20% plan bills 15% / gives 15% cashback.
+                                            15% plan bills 15% / gives 10% cashback. 20% plan bills 20% / gives 15% cashback.
                                           </Text>
                                         </View>
                                         {hasDirectionsTarget && (
@@ -33372,6 +33872,114 @@ const styles = StyleSheet.create({
   timePickerText: {
     fontSize: 14,
     color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  optionPickerOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    justifyContent: "center",
+    padding: 20,
+  },
+  optionPickerCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 14,
+    maxHeight: SCREEN_HEIGHT * 0.64,
+  },
+  optionPickerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+    gap: 12,
+  },
+  optionPickerTitle: {
+    flex: 1,
+    fontSize: 15,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  optionPickerClose: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: COLORS.mint,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+  },
+  optionPickerList: {
+    gap: 6,
+  },
+  optionPickerItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+  },
+  optionPickerItemActive: {
+    backgroundColor: COLORS.mint,
+    borderColor: "#9AD7BF",
+  },
+  optionPickerText: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  optionPickerTextActive: {
+    color: COLORS.pine,
+  },
+  offerDatePickerYearRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  offerDatePickerYearLabel: {
+    fontSize: 13,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  offerDatePickerYearValue: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  offerDatePickerClearButton: {
+    borderWidth: 1,
+    borderColor: "#9AD7BF",
+    borderRadius: 12,
+    backgroundColor: "#F2FBF6",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  offerDatePickerClearButtonText: {
+    fontSize: 13,
+    color: COLORS.pine,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  offerDatePickerBackButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+    marginBottom: 10,
+  },
+  offerDatePickerBackButtonText: {
+    fontSize: 13,
+    color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
   authSecondaryButton: {

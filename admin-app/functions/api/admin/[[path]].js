@@ -85,7 +85,7 @@ const normalizeBusinessCommissionRateCents = (value) => {
     : 150;
 };
 const resolveBusinessReceiptChargeRateCents = (value) =>
-  normalizeBusinessCommissionRateCents(value) >= 200 ? 150 : 100;
+  normalizeBusinessCommissionRateCents(value);
 const resolveBusinessDefaultCashbackRateBps = (value) =>
   normalizeBusinessCommissionRateCents(value) >= 200 ? 1500 : 1000;
 
