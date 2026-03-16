@@ -5,6 +5,8 @@
 /plaid-link      /plaid-link/index.html      200
 /contact         /contact/index.html         200
 /contact/*       /contact/index.html         200
+/download        /download/index.html        200
+/download/*      /download/index.html        200
 /terms           /terms/index.html           200
 /terms/*         /terms/index.html           200
 /third-party-notices    /third-party-notices/index.html    200
