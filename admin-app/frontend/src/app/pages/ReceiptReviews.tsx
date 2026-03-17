@@ -18,6 +18,13 @@ import { ImageLightbox } from "../components/ImageLightbox";
 
 type ReviewStatus = "pending" | "verified" | "rejected";
 
+interface TradeOwnerDecision {
+  id?: string | null;
+  response?: string | null;
+  dispute_reason?: string | null;
+  updated_at?: string | null;
+}
+
 interface ReceiptListRow {
   id: string;
   user_id?: string | null;
@@ -37,7 +44,13 @@ interface ReceiptListRow {
     code?: string | null;
     cashback_rate_bps?: number | null;
   } | null;
-  business?: { id: string; name?: string | null } | null;
+  trade_receipt_owner_responses?: TradeOwnerDecision[] | null;
+  business?: {
+    id: string;
+    name?: string | null;
+    category_key?: string | null;
+    category_label?: string | null;
+  } | null;
 }
 
 interface ReceiptDetail extends ReceiptListRow {
@@ -55,6 +68,38 @@ interface PreviewData {
 }
 
 const asDollarsString = (cents?: number | null) => ((Number(cents || 0) / 100).toFixed(2));
+
+const NON_TRADE_CATEGORY_KEYS = new Set(["activity", "restaurant", "drink", "cafe"]);
+const NON_TRADE_CATEGORY_ALIASES = new Set([
+  "activity",
+  "activities",
+  "activities-entertainment",
+  "entertainment",
+  "restaurant",
+  "restaurants",
+  "restaurant-food",
+  "food",
+  "drink",
+  "drinks",
+  "cafe",
+  "cafes",
+  "coffee",
+]);
+
+const normalizeCategoryValue = (value?: string | null) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_/]+/g, "-")
+    .replace(/\s+/g, "-");
+
+const isTradeBusinessCategory = (categoryKey?: string | null, categoryLabel?: string | null) => {
+  const normalizedKey = normalizeCategoryValue(categoryKey);
+  if (normalizedKey && NON_TRADE_CATEGORY_KEYS.has(normalizedKey)) return false;
+  const normalizedLabel = normalizeCategoryValue(categoryLabel);
+  if (normalizedLabel && NON_TRADE_CATEGORY_ALIASES.has(normalizedLabel)) return false;
+  return Boolean(normalizedKey || normalizedLabel);
+};
 
 export function ReceiptReviews() {
   const [rows, setRows] = useState<ReceiptListRow[]>([]);
@@ -76,6 +121,7 @@ export function ReceiptReviews() {
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerUrl, setViewerUrl] = useState("");
   const [viewerTitle, setViewerTitle] = useState("Receipt Image");
+  const [tradeOverrideEnabled, setTradeOverrideEnabled] = useState(false);
 
   const loadReceipts = async () => {
     setLoading(true);
@@ -122,6 +168,7 @@ export function ReceiptReviews() {
         ? true
         : Boolean(res.data.retry_allowed),
     );
+    setTradeOverrideEnabled(false);
     setPreview(null);
     setPreviewError("");
 
@@ -186,6 +233,29 @@ export function ReceiptReviews() {
     });
   }, [rows, searchQuery]);
 
+  const detailTradeDecision = useMemo(() => {
+    const row = Array.isArray(detail?.trade_receipt_owner_responses)
+      ? detail?.trade_receipt_owner_responses?.[0] || null
+      : null;
+    const response = String(row?.response || "").trim().toLowerCase();
+    return row && response
+      ? {
+          ...row,
+          response,
+        }
+      : null;
+  }, [detail?.trade_receipt_owner_responses]);
+
+  const isDetailTradeReceipt = useMemo(
+    () => isTradeBusinessCategory(detail?.business?.category_key, detail?.business?.category_label),
+    [detail?.business?.category_key, detail?.business?.category_label],
+  );
+
+  const tradeInputLocked = useMemo(
+    () => isDetailTradeReceipt && !detailTradeDecision?.response && !tradeOverrideEnabled,
+    [detailTradeDecision?.response, isDetailTradeReceipt, tradeOverrideEnabled],
+  );
+
   const stats = useMemo(
     () => ({
       pending: rows.filter((row) => String(row.review_status) === "pending").length,
@@ -203,6 +273,10 @@ export function ReceiptReviews() {
 
     const parsed = Number(totalInput);
     const receiptTotalCents = Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed * 100) : 0;
+    if ((action === "verify" || action === "edit") && tradeInputLocked) {
+      setMessage("Trade receipt total is locked until the business answers or you override it.");
+      return;
+    }
     if ((action === "verify" || action === "edit") && receiptTotalCents <= 0) {
       setMessage("Enter a valid receipt total before approving.");
       return;
@@ -359,11 +433,21 @@ export function ReceiptReviews() {
                     const status = String(receipt.review_status || "pending");
                     const amountCents = Number(receipt.receipt_total_cents || 0);
                     const isSelected = selectedId === receipt.id;
+                    const isTradeReceipt = isTradeBusinessCategory(
+                      receipt.business?.category_key,
+                      receipt.business?.category_label,
+                    );
                     return (
                       <tr
                         key={receipt.id}
                         className={`transition-colors ${
-                          isSelected ? "bg-amber-50" : "hover:bg-gray-50"
+                          isTradeReceipt
+                            ? isSelected
+                              ? "bg-red-50"
+                              : "hover:bg-red-50/60"
+                            : isSelected
+                              ? "bg-amber-50"
+                              : "hover:bg-gray-50"
                         }`}
                       >
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -376,9 +460,14 @@ export function ReceiptReviews() {
                           <p className="text-sm text-gray-900">{receipt.user_id || "--"}</p>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <p className="text-sm text-gray-900">
+                          <p className={`text-sm ${isTradeReceipt ? "font-semibold text-red-700" : "text-gray-900"}`}>
                             {receipt.business?.name || receipt.business_id || "--"}
                           </p>
+                          {isTradeReceipt ? (
+                            <p className="text-xs font-medium uppercase tracking-wide text-red-600">
+                              Trade receipt
+                            </p>
+                          ) : null}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <p className="font-medium text-gray-900">
@@ -465,6 +554,18 @@ export function ReceiptReviews() {
                     {detail.business?.name || detail.business_id || "--"}
                   </p>
                 </div>
+                {isDetailTradeReceipt ? (
+                  <div>
+                    <p className="text-gray-500">Trade owner answer</p>
+                    <p className="font-medium text-red-700">
+                      {detailTradeDecision?.response === "accepted"
+                        ? "Accepted"
+                        : detailTradeDecision?.response === "disputed"
+                          ? "Disputed"
+                          : "Awaiting response"}
+                    </p>
+                  </div>
+                ) : null}
                 <div>
                   <p className="text-gray-500">User</p>
                   <p className="font-medium text-gray-900">{detail.user_id || "--"}</p>
@@ -477,14 +578,51 @@ export function ReceiptReviews() {
                 </div>
               </div>
 
+              {isDetailTradeReceipt && detailTradeDecision?.response === "disputed" && detailTradeDecision.dispute_reason ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
+                  <span className="font-semibold">Dispute reason:</span> {detailTradeDecision.dispute_reason}
+                </div>
+              ) : null}
+
+              {isDetailTradeReceipt ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-900 space-y-2">
+                  <p className="font-semibold">Trade receipt controls</p>
+                  <p>
+                    Receipt total stays locked until the business answers Accept or Dispute. You can override
+                    that lock if you need to process it early.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setTradeOverrideEnabled((prev) => !prev)}
+                    className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                      tradeOverrideEnabled
+                        ? "bg-red-700 text-white hover:bg-red-800"
+                        : "bg-white text-red-700 border border-red-300 hover:bg-red-100"
+                    }`}
+                  >
+                    {tradeOverrideEnabled ? "Disable override" : "Override business decision lock"}
+                  </button>
+                </div>
+              ) : null}
+
               <label className="block">
                 <span className="text-sm text-gray-700">Receipt total (USD)</span>
                 <input
                   value={totalInput}
                   onChange={(e) => setTotalInput(e.target.value)}
-                  className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  disabled={tradeInputLocked}
+                  className={`mt-1 w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 ${
+                    tradeInputLocked
+                      ? "border-red-200 bg-red-50 text-red-700 cursor-not-allowed focus:ring-red-200"
+                      : "border-gray-300 focus:ring-amber-500"
+                  }`}
                 />
               </label>
+              {tradeInputLocked ? (
+                <p className="text-xs text-red-600">
+                  Locked until the trade business answers Accept or Dispute, unless you use the override.
+                </p>
+              ) : null}
 
               <label className="block">
                 <span className="text-sm text-gray-700">Review notes</span>
@@ -587,7 +725,7 @@ export function ReceiptReviews() {
                 {String(detail.review_status || "").toLowerCase() === "pending" ? (
                   <>
                     <button
-                      disabled={working}
+                      disabled={working || tradeInputLocked}
                       onClick={() => void submitDecision("verify")}
                       className="flex-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-60"
                     >
@@ -603,7 +741,7 @@ export function ReceiptReviews() {
                   </>
                 ) : String(detail.review_status || "").toLowerCase() === "verified" ? (
                   <button
-                    disabled={working}
+                    disabled={working || tradeInputLocked}
                     onClick={() => void submitDecision("edit")}
                     className="w-full px-3 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-60"
                   >

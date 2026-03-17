@@ -1829,7 +1829,7 @@ const routeExplicit = async (ctx, request, segments) => {
       table: "receipt_uploads",
       action: "select",
       select:
-        "id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,promo_code_id,retry_allowed,retry_decided_by,retry_decided_at,promo_code:promo_codes(id,code,cashback_rate_bps),business:businesses(id,name,commission_rate_cents),redemption:redemptions(id,offer:offers(id,title))",
+        "id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,promo_code_id,retry_allowed,retry_decided_by,retry_decided_at,promo_code:promo_codes(id,code,cashback_rate_bps),business:businesses(id,name,commission_rate_cents,category_key,category_label),redemption:redemptions(id,offer:offers(id,title)),trade_receipt_owner_responses(id,response,dispute_reason,updated_at)",
       order: [{ column: "uploaded_at", ascending: false }],
       limit: pageSize,
       range: {
@@ -1846,7 +1846,7 @@ const routeExplicit = async (ctx, request, segments) => {
       table: "receipt_uploads",
       action: "select",
       select:
-        "id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,promo_code_id,retry_allowed,retry_decided_by,retry_decided_at,business:businesses(id,name,commission_rate_cents),redemption:redemptions(id,offer:offers(id,title),commission_events(id,amount_cents,status)),promo_code:promo_codes(id,code,cashback_rate_bps),cashback_events(id,amount_cents,status,cashback_rate_bps,cashback_basis,platform_subsidy_cents,promo_code_id,promo_code:promo_codes(code,cashback_rate_bps))",
+        "id,uploaded_at,storage_path,receipt_total_cents,commission_due_cents,review_status,review_notes,reviewed_at,reviewed_by,business_id,redemption_id,user_id,promo_code_id,retry_allowed,retry_decided_by,retry_decided_at,business:businesses(id,name,commission_rate_cents,category_key,category_label),redemption:redemptions(id,offer:offers(id,title),commission_events(id,amount_cents,status)),promo_code:promo_codes(id,code,cashback_rate_bps),cashback_events(id,amount_cents,status,cashback_rate_bps,cashback_basis,platform_subsidy_cents,promo_code_id,promo_code:promo_codes(code,cashback_rate_bps)),trade_receipt_owner_responses(id,response,dispute_reason,updated_at)",
       filters: [{ column: "id", op: "eq", value: segments[1] }],
       single: "maybe",
     });

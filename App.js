@@ -18580,6 +18580,10 @@ export default function App() {
 
   const handleOpenReceiptPreview = async (receipt, offerTitle) => {
     if (!receipt) return;
+    if (tradeReceiptReviewOpen) {
+      setTradeReceiptReviewOpen(false);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
     setReceiptReportStatus({
       loading: false,
       targetId: null,
@@ -20243,58 +20247,52 @@ export default function App() {
         }
         return;
       }
-      const mapped = await Promise.all(
-        (data || []).map(async (row) => {
-          const verificationSource = String(
-            row.verification_source || "receipt",
-          ).toLowerCase();
-          const ownerDecisionRow = Array.isArray(
-            row.trade_receipt_owner_responses,
-          )
-            ? row.trade_receipt_owner_responses[0] || null
-            : row.trade_receipt_owner_responses || null;
-          const signedUrl =
-            verificationSource === "plaid"
-              ? ""
-              : await createReceiptSignedUrl(row.storage_path);
-          return {
-            id: String(row.id),
-            redemptionId: row.redemption_id || null,
-            businessId: row.business_id || null,
-            offerId: row.redemption?.offer?.id || null,
-            uploadedAt: row.uploaded_at
-              ? new Date(row.uploaded_at).getTime()
-              : Date.now(),
-            redeemedAt: row.redemption?.created_at
-              ? new Date(row.redemption.created_at).getTime()
-              : null,
-            offerTitle: row.redemption?.offer?.title || "",
-            storagePath: row.storage_path || "",
-            imageUrl: signedUrl || "",
-            reviewStatus: row.review_status || null,
-            verificationSource,
-            verificationReference: row.verification_reference || null,
-            receiptTotalCents: Number(row.receipt_total_cents) || 0,
-            ownerDecision: ownerDecisionRow
-              ? {
-                  id: String(ownerDecisionRow.id || ""),
-                  response:
-                    String(ownerDecisionRow.response || "").trim().toLowerCase() ||
-                    null,
-                  disputeReason:
-                    String(ownerDecisionRow.dispute_reason || "").trim() || null,
-                  ownerId: String(ownerDecisionRow.owner_id || "").trim() || null,
-                  createdAt: ownerDecisionRow.created_at
-                    ? new Date(ownerDecisionRow.created_at).getTime()
-                    : 0,
-                  updatedAt: ownerDecisionRow.updated_at
-                    ? new Date(ownerDecisionRow.updated_at).getTime()
-                    : 0,
-                }
-              : null,
-          };
-        }),
-      );
+      const mapped = (data || []).map((row) => {
+        const verificationSource = String(
+          row.verification_source || "receipt",
+        ).toLowerCase();
+        const ownerDecisionRow = Array.isArray(
+          row.trade_receipt_owner_responses,
+        )
+          ? row.trade_receipt_owner_responses[0] || null
+          : row.trade_receipt_owner_responses || null;
+        return {
+          id: String(row.id),
+          redemptionId: row.redemption_id || null,
+          businessId: row.business_id || null,
+          offerId: row.redemption?.offer?.id || null,
+          uploadedAt: row.uploaded_at
+            ? new Date(row.uploaded_at).getTime()
+            : Date.now(),
+          redeemedAt: row.redemption?.created_at
+            ? new Date(row.redemption.created_at).getTime()
+            : null,
+          offerTitle: row.redemption?.offer?.title || "",
+          storagePath: row.storage_path || "",
+          imageUrl: "",
+          reviewStatus: row.review_status || null,
+          verificationSource,
+          verificationReference: row.verification_reference || null,
+          receiptTotalCents: Number(row.receipt_total_cents) || 0,
+          ownerDecision: ownerDecisionRow
+            ? {
+                id: String(ownerDecisionRow.id || ""),
+                response:
+                  String(ownerDecisionRow.response || "").trim().toLowerCase() ||
+                  null,
+                disputeReason:
+                  String(ownerDecisionRow.dispute_reason || "").trim() || null,
+                ownerId: String(ownerDecisionRow.owner_id || "").trim() || null,
+                createdAt: ownerDecisionRow.created_at
+                  ? new Date(ownerDecisionRow.created_at).getTime()
+                  : 0,
+                updatedAt: ownerDecisionRow.updated_at
+                  ? new Date(ownerDecisionRow.updated_at).getTime()
+                  : 0,
+              }
+            : null,
+        };
+      });
       setBusinessReceipts(mapped);
       if (!silent) {
         setBusinessReceiptStatus({ loading: false, error: null });
@@ -23034,6 +23032,13 @@ export default function App() {
                             const isSaving =
                               tradeReceiptDecisionStatus.loading &&
                               tradeReceiptDecisionStatus.targetId === receipt.id;
+                            const canViewReceiptPhoto =
+                              String(
+                                receipt?.verificationSource || "",
+                              ).toLowerCase() !== "plaid" &&
+                              !!String(
+                                receipt?.storagePath || receipt?.imageUrl || "",
+                              ).trim();
                             const responseLabel =
                               decision?.response === "disputed"
                                 ? "Disputed"
@@ -23094,6 +23099,27 @@ export default function App() {
                                   <Text style={styles.tradeReceiptDecisionReason}>
                                     Reason: {decision.disputeReason}
                                   </Text>
+                                ) : null}
+
+                                {canViewReceiptPhoto ? (
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.secondaryButton,
+                                      styles.tradeReceiptDecisionPhotoButton,
+                                      isSaving && styles.secondaryButtonDisabled,
+                                    ]}
+                                    onPress={() =>
+                                      handleOpenReceiptPreview(
+                                        receipt,
+                                        receipt.offerTitle,
+                                      )
+                                    }
+                                    disabled={isSaving}
+                                  >
+                                    <Text style={styles.secondaryButtonText}>
+                                      View receipt photo
+                                    </Text>
+                                  </TouchableOpacity>
                                 ) : null}
 
                                 <View style={styles.tradeReceiptDecisionActions}>
@@ -40252,6 +40278,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
+  },
+  tradeReceiptDecisionPhotoButton: {
+    alignSelf: "flex-start",
   },
   tradeReceiptDecisionActions: {
     flexDirection: "row",
