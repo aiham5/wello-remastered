@@ -14671,13 +14671,17 @@ export default function App() {
         }
       }
 
-      const { error } = await supabase.from("redemptions").insert({
-        business_id: business.id,
-        offer_id: offerId,
-        qr_payload: null,
-        scanned_by: authUserId,
-      });
-      if (error) {
+      const { data: insertedRedemption, error } = await supabase
+        .from("redemptions")
+        .insert({
+          business_id: business.id,
+          offer_id: offerId,
+          qr_payload: null,
+          scanned_by: authUserId,
+        })
+        .select("id, business_id, offer_id, created_at")
+        .single();
+      if (error || !insertedRedemption) {
         redemptionLoggedRef.current = false;
         setScannerStatus("error");
         const rawDetails = String(error?.details || "");
@@ -14706,11 +14710,71 @@ export default function App() {
         console.warn("Wello redemption insert failed:", error.message || error);
         return false;
       }
+      const createdAt = insertedRedemption.created_at
+        ? new Date(insertedRedemption.created_at).getTime()
+        : Date.now();
+      const businessCategoryKey = String(
+        business?.categoryKey || offerCard?.categoryKey || "restaurant",
+      ).trim();
+      const businessCategoryLabel = String(
+        business?.category ||
+          business?.categoryLabel ||
+          getCategoryConfig(businessCategoryKey).display ||
+          "Local business",
+      ).trim();
+      setRedemptionHistory((prev) => {
+        const nextEntry = {
+          id: String(insertedRedemption.id),
+          optimistic: true,
+          createdAt,
+          businessId: insertedRedemption.business_id || business.id || null,
+          offerId: insertedRedemption.offer_id || offerId,
+          offer: {
+            id: offerId ? String(offerId) : String(insertedRedemption.id),
+            title: String(
+              offerCard?.offerTitle || offerCard?.offer || business?.offer || "Offer",
+            ).trim(),
+            description: String(
+              offerCard?.description || offerCard?.offerDescription || "",
+            ).trim(),
+            offer_type: String(
+              offerCard?.offerType || offerCard?.offer_type || "offer",
+            ).trim(),
+            image_url: String(
+              offerCard?.imageUrl || business?.imageUrl || "",
+            ).trim(),
+          },
+          business: {
+            id: String(insertedRedemption.business_id || business.id || ""),
+            name: String(business.name || "Wello business").trim(),
+            category_key: businessCategoryKey,
+            category_label: businessCategoryLabel,
+          },
+          purchaseVerification: {
+            id: `pending-${insertedRedemption.id}`,
+            source: hasLinkedPlaidBank ? "plaid" : "receipt",
+            status: hasLinkedPlaidBank ? "pending" : "needed",
+            reasonCode: hasLinkedPlaidBank ? "pending_review" : "receipt_required",
+            reasonDetail: hasLinkedPlaidBank
+              ? "Verification pending."
+              : "Upload a receipt to continue.",
+            lastCheckedAt: createdAt,
+            confirmedAt: null,
+            rejectedAt: null,
+          },
+          receipt: null,
+        };
+        return prev.some((entry) => String(entry?.id || "") === nextEntry.id)
+          ? prev
+          : [nextEntry, ...prev];
+      });
       setScannerStatus("success");
       if (!hasLinkedPlaidBank) {
         setPostRedeemBankPromptOpen(true);
       }
-      loadRedemptions({ silent: true });
+      setTimeout(() => {
+        loadRedemptions({ silent: true });
+      }, 900);
       return true;
     } catch (error) {
       redemptionLoggedRef.current = false;
@@ -18580,10 +18644,6 @@ export default function App() {
 
   const handleOpenReceiptPreview = async (receipt, offerTitle) => {
     if (!receipt) return;
-    if (tradeReceiptReviewOpen) {
-      setTradeReceiptReviewOpen(false);
-      await new Promise((resolve) => setTimeout(resolve, 120));
-    }
     setReceiptReportStatus({
       loading: false,
       targetId: null,
@@ -18662,6 +18722,15 @@ export default function App() {
       loading: false,
       error: finalUrl ? null : "Unable to load receipt image.",
     });
+  };
+
+  const handleOpenTradeReceiptPreview = (receipt) => {
+    if (!receipt) return;
+    setTradeReceiptReviewOpen(false);
+    setReceiptsModalOpen(true);
+    setTimeout(() => {
+      handleOpenReceiptPreview(receipt, receipt.offerTitle);
+    }, 180);
   };
 
   const onReceiptPinchEvent = Animated.event(
@@ -19849,7 +19918,21 @@ export default function App() {
         }
         return;
       }
-      setRedemptionHistory((data || []).map(mapSupabaseRedemption));
+      const mappedRows = (data || []).map(mapSupabaseRedemption);
+      setRedemptionHistory((prev) => {
+        const now = Date.now();
+        const optimisticRows = (Array.isArray(prev) ? prev : []).filter(
+          (entry) =>
+            entry?.optimistic === true &&
+            !mappedRows.some(
+              (row) => String(row?.id || "") === String(entry?.id || ""),
+            ) &&
+            now - (Number(entry?.createdAt) || 0) < 10 * 60 * 1000,
+        );
+        return [...optimisticRows, ...mappedRows].sort(
+          (a, b) => (Number(b?.createdAt) || 0) - (Number(a?.createdAt) || 0),
+        );
+      });
       if (!silent) {
         setRedemptionStatus({ loading: false, error: null });
       }
@@ -23108,12 +23191,7 @@ export default function App() {
                                       styles.tradeReceiptDecisionPhotoButton,
                                       isSaving && styles.secondaryButtonDisabled,
                                     ]}
-                                    onPress={() =>
-                                      handleOpenReceiptPreview(
-                                        receipt,
-                                        receipt.offerTitle,
-                                      )
-                                    }
+                                    onPress={() => handleOpenTradeReceiptPreview(receipt)}
                                     disabled={isSaving}
                                   >
                                     <Text style={styles.secondaryButtonText}>
