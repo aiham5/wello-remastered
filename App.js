@@ -282,7 +282,7 @@ const BUSINESS_RATE_PRESET_OPTIONS = [
   { key: "20", label: "20%", commissionRateCents: 200, defaultCashbackRateBps: 1500 },
   { key: "custom", label: "Custom Rate", commissionRateCents: null, defaultCashbackRateBps: null },
 ];
-const TRADES_RECEIPT_CAP_CENTS = 100000;
+const TRADES_CASHBACK_CAP_CENTS = 100000;
 const TRADES_RECEIPT_CAP_COPY = "$1,000";
 const TRADES_RECEIPT_CHARGE_RATE_BPS = 1000;
 const TRADES_RECEIPT_CASHBACK_RATE_BPS = 600;
@@ -4915,7 +4915,7 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
                 </Text>
                 {isTradeOffer ? (
                   <Text style={styles.liveEditorialStackCashbackCapText}>
-                    Up to {TRADES_RECEIPT_CAP_COPY}
+                    Up to {TRADES_RECEIPT_CAP_COPY} back
                   </Text>
                 ) : null}
                 <Text style={styles.liveEditorialStackCashbackSubtext}>
@@ -18139,7 +18139,7 @@ export default function App() {
                     status: "pending",
                     reasonCode: "receipt_under_review",
                     reasonDetail: isTradesRedemptionEntry(entry)
-                      ? `Receipt uploaded and awaiting review. Trades cashback is 6% back on up to ${TRADES_RECEIPT_CAP_COPY} in eligible purchase amount and can take up to 7 business days.`
+                      ? `Receipt uploaded and awaiting review. Trades cashback is 6% back, capped at ${TRADES_RECEIPT_CAP_COPY} total cashback, and can take up to 7 business days.`
                       : "Receipt uploaded and awaiting review.",
                     lastCheckedAt: Date.now(),
                     confirmedAt: null,
@@ -18159,7 +18159,7 @@ export default function App() {
           "success",
           "Receipt uploaded",
           isTradesRedemptionEntry(entry)
-            ? `Thanks! Trades cashback is 6% back on up to ${TRADES_RECEIPT_CAP_COPY} in eligible purchases and can take up to 7 business days.`
+            ? `Thanks! Trades cashback is 6% back, capped at ${TRADES_RECEIPT_CAP_COPY} total cashback, and can take up to 7 business days.`
             : "Thanks! We'll review it shortly.",
           { autoHideMs: 1600 },
         );
@@ -26689,7 +26689,7 @@ export default function App() {
                                     openInfoTooltip(
                                       "Payments",
                                       ownerIsTradeBusiness
-                                        ? `Your business is on the ${formatPercentLabel(ownerCommissionRatePercent)}% plan. Verified trades receipts are billed at ${formatPercentLabel(ownerReceiptChargePercent)}% of up to ${TRADES_RECEIPT_CAP_COPY} in receipt total, and customers earn ${formatPercentLabel(ownerDefaultCashbackPercent)}% cashback on eligible verified trades receipts. Billing remains monthly.`
+                                        ? `Your business is on the ${formatPercentLabel(ownerCommissionRatePercent)}% plan. Verified trades receipts are billed at ${formatPercentLabel(ownerReceiptChargePercent)}% of the verified receipt total, and customers earn ${formatPercentLabel(ownerDefaultCashbackPercent)}% cashback capped at ${TRADES_RECEIPT_CAP_COPY} total cashback. Billing remains monthly.`
                                         : `Your business is on the ${formatPercentLabel(ownerCommissionRatePercent)}% plan. Verified receipts are billed at ${formatPercentLabel(ownerReceiptChargePercent)}% of receipt total, and your offers default to ${formatPercentLabel(ownerDefaultCashbackPercent)}% cashback. Promo codes can still increase customer cashback. Billing remains monthly.`,
                                     )
                                   }
@@ -28622,7 +28622,7 @@ export default function App() {
                                     const tradeReceiptReviewNote =
                                       receiptReviewStatus === "pending" &&
                                       isTradesRedemptionEntry(entry)
-                                        ? `Trades cashback is 6% back on up to ${TRADES_RECEIPT_CAP_COPY} in eligible purchases and can take up to 7 business days.`
+                                        ? `Trades cashback is 6% back, capped at ${TRADES_RECEIPT_CAP_COPY} total cashback, and can take up to 7 business days.`
                                         : "";
                                     const statusCopy = (() => {
                                       if (needsReceipt) {

@@ -88,7 +88,7 @@ const BUSINESS_RATE_PRESET_BY_COMMISSION = new Map(
     option.defaultCashbackRateBps,
   ]),
 );
-const TRADE_RECEIPT_CAP_CENTS = 100000;
+const TRADE_CASHBACK_CAP_CENTS = 100000;
 const TRADE_RECEIPT_COMMISSION_RATE_CENTS = 100;
 const TRADE_RECEIPT_COMMISSION_RATE_BPS = 1000;
 const TRADE_RECEIPT_CASHBACK_RATE_BPS = 600;
@@ -1049,9 +1049,7 @@ const handleRpc = async (ctx, body) => {
         );
       }
     }
-    const eligibleTotalCents = isTradeBusiness
-      ? Math.min(totalCents, TRADE_RECEIPT_CAP_CENTS)
-      : totalCents;
+    const eligibleTotalCents = totalCents;
     const commissionRateCents = isTradeBusiness
       ? TRADE_RECEIPT_COMMISSION_RATE_CENTS
       : resolveBusinessReceiptChargeRateCents(businessCommissionRateCents);
@@ -1085,9 +1083,12 @@ const handleRpc = async (ctx, body) => {
     }
 
     const effectiveCashbackRateBps = appliedPromoRateBps || defaultCashbackRateBps;
-    const cashbackCents = Math.floor(
+    const rawCashbackCents = Math.floor(
       (eligibleTotalCents * effectiveCashbackRateBps) / 10000,
     );
+    const cashbackCents = isTradeBusiness
+      ? Math.min(rawCashbackCents, TRADE_CASHBACK_CAP_CENTS)
+      : rawCashbackCents;
     const platformSubsidyCents = Math.max(cashbackCents - commissionCents, 0);
 
     return json({
@@ -1103,8 +1104,8 @@ const handleRpc = async (ctx, body) => {
         applied_promo_rate_bps: appliedPromoRateBps,
         effective_cashback_rate_bps: effectiveCashbackRateBps,
         cashback_basis:
-          isTradeBusiness && eligibleTotalCents < totalCents
-            ? "receipt_total_capped"
+          isTradeBusiness && cashbackCents < rawCashbackCents
+            ? "cashback_amount_capped"
             : "receipt_total",
         cashback_cents: cashbackCents,
         platform_subsidy_cents: platformSubsidyCents,
