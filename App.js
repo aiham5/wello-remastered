@@ -8337,8 +8337,14 @@ export default function App() {
           animateMapToRegion(DEMO_MAP_REGION, 700);
           return;
         }
-        // Do not prompt for permission during startup; only use location if already granted.
-        const { status } = await Location.getForegroundPermissionsAsync();
+        const existingPermission =
+          await Location.getForegroundPermissionsAsync();
+        let status = existingPermission.status;
+        if (status !== "granted") {
+          const requestedPermission =
+            await Location.requestForegroundPermissionsAsync();
+          status = requestedPermission.status;
+        }
         if (status !== "granted") return;
         let position = await Location.getLastKnownPositionAsync({
           maxAge: 1000 * 60 * 10,
