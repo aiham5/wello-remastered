@@ -276,36 +276,133 @@ const DISCOVER_DEMO_LAYOUTS = [
   { key: "editorial_stack", label: "Editorial Stack" },
   { key: "editorial", label: "Editorial" },
 ];
-const BUSINESS_COMMISSION_OPTIONS = [
-  { label: "15%", value: 150 },
-  { label: "20%", value: 200 },
+const BUSINESS_RATE_PRESET_OPTIONS = [
+  { key: "10", label: "10%", commissionRateCents: 100, defaultCashbackRateBps: 600 },
+  { key: "15", label: "15%", commissionRateCents: 150, defaultCashbackRateBps: 1000 },
+  { key: "20", label: "20%", commissionRateCents: 200, defaultCashbackRateBps: 1500 },
+  { key: "custom", label: "Custom Rate", commissionRateCents: null, defaultCashbackRateBps: null },
 ];
-const BUSINESS_COMMISSION_VALUES = new Set(
-  BUSINESS_COMMISSION_OPTIONS.map((option) => option.value),
+const TRADES_RECEIPT_CAP_CENTS = 100000;
+const TRADES_RECEIPT_CAP_COPY = "$1,000";
+const TRADES_RECEIPT_CHARGE_RATE_BPS = 1000;
+const TRADES_RECEIPT_CASHBACK_RATE_BPS = 600;
+const BUSINESS_RATE_PRESET_BY_COMMISSION = new Map(
+  BUSINESS_RATE_PRESET_OPTIONS
+    .filter((option) => Number.isFinite(option.commissionRateCents))
+    .map((option) => [option.commissionRateCents, option]),
 );
-const normalizeBusinessCommissionRateCents = (value) => {
+const normalizeBusinessCommissionRateCents = (value, fallback = 150) => {
   const numeric = Number(value);
-  if (Number.isFinite(numeric) && BUSINESS_COMMISSION_VALUES.has(numeric)) {
-    return numeric;
+  if (Number.isFinite(numeric)) {
+    return Math.max(10, Math.min(1000, Math.round(numeric)));
   }
-  return 150;
+  return Math.max(10, Math.min(1000, Math.round(Number(fallback) || 150)));
 };
 const resolveBusinessReceiptChargeRateCents = (value) =>
   normalizeBusinessCommissionRateCents(value);
-const resolveBusinessDefaultCashbackRateBps = (value) =>
-  normalizeBusinessCommissionRateCents(value) >= 200 ? 1500 : 1000;
+const deriveDefaultCashbackRateBpsFromCommission = (value) => {
+  const normalizedCommission = normalizeBusinessCommissionRateCents(value);
+  const preset = BUSINESS_RATE_PRESET_BY_COMMISSION.get(normalizedCommission);
+  if (preset?.defaultCashbackRateBps != null) {
+    return preset.defaultCashbackRateBps;
+  }
+  return Math.max(
+    0,
+    Math.min(normalizedCommission * 10, (normalizedCommission - 50) * 10),
+  );
+};
+const normalizeBusinessDefaultCashbackRateBps = (
+  cashbackRateBps,
+  commissionRateCents,
+) => {
+  const maxCashbackRateBps = normalizeBusinessCommissionRateCents(
+    commissionRateCents,
+  ) * 10;
+  const numeric = Number(cashbackRateBps);
+  if (Number.isFinite(numeric)) {
+    return Math.max(0, Math.min(maxCashbackRateBps, Math.round(numeric)));
+  }
+  return deriveDefaultCashbackRateBpsFromCommission(commissionRateCents);
+};
+const resolveBusinessDefaultCashbackRateBps = (
+  commissionRateCents,
+  explicitCashbackRateBps = null,
+) =>
+  normalizeBusinessDefaultCashbackRateBps(
+    explicitCashbackRateBps,
+    commissionRateCents,
+  );
 const commissionRateCentsToPercent = (value) =>
   normalizeBusinessCommissionRateCents(value) / 10;
 const commissionRateCentsToChargePercent = (value) =>
   resolveBusinessReceiptChargeRateCents(value) / 10;
-const commissionRateCentsToDefaultCashbackPercent = (value) =>
-  resolveBusinessDefaultCashbackRateBps(value) / 100;
+const commissionRateCentsToDefaultCashbackPercent = (value, explicit = null) =>
+  resolveBusinessDefaultCashbackRateBps(value, explicit) / 100;
+const getBusinessRatePresetKey = (
+  commissionRateCents,
+  defaultCashbackRateBps = null,
+) => {
+  const normalizedCommission = normalizeBusinessCommissionRateCents(
+    commissionRateCents,
+  );
+  const normalizedCashback = normalizeBusinessDefaultCashbackRateBps(
+    defaultCashbackRateBps,
+    normalizedCommission,
+  );
+  const preset = BUSINESS_RATE_PRESET_OPTIONS.find(
+    (option) =>
+      option.commissionRateCents === normalizedCommission &&
+      option.defaultCashbackRateBps === normalizedCashback,
+  );
+  return preset?.key || "custom";
+};
+const createBusinessRateDraft = (
+  commissionRateCents,
+  defaultCashbackRateBps = null,
+) => {
+  const normalizedCommission = normalizeBusinessCommissionRateCents(
+    commissionRateCents,
+  );
+  const normalizedCashback = normalizeBusinessDefaultCashbackRateBps(
+    defaultCashbackRateBps,
+    normalizedCommission,
+  );
+  return {
+    presetKey: getBusinessRatePresetKey(
+      normalizedCommission,
+      normalizedCashback,
+    ),
+    commissionRateCents: normalizedCommission,
+    defaultCashbackRateBps: normalizedCashback,
+    customCommissionPercentInput: formatPercentLabel(
+      normalizedCommission / 10,
+    ),
+    customCashbackPercentInput: formatPercentLabel(normalizedCashback / 100),
+  };
+};
 const formatPercentLabel = (value) => {
   if (!Number.isFinite(value)) return "--";
   const rounded = Math.round(value * 10) / 10;
   return Number.isInteger(rounded)
     ? String(rounded)
     : rounded.toFixed(1).replace(/\.0$/, "");
+};
+const sanitizePercentInputText = (value) => {
+  let text = String(value ?? "").replace(/[^0-9.]/g, "");
+  const firstDotIndex = text.indexOf(".");
+  if (firstDotIndex >= 0) {
+    text =
+      text.slice(0, firstDotIndex + 1) +
+      text.slice(firstDotIndex + 1).replace(/\./g, "");
+  }
+  return text;
+};
+const parsePercentInputToScaledInt = (value, scale) => {
+  const text = sanitizePercentInputText(value);
+  if (!text) return null;
+  const numeric = Number(text);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.round(numeric * scale);
 };
 const DEFAULT_CASHBACK_RATE_BPS = 1000;
 const CASHBACK_SETTING_KEY = "consumer_cashback_rate_bps";
@@ -1159,6 +1256,10 @@ const mapSupabaseBusiness = (row, index) => {
       : null,
     commissionRateCents: normalizeBusinessCommissionRateCents(
       row.commission_rate_cents,
+    ),
+    defaultCashbackRateBps: resolveBusinessDefaultCashbackRateBps(
+      row.commission_rate_cents,
+      row.default_cashback_rate_bps,
     ),
     commissionEnabled: row.commission_enabled ?? true,
     source: "supabase",
@@ -3763,9 +3864,77 @@ const CATEGORY_CONFIG = {
   },
 };
 
+const NON_TRADE_CATEGORY_KEYS = new Set([
+  "activity",
+  "restaurant",
+  "drink",
+  "cafe",
+]);
+const NON_TRADE_CATEGORY_TERMS = new Set([
+  "activity",
+  "activities",
+  "activities-entertainment",
+  "entertainment",
+  "restaurant",
+  "restaurants",
+  "restaurant-food",
+  "food",
+  "drinks",
+  "drink",
+  "cafe",
+  "cafes",
+]);
+
 function getCategoryConfig(categoryKey) {
   return CATEGORY_CONFIG[categoryKey] || CATEGORY_CONFIG.default;
 }
+
+function isTradeCategoryValue(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!normalized) return false;
+  if (NON_TRADE_CATEGORY_KEYS.has(normalized)) return false;
+  if (NON_TRADE_CATEGORY_TERMS.has(normalized)) return false;
+  return true;
+}
+
+function isTradeBusinessLike(subject) {
+  if (!subject || typeof subject !== "object") return false;
+  const categoryCandidates = [
+    subject.categoryKey,
+    subject.category_key,
+    subject.categoryLabel,
+    subject.category_label,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  if (categoryCandidates.length) {
+    return categoryCandidates.some((value) => isTradeCategoryValue(value));
+  }
+  const rawTags = Array.isArray(subject.tags)
+    ? subject.tags
+    : String(subject.tags || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+  return rawTags.some((value) => isTradeCategoryValue(value));
+}
+
+const resolveBusinessEffectiveReceiptChargeRateBps = (value, subject) =>
+  isTradeBusinessLike(subject)
+    ? TRADES_RECEIPT_CHARGE_RATE_BPS
+    : resolveBusinessReceiptChargeRateCents(value) * 10;
+
+const resolveBusinessEffectiveDefaultCashbackRateBps = (value, subject) =>
+  isTradeBusinessLike(subject)
+    ? TRADES_RECEIPT_CASHBACK_RATE_BPS
+    : resolveBusinessDefaultCashbackRateBps(
+        value,
+        subject?.defaultCashbackRateBps ?? subject?.default_cashback_rate_bps,
+      );
 
 function isKnownCategoryKey(categoryKey) {
   return KNOWN_CATEGORY_KEY_SET.has(String(categoryKey || "").trim());
@@ -4628,10 +4797,12 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
   const statusText = hoursStatus.statusText;
   const statusVariant = hoursStatus.statusVariant;
   const closedOverlayText = hoursStatus.closedOverlayText;
+  const isTradeOffer = isTradeBusinessLike(item?.business);
   const cashbackLabel = `${formatPercentLabel(
-    commissionRateCentsToDefaultCashbackPercent(
+    resolveBusinessEffectiveDefaultCashbackRateBps(
       item?.business?.commissionRateCents ?? item?.business?.commission_rate_cents,
-    ),
+      item?.business,
+    ) / 100,
   )}%`;
   return (
     <View style={styles.cardShell}>
@@ -4742,6 +4913,11 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
                 <Text style={styles.liveEditorialStackCashbackText}>
                   {cashbackLabel} Cashback
                 </Text>
+                {isTradeOffer ? (
+                  <Text style={styles.liveEditorialStackCashbackCapText}>
+                    Up to {TRADES_RECEIPT_CAP_COPY}
+                  </Text>
+                ) : null}
                 <Text style={styles.liveEditorialStackCashbackSubtext}>
                   {isOpen ? "Tap to redeem" : "Closed now"}
                 </Text>
@@ -5116,6 +5292,7 @@ export default function App() {
   const [userReviews, setUserReviews] = useState([]);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [receiptsModalOpen, setReceiptsModalOpen] = useState(false);
+  const [tradeReceiptReviewOpen, setTradeReceiptReviewOpen] = useState(false);
   const [expandedReceiptOffers, setExpandedReceiptOffers] = useState({});
   const [expandedOwnerOffers, setExpandedOwnerOffers] = useState({});
   const [ownerOffersModalOpen, setOwnerOffersModalOpen] = useState(false);
@@ -5134,6 +5311,13 @@ export default function App() {
     submitting: false,
   });
   const [businessReceiptReports, setBusinessReceiptReports] = useState([]);
+  const [tradeReceiptDecisionStatus, setTradeReceiptDecisionStatus] = useState({
+    loading: false,
+    targetId: null,
+    error: null,
+    success: null,
+  });
+  const [tradeReceiptDisputeDrafts, setTradeReceiptDisputeDrafts] = useState({});
   const [businessReceiptReportsStatus, setBusinessReceiptReportsStatus] =
     useState({
       loading: false,
@@ -8317,19 +8501,25 @@ export default function App() {
       commissionRateCentsToPercent(resolvedOwnerBusiness?.commissionRateCents),
     [resolvedOwnerBusiness?.commissionRateCents],
   );
+  const ownerIsTradeBusiness = useMemo(
+    () => isTradeBusinessLike(resolvedOwnerBusiness),
+    [resolvedOwnerBusiness],
+  );
   const ownerReceiptChargePercent = useMemo(
     () =>
-      commissionRateCentsToChargePercent(
+      resolveBusinessEffectiveReceiptChargeRateBps(
         resolvedOwnerBusiness?.commissionRateCents,
-      ),
-    [resolvedOwnerBusiness?.commissionRateCents],
+        resolvedOwnerBusiness,
+      ) / 100,
+    [resolvedOwnerBusiness?.commissionRateCents, resolvedOwnerBusiness],
   );
   const ownerDefaultCashbackPercent = useMemo(
     () =>
-      commissionRateCentsToDefaultCashbackPercent(
+      resolveBusinessEffectiveDefaultCashbackRateBps(
         resolvedOwnerBusiness?.commissionRateCents,
-      ),
-    [resolvedOwnerBusiness?.commissionRateCents],
+        resolvedOwnerBusiness,
+      ) / 100,
+    [resolvedOwnerBusiness?.commissionRateCents, resolvedOwnerBusiness],
   );
 
   const resolveStripeBusiness = useCallback(
@@ -8371,6 +8561,7 @@ export default function App() {
             "stripe_payouts_enabled",
             "stripe_onboarded_at",
             "commission_rate_cents",
+            "default_cashback_rate_bps",
             "commission_enabled",
             "created_at",
           ].join(","),
@@ -9726,6 +9917,7 @@ export default function App() {
               "stripe_payouts_enabled",
               "stripe_onboarded_at",
               "commission_rate_cents",
+              "default_cashback_rate_bps",
               "commission_enabled",
               "created_at",
             ].join(","),
@@ -9870,6 +10062,12 @@ export default function App() {
     loadBusinessRedemptions,
     loadBusinessReceiptReports,
   ]);
+
+  useEffect(() => {
+    if (!tradeReceiptReviewOpen) return;
+    if (!ownerBusiness?.id) return;
+    loadBusinessReceipts(ownerBusiness.id, { silent: false });
+  }, [tradeReceiptReviewOpen, ownerBusiness?.id, loadBusinessReceipts]);
 
   useEffect(() => {
     if (receiptsModalOpen) return;
@@ -11091,6 +11289,50 @@ export default function App() {
     return status !== "reversed" && status !== "failed";
   }, []);
 
+  const isTradesRedemptionEntry = useCallback(
+    (entry) => {
+      const linkedBusiness =
+        entry?.business ||
+        entry?.offer?.business ||
+        businesses.find((item) => item.id === entry?.businessId) ||
+        null;
+      const categoryCandidates = [
+        entry?.categoryKey,
+        entry?.categoryLabel,
+        entry?.business?.categoryKey,
+        entry?.business?.category,
+        entry?.business?.category_label,
+        entry?.business?.categoryLabel,
+        entry?.offer?.business?.categoryKey,
+        entry?.offer?.business?.category,
+        entry?.offer?.business?.category_label,
+        entry?.offer?.business?.categoryLabel,
+        linkedBusiness?.categoryKey,
+        linkedBusiness?.category,
+        linkedBusiness?.category_label,
+        linkedBusiness?.categoryLabel,
+      ];
+      const normalizedCategories = categoryCandidates
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      if (normalizedCategories.some((value) => isTradeCategoryValue(value))) {
+        return true;
+      }
+      if (normalizedCategories.length > 0) {
+        return false;
+      }
+      const tagCandidates = [
+        ...(Array.isArray(entry?.business?.tags) ? entry.business.tags : []),
+        ...(Array.isArray(entry?.offer?.business?.tags)
+          ? entry.offer.business.tags
+          : []),
+        ...(Array.isArray(linkedBusiness?.tags) ? linkedBusiness.tags : []),
+      ];
+      return tagCandidates.some((value) => isTradeCategoryValue(value));
+    },
+    [businesses],
+  );
+
   const latestReviewEligibleRedemptionByBusiness = useMemo(() => {
     const map = new Map();
     redemptionHistory.forEach((entry) => {
@@ -11218,6 +11460,126 @@ export default function App() {
     });
     return map;
   }, [businessReceipts]);
+  const tradeReceiptReviewItems = useMemo(() => {
+    if (!ownerIsTradeBusiness) return [];
+    return [...(Array.isArray(businessReceipts) ? businessReceipts : [])]
+      .filter(
+        (receipt) =>
+          String(receipt?.reviewStatus || "").trim().toLowerCase() === "verified",
+      )
+      .sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+  }, [businessReceipts, ownerIsTradeBusiness]);
+
+  const handleSaveTradeReceiptDecision = useCallback(
+    async (receipt, response, disputeReason = "") => {
+      const receiptId = String(receipt?.id || "").trim();
+      const normalizedResponse = String(response || "")
+        .trim()
+        .toLowerCase();
+      const normalizedReason = String(disputeReason || "").trim();
+      if (!receiptId) {
+        setTradeReceiptDecisionStatus({
+          loading: false,
+          targetId: null,
+          error: "Receipt is unavailable right now.",
+          success: null,
+        });
+        return;
+      }
+      if (!["accepted", "disputed"].includes(normalizedResponse)) {
+        setTradeReceiptDecisionStatus({
+          loading: false,
+          targetId: null,
+          error: "Choose accept or dispute.",
+          success: null,
+        });
+        return;
+      }
+      if (normalizedResponse === "disputed" && !normalizedReason) {
+        setTradeReceiptDecisionStatus({
+          loading: false,
+          targetId: receiptId,
+          error: "A dispute reason is required.",
+          success: null,
+        });
+        return;
+      }
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !authUserId) {
+        setTradeReceiptDecisionStatus({
+          loading: false,
+          targetId: receiptId,
+          error: "Supabase is not configured for trade receipt decisions.",
+          success: null,
+        });
+        return;
+      }
+
+      setTradeReceiptDecisionStatus({
+        loading: true,
+        targetId: receiptId,
+        error: null,
+        success: null,
+      });
+
+      const payload = {
+        receipt_upload_id: receiptId,
+        business_id: receipt.businessId,
+        owner_id: authUserId,
+        response: normalizedResponse,
+        dispute_reason:
+          normalizedResponse === "disputed" ? normalizedReason : null,
+      };
+      const { data, error } = await supabase
+        .from("trade_receipt_owner_responses")
+        .upsert(payload, { onConflict: "receipt_upload_id" })
+        .select("id, response, dispute_reason, owner_id, created_at, updated_at")
+        .single();
+
+      if (error) {
+        setTradeReceiptDecisionStatus({
+          loading: false,
+          targetId: receiptId,
+          error: error.message || "Unable to save your answer.",
+          success: null,
+        });
+        return;
+      }
+
+      const nextDecision = {
+        id: String(data?.id || ""),
+        response:
+          String(data?.response || "").trim().toLowerCase() || normalizedResponse,
+        disputeReason:
+          String(data?.dispute_reason || "").trim() ||
+          (normalizedResponse === "disputed" ? normalizedReason : null),
+        ownerId: String(data?.owner_id || authUserId).trim() || authUserId,
+        createdAt: data?.created_at ? new Date(data.created_at).getTime() : Date.now(),
+        updatedAt: data?.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
+      };
+
+      setBusinessReceipts((prev) =>
+        prev.map((item) =>
+          item.id === receiptId ? { ...item, ownerDecision: nextDecision } : item,
+        ),
+      );
+      setTradeReceiptDecisionStatus({
+        loading: false,
+        targetId: receiptId,
+        error: null,
+        success:
+          normalizedResponse === "disputed"
+            ? "Receipt marked as disputed."
+            : "Receipt marked as accepted.",
+      });
+      setTradeReceiptDisputeDrafts((prev) => {
+        if (!(receiptId in prev)) return prev;
+        const next = { ...prev };
+        delete next[receiptId];
+        return next;
+      });
+    },
+    [authUserId],
+  );
 
   const pendingRedemptionGroups = useMemo(() => {
     const grouped = new Map();
@@ -13445,6 +13807,7 @@ export default function App() {
             "stripe_payouts_enabled",
             "stripe_onboarded_at",
             "commission_rate_cents",
+            "default_cashback_rate_bps",
             "commission_enabled",
             "created_at",
           ].join(","),
@@ -14008,6 +14371,10 @@ export default function App() {
         ratingLabel,
         distanceLabel,
         categoryLabel,
+        businessCategoryKey:
+          business?.categoryKey || business?.category_key || "",
+        businessCategoryLabel:
+          business?.categoryLabel || business?.category_label || categoryLabel,
         statusLabel: isOpen ? "Open now" : "Closed",
         businessCommissionRateCents:
           business?.commissionRateCents ?? business?.commission_rate_cents ?? 150,
@@ -14813,6 +15180,7 @@ export default function App() {
             "stripe_payouts_enabled",
             "stripe_onboarded_at",
             "commission_rate_cents",
+            "default_cashback_rate_bps",
             "commission_enabled",
             "created_at",
           ].join(","),
@@ -15057,9 +15425,12 @@ export default function App() {
   const handleApprove = async (id, commissionRateCentsInput) => {
     const target = businesses.find((business) => business.id === id);
     if (!target) return;
-    const commissionRateCents = normalizeBusinessCommissionRateCents(
-      commissionRateCentsInput,
+    const rateDraft = createBusinessRateDraft(
+      commissionRateCentsInput?.commissionRateCents ?? commissionRateCentsInput,
+      commissionRateCentsInput?.defaultCashbackRateBps ?? null,
     );
+    const commissionRateCents = rateDraft.commissionRateCents;
+    const defaultCashbackRateBps = rateDraft.defaultCashbackRateBps;
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY || target.source !== "supabase") {
       setBusinesses((prev) =>
         prev.map((business) =>
@@ -15068,6 +15439,7 @@ export default function App() {
                 ...business,
                 approved: true,
                 commissionRateCents,
+                defaultCashbackRateBps,
               }
             : business,
         ),
@@ -15080,6 +15452,7 @@ export default function App() {
         approval_status: "approved",
         status: "active",
         commission_rate_cents: commissionRateCents,
+        default_cashback_rate_bps: defaultCashbackRateBps,
       })
       .eq("id", id)
       .select(
@@ -15113,6 +15486,7 @@ export default function App() {
           "stripe_payouts_enabled",
           "stripe_onboarded_at",
           "commission_rate_cents",
+          "default_cashback_rate_bps",
           "commission_enabled",
           "created_at",
         ].join(","),
@@ -15217,6 +15591,7 @@ export default function App() {
           "stripe_payouts_enabled",
           "stripe_onboarded_at",
           "commission_rate_cents",
+          "default_cashback_rate_bps",
           "commission_enabled",
           "created_at",
         ].join(","),
@@ -15352,6 +15727,7 @@ export default function App() {
           "stripe_payouts_enabled",
           "stripe_onboarded_at",
           "commission_rate_cents",
+          "default_cashback_rate_bps",
           "commission_enabled",
           "created_at",
         ].join(","),
@@ -15522,7 +15898,7 @@ export default function App() {
               "redemption_limit_period",
               "redemption_limit_count",
               "created_at",
-              "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, is_open, approval_status, status, commission_rate_cents)",
+              "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, is_open, approval_status, status, commission_rate_cents, default_cashback_rate_bps)",
             ].join(","),
           )
           .eq("active", true)
@@ -17756,7 +18132,9 @@ export default function App() {
                     source: "receipt",
                     status: "pending",
                     reasonCode: "receipt_under_review",
-                    reasonDetail: "Receipt uploaded and awaiting review.",
+                    reasonDetail: isTradesRedemptionEntry(entry)
+                      ? `Receipt uploaded and awaiting review. Trades cashback is 6% back on up to ${TRADES_RECEIPT_CAP_COPY} in eligible purchase amount and can take up to 7 business days.`
+                      : "Receipt uploaded and awaiting review.",
                     lastCheckedAt: Date.now(),
                     confirmedAt: null,
                     rejectedAt: null,
@@ -17774,7 +18152,9 @@ export default function App() {
         showReceiptOverlay(
           "success",
           "Receipt uploaded",
-          "Thanks! We'll review it shortly.",
+          isTradesRedemptionEntry(entry)
+            ? `Thanks! Trades cashback is 6% back on up to ${TRADES_RECEIPT_CAP_COPY} in eligible purchases and can take up to 7 business days.`
+            : "Thanks! We'll review it shortly.",
           { autoHideMs: 1600 },
         );
         loadRedemptions({ silent: true });
@@ -19841,6 +20221,7 @@ export default function App() {
             "verification_source",
             "verification_reference",
             "receipt_total_cents",
+            "trade_receipt_owner_responses (id, response, dispute_reason, owner_id, created_at, updated_at)",
             "redemption:redemptions (id, created_at, offer:offers (id, title))",
           ].join(","),
         )
@@ -19861,6 +20242,11 @@ export default function App() {
           const verificationSource = String(
             row.verification_source || "receipt",
           ).toLowerCase();
+          const ownerDecisionRow = Array.isArray(
+            row.trade_receipt_owner_responses,
+          )
+            ? row.trade_receipt_owner_responses[0] || null
+            : row.trade_receipt_owner_responses || null;
           const signedUrl =
             verificationSource === "plaid"
               ? ""
@@ -19883,6 +20269,23 @@ export default function App() {
             verificationSource,
             verificationReference: row.verification_reference || null,
             receiptTotalCents: Number(row.receipt_total_cents) || 0,
+            ownerDecision: ownerDecisionRow
+              ? {
+                  id: String(ownerDecisionRow.id || ""),
+                  response:
+                    String(ownerDecisionRow.response || "").trim().toLowerCase() ||
+                    null,
+                  disputeReason:
+                    String(ownerDecisionRow.dispute_reason || "").trim() || null,
+                  ownerId: String(ownerDecisionRow.owner_id || "").trim() || null,
+                  createdAt: ownerDecisionRow.created_at
+                    ? new Date(ownerDecisionRow.created_at).getTime()
+                    : 0,
+                  updatedAt: ownerDecisionRow.updated_at
+                    ? new Date(ownerDecisionRow.updated_at).getTime()
+                    : 0,
+                }
+              : null,
           };
         }),
       );
@@ -21103,9 +21506,15 @@ export default function App() {
                       <View style={styles.offerActivationCashbackBadge}>
                         <Text style={styles.offerActivationCashbackValue}>
                           {formatPercentLabel(
-                            commissionRateCentsToDefaultCashbackPercent(
+                            resolveBusinessEffectiveDefaultCashbackRateBps(
                               redeemActivationModal.card?.businessCommissionRateCents,
-                            ),
+                              {
+                                categoryKey:
+                                  redeemActivationModal.card?.businessCategoryKey,
+                                categoryLabel:
+                                  redeemActivationModal.card?.businessCategoryLabel,
+                              },
+                            ) / 100,
                           )}
                           %
                         </Text>
@@ -21794,7 +22203,7 @@ export default function App() {
                     edges={["top", "bottom"]}
                   >
                     <View style={styles.receiptsHeader}>
-                      <View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
                         <Text style={styles.receiptsTitle}>Receipts</Text>
                         <Text style={styles.receiptsSubtitle}>
                           View uploaded receipts by offer.
@@ -22530,6 +22939,263 @@ export default function App() {
                         </View>
                       </View>
                     )}
+                  </SafeAreaView>
+                </GestureHandlerRootView>
+              </SafeAreaProvider>
+            </Modal>
+
+            <Modal
+              visible={tradeReceiptReviewOpen}
+              animationType="slide"
+              presentationStyle="fullScreen"
+              onRequestClose={() => {
+                setTradeReceiptReviewOpen(false);
+                setTradeReceiptDisputeDrafts({});
+                setTradeReceiptDecisionStatus({
+                  loading: false,
+                  targetId: null,
+                  error: null,
+                  success: null,
+                });
+              }}
+            >
+              <SafeAreaProvider>
+                <GestureHandlerRootView style={{ flex: 1 }}>
+                  <SafeAreaView
+                    style={styles.receiptsScreen}
+                    edges={["top", "bottom"]}
+                  >
+                    <View style={styles.receiptsHeader}>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={styles.receiptsTitle}>Trade payout review</Text>
+                        <Text style={styles.receiptsSubtitle}>
+                          Record accept or dispute answers for verified trade
+                          receipts. These responses are informational only and do
+                          not stop payouts.
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.receiptsClose}
+                        onPress={() => {
+                          setTradeReceiptReviewOpen(false);
+                          setTradeReceiptDisputeDrafts({});
+                          setTradeReceiptDecisionStatus({
+                            loading: false,
+                            targetId: null,
+                            error: null,
+                            success: null,
+                          });
+                        }}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      >
+                        <Ionicons name="close" size={18} color={COLORS.ink} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <ScrollView
+                      style={styles.receiptsBody}
+                      contentContainerStyle={styles.receiptsBodyContent}
+                      showsVerticalScrollIndicator={false}
+                      keyboardShouldPersistTaps="handled"
+                    >
+                      {tradeReceiptDecisionStatus.error ? (
+                        <Text style={styles.formError}>
+                          {tradeReceiptDecisionStatus.error}
+                        </Text>
+                      ) : null}
+                      {tradeReceiptDecisionStatus.success ? (
+                        <Text style={styles.formSuccess}>
+                          {tradeReceiptDecisionStatus.success}
+                        </Text>
+                      ) : null}
+
+                      {tradeReceiptReviewItems.length === 0 ? (
+                        <View style={styles.emptyState}>
+                          <Text style={styles.emptyTitle}>
+                            No verified trade receipts yet.
+                          </Text>
+                          <Text style={styles.emptyCopy}>
+                            Verified trade receipts will appear here so you can
+                            record an accept or dispute answer.
+                          </Text>
+                        </View>
+                      ) : (
+                        <View style={styles.tradeReceiptDecisionList}>
+                          {tradeReceiptReviewItems.map((receipt) => {
+                            const decision = receipt.ownerDecision || null;
+                            const isDisputeOpen =
+                              tradeReceiptDisputeDrafts[receipt.id] !== undefined;
+                            const isSaving =
+                              tradeReceiptDecisionStatus.loading &&
+                              tradeReceiptDecisionStatus.targetId === receipt.id;
+                            const responseLabel =
+                              decision?.response === "disputed"
+                                ? "Disputed"
+                                : decision?.response === "accepted"
+                                  ? "Accepted"
+                                  : "Awaiting answer";
+                            return (
+                              <View
+                                key={`trade-receipt-decision-${receipt.id}`}
+                                style={styles.tradeReceiptDecisionCard}
+                              >
+                                <View style={styles.tradeReceiptDecisionHeader}>
+                                  <View style={styles.tradeReceiptDecisionCopy}>
+                                    <Text
+                                      style={styles.tradeReceiptDecisionTitle}
+                                      numberOfLines={1}
+                                    >
+                                      {receipt.offerTitle || "Offer"}
+                                    </Text>
+                                    <Text
+                                      style={styles.tradeReceiptDecisionMeta}
+                                      numberOfLines={2}
+                                    >
+                                      {formatCurrencyFromCents(
+                                        receipt.receiptTotalCents,
+                                      )}{" "}
+                                      {"\u00b7"} Uploaded{" "}
+                                      {formatHistoryTimestamp(receipt.uploadedAt)}
+                                    </Text>
+                                  </View>
+                                  <View
+                                    style={[
+                                      styles.tradeReceiptDecisionPill,
+                                      decision?.response === "accepted"
+                                        ? styles.tradeReceiptDecisionPillAccepted
+                                        : decision?.response === "disputed"
+                                          ? styles.tradeReceiptDecisionPillDisputed
+                                          : null,
+                                    ]}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.tradeReceiptDecisionPillText,
+                                        decision?.response === "accepted"
+                                          ? styles.tradeReceiptDecisionPillTextAccepted
+                                          : decision?.response === "disputed"
+                                            ? styles.tradeReceiptDecisionPillTextDisputed
+                                            : null,
+                                      ]}
+                                    >
+                                      {responseLabel}
+                                    </Text>
+                                  </View>
+                                </View>
+
+                                {decision?.response === "disputed" &&
+                                decision?.disputeReason ? (
+                                  <Text style={styles.tradeReceiptDecisionReason}>
+                                    Reason: {decision.disputeReason}
+                                  </Text>
+                                ) : null}
+
+                                <View style={styles.tradeReceiptDecisionActions}>
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.secondaryButton,
+                                      isSaving && styles.secondaryButtonDisabled,
+                                    ]}
+                                    onPress={() =>
+                                      handleSaveTradeReceiptDecision(
+                                        receipt,
+                                        "accepted",
+                                      )
+                                    }
+                                    disabled={isSaving}
+                                  >
+                                    <Text style={styles.secondaryButtonText}>
+                                      Accept
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.primaryButton,
+                                      isSaving && styles.primaryButtonDisabled,
+                                    ]}
+                                    onPress={() =>
+                                      setTradeReceiptDisputeDrafts((prev) => ({
+                                        ...prev,
+                                        [receipt.id]:
+                                          prev[receipt.id] ??
+                                          decision?.disputeReason ??
+                                          "",
+                                      }))
+                                    }
+                                    disabled={isSaving}
+                                  >
+                                    <Text style={styles.primaryButtonText}>
+                                      Dispute
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+
+                                {isDisputeOpen ? (
+                                  <View style={styles.tradeReceiptDecisionDisputeBox}>
+                                    <Text
+                                      style={styles.tradeReceiptDecisionInputLabel}
+                                    >
+                                      Why are you disputing this receipt?
+                                    </Text>
+                                    <TextInput
+                                      value={tradeReceiptDisputeDrafts[receipt.id]}
+                                      onChangeText={(value) =>
+                                        setTradeReceiptDisputeDrafts((prev) => ({
+                                          ...prev,
+                                          [receipt.id]: value,
+                                        }))
+                                      }
+                                      placeholder="Enter dispute reason"
+                                      placeholderTextColor={COLORS.muted}
+                                      style={styles.tradeReceiptDecisionInput}
+                                      multiline
+                                      textAlignVertical="top"
+                                    />
+                                    <View
+                                      style={styles.tradeReceiptDecisionActions}
+                                    >
+                                      <TouchableOpacity
+                                        style={styles.secondaryButton}
+                                        onPress={() =>
+                                          setTradeReceiptDisputeDrafts((prev) => {
+                                            const next = { ...prev };
+                                            delete next[receipt.id];
+                                            return next;
+                                          })
+                                        }
+                                      >
+                                        <Text style={styles.secondaryButtonText}>
+                                          Cancel
+                                        </Text>
+                                      </TouchableOpacity>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.primaryButton,
+                                          isSaving &&
+                                            styles.primaryButtonDisabled,
+                                        ]}
+                                        onPress={() =>
+                                          handleSaveTradeReceiptDecision(
+                                            receipt,
+                                            "disputed",
+                                            tradeReceiptDisputeDrafts[receipt.id],
+                                          )
+                                        }
+                                        disabled={isSaving}
+                                      >
+                                        <Text style={styles.primaryButtonText}>
+                                          Submit dispute
+                                        </Text>
+                                      </TouchableOpacity>
+                                    </View>
+                                  </View>
+                                ) : null}
+                              </View>
+                            );
+                          })}
+                        </View>
+                      )}
+                    </ScrollView>
                   </SafeAreaView>
                 </GestureHandlerRootView>
               </SafeAreaProvider>
@@ -25969,6 +26635,37 @@ export default function App() {
                                 {ownerAnalyticsStatus.error}
                               </Text>
                             )}
+                            {ownerIsTradeBusiness ? (
+                              <TouchableOpacity
+                                style={styles.tradeReceiptReviewEntryButton}
+                                onPress={() => {
+                                  setTradeReceiptReviewOpen(true);
+                                  setTradeReceiptDisputeDrafts({});
+                                  setTradeReceiptDecisionStatus({
+                                    loading: false,
+                                    targetId: null,
+                                    error: null,
+                                    success: null,
+                                  });
+                                }}
+                                activeOpacity={0.85}
+                              >
+                                <View style={styles.tradeReceiptReviewEntryCopy}>
+                                  <Text style={styles.tradeReceiptReviewEntryTitle}>
+                                    Trade payout review
+                                  </Text>
+                                  <Text style={styles.tradeReceiptReviewEntryBody}>
+                                    Record accept or dispute answers for verified
+                                    trade receipts. This does not pause payouts.
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name="chevron-forward"
+                                  size={18}
+                                  color={COLORS.pine}
+                                />
+                              </TouchableOpacity>
+                            ) : null}
 
                             <View style={styles.sectionBlock}>
                               <View style={styles.sectionTitleRow}>
@@ -25985,7 +26682,9 @@ export default function App() {
                                   onPress={() =>
                                     openInfoTooltip(
                                       "Payments",
-                                      `Your business is on the ${formatPercentLabel(ownerCommissionRatePercent)}% plan. Verified receipts are billed at ${formatPercentLabel(ownerReceiptChargePercent)}% of receipt total, and your offers default to ${formatPercentLabel(ownerDefaultCashbackPercent)}% cashback. Promo codes can still increase customer cashback. Billing remains monthly.`,
+                                      ownerIsTradeBusiness
+                                        ? `Your business is on the ${formatPercentLabel(ownerCommissionRatePercent)}% plan. Verified trades receipts are billed at ${formatPercentLabel(ownerReceiptChargePercent)}% of up to ${TRADES_RECEIPT_CAP_COPY} in receipt total, and customers earn ${formatPercentLabel(ownerDefaultCashbackPercent)}% cashback on eligible verified trades receipts. Billing remains monthly.`
+                                        : `Your business is on the ${formatPercentLabel(ownerCommissionRatePercent)}% plan. Verified receipts are billed at ${formatPercentLabel(ownerReceiptChargePercent)}% of receipt total, and your offers default to ${formatPercentLabel(ownerDefaultCashbackPercent)}% cashback. Promo codes can still increase customer cashback. Billing remains monthly.`,
                                     )
                                   }
                                   hitSlop={{
@@ -27914,6 +28613,11 @@ export default function App() {
                                               "",
                                           ).trim()
                                         : "";
+                                    const tradeReceiptReviewNote =
+                                      receiptReviewStatus === "pending" &&
+                                      isTradesRedemptionEntry(entry)
+                                        ? `Trades cashback is 6% back on up to ${TRADES_RECEIPT_CAP_COPY} in eligible purchases and can take up to 7 business days.`
+                                        : "";
                                     const statusCopy = (() => {
                                       if (needsReceipt) {
                                         if (verificationStatus === "pending") {
@@ -28082,6 +28786,16 @@ export default function App() {
                                             style={styles.historyStatusReasonText}
                                           >
                                             {receiptRejectionReason}
+                                          </Text>
+                                        ) : null}
+                                        {!hideStatusForUploadAction &&
+                                        tradeReceiptReviewNote ? (
+                                          <Text
+                                            style={
+                                              styles.historyStatusReasonText
+                                            }
+                                          >
+                                            {tradeReceiptReviewNote}
                                           </Text>
                                         ) : null}
                                         {isReceiptActionable && (
@@ -32362,9 +33076,28 @@ export default function App() {
                                       Number(business.coordinate.longitude),
                                     )),
                                 );
+                                const selectedRateDraft =
+                                  pendingBusinessCommissionRates[
+                                    business.id
+                                  ] ||
+                                  createBusinessRateDraft(
+                                    business.commissionRateCents,
+                                    business.defaultCashbackRateBps,
+                                  );
                                 const selectedCommissionRate =
-                                  normalizeBusinessCommissionRateCents(
-                                    pendingBusinessCommissionRates[business.id],
+                                  selectedRateDraft.commissionRateCents;
+                                const selectedCashbackRateBps =
+                                  selectedRateDraft.defaultCashbackRateBps;
+                                const selectedPlatformRatePercent =
+                                  Math.max(
+                                    commissionRateCentsToChargePercent(
+                                      selectedCommissionRate,
+                                    ) -
+                                      commissionRateCentsToDefaultCashbackPercent(
+                                        selectedCommissionRate,
+                                        selectedCashbackRateBps,
+                                      ),
+                                    0,
                                   );
                                 const businessHighlight = String(
                                   business.offer || "",
@@ -32424,7 +33157,12 @@ export default function App() {
                                       </View>
                                       <View style={styles.adminQuickMetaChip}>
                                         <Text style={styles.adminQuickMetaText}>
-                                          {`Commission ${selectedCommissionRate / 10}%`}
+                                          {`Commission ${formatPercentLabel(selectedCommissionRate / 10)}%`}
+                                        </Text>
+                                      </View>
+                                      <View style={styles.adminQuickMetaChip}>
+                                        <Text style={styles.adminQuickMetaText}>
+                                          {`Cashback ${formatPercentLabel(selectedCashbackRateBps / 100)}%`}
                                         </Text>
                                       </View>
                                     </View>
@@ -32585,14 +33323,14 @@ export default function App() {
                                             Commission rate
                                           </Text>
                                           <View style={styles.adminRatePicker}>
-                                            {BUSINESS_COMMISSION_OPTIONS.map(
+                                            {BUSINESS_RATE_PRESET_OPTIONS.map(
                                               (option) => {
                                                 const isSelected =
-                                                  selectedCommissionRate ===
-                                                  option.value;
+                                                  selectedRateDraft.presetKey ===
+                                                  option.key;
                                                 return (
                                                   <TouchableOpacity
-                                                    key={`${business.id}-${option.value}`}
+                                                    key={`${business.id}-${option.key}`}
                                                     style={[
                                                       styles.adminRateOption,
                                                       isSelected &&
@@ -32603,7 +33341,17 @@ export default function App() {
                                                         (prev) => ({
                                                           ...prev,
                                                           [business.id]:
-                                                            option.value,
+                                                            option.key ===
+                                                            "custom"
+                                                              ? {
+                                                                  ...selectedRateDraft,
+                                                                  presetKey:
+                                                                    "custom",
+                                                                }
+                                                              : createBusinessRateDraft(
+                                                                  option.commissionRateCents,
+                                                                  option.defaultCashbackRateBps,
+                                                                ),
                                                         }),
                                                       )
                                                     }
@@ -32622,8 +33370,138 @@ export default function App() {
                                               },
                                             )}
                                           </View>
+                                          {selectedRateDraft.presetKey ===
+                                          "custom" ? (
+                                            <View style={styles.formRow}>
+                                              <View style={styles.formField}>
+                                                <Text
+                                                  style={
+                                                    styles.adminDetailLabel
+                                                  }
+                                                >
+                                                  Custom commission %
+                                                </Text>
+                                                <TextInput
+                                                  value={
+                                                    selectedRateDraft.customCommissionPercentInput
+                                                  }
+                                                  onChangeText={(text) => {
+                                                    const sanitized =
+                                                      sanitizePercentInputText(
+                                                        text,
+                                                      );
+                                                    const parsed =
+                                                      parsePercentInputToScaledInt(
+                                                        sanitized,
+                                                        10,
+                                                      );
+                                                    setPendingBusinessCommissionRates(
+                                                      (prev) => {
+                                                        const current =
+                                                          prev[business.id] ||
+                                                          selectedRateDraft;
+                                                        const nextCommission =
+                                                          parsed == null
+                                                            ? current.commissionRateCents
+                                                            : normalizeBusinessCommissionRateCents(
+                                                                parsed,
+                                                                current.commissionRateCents,
+                                                              );
+                                                        const nextCashback =
+                                                          normalizeBusinessDefaultCashbackRateBps(
+                                                            current.defaultCashbackRateBps,
+                                                            nextCommission,
+                                                          );
+                                                        return {
+                                                          ...prev,
+                                                          [business.id]: {
+                                                            ...current,
+                                                            presetKey:
+                                                              "custom",
+                                                            customCommissionPercentInput:
+                                                              sanitized,
+                                                            commissionRateCents:
+                                                              nextCommission,
+                                                            defaultCashbackRateBps:
+                                                              nextCashback,
+                                                            customCashbackPercentInput:
+                                                              formatPercentLabel(
+                                                                nextCashback /
+                                                                  100,
+                                                              ),
+                                                          },
+                                                        };
+                                                      },
+                                                    );
+                                                  }}
+                                                  keyboardType="decimal-pad"
+                                                  placeholder="10"
+                                                  style={styles.formInput}
+                                                />
+                                              </View>
+                                              <View style={styles.formField}>
+                                                <Text
+                                                  style={
+                                                    styles.adminDetailLabel
+                                                  }
+                                                >
+                                                  Custom cashback %
+                                                </Text>
+                                                <TextInput
+                                                  value={
+                                                    selectedRateDraft.customCashbackPercentInput
+                                                  }
+                                                  onChangeText={(text) => {
+                                                    const sanitized =
+                                                      sanitizePercentInputText(
+                                                        text,
+                                                      );
+                                                    const parsed =
+                                                      parsePercentInputToScaledInt(
+                                                        sanitized,
+                                                        100,
+                                                      );
+                                                    setPendingBusinessCommissionRates(
+                                                      (prev) => {
+                                                        const current =
+                                                          prev[business.id] ||
+                                                          selectedRateDraft;
+                                                        const nextCashback =
+                                                          parsed == null
+                                                            ? current.defaultCashbackRateBps
+                                                            : normalizeBusinessDefaultCashbackRateBps(
+                                                                parsed,
+                                                                current.commissionRateCents,
+                                                              );
+                                                        return {
+                                                          ...prev,
+                                                          [business.id]: {
+                                                            ...current,
+                                                            presetKey:
+                                                              "custom",
+                                                            customCashbackPercentInput:
+                                                              sanitized,
+                                                            defaultCashbackRateBps:
+                                                              nextCashback,
+                                                            customCommissionPercentInput:
+                                                              formatPercentLabel(
+                                                                current.commissionRateCents /
+                                                                  10,
+                                                              ),
+                                                          },
+                                                        };
+                                                      },
+                                                    );
+                                                  }}
+                                                  keyboardType="decimal-pad"
+                                                  placeholder="6"
+                                                  style={styles.formInput}
+                                                />
+                                              </View>
+                                            </View>
+                                          ) : null}
                                           <Text style={styles.adminMeta}>
-                                            15% plan bills 15% / gives 10% cashback. 20% plan bills 20% / gives 15% cashback.
+                                            {`Business pays ${formatPercentLabel(selectedCommissionRate / 10)}%, users get ${formatPercentLabel(selectedCashbackRateBps / 100)}%, Wello keeps ${formatPercentLabel(selectedPlatformRatePercent)}%.`}
                                           </Text>
                                         </View>
                                         {hasDirectionsTarget && (
@@ -32677,11 +33555,11 @@ export default function App() {
                                             id: business.id,
                                             action: "approve",
                                             title: "Approve business listing?",
-                                            message: `This will approve the listing and apply a ${selectedCommissionRate / 10}% commission rate.`,
+                                            message: `This will approve the listing with a ${formatPercentLabel(selectedCommissionRate / 10)}% commission and ${formatPercentLabel(selectedCashbackRateBps / 100)}% user cashback.`,
                                             onConfirm: () =>
                                               handleApprove(
                                                 business.id,
-                                                selectedCommissionRate,
+                                                selectedRateDraft,
                                               ),
                                           })
                                         }
@@ -34645,7 +35523,7 @@ const styles = StyleSheet.create({
   receiptsHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 12,
     paddingTop: Platform.OS === "ios" ? 8 : 0,
   },
@@ -34663,6 +35541,8 @@ const styles = StyleSheet.create({
   receiptsClose: {
     width: 34,
     height: 34,
+    flexShrink: 0,
+    alignSelf: "flex-start",
     borderRadius: 17,
     backgroundColor: COLORS.mint,
     alignItems: "center",
@@ -37273,6 +38153,12 @@ const styles = StyleSheet.create({
     fontFamily: FONT_SEMIBOLD,
     letterSpacing: -0.2,
   },
+  liveEditorialStackCashbackCapText: {
+    marginTop: 1,
+    fontSize: IS_SMALL_PHONE ? 8 : 9,
+    color: "#8B97A9",
+    fontFamily: FONT_SEMIBOLD,
+  },
   liveEditorialStackCashbackSubtext: {
     marginTop: 2,
     fontSize: IS_SMALL_PHONE ? 10 : 11,
@@ -39268,6 +40154,123 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     marginTop: 4,
     textAlign: "left",
+  },
+  tradeReceiptReviewEntryButton: {
+    marginTop: 4,
+    marginBottom: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  tradeReceiptReviewEntryCopy: {
+    flex: 1,
+  },
+  tradeReceiptReviewEntryTitle: {
+    fontSize: 15,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+  },
+  tradeReceiptReviewEntryBody: {
+    marginTop: 4,
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  tradeReceiptDecisionList: {
+    gap: 12,
+    marginBottom: 16,
+  },
+  tradeReceiptDecisionCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    padding: 14,
+    gap: 12,
+  },
+  tradeReceiptDecisionHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  tradeReceiptDecisionCopy: {
+    flex: 1,
+  },
+  tradeReceiptDecisionTitle: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  tradeReceiptDecisionMeta: {
+    marginTop: 4,
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  tradeReceiptDecisionPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.cream,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  tradeReceiptDecisionPillAccepted: {
+    borderColor: "#BEE4C8",
+    backgroundColor: "#EAF8EE",
+  },
+  tradeReceiptDecisionPillDisputed: {
+    borderColor: "#F3C2C7",
+    backgroundColor: "#FFF1F2",
+  },
+  tradeReceiptDecisionPillText: {
+    fontSize: 11,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+  },
+  tradeReceiptDecisionPillTextAccepted: {
+    color: "#166534",
+  },
+  tradeReceiptDecisionPillTextDisputed: {
+    color: "#B42318",
+  },
+  tradeReceiptDecisionReason: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+  },
+  tradeReceiptDecisionActions: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  tradeReceiptDecisionDisputeBox: {
+    gap: 10,
+    paddingTop: 2,
+  },
+  tradeReceiptDecisionInputLabel: {
+    fontSize: 12,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  tradeReceiptDecisionInput: {
+    minHeight: 90,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.cream,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
   },
   receiptsScreen: {
     flex: 1,

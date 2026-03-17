@@ -77,7 +77,8 @@ alter table public.businesses
   add column if not exists stripe_payouts_enabled boolean not null default false,
   add column if not exists stripe_onboarded_at timestamptz,
   add column if not exists commission_enabled boolean not null default true,
-  add column if not exists commission_rate_cents integer not null default 150;
+  add column if not exists commission_rate_cents integer not null default 150,
+  add column if not exists default_cashback_rate_bps integer not null default 1000;
 
 alter table public.businesses
   add column if not exists offer_honor_policy_accepted boolean not null default false,
@@ -90,7 +91,17 @@ alter table public.businesses
 
 alter table public.businesses
   add constraint businesses_commission_rate_cents_check
-  check (commission_rate_cents in (150, 200));
+  check (commission_rate_cents between 10 and 1000);
+
+alter table public.businesses
+  drop constraint if exists businesses_default_cashback_rate_bps_check;
+
+alter table public.businesses
+  add constraint businesses_default_cashback_rate_bps_check
+  check (
+    default_cashback_rate_bps >= 0
+    and default_cashback_rate_bps <= (commission_rate_cents * 10)
+  );
 
 create table if not exists public.offers (
   id uuid primary key default gen_random_uuid(),

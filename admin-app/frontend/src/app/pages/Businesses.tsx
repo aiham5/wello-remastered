@@ -28,12 +28,116 @@ interface BusinessRow {
   approval_status?: string | null;
   status?: string | null;
   commission_rate_cents?: number | null;
+  default_cashback_rate_bps?: number | null;
   created_at?: string | null;
   updated_at?: string | null;
   [key: string]: unknown;
 }
 
 type DrawerMode = "view" | "edit";
+type RatePresetKey = "10" | "15" | "20" | "custom";
+
+interface RateDraft {
+  presetKey: RatePresetKey;
+  commissionRateCents: number;
+  defaultCashbackRateBps: number;
+  customCommissionPercentInput: string;
+  customCashbackPercentInput: string;
+}
+
+const BUSINESS_RATE_PRESET_OPTIONS: Array<{
+  key: RatePresetKey;
+  label: string;
+  commissionRateCents: number | null;
+  defaultCashbackRateBps: number | null;
+}> = [
+  { key: "10", label: "10%", commissionRateCents: 100, defaultCashbackRateBps: 600 },
+  { key: "15", label: "15%", commissionRateCents: 150, defaultCashbackRateBps: 1000 },
+  { key: "20", label: "20%", commissionRateCents: 200, defaultCashbackRateBps: 1500 },
+  { key: "custom", label: "Custom Rate", commissionRateCents: null, defaultCashbackRateBps: null },
+];
+
+const BUSINESS_RATE_PRESET_BY_COMMISSION = new Map(
+  BUSINESS_RATE_PRESET_OPTIONS
+    .filter((option) => Number.isFinite(option.commissionRateCents))
+    .map((option) => [option.commissionRateCents as number, option]),
+);
+
+const formatPercentLabel = (value?: number | null) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "--";
+  const rounded = Math.round(numeric * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1).replace(/\.0$/, "");
+};
+
+const sanitizePercentInputText = (value: string) => {
+  let text = String(value ?? "").replace(/[^0-9.]/g, "");
+  const firstDotIndex = text.indexOf(".");
+  if (firstDotIndex >= 0) {
+    text =
+      text.slice(0, firstDotIndex + 1) +
+      text.slice(firstDotIndex + 1).replace(/\./g, "");
+  }
+  return text;
+};
+
+const parsePercentInputToScaledInt = (value: string, scale: number) => {
+  const text = sanitizePercentInputText(value);
+  if (!text) return null;
+  const numeric = Number(text);
+  return Number.isFinite(numeric) ? Math.round(numeric * scale) : null;
+};
+
+const normalizeBusinessCommissionRateCents = (value: unknown, fallback = 150) => {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return Math.max(10, Math.min(1000, Math.round(numeric)));
+  }
+  return Math.max(10, Math.min(1000, Math.round(Number(fallback) || 150)));
+};
+
+const deriveDefaultCashbackRateBpsFromCommission = (value: unknown) => {
+  const normalizedCommission = normalizeBusinessCommissionRateCents(value);
+  const preset = BUSINESS_RATE_PRESET_BY_COMMISSION.get(normalizedCommission);
+  if (preset?.defaultCashbackRateBps != null) return preset.defaultCashbackRateBps;
+  return Math.max(0, Math.min(normalizedCommission * 10, (normalizedCommission - 50) * 10));
+};
+
+const normalizeBusinessDefaultCashbackRateBps = (
+  cashbackRateBps: unknown,
+  commissionRateCents: unknown,
+) => {
+  const maxCashbackRateBps = normalizeBusinessCommissionRateCents(commissionRateCents) * 10;
+  const numeric = Number(cashbackRateBps);
+  if (Number.isFinite(numeric)) {
+    return Math.max(0, Math.min(maxCashbackRateBps, Math.round(numeric)));
+  }
+  return deriveDefaultCashbackRateBpsFromCommission(commissionRateCents);
+};
+
+const createBusinessRateDraft = (
+  commissionRateCents: unknown,
+  defaultCashbackRateBps: unknown = null,
+): RateDraft => {
+  const normalizedCommission = normalizeBusinessCommissionRateCents(commissionRateCents);
+  const normalizedCashback = normalizeBusinessDefaultCashbackRateBps(
+    defaultCashbackRateBps,
+    normalizedCommission,
+  );
+  const preset =
+    BUSINESS_RATE_PRESET_OPTIONS.find(
+      (option) =>
+        option.commissionRateCents === normalizedCommission &&
+        option.defaultCashbackRateBps === normalizedCashback,
+    )?.key || "custom";
+  return {
+    presetKey: preset,
+    commissionRateCents: normalizedCommission,
+    defaultCashbackRateBps: normalizedCashback,
+    customCommissionPercentInput: formatPercentLabel(normalizedCommission / 10),
+    customCashbackPercentInput: formatPercentLabel(normalizedCashback / 100),
+  };
+};
 
 const businessCsvColumns: CsvColumn<BusinessRow>[] = [
   { key: "id", label: "Business ID" },
@@ -60,6 +164,8 @@ export function Businesses() {
   const [drawerMode, setDrawerMode] = useState<DrawerMode>("view");
   const [selectedBusiness, setSelectedBusiness] = useState<BusinessRow | null>(null);
   const [editPayload, setEditPayload] = useState("");
+  const [rateModalBusiness, setRateModalBusiness] = useState<BusinessRow | null>(null);
+  const [rateDraft, setRateDraft] = useState<RateDraft | null>(null);
 
   const loadBusinesses = async () => {
     setLoading(true);
@@ -112,35 +218,35 @@ export function Businesses() {
     [rows],
   );
 
-  const updateDecision = async (business: BusinessRow, nextStatus: "approved" | "rejected") => {
+  const submitDecision = async (
+    business: BusinessRow,
+    nextStatus: "approved" | "rejected",
+    nextRateDraft?: RateDraft | null,
+  ) => {
     const confirmed = window.confirm(
       `${nextStatus === "approved" ? "Approve" : "Reject"} business "${business.name}"?`,
     );
     if (!confirmed) return;
-    let commissionRateCents: number | null = null;
-    if (nextStatus === "approved") {
-      const input = window.prompt(
-        `Choose the commission plan for "${business.name}". Enter 15 or 20.`,
-        String(Number(business.commission_rate_cents || 150) / 10),
-      );
-      if (input == null) return;
-      const normalized = Number(String(input).trim());
-      if (normalized === 15) commissionRateCents = 150;
-      else if (normalized === 20) commissionRateCents = 200;
-      else {
-        setMessage("Commission plan must be 15 or 20.");
-        return;
-      }
-    }
     setWorkingId(business.id);
+    const normalizedRateDraft =
+      nextStatus === "approved"
+        ? createBusinessRateDraft(
+            nextRateDraft?.commissionRateCents ?? business.commission_rate_cents ?? 150,
+            nextRateDraft?.defaultCashbackRateBps ?? business.default_cashback_rate_bps ?? null,
+          )
+        : null;
     const res = await apiRequest<BusinessRow>(
       `/api/admin/businesses/${encodeURIComponent(business.id)}/review`,
       {
         method: "POST",
         body: {
           nextApprovalStatus: nextStatus,
-          ...(commissionRateCents != null
-            ? { commissionRateCents }
+          ...(normalizedRateDraft != null
+            ? {
+                commissionRateCents: normalizedRateDraft.commissionRateCents,
+                defaultCashbackRateBps:
+                  normalizedRateDraft.defaultCashbackRateBps,
+              }
             : {}),
         },
       },
@@ -155,8 +261,13 @@ export function Businesses() {
                 ...row,
                 approval_status: nextStatus,
                 status: nextStatus === "approved" ? "active" : "inactive",
-                ...(commissionRateCents != null
-                  ? { commission_rate_cents: commissionRateCents }
+                ...(normalizedRateDraft != null
+                  ? {
+                      commission_rate_cents:
+                        normalizedRateDraft.commissionRateCents,
+                      default_cashback_rate_bps:
+                        normalizedRateDraft.defaultCashbackRateBps,
+                    }
                   : {}),
               }
             : row,
@@ -168,8 +279,13 @@ export function Businesses() {
               ...prev,
               approval_status: nextStatus,
               status: nextStatus === "approved" ? "active" : "inactive",
-              ...(commissionRateCents != null
-                ? { commission_rate_cents: commissionRateCents }
+              ...(normalizedRateDraft != null
+                ? {
+                    commission_rate_cents:
+                      normalizedRateDraft.commissionRateCents,
+                    default_cashback_rate_bps:
+                      normalizedRateDraft.defaultCashbackRateBps,
+                  }
                 : {}),
             }
           : prev,
@@ -177,6 +293,20 @@ export function Businesses() {
       setMessage(`Business ${nextStatus}.`);
     }
     setWorkingId(null);
+  };
+
+  const updateDecision = async (business: BusinessRow, nextStatus: "approved" | "rejected") => {
+    if (nextStatus === "approved") {
+      setRateModalBusiness(business);
+      setRateDraft(
+        createBusinessRateDraft(
+          business.commission_rate_cents ?? 150,
+          business.default_cashback_rate_bps ?? null,
+        ),
+      );
+      return;
+    }
+    await submitDecision(business, nextStatus, null);
   };
 
   const openDrawer = (business: BusinessRow, mode: DrawerMode) => {
@@ -406,6 +536,29 @@ export function Businesses() {
                     {formatDateTime(business.updated_at)}
                   </p>
                 </div>
+                <div>
+                  <p className="text-xs text-gray-600 mb-1">Commission</p>
+                  <p className="text-sm font-semibold text-gray-900">
+                    {formatPercentLabel(
+                      normalizeBusinessCommissionRateCents(
+                        business.commission_rate_cents,
+                      ) / 10,
+                    )}
+                    %
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-600 mb-1">Cashback</p>
+                  <p className="text-sm font-semibold text-gray-900">
+                    {formatPercentLabel(
+                      normalizeBusinessDefaultCashbackRateBps(
+                        business.default_cashback_rate_bps,
+                        business.commission_rate_cents,
+                      ) / 100,
+                    )}
+                    %
+                  </p>
+                </div>
               </div>
 
               <div className="flex items-center gap-2 mb-4">
@@ -579,6 +732,172 @@ export function Businesses() {
                   </div>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {rateModalBusiness && rateDraft ? (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-white rounded-2xl shadow-xl border border-gray-200">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Approve Business</h3>
+                <p className="text-sm text-gray-500">{rateModalBusiness.name}</p>
+              </div>
+              <button
+                type="button"
+                className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                onClick={() => {
+                  setRateModalBusiness(null);
+                  setRateDraft(null);
+                }}
+              >
+                <X className="w-5 h-5 text-gray-600" />
+              </button>
+            </div>
+            <div className="p-6 space-y-5">
+              <div>
+                <p className="text-sm font-medium text-gray-900 mb-3">Choose a rate</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {BUSINESS_RATE_PRESET_OPTIONS.map((option) => {
+                    const selected = rateDraft.presetKey === option.key;
+                    return (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() =>
+                          setRateDraft((current) =>
+                            option.key === "custom"
+                              ? { ...(current || rateDraft), presetKey: "custom" }
+                              : createBusinessRateDraft(
+                                  option.commissionRateCents,
+                                  option.defaultCashbackRateBps,
+                                ),
+                          )
+                        }
+                        className={`px-4 py-3 rounded-xl border text-sm font-medium transition-colors ${
+                          selected
+                            ? "border-amber-500 bg-amber-50 text-amber-900"
+                            : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {rateDraft.presetKey === "custom" ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-900 mb-2">
+                      Commission %
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={rateDraft.customCommissionPercentInput}
+                      onChange={(e) => {
+                        const sanitized = sanitizePercentInputText(e.target.value);
+                        const parsed = parsePercentInputToScaledInt(sanitized, 10);
+                        setRateDraft((current) => {
+                          const base = current || rateDraft;
+                          const nextCommission =
+                            parsed == null
+                              ? base.commissionRateCents
+                              : normalizeBusinessCommissionRateCents(parsed, base.commissionRateCents);
+                          const nextCashback = normalizeBusinessDefaultCashbackRateBps(
+                            base.defaultCashbackRateBps,
+                            nextCommission,
+                          );
+                          return {
+                            ...base,
+                            presetKey: "custom",
+                            customCommissionPercentInput: sanitized,
+                            commissionRateCents: nextCommission,
+                            defaultCashbackRateBps: nextCashback,
+                            customCashbackPercentInput: formatPercentLabel(nextCashback / 100),
+                          };
+                        });
+                      }}
+                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-900 mb-2">
+                      Cashback %
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={rateDraft.customCashbackPercentInput}
+                      onChange={(e) => {
+                        const sanitized = sanitizePercentInputText(e.target.value);
+                        const parsed = parsePercentInputToScaledInt(sanitized, 100);
+                        setRateDraft((current) => {
+                          const base = current || rateDraft;
+                          const nextCashback =
+                            parsed == null
+                              ? base.defaultCashbackRateBps
+                              : normalizeBusinessDefaultCashbackRateBps(
+                                  parsed,
+                                  base.commissionRateCents,
+                                );
+                          return {
+                            ...base,
+                            presetKey: "custom",
+                            customCashbackPercentInput: sanitized,
+                            defaultCashbackRateBps: nextCashback,
+                            customCommissionPercentInput: formatPercentLabel(
+                              base.commissionRateCents / 10,
+                            ),
+                          };
+                        });
+                      }}
+                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                Business pays {formatPercentLabel(rateDraft.commissionRateCents / 10)}%, users get{" "}
+                {formatPercentLabel(rateDraft.defaultCashbackRateBps / 100)}%, Wello keeps{" "}
+                {formatPercentLabel(
+                  Math.max(
+                    rateDraft.commissionRateCents / 10 -
+                      rateDraft.defaultCashbackRateBps / 100,
+                    0,
+                  ),
+                )}
+                %.
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                className="px-4 py-2.5 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                onClick={() => {
+                  setRateModalBusiness(null);
+                  setRateDraft(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={workingId === rateModalBusiness.id}
+                className="px-4 py-2.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-60"
+                onClick={async () => {
+                  await submitDecision(rateModalBusiness, "approved", rateDraft);
+                  setRateModalBusiness(null);
+                  setRateDraft(null);
+                }}
+              >
+                Approve
+              </button>
             </div>
           </div>
         </div>

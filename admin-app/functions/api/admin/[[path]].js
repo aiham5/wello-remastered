@@ -77,17 +77,97 @@ const parseResponseBody = async (response) => {
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const BUSINESS_COMMISSION_RATE_VALUES = new Set([150, 200]);
-const normalizeBusinessCommissionRateCents = (value) => {
+const BUSINESS_RATE_PRESET_OPTIONS = [
+  { key: "10", commissionRateCents: 100, defaultCashbackRateBps: 600 },
+  { key: "15", commissionRateCents: 150, defaultCashbackRateBps: 1000 },
+  { key: "20", commissionRateCents: 200, defaultCashbackRateBps: 1500 },
+];
+const BUSINESS_RATE_PRESET_BY_COMMISSION = new Map(
+  BUSINESS_RATE_PRESET_OPTIONS.map((option) => [
+    option.commissionRateCents,
+    option.defaultCashbackRateBps,
+  ]),
+);
+const TRADE_RECEIPT_CAP_CENTS = 100000;
+const TRADE_RECEIPT_COMMISSION_RATE_CENTS = 100;
+const TRADE_RECEIPT_COMMISSION_RATE_BPS = 1000;
+const TRADE_RECEIPT_CASHBACK_RATE_BPS = 600;
+const NON_TRADE_CATEGORY_KEYS = new Set(["activity", "restaurant", "drink", "cafe"]);
+const NON_TRADE_CATEGORY_TERMS = new Set([
+  "activity",
+  "activities",
+  "activities-entertainment",
+  "entertainment",
+  "restaurant",
+  "restaurants",
+  "restaurant-food",
+  "food",
+  "drinks",
+  "drink",
+  "cafe",
+  "cafes",
+]);
+const normalizeCategoryForTradeCheck = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+const isTradeBusinessCategory = (categoryKey, categoryLabel) => {
+  const key = normalizeCategoryForTradeCheck(categoryKey);
+  const label = normalizeCategoryForTradeCheck(categoryLabel);
+  if (key) {
+    if (NON_TRADE_CATEGORY_KEYS.has(key) || NON_TRADE_CATEGORY_TERMS.has(key)) {
+      return false;
+    }
+    return true;
+  }
+  if (label) {
+    if (NON_TRADE_CATEGORY_KEYS.has(label) || NON_TRADE_CATEGORY_TERMS.has(label)) {
+      return false;
+    }
+    return true;
+  }
+  return false;
+};
+const normalizeBusinessCommissionRateCents = (value, fallback = 150) => {
   const numeric = Number(value);
-  return Number.isFinite(numeric) && BUSINESS_COMMISSION_RATE_VALUES.has(numeric)
-    ? numeric
-    : 150;
+  if (Number.isFinite(numeric)) {
+    return Math.max(10, Math.min(1000, Math.round(numeric)));
+  }
+  return Math.max(10, Math.min(1000, Math.round(Number(fallback) || 150)));
 };
 const resolveBusinessReceiptChargeRateCents = (value) =>
   normalizeBusinessCommissionRateCents(value);
-const resolveBusinessDefaultCashbackRateBps = (value) =>
-  normalizeBusinessCommissionRateCents(value) >= 200 ? 1500 : 1000;
+const deriveDefaultCashbackRateBpsFromCommission = (value) => {
+  const normalizedCommission = normalizeBusinessCommissionRateCents(value);
+  const preset = BUSINESS_RATE_PRESET_BY_COMMISSION.get(normalizedCommission);
+  if (preset != null) return preset;
+  return Math.max(
+    0,
+    Math.min(normalizedCommission * 10, (normalizedCommission - 50) * 10),
+  );
+};
+const normalizeBusinessDefaultCashbackRateBps = (
+  cashbackRateBps,
+  commissionRateCents,
+) => {
+  const maxCashbackRateBps =
+    normalizeBusinessCommissionRateCents(commissionRateCents) * 10;
+  const numeric = Number(cashbackRateBps);
+  if (Number.isFinite(numeric)) {
+    return Math.max(0, Math.min(maxCashbackRateBps, Math.round(numeric)));
+  }
+  return deriveDefaultCashbackRateBpsFromCommission(commissionRateCents);
+};
+const resolveBusinessDefaultCashbackRateBps = (
+  commissionRateCents,
+  explicitCashbackRateBps = null,
+) =>
+  normalizeBusinessDefaultCashbackRateBps(
+    explicitCashbackRateBps,
+    commissionRateCents,
+  );
 
 const BUSINESS_SELECT_FIELDS = [
   "id",
@@ -119,6 +199,7 @@ const BUSINESS_SELECT_FIELDS = [
   "stripe_onboarded_at",
   "commission_enabled",
   "commission_rate_cents",
+  "default_cashback_rate_bps",
   "offer_honor_policy_accepted",
   "offer_honor_policy_version",
   "offer_honor_policy_accepted_at",
@@ -293,12 +374,33 @@ const sanitizeBusinessUpdates = (payload) => {
     const value = toNullableInteger(body.commission_rate_cents);
     if (
       value === "__invalid_number__" ||
-      (value != null && !BUSINESS_COMMISSION_RATE_VALUES.has(value))
+      (value != null && (value < 10 || value > 1000))
     ) {
-      errors.push("commission_rate_cents must be 150 or 200.");
+      errors.push("commission_rate_cents must be between 10 and 1000.");
     } else {
       updates.commission_rate_cents = value;
       fields.push("commission_rate_cents");
+    }
+  }
+
+  if ("default_cashback_rate_bps" in body) {
+    const value = toNullableInteger(body.default_cashback_rate_bps);
+    const normalizedCommission =
+      "commission_rate_cents" in updates
+        ? updates.commission_rate_cents
+        : body.commission_rate_cents;
+    const maxCashbackRateBps =
+      normalizeBusinessCommissionRateCents(normalizedCommission) * 10;
+    if (
+      value === "__invalid_number__" ||
+      (value != null && (value < 0 || value > maxCashbackRateBps))
+    ) {
+      errors.push(
+        `default_cashback_rate_bps must be between 0 and ${maxCashbackRateBps}.`,
+      );
+    } else {
+      updates.default_cashback_rate_bps = value;
+      fields.push("default_cashback_rate_bps");
     }
   }
 
@@ -923,32 +1025,51 @@ const handleRpc = async (ctx, body) => {
     }
 
     let businessCommissionRateCents = 150;
+    let businessDefaultCashbackRateBps = 1000;
+    let isTradeBusiness = false;
     const businessId = String(receiptRes.row.business_id || "").trim();
     if (businessId) {
       const businessRes = await selectOne({
         table: "businesses",
-        select: "id,commission_rate_cents",
+        select:
+          "id,commission_rate_cents,default_cashback_rate_bps,category_key,category_label",
         filters: [{ column: "id", op: "eq", value: businessId }],
       });
       if (!businessRes.error && businessRes.row?.id) {
-        const candidate = Number(businessRes.row.commission_rate_cents || 0);
-        if (BUSINESS_COMMISSION_RATE_VALUES.has(candidate)) {
-          businessCommissionRateCents = candidate;
-        }
+        businessCommissionRateCents = normalizeBusinessCommissionRateCents(
+          businessRes.row.commission_rate_cents,
+        );
+        businessDefaultCashbackRateBps = resolveBusinessDefaultCashbackRateBps(
+          businessCommissionRateCents,
+          businessRes.row.default_cashback_rate_bps,
+        );
+        isTradeBusiness = isTradeBusinessCategory(
+          businessRes.row.category_key,
+          businessRes.row.category_label,
+        );
       }
     }
-    const commissionRateCents =
-      resolveBusinessReceiptChargeRateCents(businessCommissionRateCents);
-    const commissionRateBps = commissionRateCents * 10;
-    const defaultCashbackRateBps =
-      resolveBusinessDefaultCashbackRateBps(businessCommissionRateCents);
+    const eligibleTotalCents = isTradeBusiness
+      ? Math.min(totalCents, TRADE_RECEIPT_CAP_CENTS)
+      : totalCents;
+    const commissionRateCents = isTradeBusiness
+      ? TRADE_RECEIPT_COMMISSION_RATE_CENTS
+      : resolveBusinessReceiptChargeRateCents(businessCommissionRateCents);
+    const commissionRateBps = isTradeBusiness
+      ? TRADE_RECEIPT_COMMISSION_RATE_BPS
+      : commissionRateCents * 10;
+    const defaultCashbackRateBps = isTradeBusiness
+      ? TRADE_RECEIPT_CASHBACK_RATE_BPS
+      : businessDefaultCashbackRateBps;
 
-    const commissionCents = Math.floor((totalCents * commissionRateBps) / 10000);
+    const commissionCents = Math.floor(
+      (eligibleTotalCents * commissionRateBps) / 10000,
+    );
 
     const promoCodeId = receiptRes.row.promo_code_id || null;
     let appliedPromoRateBps = null;
     let appliedPromoCode = null;
-    if (promoCodeId) {
+    if (promoCodeId && !isTradeBusiness) {
       const promoRes = await selectOne({
         table: "promo_codes",
         select: "id,code,cashback_rate_bps",
@@ -964,7 +1085,9 @@ const handleRpc = async (ctx, body) => {
     }
 
     const effectiveCashbackRateBps = appliedPromoRateBps || defaultCashbackRateBps;
-    const cashbackCents = Math.floor((totalCents * effectiveCashbackRateBps) / 10000);
+    const cashbackCents = Math.floor(
+      (eligibleTotalCents * effectiveCashbackRateBps) / 10000,
+    );
     const platformSubsidyCents = Math.max(cashbackCents - commissionCents, 0);
 
     return json({
@@ -979,7 +1102,10 @@ const handleRpc = async (ctx, body) => {
         applied_promo_code: appliedPromoCode,
         applied_promo_rate_bps: appliedPromoRateBps,
         effective_cashback_rate_bps: effectiveCashbackRateBps,
-        cashback_basis: "receipt_total",
+        cashback_basis:
+          isTradeBusiness && eligibleTotalCents < totalCents
+            ? "receipt_total_capped"
+            : "receipt_total",
         cashback_cents: cashbackCents,
         platform_subsidy_cents: platformSubsidyCents,
       },
@@ -1253,6 +1379,10 @@ const handleRpc = async (ctx, body) => {
       args.p_commission_rate_cents == null
         ? null
         : toNullableInteger(args.p_commission_rate_cents);
+    const requestedDefaultCashbackRateBps =
+      args.p_default_cashback_rate_bps == null
+        ? null
+        : toNullableInteger(args.p_default_cashback_rate_bps);
     if (!businessId) {
       return json({ ok: false, error: { code: "invalid_business_id", message: "Business id is required." } }, 400);
     }
@@ -1262,10 +1392,31 @@ const handleRpc = async (ctx, body) => {
     if (
       requestedCommissionRateCents === "__invalid_number__" ||
       (requestedCommissionRateCents != null &&
-        !BUSINESS_COMMISSION_RATE_VALUES.has(requestedCommissionRateCents))
+        (requestedCommissionRateCents < 10 ||
+          requestedCommissionRateCents > 1000))
     ) {
-      return json({ ok: false, error: { code: "invalid_commission_rate", message: "commission_rate_cents must be 150 or 200." } }, 400);
+      return json({ ok: false, error: { code: "invalid_commission_rate", message: "commission_rate_cents must be between 10 and 1000." } }, 400);
     }
+    if (
+      requestedDefaultCashbackRateBps === "__invalid_number__" ||
+      (requestedDefaultCashbackRateBps != null &&
+        (requestedDefaultCashbackRateBps < 0 ||
+          requestedDefaultCashbackRateBps >
+            normalizeBusinessCommissionRateCents(
+              requestedCommissionRateCents,
+            ) *
+              10))
+    ) {
+      return json({ ok: false, error: { code: "invalid_cashback_rate", message: "default_cashback_rate_bps must not exceed the commission rate." } }, 400);
+    }
+    const normalizedCommissionRateCents = normalizeBusinessCommissionRateCents(
+      requestedCommissionRateCents,
+    );
+    const normalizedDefaultCashbackRateBps =
+      resolveBusinessDefaultCashbackRateBps(
+        normalizedCommissionRateCents,
+        requestedDefaultCashbackRateBps,
+      );
     const result = await updateOne({
       table: "businesses",
       updates: {
@@ -1273,9 +1424,8 @@ const handleRpc = async (ctx, body) => {
         status: nextStatus === "approved" ? "active" : "inactive",
         ...(nextStatus === "approved"
           ? {
-              commission_rate_cents: normalizeBusinessCommissionRateCents(
-                requestedCommissionRateCents,
-              ),
+              commission_rate_cents: normalizedCommissionRateCents,
+              default_cashback_rate_bps: normalizedDefaultCashbackRateBps,
             }
           : {}),
         updated_at: new Date().toISOString(),
@@ -2213,6 +2363,8 @@ const routeExplicit = async (ctx, request, segments) => {
       qr_code: body?.qr_code ?? body?.qrCode,
       owner_id: body?.owner_id ?? body?.ownerId,
       commission_rate_cents: body?.commission_rate_cents ?? body?.commissionRateCents,
+      default_cashback_rate_bps:
+        body?.default_cashback_rate_bps ?? body?.defaultCashbackRateBps,
       commission_enabled: body?.commission_enabled ?? body?.commissionEnabled,
       stripe_onboarded_at: body?.stripe_onboarded_at ?? body?.stripeOnboardedAt,
       offer_honor_policy_accepted: body?.offer_honor_policy_accepted ?? body?.offerHonorPolicyAccepted,
@@ -2318,6 +2470,8 @@ const routeExplicit = async (ctx, request, segments) => {
         p_business_id: segments[1],
         p_next_approval_status: body?.nextApprovalStatus,
         p_commission_rate_cents: body?.commissionRateCents ?? body?.commission_rate_cents,
+        p_default_cashback_rate_bps:
+          body?.defaultCashbackRateBps ?? body?.default_cashback_rate_bps,
       },
     });
   }
