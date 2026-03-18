@@ -241,6 +241,7 @@ const SAFE_TOP =
       ? 8
       : 12;
 const SAFE_BOTTOM = Platform.OS === "ios" ? 22 : 10;
+const SHOULD_SHOW_APPLE_SIGN_IN = Platform.OS === "ios";
 const CARD_WIDTH = Math.min(280, Math.max(210, Math.round(SCREEN_WIDTH * 0.7)));
 const CARD_GAP = Math.round(Math.max(10, SCREEN_WIDTH * 0.03));
 const OFFER_IMAGE_ASPECT = 1.91 / 1;
@@ -5029,6 +5030,7 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authCreatedAtMs, setAuthCreatedAtMs] = useState(null);
+  const [appleAuthState, setAppleAuthState] = useState("idle");
   const [googleAuthState, setGoogleAuthState] = useState("idle");
   const [signInEmail, setSignInEmail] = useState("");
   const [signInPassword, setSignInPassword] = useState("");
@@ -5093,6 +5095,19 @@ export default function App() {
   const businessAddressSessionTokenRef = useRef(createPlacesSessionToken());
   const businessAddressSelectionRef = useRef(false);
   const [authView, setAuthView] = useState("menu");
+  const appleAuthInFlight = appleAuthState !== "idle";
+  const appleAuthStatusCopy = useMemo(() => {
+    if (appleAuthState === "opening") {
+      return "Opening secure Apple sign-in...";
+    }
+    if (appleAuthState === "awaiting_return") {
+      return "Finish sign-in with Apple to return to Wello.";
+    }
+    if (appleAuthState === "finishing") {
+      return "Finishing Apple sign-in...";
+    }
+    return "";
+  }, [appleAuthState]);
   const googleAuthInFlight = googleAuthState !== "idle";
   const googleAuthButtonLabel = useMemo(() => {
     if (googleAuthState === "opening") return "Opening Google...";
@@ -12364,6 +12379,7 @@ export default function App() {
       }
       if (!ensureSupabaseReady(setSignInError)) return;
       setGoogleAuthState("finishing");
+      setAppleAuthState("finishing");
 
       const {
         code,
@@ -12421,6 +12437,7 @@ export default function App() {
           } finally {
             setAuthBusy(false);
             setGoogleAuthState("idle");
+            setAppleAuthState("idle");
           }
           return;
         }
@@ -12469,12 +12486,14 @@ export default function App() {
         }
         setAuthBusy(false);
         setGoogleAuthState("idle");
+        setAppleAuthState("idle");
         return;
       }
       if (error) {
         setSignInError(error);
         setAuthBusy(false);
         setGoogleAuthState("idle");
+        setAppleAuthState("idle");
         setAuthView("signin");
         return;
       }
@@ -12528,6 +12547,7 @@ export default function App() {
           }
           setSignInError("Unable to finish Google sign-in.");
           setGoogleAuthState("idle");
+          setAppleAuthState("idle");
           setAuthView("signin");
           return;
         }
@@ -12551,6 +12571,7 @@ export default function App() {
       } finally {
         setAuthBusy(false);
         setGoogleAuthState("idle");
+        setAppleAuthState("idle");
       }
     },
     [
@@ -13423,6 +13444,61 @@ export default function App() {
     }
   };
 
+  const handleAppleSignIn = async () => {
+    if (!SHOULD_SHOW_APPLE_SIGN_IN) return;
+    if (!ensureSupabaseReady(setSignInError)) return;
+    setSignInError(null);
+    setAppleAuthState("opening");
+    setAuthBusy(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "apple",
+        options: {
+          redirectTo: GOOGLE_AUTH_REDIRECT_URL,
+          skipBrowserRedirect: true,
+        },
+      });
+      if (error || !data?.url) {
+        setSignInError(error?.message || "Unable to start Apple sign-in.");
+        setAppleAuthState("idle");
+        setAuthBusy(false);
+        return;
+      }
+
+      setAppleAuthState("awaiting_return");
+      try {
+        const authResult = await WebBrowser.openAuthSessionAsync(
+          data.url,
+          GOOGLE_AUTH_REDIRECT_URL,
+        );
+        if (
+          authResult?.type === "success" &&
+          String(authResult?.url || "").trim()
+        ) {
+          await handleAuthCallbackUrl(authResult.url);
+          return;
+        }
+        if (authResult?.type === "dismiss" || authResult?.type === "cancel") {
+          setAppleAuthState("idle");
+          setAuthBusy(false);
+          return;
+        }
+      } catch {
+        // Fallback for environments where auth sessions are unavailable.
+      }
+
+      await Linking.openURL(data.url);
+      setAuthBusy(false);
+    } catch (error) {
+      setSignInError(error?.message || "Unable to start Apple sign-in.");
+    } finally {
+      if (appleAuthState === "opening") {
+        setAppleAuthState("idle");
+        setAuthBusy(false);
+      }
+    }
+  };
+
   const handleCreateAccount = async () => {
     if (!signUpName.trim()) {
       setSignUpError("Full name is required.");
@@ -14106,6 +14182,7 @@ export default function App() {
     setAuthUserId(null);
     setAuthCreatedAtMs(null);
     setAuthEmail("");
+    setAppleAuthState("idle");
     setProfileName("");
     setProfileEmail("");
     setProfilePhone("");
@@ -30029,6 +30106,39 @@ export default function App() {
                                   </Text>
                                 </TouchableOpacity>
 
+                                {SHOULD_SHOW_APPLE_SIGN_IN ? (
+                                  <>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.authAppleButton,
+                                        (authBusy || appleAuthInFlight) &&
+                                          styles.authGoogleButtonBusy,
+                                      ]}
+                                      onPress={handleAppleSignIn}
+                                      disabled={authBusy || appleAuthInFlight}
+                                    >
+                                      <Ionicons
+                                        name="logo-apple"
+                                        size={18}
+                                        color={COLORS.white}
+                                      />
+                                      <Text style={styles.authAppleButtonText}>
+                                        Continue with Apple
+                                      </Text>
+                                    </TouchableOpacity>
+                                    {appleAuthInFlight &&
+                                    !!appleAuthStatusCopy ? (
+                                      <View style={styles.authGoogleStatusRow}>
+                                        <Text
+                                          style={styles.authGoogleStatusText}
+                                        >
+                                          {appleAuthStatusCopy}
+                                        </Text>
+                                      </View>
+                                    ) : null}
+                                  </>
+                                ) : null}
+
                                 <TouchableOpacity
                                   style={[
                                     styles.authGoogleButton,
@@ -30109,6 +30219,39 @@ export default function App() {
                                   Access your account to manage listings and
                                   offers.
                                 </Text>
+
+                                {SHOULD_SHOW_APPLE_SIGN_IN ? (
+                                  <>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.authAppleButton,
+                                        (authBusy || appleAuthInFlight) &&
+                                          styles.authGoogleButtonBusy,
+                                      ]}
+                                      onPress={handleAppleSignIn}
+                                      disabled={authBusy || appleAuthInFlight}
+                                    >
+                                      <Ionicons
+                                        name="logo-apple"
+                                        size={18}
+                                        color={COLORS.white}
+                                      />
+                                      <Text style={styles.authAppleButtonText}>
+                                        Continue with Apple
+                                      </Text>
+                                    </TouchableOpacity>
+                                    {appleAuthInFlight &&
+                                    !!appleAuthStatusCopy ? (
+                                      <View style={styles.authGoogleStatusRow}>
+                                        <Text
+                                          style={styles.authGoogleStatusText}
+                                        >
+                                          {appleAuthStatusCopy}
+                                        </Text>
+                                      </View>
+                                    ) : null}
+                                  </>
+                                ) : null}
 
                                 <TouchableOpacity
                                   style={[
@@ -32063,57 +32206,81 @@ export default function App() {
                                     Password
                                   </Text>
                                 </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.securityActionPill,
+                                    securityActivePanel === "delete" &&
+                                      styles.securityActionPillActive,
+                                  ]}
+                                  onPress={() =>
+                                    setActiveSecurityPanel("delete")
+                                  }
+                                >
+                                  <Text
+                                    style={[
+                                      styles.securityActionPillText,
+                                      securityActivePanel === "delete" &&
+                                        styles.securityActionPillTextActive,
+                                    ]}
+                                  >
+                                    Delete
+                                  </Text>
+                                </TouchableOpacity>
                               </View>
 
                               {securityActivePanel ? (
                                 <View style={styles.securityEditorCard}>
-                                  <Text style={styles.formLabel}>
-                                    Current password
-                                  </Text>
-                                  <View style={styles.passwordInputWrapper}>
-                                    <AutoFocusInput
-                                      style={[
-                                        styles.formInput,
-                                        styles.passwordInputWithToggle,
-                                      ]}
-                                      placeholder="Enter current password"
-                                      placeholderTextColor={COLORS.muted}
-                                      value={securityCurrentPassword}
-                                      onChangeText={(value) => {
-                                        setSecurityCurrentPassword(value);
-                                        clearSecurityStatusMessage();
-                                      }}
-                                      secureTextEntry={
-                                        !showSecurityCurrentPassword
-                                      }
-                                      autoCapitalize="none"
-                                      autoCorrect={false}
-                                    />
-                                    <TouchableOpacity
-                                      style={styles.passwordToggleButton}
-                                      onPress={() =>
-                                        setShowSecurityCurrentPassword(
-                                          (prev) => !prev,
-                                        )
-                                      }
-                                      hitSlop={{
-                                        top: 8,
-                                        bottom: 8,
-                                        left: 8,
-                                        right: 8,
-                                      }}
-                                    >
-                                      <Ionicons
-                                        name={
-                                          showSecurityCurrentPassword
-                                            ? "eye-off-outline"
-                                            : "eye-outline"
-                                        }
-                                        size={18}
-                                        color={COLORS.muted}
-                                      />
-                                    </TouchableOpacity>
-                                  </View>
+                                  {securityActivePanel !== "delete" ? (
+                                    <>
+                                      <Text style={styles.formLabel}>
+                                        Current password
+                                      </Text>
+                                      <View style={styles.passwordInputWrapper}>
+                                        <AutoFocusInput
+                                          style={[
+                                            styles.formInput,
+                                            styles.passwordInputWithToggle,
+                                          ]}
+                                          placeholder="Enter current password"
+                                          placeholderTextColor={COLORS.muted}
+                                          value={securityCurrentPassword}
+                                          onChangeText={(value) => {
+                                            setSecurityCurrentPassword(value);
+                                            clearSecurityStatusMessage();
+                                          }}
+                                          secureTextEntry={
+                                            !showSecurityCurrentPassword
+                                          }
+                                          autoCapitalize="none"
+                                          autoCorrect={false}
+                                        />
+                                        <TouchableOpacity
+                                          style={styles.passwordToggleButton}
+                                          onPress={() =>
+                                            setShowSecurityCurrentPassword(
+                                              (prev) => !prev,
+                                            )
+                                          }
+                                          hitSlop={{
+                                            top: 8,
+                                            bottom: 8,
+                                            left: 8,
+                                            right: 8,
+                                          }}
+                                        >
+                                          <Ionicons
+                                            name={
+                                              showSecurityCurrentPassword
+                                                ? "eye-off-outline"
+                                                : "eye-outline"
+                                            }
+                                            size={18}
+                                            color={COLORS.muted}
+                                          />
+                                        </TouchableOpacity>
+                                      </View>
+                                    </>
+                                  ) : null}
 
                                   {securityActivePanel === "email" ? (
                                     <>
@@ -32328,6 +32495,90 @@ export default function App() {
                                         </Text>
                                       </TouchableOpacity>
                                     </>
+                                  ) : null}
+                                  {securityActivePanel === "delete" ? (
+                                    <View style={styles.deleteAccountSection}>
+                                      <Text style={styles.deleteAccountTitle}>
+                                        Delete account
+                                      </Text>
+                                      <Text style={styles.deleteAccountHint}>
+                                        Request permanent account deletion. Any
+                                        remaining available cashback will be
+                                        forfeited.
+                                      </Text>
+                                      <TouchableOpacity
+                                        style={styles.deleteAccountConsentRow}
+                                        onPress={() =>
+                                          setDeleteAccountConsentChecked(
+                                            (prev) => !prev,
+                                          )
+                                        }
+                                        accessibilityRole="checkbox"
+                                        accessibilityState={{
+                                          checked: deleteAccountConsentChecked,
+                                        }}
+                                      >
+                                        <Ionicons
+                                          name={
+                                            deleteAccountConsentChecked
+                                              ? "checkbox"
+                                              : "square-outline"
+                                          }
+                                          size={18}
+                                          color={
+                                            deleteAccountConsentChecked
+                                              ? COLORS.pine
+                                              : COLORS.muted
+                                          }
+                                        />
+                                        <Text
+                                          style={
+                                            styles.deleteAccountConsentText
+                                          }
+                                        >
+                                          I understand any remaining cashback
+                                          balance will be forfeited.
+                                        </Text>
+                                      </TouchableOpacity>
+                                      {deleteAccountStatus.error ? (
+                                        <Text style={styles.formError}>
+                                          {deleteAccountStatus.error}
+                                        </Text>
+                                      ) : null}
+                                      {deleteAccountStatus.success ? (
+                                        <Text style={styles.formSuccess}>
+                                          {deleteAccountStatus.success}
+                                        </Text>
+                                      ) : null}
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.deleteAccountButton,
+                                          (!deleteAccountConsentChecked ||
+                                            deleteAccountStatus.loading) &&
+                                            styles.deleteAccountButtonDisabled,
+                                        ]}
+                                        onPress={handleRequestAccountDeletion}
+                                        disabled={
+                                          !deleteAccountConsentChecked ||
+                                          deleteAccountStatus.loading
+                                        }
+                                      >
+                                        <Ionicons
+                                          name="trash-outline"
+                                          size={16}
+                                          color={COLORS.danger}
+                                        />
+                                        <Text
+                                          style={
+                                            styles.deleteAccountButtonText
+                                          }
+                                        >
+                                          {deleteAccountStatus.loading
+                                            ? "Submitting..."
+                                            : "Delete account"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    </View>
                                   ) : null}
                                 </View>
                               ) : (
@@ -34740,6 +34991,21 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexDirection: "row",
     gap: 8,
+  },
+  authAppleButton: {
+    marginTop: 8,
+    backgroundColor: "#111111",
+    borderRadius: 14,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  authAppleButtonText: {
+    color: COLORS.white,
+    fontSize: 16,
+    fontFamily: FONT_MEDIUM,
   },
   authGoogleButtonBusy: {
     opacity: 0.8,
