@@ -241,7 +241,8 @@ const SAFE_TOP =
       ? 8
       : 12;
 const SAFE_BOTTOM = Platform.OS === "ios" ? 22 : 10;
-const SHOULD_SHOW_APPLE_SIGN_IN = Platform.OS === "ios";
+const SHOULD_SHOW_APPLE_SIGN_IN = false;
+const SHOULD_SHOW_GOOGLE_SIGN_IN = Platform.OS !== "ios";
 const CARD_WIDTH = Math.min(280, Math.max(210, Math.round(SCREEN_WIDTH * 0.7)));
 const CARD_GAP = Math.round(Math.max(10, SCREEN_WIDTH * 0.03));
 const OFFER_IMAGE_ASPECT = 1.91 / 1;
@@ -5094,7 +5095,7 @@ export default function App() {
   const businessAddressRequestRef = useRef(0);
   const businessAddressSessionTokenRef = useRef(createPlacesSessionToken());
   const businessAddressSelectionRef = useRef(false);
-  const [authView, setAuthView] = useState("menu");
+  const [authView, setAuthView] = useState("signin");
   const appleAuthInFlight = appleAuthState !== "idle";
   const appleAuthStatusCopy = useMemo(() => {
     if (appleAuthState === "opening") {
@@ -6923,7 +6924,7 @@ export default function App() {
           setProfileName(formatDisplayName(email));
         }
       }
-      setAuthView("menu");
+      setAuthView("signin");
       setSignInError(null);
       setSessionReady(true);
 
@@ -14026,7 +14027,7 @@ export default function App() {
       setBusinessOtpSentEmail("");
       setBusinessPendingSignup(null);
       setBusinessSignUpNotice(null);
-      setAuthView("menu");
+      setAuthView("signin");
     } finally {
       setAuthBusy(false);
     }
@@ -14269,7 +14270,7 @@ export default function App() {
     setCreateHoursEndMeridiem("PM");
     setTimePickerVisible(false);
     setTimePickerTarget("start");
-    setAuthView("menu");
+    setAuthView("signin");
     setActiveTab("discover");
     setOfferForm({
       title: "",
@@ -30085,212 +30086,23 @@ export default function App() {
                       <>
                         {!isSignedIn ? (
                           <View style={styles.authStack}>
-                            {authView === "menu" && (
-                              <View style={styles.authCard}>
-                                <Text style={styles.authBrand}>Wello</Text>
-                                <Text style={styles.authTitle}>
-                                  You're not signed in
-                                </Text>
-                                <Text style={styles.authSubtitle}>
-                                  Sign in to manage your account or create a new
-                                  one to get started.
-                                </Text>
-
-                                <TouchableOpacity
-                                  style={styles.authPrimaryButton}
-                                  onPress={() => setAuthView("signin")}
-                                  disabled={authBusy}
-                                >
-                                  <Text style={styles.authButtonText}>
-                                    Sign in
-                                  </Text>
-                                </TouchableOpacity>
-
-                                {SHOULD_SHOW_APPLE_SIGN_IN ? (
-                                  <>
-                                    <TouchableOpacity
-                                      style={[
-                                        styles.authAppleButton,
-                                        (authBusy || appleAuthInFlight) &&
-                                          styles.authGoogleButtonBusy,
-                                      ]}
-                                      onPress={handleAppleSignIn}
-                                      disabled={authBusy || appleAuthInFlight}
-                                    >
-                                      <Ionicons
-                                        name="logo-apple"
-                                        size={18}
-                                        color={COLORS.white}
-                                      />
-                                      <Text style={styles.authAppleButtonText}>
-                                        Continue with Apple
-                                      </Text>
-                                    </TouchableOpacity>
-                                    {appleAuthInFlight &&
-                                    !!appleAuthStatusCopy ? (
-                                      <View style={styles.authGoogleStatusRow}>
-                                        <Text
-                                          style={styles.authGoogleStatusText}
-                                        >
-                                          {appleAuthStatusCopy}
-                                        </Text>
-                                      </View>
-                                    ) : null}
-                                  </>
-                                ) : null}
-
-                                <TouchableOpacity
-                                  style={[
-                                    styles.authGoogleButton,
-                                    (authBusy || googleAuthInFlight) &&
-                                      styles.authGoogleButtonBusy,
-                                  ]}
-                                  onPress={handleGoogleSignIn}
-                                  disabled={authBusy || googleAuthInFlight}
-                                >
-                                  {googleAuthInFlight ? (
-                                    <ActivityIndicator
-                                      size="small"
-                                      color={COLORS.ink}
-                                    />
-                                  ) : (
-                                    <Ionicons
-                                      name="logo-google"
-                                      size={16}
-                                      color={COLORS.ink}
-                                    />
-                                  )}
-                                  <Text style={styles.authGoogleButtonText}>
-                                    {googleAuthButtonLabel}
-                                  </Text>
-                                </TouchableOpacity>
-                                {googleAuthInFlight &&
-                                  !!googleAuthStatusCopy && (
-                                    <View style={styles.authGoogleStatusRow}>
-                                      <Text style={styles.authGoogleStatusText}>
-                                        {googleAuthStatusCopy}
-                                      </Text>
-                                    </View>
-                                  )}
-
-                                <TouchableOpacity
-                                  style={styles.authSecondaryButton}
-                                  onPress={() => setAuthView("signup")}
-                                  disabled={authBusy}
-                                >
-                                  <Text style={styles.secondaryButtonText}>
-                                    Create new account
-                                  </Text>
-                                </TouchableOpacity>
-
-                                <TouchableOpacity
-                                  style={styles.authSecondaryButton}
-                                  onPress={() => setAuthView("business")}
-                                  disabled={authBusy}
-                                >
-                                  <Text style={styles.secondaryButtonText}>
-                                    Create business account
-                                  </Text>
-                                </TouchableOpacity>
-                                {signInError && (
-                                  <Text style={styles.formError}>
-                                    {signInError}
-                                  </Text>
-                                )}
-                              </View>
-                            )}
-
                             {authView === "signin" && (
-                              <View style={styles.authCard}>
-                                <TouchableOpacity
-                                  style={styles.authBack}
-                                  onPress={() => setAuthView("menu")}
-                                >
-                                  <Ionicons
-                                    name="arrow-back"
-                                    size={16}
-                                    color={COLORS.muted}
-                                  />
-                                  <Text style={styles.authBackText}>Back</Text>
-                                </TouchableOpacity>
-
-                                <Text style={styles.authTitle}>Sign in</Text>
-                                <Text style={styles.authSubtitle}>
-                                  Access your account to manage listings and
-                                  offers.
+                              <View
+                                style={[styles.authCard, styles.authSignInCard]}
+                              >
+                                <Text style={styles.authWelcomeTitle}>
+                                  Welcome back!
+                                </Text>
+                                <Text style={styles.authWelcomeSubtitle}>
+                                  Sign in to access your Wello account.
                                 </Text>
 
-                                {SHOULD_SHOW_APPLE_SIGN_IN ? (
-                                  <>
-                                    <TouchableOpacity
-                                      style={[
-                                        styles.authAppleButton,
-                                        (authBusy || appleAuthInFlight) &&
-                                          styles.authGoogleButtonBusy,
-                                      ]}
-                                      onPress={handleAppleSignIn}
-                                      disabled={authBusy || appleAuthInFlight}
-                                    >
-                                      <Ionicons
-                                        name="logo-apple"
-                                        size={18}
-                                        color={COLORS.white}
-                                      />
-                                      <Text style={styles.authAppleButtonText}>
-                                        Continue with Apple
-                                      </Text>
-                                    </TouchableOpacity>
-                                    {appleAuthInFlight &&
-                                    !!appleAuthStatusCopy ? (
-                                      <View style={styles.authGoogleStatusRow}>
-                                        <Text
-                                          style={styles.authGoogleStatusText}
-                                        >
-                                          {appleAuthStatusCopy}
-                                        </Text>
-                                      </View>
-                                    ) : null}
-                                  </>
-                                ) : null}
-
-                                <TouchableOpacity
-                                  style={[
-                                    styles.authGoogleButton,
-                                    (authBusy || googleAuthInFlight) &&
-                                      styles.authGoogleButtonBusy,
-                                  ]}
-                                  onPress={handleGoogleSignIn}
-                                  disabled={authBusy || googleAuthInFlight}
-                                >
-                                  {googleAuthInFlight ? (
-                                    <ActivityIndicator
-                                      size="small"
-                                      color={COLORS.ink}
-                                    />
-                                  ) : (
-                                    <Ionicons
-                                      name="logo-google"
-                                      size={16}
-                                      color={COLORS.ink}
-                                    />
-                                  )}
-                                  <Text style={styles.authGoogleButtonText}>
-                                    {googleAuthButtonLabel}
-                                  </Text>
-                                </TouchableOpacity>
-                                {googleAuthInFlight &&
-                                  !!googleAuthStatusCopy && (
-                                    <View style={styles.authGoogleStatusRow}>
-                                      <Text style={styles.authGoogleStatusText}>
-                                        {googleAuthStatusCopy}
-                                      </Text>
-                                    </View>
-                                  )}
-
-                                <Text style={styles.formLabel}>Email</Text>
+                                <Text style={styles.authFieldLabel}>
+                                  Email address
+                                </Text>
                                 <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="you@example.com"
+                                  style={styles.authInputModern}
+                                  placeholder="Enter your email"
                                   placeholderTextColor={COLORS.muted}
                                   value={signInEmail}
                                   onChangeText={(value) => {
@@ -30304,11 +30116,13 @@ export default function App() {
                                   returnKeyType="next"
                                 />
 
-                                <Text style={styles.formLabel}>Password</Text>
+                                <Text style={styles.authFieldLabel}>
+                                  Password
+                                </Text>
                                 <View style={styles.passwordInputWrapper}>
                                   <AutoFocusInput
                                     style={[
-                                      styles.authInput,
+                                      styles.authInputModern,
                                       styles.passwordInputWithToggle,
                                     ]}
                                     placeholder="Enter your password"
@@ -30400,15 +30214,121 @@ export default function App() {
                                 <TouchableOpacity
                                   style={[
                                     styles.authButton,
+                                    styles.authLoginButton,
                                     authBusy && styles.authButtonDisabled,
                                   ]}
                                   onPress={handleSignIn}
                                   disabled={authBusy}
                                 >
                                   <Text style={styles.authButtonText}>
-                                    {authBusy ? "Please wait..." : "Sign in"}
+                                    {authBusy ? "Please wait..." : "Login"}
                                   </Text>
                                 </TouchableOpacity>
+
+                                {(SHOULD_SHOW_APPLE_SIGN_IN ||
+                                  SHOULD_SHOW_GOOGLE_SIGN_IN) && (
+                                  <View style={styles.authSocialDividerRow}>
+                                    <View
+                                      style={styles.authSocialDividerLine}
+                                    />
+                                    <Text style={styles.authSocialDividerText}>
+                                      Login with
+                                    </Text>
+                                    <View
+                                      style={styles.authSocialDividerLine}
+                                    />
+                                  </View>
+                                )}
+
+                                {SHOULD_SHOW_GOOGLE_SIGN_IN ||
+                                SHOULD_SHOW_APPLE_SIGN_IN ? (
+                                  <View style={styles.authSocialIconRow}>
+                                    {SHOULD_SHOW_GOOGLE_SIGN_IN ? (
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.authSocialIconButton,
+                                          (authBusy || googleAuthInFlight) &&
+                                            styles.authGoogleButtonBusy,
+                                        ]}
+                                        onPress={handleGoogleSignIn}
+                                        disabled={
+                                          authBusy || googleAuthInFlight
+                                        }
+                                      >
+                                        {googleAuthInFlight ? (
+                                          <ActivityIndicator
+                                            size="small"
+                                            color={COLORS.ink}
+                                          />
+                                        ) : (
+                                          <Ionicons
+                                            name="logo-google"
+                                            size={22}
+                                            color={COLORS.ink}
+                                          />
+                                        )}
+                                      </TouchableOpacity>
+                                    ) : null}
+                                    {SHOULD_SHOW_APPLE_SIGN_IN ? (
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.authSocialIconButton,
+                                          styles.authSocialIconButtonDark,
+                                          (authBusy || appleAuthInFlight) &&
+                                            styles.authGoogleButtonBusy,
+                                        ]}
+                                        onPress={handleAppleSignIn}
+                                        disabled={
+                                          authBusy || appleAuthInFlight
+                                        }
+                                      >
+                                        <Ionicons
+                                          name="logo-apple"
+                                          size={22}
+                                          color={COLORS.white}
+                                        />
+                                      </TouchableOpacity>
+                                    ) : null}
+                                  </View>
+                                ) : null}
+                                {(googleAuthInFlight && !!googleAuthStatusCopy) ||
+                                (appleAuthInFlight && !!appleAuthStatusCopy) ? (
+                                  <View style={styles.authGoogleStatusRow}>
+                                    <Text style={styles.authGoogleStatusText}>
+                                      {googleAuthInFlight && googleAuthStatusCopy
+                                        ? googleAuthStatusCopy
+                                        : appleAuthStatusCopy}
+                                    </Text>
+                                  </View>
+                                ) : null}
+
+                                <View style={styles.authSignupRow}>
+                                  <Text style={styles.authSignupCopy}>
+                                    Don't have an account?{" "}
+                                  </Text>
+                                  <TouchableOpacity
+                                    onPress={() => setAuthView("signup")}
+                                    disabled={authBusy}
+                                  >
+                                    <Text style={styles.authSignupLink}>
+                                      Sign up
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                                <View style={styles.authSignupRow}>
+                                  <Text style={styles.authSignupCopy}>
+                                    You're a business?{" "}
+                                  </Text>
+                                  <TouchableOpacity
+                                    onPress={() => setAuthView("business")}
+                                    disabled={authBusy}
+                                  >
+                                    <Text style={styles.authSignupLink}>
+                                      Create business account
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+
                                 <View style={styles.authLegalBlock}>
                                   <Text style={styles.authLegalCopy}>
                                     By continuing, you agree to our Terms and
@@ -30639,7 +30559,7 @@ export default function App() {
                               <View style={styles.authCard}>
                                 <TouchableOpacity
                                   style={styles.authBack}
-                                  onPress={() => setAuthView("menu")}
+                                  onPress={() => setAuthView("signin")}
                                 >
                                   <Ionicons
                                     name="arrow-back"
@@ -30820,7 +30740,7 @@ export default function App() {
                               <View style={styles.authCard}>
                                 <TouchableOpacity
                                   style={styles.authBack}
-                                  onPress={() => setAuthView("menu")}
+                                  onPress={() => setAuthView("signin")}
                                 >
                                   <Ionicons
                                     name="arrow-back"
@@ -31728,9 +31648,20 @@ export default function App() {
                                   <Text style={styles.profileQuickListTitle}>
                                     Help & Support
                                   </Text>
-                                  <Text style={styles.profileQuickListMeta}>
-                                    Contact support
-                                  </Text>
+                                  <View
+                                    style={styles.profileQuickListMetaInlineRow}
+                                  >
+                                    <Text style={styles.profileQuickListMeta}>
+                                      Contact support
+                                    </Text>
+                                    <Text
+                                      style={
+                                        styles.profileQuickListMeta
+                                      }
+                                    >
+                                      , Delete Account
+                                    </Text>
+                                  </View>
                                 </View>
                                 <Ionicons
                                   name="chevron-forward"
@@ -34906,10 +34837,13 @@ const styles = StyleSheet.create({
   authCard: {
     backgroundColor: COLORS.white,
     borderRadius: 22,
-    padding: 24,
+    padding: IS_SMALL_PHONE ? 20 : 24,
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.09)",
     ...ELEVATION.medium,
+  },
+  authSignInCard: {
+    paddingTop: IS_SMALL_PHONE ? 18 : 22,
   },
   authBrand: {
     fontSize: 24,
@@ -34930,6 +34864,30 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     marginBottom: 16,
   },
+  authWelcomeTitle: {
+    fontSize: IS_SMALL_PHONE ? 28 : 34,
+    lineHeight: IS_SMALL_PHONE ? 34 : 40,
+    color: COLORS.pine,
+    fontFamily: FONT_DISPLAY,
+    textAlign: "center",
+    marginTop: IS_SMALL_PHONE ? 2 : 8,
+    marginBottom: 8,
+  },
+  authWelcomeSubtitle: {
+    fontSize: IS_SMALL_PHONE ? 14 : 15,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    lineHeight: IS_SMALL_PHONE ? 20 : 21,
+    textAlign: "center",
+    marginBottom: 20,
+  },
+  authFieldLabel: {
+    fontSize: 13,
+    color: COLORS.pine,
+    fontFamily: FONT_MEDIUM,
+    marginBottom: 6,
+    marginLeft: 4,
+  },
   authInput: {
     backgroundColor: COLORS.surfaceAlt,
     borderRadius: 14,
@@ -34939,6 +34897,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: COLORS.ink,
     borderWidth: 1,
+    borderColor: COLORS.sand,
+    marginBottom: 12,
+  },
+  authInputModern: {
+    backgroundColor: COLORS.surfaceAlt,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: IS_SMALL_PHONE ? 13 : 14,
+    fontFamily: FONT_TEXT,
+    fontSize: 16,
+    color: COLORS.ink,
+    borderWidth: 1.5,
     borderColor: COLORS.sand,
     marginBottom: 12,
   },
@@ -34968,6 +34938,13 @@ const styles = StyleSheet.create({
     borderColor: "rgba(11, 31, 58, 0.96)",
     marginTop: 4,
     ...ELEVATION.soft,
+  },
+  authLoginButton: {
+    marginTop: 10,
+    borderRadius: 16,
+    minHeight: 52,
+    backgroundColor: COLORS.pine,
+    borderColor: COLORS.pine,
   },
   authPrimaryButton: {
     backgroundColor: COLORS.pine,
@@ -35024,6 +35001,44 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     lineHeight: 16,
   },
+  authSocialDividerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 18,
+    marginBottom: 14,
+  },
+  authSocialDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: COLORS.sand,
+  },
+  authSocialDividerText: {
+    fontSize: 13,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  authSocialIconRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 14,
+    marginBottom: 18,
+  },
+  authSocialIconButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  authSocialIconButtonDark: {
+    backgroundColor: "#111111",
+    borderColor: "#111111",
+  },
   authButtonDisabled: {
     backgroundColor: "#A7B4C8",
     borderColor: "#A7B4C8",
@@ -35048,8 +35063,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: -4,
-    marginBottom: 6,
+    marginTop: -2,
+    marginBottom: 8,
   },
   authInlineLinkAction: {
     paddingVertical: 4,
@@ -35063,11 +35078,28 @@ const styles = StyleSheet.create({
   },
   authInlineLinkText: {
     fontSize: 14,
-    color: "#27476B",
+    color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
+  authSignupRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    flexWrap: "wrap",
+    marginTop: 2,
+  },
+  authSignupCopy: {
+    fontSize: 14,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  authSignupLink: {
+    fontSize: 14,
+    color: COLORS.pine,
+    fontFamily: FONT_SEMIBOLD,
+  },
   authLegalBlock: {
-    marginTop: 10,
+    marginTop: 14,
     gap: 5,
   },
   authLegalCopy: {
@@ -39571,6 +39603,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#8B97A9",
     fontFamily: FONT_TEXT,
+  },
+  profileQuickListMetaInlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    marginTop: 2,
   },
   profileSubpageBackButton: {
     alignSelf: "flex-start",
