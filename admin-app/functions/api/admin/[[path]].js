@@ -1666,6 +1666,56 @@ const invokeEdgeFunctionData = async (ctx, fnName, body) => {
   return { ok: true, status: response.status, data: parsed?.data ?? parsed ?? null };
 };
 
+const deleteAuthUserById = async (ctx, userId) => {
+  const targetUserId = String(userId || "").trim();
+  if (!targetUserId) {
+    return { ok: false, status: 400, error: "User id is required." };
+  }
+  const supabaseUrl = String(ctx.env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
+  const key = String(
+    ctx.env.ADMIN_SUPABASE_SECRET_KEY ||
+      ctx.env.SUPABASE_SECRET_KEY ||
+      ctx.env.SUPABASE_SERVICE_ROLE_KEY ||
+      "",
+  ).trim();
+  if (!supabaseUrl || !key) {
+    return {
+      ok: false,
+      status: 500,
+      error: "Server secret is not configured.",
+    };
+  }
+
+  const response = await fetch(
+    `${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(targetUserId)}`,
+    {
+      method: "DELETE",
+      headers: {
+        apikey: key,
+        authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+      },
+    },
+  );
+
+  const parsed = await parseResponseBody(response);
+  if (response.ok || response.status === 404) {
+    return { ok: true, status: response.status, data: parsed ?? null };
+  }
+
+  return {
+    ok: false,
+    status: response.status,
+    error: String(
+      parsed?.msg ||
+        parsed?.message ||
+        parsed?.error_description ||
+        parsed?.error ||
+        "Unable to delete auth user.",
+    ),
+  };
+};
+
 const handleLogAction = async (ctx, body) => {
   const payload = {
     actor_id: String(ctx.profile?.id || ""),
@@ -2256,7 +2306,8 @@ const routeExplicit = async (ctx, request, segments) => {
     const requestRow = await runQuery({
       table: "account_deletion_requests",
       action: "select",
-      select: "id,request_status,reviewed_by,reviewed_at",
+      select:
+        "id,user_id,request_status,confirm_forfeit_cashback,forfeited_cashback_cents,forfeited_at,reviewed_by,reviewed_at,review_notes,created_at,updated_at",
       filters: [{ column: "id", op: "eq", value: requestId }],
       single: "maybe",
     });
@@ -2279,13 +2330,71 @@ const routeExplicit = async (ctx, request, segments) => {
     }
 
     const nextStatus = action === "approve" ? "approved" : "rejected";
+    const reviewedAt = new Date().toISOString();
+
+    if (action === "approve") {
+      const targetUserId = String(requestRow.payload.data.user_id || "").trim();
+      if (!targetUserId) {
+        return json(
+          {
+            ok: false,
+            error: {
+              code: "request_missing_user",
+              message: "Deletion request is missing a user id.",
+            },
+          },
+          409,
+        );
+      }
+
+      const deleted = await deleteAuthUserById(ctx, targetUserId);
+      if (!deleted.ok) {
+        return json(
+          {
+            ok: false,
+            error: {
+              code: "auth_user_delete_failed",
+              message: deleted.error || "Unable to delete the auth user.",
+            },
+          },
+          deleted.status || 500,
+        );
+      }
+
+      const completedRow = {
+        ...requestRow.payload.data,
+        request_status: "completed",
+        reviewed_by: ctx.profile.id,
+        reviewed_at: reviewedAt,
+        review_notes: reviewNotes,
+        updated_at: reviewedAt,
+      };
+
+      await logAdminActionInternal(ctx, {
+        action: "account_deletion_approve",
+        entity: "account_deletion_requests",
+        entityId: requestId,
+        status: "success",
+        before: requestRow.payload.data,
+        after: completedRow,
+        meta: {
+          action,
+          expectedStatus,
+          userDeleted: true,
+          deletedUserId: targetUserId,
+        },
+      });
+
+      return json({ ok: true, data: completedRow }, 200);
+    }
+
     const updated = await runQuery({
       table: "account_deletion_requests",
       action: "update",
       body: {
         request_status: nextStatus,
         reviewed_by: ctx.profile.id,
-        reviewed_at: new Date().toISOString(),
+        reviewed_at: reviewedAt,
         review_notes: reviewNotes,
       },
       select:

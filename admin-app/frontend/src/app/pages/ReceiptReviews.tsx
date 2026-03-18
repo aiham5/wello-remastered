@@ -10,7 +10,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import {
   apiRequest,
   formatCurrencyFromCents,
-  formatRelativeTime,
+  formatDateTime,
   summarizeError,
 } from "../lib/adminApi";
 import { resolveReceiptImage, type SignedReceiptImage } from "../lib/receiptImage";
@@ -453,7 +453,7 @@ export function ReceiptReviews() {
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div>
                             <p className="font-medium text-gray-900">#{receipt.id.slice(0, 8)}</p>
-                            <p className="text-xs text-gray-500">{formatRelativeTime(receipt.uploaded_at)}</p>
+                            <p className="text-xs text-gray-500">{formatDateTime(receipt.uploaded_at)}</p>
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -574,6 +574,18 @@ export function ReceiptReviews() {
                   <p className="text-gray-500">Promo</p>
                   <p className="font-medium text-gray-900">
                     {detail.promo_code?.code || detail.promo_code_id || "None"}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-gray-500">Uploaded</p>
+                  <p className="font-medium text-gray-900">
+                    {formatDateTime(detail.uploaded_at)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-gray-500">Reviewed</p>
+                  <p className="font-medium text-gray-900">
+                    {formatDateTime(detail.reviewed_at)}
                   </p>
                 </div>
               </div>

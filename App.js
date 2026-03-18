@@ -1907,7 +1907,7 @@ const formatPurchaseVerificationReason = (reasonCode, reasonDetail) => {
     case "identity_mismatch":
       return "Account ownership check did not match.";
     case "receipt_under_review":
-      return "Receipt uploaded and pending review.";
+      return "Receipt sent for review.";
     case "receipt_rejected":
       return "Receipt review was rejected.";
     default:
@@ -2109,6 +2109,7 @@ const levenshteinDistance = (value, target) => {
 
 const OFFER_TYPE_LABELS = {
   bogo: "BOGO",
+  cashback: "Cashback",
   discount: "Discount",
   bundle: "Bundle",
   freebie: "Freebie",
@@ -2119,6 +2120,7 @@ const OFFER_TYPE_LABELS = {
 
 const OFFER_TYPE_OTHER_KEY = "__other__";
 const OFFER_TYPE_DROPDOWN_OPTIONS = [
+  { value: "Cashback", label: "Cashback" },
   { value: "Discount", label: "Discount" },
   { value: "BOGO", label: "BOGO" },
   { value: "Bundle", label: "Bundle" },
@@ -2142,6 +2144,8 @@ const normalizeOfferType = (input) => {
     "two for one": "bogo",
     "two-for-one": "bogo",
     bogo: "bogo",
+    cashback: "cashback",
+    "cash back": "cashback",
     discount: "discount",
     "percent off": "discount",
     "percentage off": "discount",
@@ -8163,6 +8167,90 @@ export default function App() {
     [resetAuthState],
   );
 
+  const shouldForceLogoutFromAuthValidationError = useCallback((error) => {
+    const status = Number(error?.status || error?.statusCode || 0);
+    const message = String(error?.message || "")
+      .trim()
+      .toLowerCase();
+    if (status === 401 || status === 403) return true;
+    return (
+      message.includes("user not found") ||
+      message.includes("session not found") ||
+      message.includes("invalid jwt") ||
+      message.includes("jwt expired") ||
+      message.includes("unauthorized") ||
+      message.includes("forbidden") ||
+      message.includes("sub claim") ||
+      message.includes("does not exist")
+    );
+  }, []);
+
+  const validateServerSessionUser = useCallback(
+    async ({
+      accessToken,
+      expectedUserId = "",
+      missingReason = "Your account is no longer available.",
+    } = {}) => {
+      const token = String(accessToken || "").trim();
+      if (!token) return null;
+      try {
+        const result = await withTimeout(
+          supabase.auth.getUser(token),
+          SESSION_USER_TIMEOUT_MS,
+          "auth.validateUser",
+        );
+        const nextUser = result?.data?.user || null;
+        const nextUserId = String(nextUser?.id || "").trim();
+        if (!nextUserId) {
+          await forceSignOut(missingReason);
+          return null;
+        }
+        if (
+          expectedUserId &&
+          nextUserId &&
+          String(expectedUserId).trim() !== nextUserId
+        ) {
+          await forceSignOut(missingReason);
+          return null;
+        }
+        return nextUser;
+      } catch (error) {
+        if (shouldForceLogoutFromAuthValidationError(error)) {
+          await forceSignOut(missingReason);
+          return null;
+        }
+        return null;
+      }
+    },
+    [forceSignOut, shouldForceLogoutFromAuthValidationError],
+  );
+
+  const ensureSignedInUserStillExists = useCallback(async () => {
+    if (!isSignedIn) return true;
+    try {
+      const sessionResult = await withTimeout(
+        supabase.auth.getSession(),
+        4000,
+        "session.validate",
+      );
+      const session = sessionResult?.data?.session || null;
+      const accessToken = String(session?.access_token || "").trim();
+      const sessionUserId = String(session?.user?.id || "").trim();
+      if (!accessToken || !sessionUserId) {
+        await forceSignOut("Your session expired. Sign in again.");
+        return false;
+      }
+      const verifiedUser = await validateServerSessionUser({
+        accessToken,
+        expectedUserId: sessionUserId,
+        missingReason: "Your account has been deleted.",
+      });
+      return !!verifiedUser?.id;
+    } catch {
+      return true;
+    }
+  }, [forceSignOut, isSignedIn, validateServerSessionUser]);
+
   const leavePasswordRecoveryMode = useCallback(
     async (notice = null) => {
       await safeLocalSignOut();
@@ -8220,20 +8308,14 @@ export default function App() {
         );
         let session = tokenResult.session;
         let sessionUser = session?.user || null;
-        if (!sessionUser?.id && tokenResult.accessToken) {
-          try {
-            const userResult = await withTimeout(
-              supabase.auth.getUser(tokenResult.accessToken),
-              SESSION_USER_TIMEOUT_MS,
-              "auth.getUser",
-            );
-            sessionUser = userResult?.data?.user || null;
-            if (sessionUser?.id) {
-              session = { ...(session || {}), user: sessionUser };
-            }
-          } catch {
-            // Keep fallback behavior below.
-          }
+        const verifiedSessionUser = await validateServerSessionUser({
+          accessToken: tokenResult.accessToken,
+          expectedUserId: sessionUser?.id || "",
+          missingReason: "Your account has been deleted.",
+        });
+        if (verifiedSessionUser?.id) {
+          sessionUser = verifiedSessionUser;
+          session = { ...(session || {}), user: verifiedSessionUser };
         }
         if (!isMounted) return;
         if (sessionUser?.id) {
@@ -8278,6 +8360,14 @@ export default function App() {
       ? supabase.auth.onAuthStateChange(async (event, session) => {
           if (!isMounted) return;
           if (session?.user) {
+            const verifiedAuthUser = await validateServerSessionUser({
+              accessToken: session.access_token,
+              expectedUserId: session.user.id,
+              missingReason: "Your account has been deleted.",
+            });
+            if (!verifiedAuthUser?.id) {
+              return;
+            }
             if (event === "PASSWORD_RECOVERY") {
               enterPasswordRecoveryMode();
               return;
@@ -8288,12 +8378,12 @@ export default function App() {
               return;
             }
             setIsSignedIn(true);
-            setAuthUserId(session.user.id);
-            if (session.user.email) {
-              setAuthEmail(session.user.email);
+            setAuthUserId(verifiedAuthUser.id);
+            if (verifiedAuthUser.email) {
+              setAuthEmail(verifiedAuthUser.email);
             }
             setSessionReady(true);
-            finalizeSignedInUser(session.user).catch(() => null);
+            finalizeSignedInUser(verifiedAuthUser).catch(() => null);
           } else {
             if (passwordRecoveryModeRef.current) {
               setIsSignedIn(false);
@@ -8317,6 +8407,7 @@ export default function App() {
     loadPromoStatus,
     loadReferralStatus,
     hasActiveSessionForUser,
+    validateServerSessionUser,
   ]);
 
   useEffect(() => {
@@ -12599,6 +12690,7 @@ export default function App() {
     async (count) => {
       const pendingCount = Math.max(Number(count) || 0, 0);
       if (!pendingCount) return;
+      if (AppState.currentState === "active") return;
       try {
         const { status } = await Notifications.getPermissionsAsync();
         if (status !== "granted") return;
@@ -18203,8 +18295,8 @@ export default function App() {
                     status: "pending",
                     reasonCode: "receipt_under_review",
                     reasonDetail: isTradesRedemptionEntry(entry)
-                      ? `Receipt uploaded and awaiting review. Trades cashback is 6% back, capped at ${TRADES_RECEIPT_CAP_COPY} total cashback, and can take up to 7 business days.`
-                      : "Receipt uploaded and awaiting review.",
+                      ? `Receipt sent. Trades review can take up to 7 business days.`
+                      : "Receipt sent for review.",
                     lastCheckedAt: Date.now(),
                     confirmedAt: null,
                     rejectedAt: null,
@@ -18221,10 +18313,10 @@ export default function App() {
         triggerReceiptConfetti();
         showReceiptOverlay(
           "success",
-          "Receipt uploaded",
+          "Receipt sent",
           isTradesRedemptionEntry(entry)
-            ? `Thanks! Trades cashback is 6% back, capped at ${TRADES_RECEIPT_CAP_COPY} total cashback, and can take up to 7 business days.`
-            : "Thanks! We'll review it shortly.",
+            ? "Trades review can take up to 7 business days."
+            : "We got it.",
           { autoHideMs: 1600 },
         );
         loadRedemptions({ silent: true });
@@ -19987,6 +20079,10 @@ export default function App() {
       if (liveSyncRef.current.inFlight) return;
       liveSyncRef.current.inFlight = true;
       try {
+        if (isSignedIn) {
+          const stillExists = await ensureSignedInUserStillExists();
+          if (!stillExists) return;
+        }
         await refreshAll({ silent: true, force: Boolean(force) });
         if (isSignedIn) {
           await Promise.all([
@@ -20013,6 +20109,7 @@ export default function App() {
     [
       refreshAll,
       isSignedIn,
+      ensureSignedInUserStillExists,
       isOwner,
       resolvedOwnerBusiness?.id,
       ownerBusinessId,
