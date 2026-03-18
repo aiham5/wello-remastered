@@ -34,7 +34,7 @@
           <article class="legal-card legal-prose">
             <p class="legal-kicker">Legal</p>
             <h1>Privacy Policy</h1>
-            <p class="legal-meta">Effective date: March 8, 2026</p>
+            <p class="legal-meta">Effective date: March 18, 2026</p>
 
             <div class="legal-note">
               <p>
@@ -76,7 +76,8 @@
               <ul>
                 <li>
                   <strong>Identifiers and account information:</strong> name, email, account ID,
-                  role, login/session metadata, and support identifiers.
+                  role, login/session metadata, third-party auth provider metadata where used,
+                  and support identifiers.
                 </li>
                 <li>
                   <strong>Business profile and offer information:</strong> business name, business
@@ -84,7 +85,8 @@
                 </li>
                 <li>
                   <strong>Redemption and receipt information:</strong> redemptions, receipt uploads,
-                  review outcomes, fraud-prevention logs, and audit events.
+                  review outcomes, business review feedback or dispute reasons for certain trade
+                  reviews, fraud-prevention logs, and audit events.
                 </li>
                 <li>
                   <strong>Financial and payout metadata:</strong> payout method metadata,
@@ -117,9 +119,13 @@
             <section id="sources">
               <h2>4. Sources of Information</h2>
               <ul>
-                <li>Directly from you (account creation, profile updates, support requests).</li>
+                <li>
+                  Directly from you (account creation, sign-in, profile updates, support
+                  requests).
+                </li>
                 <li>Automatically from app and website usage.</li>
                 <li>From businesses and administrators using Service tooling.</li>
+                <li>From identity or sign-in providers you choose to use.</li>
                 <li>From service providers used to operate verification and payout features.</li>
               </ul>
             </section>
@@ -127,7 +133,7 @@
             <section id="how-we-use">
               <h2>5. How We Use Information</h2>
               <ul>
-                <li>Operate and secure user accounts and Service functionality.</li>
+                <li>Operate and secure user accounts, sign-in methods, and Service functionality.</li>
                 <li>Process offers, redemptions, verification, and cashback workflows.</li>
                 <li>Process gift card cashouts and bank-transfer withdrawal requests.</li>
                 <li>Prevent fraud, abuse, and policy violations.</li>
@@ -157,6 +163,7 @@
               <h2>7. Key Third-Party Providers</h2>
               <ul>
                 <li><strong>Supabase:</strong> backend, auth, data, storage.</li>
+                <li><strong>Google:</strong> optional Google sign-in and identity flows.</li>
                 <li><strong>Stripe:</strong> business billing and invoicing flows.</li>
                 <li><strong>Plaid:</strong> bank-link and purchase-verification support.</li>
                 <li><strong>Checkbook:</strong> bank-transfer payout operations.</li>
@@ -232,9 +239,10 @@
                 <a href="mailto:support@wellopartners.com">support@wellopartners.com</a>.
               </p>
               <p>
-                You can request account deletion in-app through Profile settings. If your account
-                has a remaining cashback balance, you are shown a forfeiture confirmation before
-                submitting the deletion request. You may also contact support for assistance.
+                You can request account deletion in-app through the Profile area, including the
+                Help &amp; Support section. If your account has a remaining cashback balance, you
+                are shown a forfeiture confirmation before submitting the deletion request. You may
+                also contact support for assistance.
               </p>
             </section>
 
@@ -244,7 +252,10 @@
                 You can request deletion of your app account and associated user data by either:
               </p>
               <ul>
-                <li>Using the in-app account deletion flow in Profile settings, or</li>
+                <li>
+                  Using the in-app account deletion flow available from the Profile area / Help
+                  &amp; Support section, or
+                </li>
                 <li>
                   Emailing
                   <a href="mailto:support@wellopartners.com?subject=Account%20Deletion%20Request">support@wellopartners.com</a>
