@@ -47,6 +47,19 @@ interface OfferRow {
 
 type DrawerMode = "view" | "edit" | "create";
 
+interface OfferEditForm {
+  businessId: string;
+  title: string;
+  description: string;
+  offerType: string;
+  imageUrl: string;
+  active: boolean;
+  approvalStatus: string;
+  redemptionLimitPeriod: string;
+  redemptionLimitCount: string;
+  approvedAt: string;
+}
+
 const offerCsvColumns: CsvColumn<OfferRow>[] = [
   { key: "id", label: "Offer ID" },
   { key: "business_id", label: "Business ID" },
@@ -69,6 +82,70 @@ const normalizeStatus = (offer: OfferRow) => {
   return offer.active ? "Active" : "Inactive";
 };
 
+const createEmptyOfferEditForm = (): OfferEditForm => ({
+  businessId: "",
+  title: "",
+  description: "",
+  offerType: "cashback",
+  imageUrl: "",
+  active: false,
+  approvalStatus: "",
+  redemptionLimitPeriod: "",
+  redemptionLimitCount: "",
+  approvedAt: "",
+});
+
+const buildOfferEditPayload = (offer: OfferRow) => {
+  const editable = { ...offer };
+  delete editable.id;
+  delete editable.created_at;
+  delete editable.updated_at;
+  delete editable.business;
+  return JSON.stringify(editable, null, 2);
+};
+
+const toInputDateTimeValue = (value: unknown) => {
+  if (!value) return "";
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return "";
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, 16);
+};
+
+const offerToEditForm = (offer: OfferRow): OfferEditForm => ({
+  businessId: String(offer.business_id || ""),
+  title: String(offer.title || ""),
+  description: String(offer.description || ""),
+  offerType: String(offer.offer_type || "cashback"),
+  imageUrl: String(offer.image_url || ""),
+  active: Boolean(offer.active),
+  approvalStatus: String(offer.approval_status || ""),
+  redemptionLimitPeriod: String(offer.redemption_limit_period || ""),
+  redemptionLimitCount:
+    offer.redemption_limit_count == null ? "" : String(offer.redemption_limit_count),
+  approvedAt: toInputDateTimeValue(offer.approved_at),
+});
+
+const toNullableText = (value: string) => {
+  const trimmed = String(value || "").trim();
+  return trimmed ? trimmed : null;
+};
+
+const toNullableInteger = (value: string) => {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? Math.trunc(numeric) : trimmed;
+};
+
+const toNullableIsoString = (value: string) => {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const date = new Date(trimmed);
+  return Number.isNaN(date.getTime()) ? trimmed : date.toISOString();
+};
+
 export function Offers() {
   const [rows, setRows] = useState<OfferRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,6 +158,7 @@ export function Offers() {
   const [drawerMode, setDrawerMode] = useState<DrawerMode>("view");
   const [selectedOffer, setSelectedOffer] = useState<OfferRow | null>(null);
   const [editPayload, setEditPayload] = useState("");
+  const [editForm, setEditForm] = useState<OfferEditForm>(createEmptyOfferEditForm());
   const [editBusinessId, setEditBusinessId] = useState("");
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
@@ -176,12 +254,8 @@ export function Offers() {
   const openDrawer = (offer: OfferRow, mode: DrawerMode) => {
     setSelectedOffer(offer);
     setDrawerMode(mode);
-    const editable = { ...offer };
-    delete editable.id;
-    delete editable.created_at;
-    delete editable.updated_at;
-    delete editable.business;
-    setEditPayload(JSON.stringify(editable, null, 2));
+    setEditPayload(buildOfferEditPayload(offer));
+    setEditForm(offerToEditForm(offer));
     setEditBusinessId(String(offer.business_id || ""));
     setEditTitle(String(offer.title || ""));
     setEditDescription(String(offer.description || ""));
@@ -193,6 +267,7 @@ export function Offers() {
     setSelectedOffer(null);
     setDrawerMode("create");
     setEditPayload("");
+    setEditForm(createEmptyOfferEditForm());
     setEditBusinessId("");
     setEditTitle("");
     setEditDescription("");
@@ -213,12 +288,29 @@ export function Offers() {
       setMessage("Offer editor must be a JSON object.");
       return;
     }
+    if (!editForm.title.trim() || !editForm.businessId.trim()) {
+      setMessage("Business ID and title are required.");
+      return;
+    }
+    const mergedPayload: Record<string, unknown> = {
+      ...parsed,
+      business_id: editForm.businessId.trim(),
+      title: editForm.title.trim(),
+      description: toNullableText(editForm.description),
+      offer_type: toNullableText(editForm.offerType) || "cashback",
+      image_url: toNullableText(editForm.imageUrl),
+      active: editForm.active,
+      approval_status: toNullableText(editForm.approvalStatus),
+      redemption_limit_period: toNullableText(editForm.redemptionLimitPeriod),
+      redemption_limit_count: toNullableInteger(editForm.redemptionLimitCount),
+      approved_at: toNullableIsoString(editForm.approvedAt),
+    };
     setWorkingId(selectedOffer.id);
     const res = await apiRequest<OfferRow>(
       `/api/admin/offers/${encodeURIComponent(selectedOffer.id)}/update`,
       {
         method: "POST",
-        body: parsed,
+        body: mergedPayload,
       },
     );
 
@@ -249,24 +341,16 @@ export function Offers() {
           }
         : prev,
     );
+    setEditForm(offerToEditForm(updated));
+    setEditPayload(buildOfferEditPayload(updated));
     setDrawerMode("view");
     setMessage("Offer updated.");
     setWorkingId(null);
   };
 
   const removeOfferPhotoFromDraft = () => {
-    try {
-      const parsed = JSON.parse(editPayload || "{}");
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        setMessage("Offer editor must be a JSON object.");
-        return;
-      }
-      const next = { ...parsed, image_url: null };
-      setEditPayload(JSON.stringify(next, null, 2));
-      setMessage("Offer photo marked for removal. Save to apply.");
-    } catch {
-      setMessage("Invalid JSON in offer editor.");
-    }
+    setEditForm((current) => ({ ...current, imageUrl: "" }));
+    setMessage("Offer photo marked for removal. Save to apply.");
   };
 
   const createOffer = async () => {
@@ -736,15 +820,165 @@ export function Offers() {
                 </>
               ) : (
                 <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Business ID</span>
+                      <input
+                        value={editForm.businessId}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            businessId: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Offer type</span>
+                      <input
+                        value={editForm.offerType}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            offerType: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block col-span-2">
+                      <span className="text-sm font-medium text-gray-700">Title</span>
+                      <input
+                        value={editForm.title}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, title: event.target.value }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block col-span-2">
+                      <span className="text-sm font-medium text-gray-700">Description</span>
+                      <textarea
+                        rows={5}
+                        value={editForm.description}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            description: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block col-span-2">
+                      <span className="text-sm font-medium text-gray-700">Offer photo URL</span>
+                      <input
+                        value={editForm.imageUrl}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            imageUrl: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Approval</span>
+                      <select
+                        value={editForm.approvalStatus}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            approvalStatus: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                      >
+                        <option value="">Unset</option>
+                        <option value="pending">Pending</option>
+                        <option value="approved">Approved</option>
+                        <option value="rejected">Rejected</option>
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">
+                        Redemption period
+                      </span>
+                      <select
+                        value={editForm.redemptionLimitPeriod}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            redemptionLimitPeriod: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                      >
+                        <option value="">None</option>
+                        <option value="day">Day</option>
+                        <option value="week">Week</option>
+                        <option value="month">Month</option>
+                        <option value="year">Year</option>
+                        <option value="lifetime">Lifetime</option>
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">
+                        Redemption limit count
+                      </span>
+                      <input
+                        value={editForm.redemptionLimitCount}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            redemptionLimitCount: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Approved at</span>
+                      <input
+                        type="datetime-local"
+                        value={editForm.approvedAt}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            approvedAt: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3 col-span-2">
+                      <input
+                        type="checkbox"
+                        checked={editForm.active}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, active: event.target.checked }))
+                        }
+                        className="h-4 w-4 rounded border-gray-300 text-amber-500 focus:ring-amber-500"
+                      />
+                      <span className="text-sm font-medium text-gray-700">Offer is active</span>
+                    </label>
+                  </div>
                   <label className="block">
-                    <span className="text-sm font-medium text-gray-700">Full offer details (JSON)</span>
+                    <span className="text-sm font-medium text-gray-700">
+                      Manual JSON overrides
+                    </span>
                     <textarea
-                      rows={16}
+                      rows={12}
                       value={editPayload}
                       onChange={(event) => setEditPayload(event.target.value)}
                       className="mt-1 w-full px-3 py-2 font-mono text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
                     />
                   </label>
+                  <p className="text-xs text-gray-500">
+                    Structured fields above are the primary editor. Use the JSON block only for advanced manual fields not exposed here.
+                  </p>
                   <div className="flex gap-3">
                     <button
                       type="button"

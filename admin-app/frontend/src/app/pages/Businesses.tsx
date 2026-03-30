@@ -17,6 +17,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import {
   apiRequest,
   formatDateTime,
+  formatCurrencyFromCents,
   summarizeError,
 } from "../lib/adminApi";
 import { downloadCsv, type CsvColumn } from "../lib/csv";
@@ -43,6 +44,46 @@ interface RateDraft {
   defaultCashbackRateBps: number;
   customCommissionPercentInput: string;
   customCashbackPercentInput: string;
+}
+
+interface BusinessMetricsSummary {
+  verifiedReceiptCount: number;
+  revenueCents: number;
+  chargesCents: number;
+  cashbackCents: number;
+  subsidyCents: number;
+  profitCents: number;
+}
+
+interface BusinessEditForm {
+  name: string;
+  address: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  phone: string;
+  categoryKey: string;
+  categoryLabel: string;
+  offerHighlight: string;
+  hours: string;
+  tagsText: string;
+  merchantAliasesText: string;
+  latitude: string;
+  longitude: string;
+  qrCode: string;
+  approvalStatus: string;
+  status: string;
+  isOpen: boolean;
+  stripeAccountId: string;
+  stripeCustomerId: string;
+  stripePaymentMethodId: string;
+  stripePaymentMethodBrand: string;
+  stripePaymentMethodLast4: string;
+  stripeChargesEnabled: boolean;
+  stripePayoutsEnabled: boolean;
+  stripeOnboardedAt: string;
+  commissionEnabled: boolean;
+  offerHonorPolicyAccepted: boolean;
 }
 
 const BUSINESS_RATE_PRESET_OPTIONS: Array<{
@@ -139,6 +180,118 @@ const createBusinessRateDraft = (
   };
 };
 
+const createEmptyBusinessEditForm = (): BusinessEditForm => ({
+  name: "",
+  address: "",
+  city: "",
+  state: "",
+  postalCode: "",
+  phone: "",
+  categoryKey: "",
+  categoryLabel: "",
+  offerHighlight: "",
+  hours: "",
+  tagsText: "",
+  merchantAliasesText: "",
+  latitude: "",
+  longitude: "",
+  qrCode: "",
+  approvalStatus: "",
+  status: "",
+  isOpen: false,
+  stripeAccountId: "",
+  stripeCustomerId: "",
+  stripePaymentMethodId: "",
+  stripePaymentMethodBrand: "",
+  stripePaymentMethodLast4: "",
+  stripeChargesEnabled: false,
+  stripePayoutsEnabled: false,
+  stripeOnboardedAt: "",
+  commissionEnabled: false,
+  offerHonorPolicyAccepted: false,
+});
+
+const buildBusinessEditPayload = (business: BusinessRow) => {
+  const editable = { ...business };
+  delete editable.id;
+  delete editable.created_at;
+  delete editable.updated_at;
+  return JSON.stringify(editable, null, 2);
+};
+
+const toInputDateTimeValue = (value: unknown) => {
+  if (!value) return "";
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return "";
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, 16);
+};
+
+const businessToEditForm = (business: BusinessRow): BusinessEditForm => ({
+  name: String(business.name || ""),
+  address: String(business.address || ""),
+  city: String(business.city || ""),
+  state: String(business.state || ""),
+  postalCode: String(business.postal_code || ""),
+  phone: String(business.phone || ""),
+  categoryKey: String(business.category_key || ""),
+  categoryLabel: String(business.category_label || ""),
+  offerHighlight: String(business.offer_highlight || ""),
+  hours: String(business.hours || ""),
+  tagsText: Array.isArray(business.tags) ? business.tags.map(String).join(", ") : "",
+  merchantAliasesText: Array.isArray(business.merchant_descriptor_aliases)
+    ? business.merchant_descriptor_aliases.map(String).join(", ")
+    : "",
+  latitude:
+    business.latitude == null || business.latitude === ""
+      ? ""
+      : String(business.latitude),
+  longitude:
+    business.longitude == null || business.longitude === ""
+      ? ""
+      : String(business.longitude),
+  qrCode: String(business.qr_code || ""),
+  approvalStatus: String(business.approval_status || ""),
+  status: String(business.status || ""),
+  isOpen: Boolean(business.is_open),
+  stripeAccountId: String(business.stripe_account_id || ""),
+  stripeCustomerId: String(business.stripe_customer_id || ""),
+  stripePaymentMethodId: String(business.stripe_payment_method_id || ""),
+  stripePaymentMethodBrand: String(business.stripe_payment_method_brand || ""),
+  stripePaymentMethodLast4: String(business.stripe_payment_method_last4 || ""),
+  stripeChargesEnabled: Boolean(business.stripe_charges_enabled),
+  stripePayoutsEnabled: Boolean(business.stripe_payouts_enabled),
+  stripeOnboardedAt: toInputDateTimeValue(business.stripe_onboarded_at),
+  commissionEnabled: Boolean(business.commission_enabled),
+  offerHonorPolicyAccepted: Boolean(business.offer_honor_policy_accepted),
+});
+
+const toNullableText = (value: string) => {
+  const trimmed = String(value || "").trim();
+  return trimmed ? trimmed : null;
+};
+
+const toNullableNumber = (value: string) => {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? numeric : trimmed;
+};
+
+const toNullableIsoString = (value: string) => {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const date = new Date(trimmed);
+  return Number.isNaN(date.getTime()) ? trimmed : date.toISOString();
+};
+
+const toTextList = (value: string) =>
+  String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
 const businessCsvColumns: CsvColumn<BusinessRow>[] = [
   { key: "id", label: "Business ID" },
   { key: "name", label: "Name" },
@@ -164,6 +317,9 @@ export function Businesses() {
   const [drawerMode, setDrawerMode] = useState<DrawerMode>("view");
   const [selectedBusiness, setSelectedBusiness] = useState<BusinessRow | null>(null);
   const [editPayload, setEditPayload] = useState("");
+  const [editForm, setEditForm] = useState<BusinessEditForm>(createEmptyBusinessEditForm());
+  const [businessMetrics, setBusinessMetrics] = useState<BusinessMetricsSummary | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
   const [rateModalBusiness, setRateModalBusiness] = useState<BusinessRow | null>(null);
   const [rateDraft, setRateDraft] = useState<RateDraft | null>(null);
 
@@ -183,6 +339,34 @@ export function Businesses() {
   useEffect(() => {
     void loadBusinesses();
   }, []);
+
+  useEffect(() => {
+    if (!drawerOpen || drawerMode !== "view" || !selectedBusiness?.id) {
+      setBusinessMetrics(null);
+      setMetricsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const loadBusinessMetrics = async () => {
+      setMetricsLoading(true);
+      const res = await apiRequest<BusinessMetricsSummary>(
+        `/api/admin/businesses/${encodeURIComponent(selectedBusiness.id)}/metrics`,
+      );
+      if (cancelled) return;
+      if (res.error || !res.data) {
+        setBusinessMetrics(null);
+      } else {
+        setBusinessMetrics(res.data);
+      }
+      setMetricsLoading(false);
+    };
+
+    void loadBusinessMetrics();
+    return () => {
+      cancelled = true;
+    };
+  }, [drawerOpen, drawerMode, selectedBusiness?.id]);
 
   const categories = useMemo(() => {
     const set = new Set<string>();
@@ -312,11 +496,15 @@ export function Businesses() {
   const openDrawer = (business: BusinessRow, mode: DrawerMode) => {
     setSelectedBusiness(business);
     setDrawerMode(mode);
-    const editable = { ...business };
-    delete editable.id;
-    delete editable.created_at;
-    delete editable.updated_at;
-    setEditPayload(JSON.stringify(editable, null, 2));
+    setEditForm(businessToEditForm(business));
+    setEditPayload(buildBusinessEditPayload(business));
+    setRateDraft(
+      createBusinessRateDraft(
+        business.commission_rate_cents ?? 150,
+        business.default_cashback_rate_bps ?? null,
+      ),
+    );
+    setBusinessMetrics(null);
     setDrawerOpen(true);
   };
 
@@ -333,12 +521,55 @@ export function Businesses() {
       setMessage("Business editor must be a JSON object.");
       return;
     }
+    if (!editForm.name.trim()) {
+      setMessage("Business name is required.");
+      return;
+    }
+    const mergedPayload: Record<string, unknown> = {
+      ...parsed,
+      name: editForm.name.trim(),
+      address: toNullableText(editForm.address),
+      city: toNullableText(editForm.city),
+      state: toNullableText(editForm.state),
+      postal_code: toNullableText(editForm.postalCode),
+      phone: toNullableText(editForm.phone),
+      category_key: toNullableText(editForm.categoryKey),
+      category_label: toNullableText(editForm.categoryLabel),
+      offer_highlight: toNullableText(editForm.offerHighlight),
+      hours: toNullableText(editForm.hours),
+      tags: toTextList(editForm.tagsText),
+      merchant_descriptor_aliases: toTextList(editForm.merchantAliasesText),
+      latitude: toNullableNumber(editForm.latitude),
+      longitude: toNullableNumber(editForm.longitude),
+      qr_code: toNullableText(editForm.qrCode),
+      approval_status: toNullableText(editForm.approvalStatus),
+      status: toNullableText(editForm.status),
+      is_open: editForm.isOpen,
+      stripe_account_id: toNullableText(editForm.stripeAccountId),
+      stripe_customer_id: toNullableText(editForm.stripeCustomerId),
+      stripe_payment_method_id: toNullableText(editForm.stripePaymentMethodId),
+      stripe_payment_method_brand: toNullableText(editForm.stripePaymentMethodBrand),
+      stripe_payment_method_last4: toNullableText(editForm.stripePaymentMethodLast4),
+      stripe_charges_enabled: editForm.stripeChargesEnabled,
+      stripe_payouts_enabled: editForm.stripePayoutsEnabled,
+      stripe_onboarded_at: toNullableIsoString(editForm.stripeOnboardedAt),
+      commission_enabled: editForm.commissionEnabled,
+      offer_honor_policy_accepted: editForm.offerHonorPolicyAccepted,
+      commission_rate_cents:
+        rateDraft?.commissionRateCents ??
+        selectedBusiness.commission_rate_cents ??
+        150,
+      default_cashback_rate_bps:
+        rateDraft?.defaultCashbackRateBps ??
+        selectedBusiness.default_cashback_rate_bps ??
+        null,
+    };
     setWorkingId(selectedBusiness.id);
     const res = await apiRequest<BusinessRow>(
       `/api/admin/businesses/${encodeURIComponent(selectedBusiness.id)}/update`,
       {
         method: "POST",
-        body: parsed,
+        body: mergedPayload,
       },
     );
     if (res.error || !res.data) {
@@ -351,6 +582,14 @@ export function Businesses() {
       prev.map((row) => (row.id === selectedBusiness.id ? { ...row, ...res.data } : row)),
     );
     setSelectedBusiness((prev) => (prev ? { ...prev, ...res.data } : prev));
+    setEditForm(businessToEditForm(res.data));
+    setEditPayload(buildBusinessEditPayload(res.data));
+    setRateDraft(
+      createBusinessRateDraft(
+        res.data.commission_rate_cents ?? 150,
+        res.data.default_cashback_rate_bps ?? null,
+      ),
+    );
     setDrawerMode("view");
     setMessage("Business updated.");
     setWorkingId(null);
@@ -656,37 +895,158 @@ export function Businesses() {
             <div className="p-6 overflow-y-auto space-y-5">
               {drawerMode === "view" ? (
                 <>
-                  <div>
-                    <p className="text-sm text-gray-500">Name</p>
-                    <p className="font-semibold text-gray-900">{selectedBusiness.name}</p>
+                  <div className="rounded-2xl border border-gray-200 bg-gray-50/70 p-5 space-y-4">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Business overview
+                      </p>
+                      <p className="mt-1 text-2xl font-semibold text-gray-900">
+                        {selectedBusiness.name}
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        {selectedBusiness.category_label || "Uncategorized"}
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <p className="text-gray-500">Business ID</p>
+                        <p className="font-medium text-gray-900 break-all">{selectedBusiness.id}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Phone</p>
+                        <p className="font-medium text-gray-900">
+                          {String(selectedBusiness.phone || "--")}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Approval</p>
+                        <p className="font-medium text-gray-900">
+                          {selectedBusiness.approval_status || "--"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Status</p>
+                        <p className="font-medium text-gray-900">
+                          {selectedBusiness.status || "--"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Commission</p>
+                        <p className="font-medium text-gray-900">
+                          {formatPercentLabel(
+                            Number(selectedBusiness.commission_rate_cents || 0) / 10,
+                          )}
+                          %
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Cashback</p>
+                        <p className="font-medium text-gray-900">
+                          {formatPercentLabel(
+                            Number(selectedBusiness.default_cashback_rate_bps || 0) / 100,
+                          )}
+                          %
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Created</p>
+                        <p className="font-medium text-gray-900">
+                          {formatDateTime(selectedBusiness.created_at)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Updated</p>
+                        <p className="font-medium text-gray-900">
+                          {formatDateTime(selectedBusiness.updated_at)}
+                        </p>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-gray-500 text-sm">Address</p>
+                      <p className="font-medium text-gray-900">
+                        {[
+                          selectedBusiness.address,
+                          selectedBusiness.city,
+                          selectedBusiness.state,
+                          selectedBusiness.postal_code,
+                        ]
+                          .filter(Boolean)
+                          .join(", ") || "Location managed in app profile"}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm text-gray-500">Category</p>
-                    <p className="font-medium text-gray-900">
-                      {selectedBusiness.category_label || "Uncategorized"}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-500">Business ID</p>
-                    <p className="font-medium text-gray-900 break-all">{selectedBusiness.id}</p>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <p className="text-sm text-gray-500">Approval</p>
-                      <p className="font-medium text-gray-900">{selectedBusiness.approval_status}</p>
+                  <div className="rounded-2xl border border-gray-200 p-5 space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                          Financial snapshot
+                        </p>
+                        <p className="text-sm text-gray-600">
+                          Charges, cashback, profit, and verified sales for this business.
+                        </p>
+                      </div>
+                      {metricsLoading ? (
+                        <span className="text-xs font-medium text-gray-500">Loading...</span>
+                      ) : null}
                     </div>
-                    <div>
-                      <p className="text-sm text-gray-500">Status</p>
-                      <p className="font-medium text-gray-900">{selectedBusiness.status || "--"}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-500">Created</p>
-                      <p className="font-medium text-gray-900">{formatDateTime(selectedBusiness.created_at)}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-500">Updated</p>
-                      <p className="font-medium text-gray-900">{formatDateTime(selectedBusiness.updated_at)}</p>
-                    </div>
+                    {businessMetrics ? (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-xl bg-slate-50 p-4 border border-slate-200">
+                          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                            Verified revenue
+                          </p>
+                          <p className="mt-1 text-lg font-semibold text-slate-900">
+                            {formatCurrencyFromCents(businessMetrics.revenueCents)}
+                          </p>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 p-4 border border-slate-200">
+                          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                            Charges
+                          </p>
+                          <p className="mt-1 text-lg font-semibold text-slate-900">
+                            {formatCurrencyFromCents(businessMetrics.chargesCents)}
+                          </p>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 p-4 border border-slate-200">
+                          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                            Cashback
+                          </p>
+                          <p className="mt-1 text-lg font-semibold text-slate-900">
+                            {formatCurrencyFromCents(businessMetrics.cashbackCents)}
+                          </p>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 p-4 border border-slate-200">
+                          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                            Platform subsidy
+                          </p>
+                          <p className="mt-1 text-lg font-semibold text-slate-900">
+                            {formatCurrencyFromCents(businessMetrics.subsidyCents)}
+                          </p>
+                        </div>
+                        <div className="rounded-xl bg-emerald-50 p-4 border border-emerald-200">
+                          <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">
+                            Profit
+                          </p>
+                          <p className="mt-1 text-lg font-semibold text-emerald-700">
+                            {formatCurrencyFromCents(businessMetrics.profitCents)}
+                          </p>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 p-4 border border-slate-200">
+                          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                            Verified receipts
+                          </p>
+                          <p className="mt-1 text-lg font-semibold text-slate-900">
+                            {businessMetrics.verifiedReceiptCount}
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-dashed border-gray-300 p-4 text-sm text-gray-500">
+                        {metricsLoading
+                          ? "Loading business metrics..."
+                          : "No business metrics available yet."}
+                      </div>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -698,19 +1058,501 @@ export function Businesses() {
                 </>
               ) : (
                 <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Business name</span>
+                      <input
+                        value={editForm.name}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, name: event.target.value }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Phone</span>
+                      <input
+                        value={editForm.phone}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, phone: event.target.value }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block col-span-2">
+                      <span className="text-sm font-medium text-gray-700">Address</span>
+                      <input
+                        value={editForm.address}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, address: event.target.value }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">City</span>
+                      <input
+                        value={editForm.city}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, city: event.target.value }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">State</span>
+                      <input
+                        value={editForm.state}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, state: event.target.value }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Postal code</span>
+                      <input
+                        value={editForm.postalCode}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            postalCode: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">QR code</span>
+                      <input
+                        value={editForm.qrCode}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, qrCode: event.target.value }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Category key</span>
+                      <input
+                        value={editForm.categoryKey}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            categoryKey: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Category label</span>
+                      <input
+                        value={editForm.categoryLabel}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            categoryLabel: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block col-span-2">
+                      <span className="text-sm font-medium text-gray-700">Offer highlight</span>
+                      <input
+                        value={editForm.offerHighlight}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            offerHighlight: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block col-span-2">
+                      <span className="text-sm font-medium text-gray-700">Hours</span>
+                      <input
+                        value={editForm.hours}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, hours: event.target.value }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block col-span-2">
+                      <span className="text-sm font-medium text-gray-700">Tags</span>
+                      <input
+                        value={editForm.tagsText}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, tagsText: event.target.value }))
+                        }
+                        placeholder="Comma-separated"
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block col-span-2">
+                      <span className="text-sm font-medium text-gray-700">
+                        Merchant descriptor aliases
+                      </span>
+                      <input
+                        value={editForm.merchantAliasesText}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            merchantAliasesText: event.target.value,
+                          }))
+                        }
+                        placeholder="Comma-separated"
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Latitude</span>
+                      <input
+                        value={editForm.latitude}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, latitude: event.target.value }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Longitude</span>
+                      <input
+                        value={editForm.longitude}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            longitude: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 p-4 space-y-4">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Rates</p>
+                      <p className="text-xs text-gray-500">
+                        Structured commission and cashback controls for the business profile.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      {BUSINESS_RATE_PRESET_OPTIONS.map((option) => {
+                        const selected = rateDraft?.presetKey === option.key;
+                        return (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() =>
+                              setRateDraft((current) =>
+                                option.key === "custom"
+                                  ? {
+                                      ...(current ||
+                                        createBusinessRateDraft(
+                                          selectedBusiness.commission_rate_cents ?? 150,
+                                          selectedBusiness.default_cashback_rate_bps ?? null,
+                                        )),
+                                      presetKey: "custom",
+                                    }
+                                  : createBusinessRateDraft(
+                                      option.commissionRateCents ?? current?.commissionRateCents,
+                                      option.defaultCashbackRateBps ??
+                                        current?.defaultCashbackRateBps,
+                                    ),
+                              )
+                            }
+                            className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                              selected
+                                ? "border-amber-500 bg-amber-50"
+                                : "border-gray-200 hover:bg-gray-50"
+                            }`}
+                          >
+                            <p className="text-sm font-semibold text-gray-900">{option.label}</p>
+                            <p className="text-xs text-gray-500">
+                              {option.commissionRateCents == null
+                                ? "Choose your own charge and cashback split."
+                                : `${formatPercentLabel(option.commissionRateCents / 10)}% charge / ${formatPercentLabel((option.defaultCashbackRateBps || 0) / 100)}% cashback`}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {rateDraft?.presetKey === "custom" ? (
+                      <div className="grid grid-cols-2 gap-4">
+                        <label className="block">
+                          <span className="text-sm font-medium text-gray-700">
+                            Commission %
+                          </span>
+                          <input
+                            value={rateDraft.customCommissionPercentInput}
+                            onChange={(event) =>
+                              setRateDraft((current) => {
+                                if (!current) return current;
+                                const nextInput = sanitizePercentInputText(event.target.value);
+                                const parsed = parsePercentInputToScaledInt(nextInput, 10);
+                                return {
+                                  ...current,
+                                  presetKey: "custom",
+                                  customCommissionPercentInput: nextInput,
+                                  commissionRateCents:
+                                    parsed == null ? current.commissionRateCents : parsed,
+                                  defaultCashbackRateBps:
+                                    parsed == null
+                                      ? current.defaultCashbackRateBps
+                                      : Math.min(
+                                          current.defaultCashbackRateBps,
+                                          Math.max(0, parsed * 10),
+                                        ),
+                                };
+                              })
+                            }
+                            className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-sm font-medium text-gray-700">Cashback %</span>
+                          <input
+                            value={rateDraft.customCashbackPercentInput}
+                            onChange={(event) =>
+                              setRateDraft((current) => {
+                                if (!current) return current;
+                                const nextInput = sanitizePercentInputText(event.target.value);
+                                const parsed = parsePercentInputToScaledInt(nextInput, 100);
+                                return {
+                                  ...current,
+                                  presetKey: "custom",
+                                  customCashbackPercentInput: nextInput,
+                                  defaultCashbackRateBps:
+                                    parsed == null
+                                      ? current.defaultCashbackRateBps
+                                      : Math.min(
+                                          Math.max(0, current.commissionRateCents * 10),
+                                          parsed,
+                                        ),
+                                };
+                              })
+                            }
+                            className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                        </label>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Approval</span>
+                      <select
+                        value={editForm.approvalStatus}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            approvalStatus: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                      >
+                        <option value="">Unset</option>
+                        <option value="pending">Pending</option>
+                        <option value="approved">Approved</option>
+                        <option value="rejected">Rejected</option>
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Status</span>
+                      <select
+                        value={editForm.status}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, status: event.target.value }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                      >
+                        <option value="">Unset</option>
+                        <option value="active">Active</option>
+                        <option value="inactive">Inactive</option>
+                        <option value="pending">Pending</option>
+                        <option value="archived">Archived</option>
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={editForm.isOpen}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, isOpen: event.target.checked }))
+                        }
+                        className="h-4 w-4 rounded border-gray-300 text-amber-500 focus:ring-amber-500"
+                      />
+                      <span className="text-sm font-medium text-gray-700">Business is open</span>
+                    </label>
+                    <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={editForm.commissionEnabled}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            commissionEnabled: event.target.checked,
+                          }))
+                        }
+                        className="h-4 w-4 rounded border-gray-300 text-amber-500 focus:ring-amber-500"
+                      />
+                      <span className="text-sm font-medium text-gray-700">
+                        Commission enabled
+                      </span>
+                    </label>
+                    <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={editForm.stripeChargesEnabled}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            stripeChargesEnabled: event.target.checked,
+                          }))
+                        }
+                        className="h-4 w-4 rounded border-gray-300 text-amber-500 focus:ring-amber-500"
+                      />
+                      <span className="text-sm font-medium text-gray-700">
+                        Stripe charges enabled
+                      </span>
+                    </label>
+                    <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={editForm.stripePayoutsEnabled}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            stripePayoutsEnabled: event.target.checked,
+                          }))
+                        }
+                        className="h-4 w-4 rounded border-gray-300 text-amber-500 focus:ring-amber-500"
+                      />
+                      <span className="text-sm font-medium text-gray-700">
+                        Stripe payouts enabled
+                      </span>
+                    </label>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Stripe account ID</span>
+                      <input
+                        value={editForm.stripeAccountId}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            stripeAccountId: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">
+                        Stripe customer ID
+                      </span>
+                      <input
+                        value={editForm.stripeCustomerId}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            stripeCustomerId: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">
+                        Stripe payment method ID
+                      </span>
+                      <input
+                        value={editForm.stripePaymentMethodId}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            stripePaymentMethodId: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">
+                        Stripe onboarded at
+                      </span>
+                      <input
+                        type="datetime-local"
+                        value={editForm.stripeOnboardedAt}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            stripeOnboardedAt: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Card brand</span>
+                      <input
+                        value={editForm.stripePaymentMethodBrand}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            stripePaymentMethodBrand: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-gray-700">Card last4</span>
+                      <input
+                        value={editForm.stripePaymentMethodLast4}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            stripePaymentMethodLast4: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                  </div>
+                  <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={editForm.offerHonorPolicyAccepted}
+                      onChange={(event) =>
+                        setEditForm((current) => ({
+                          ...current,
+                          offerHonorPolicyAccepted: event.target.checked,
+                        }))
+                      }
+                      className="h-4 w-4 rounded border-gray-300 text-amber-500 focus:ring-amber-500"
+                    />
+                    <span className="text-sm font-medium text-gray-700">
+                      Offer honor policy accepted
+                    </span>
+                  </label>
                   <label className="block">
                     <span className="text-sm font-medium text-gray-700">
-                      Full business details (JSON)
+                      Manual JSON overrides
                     </span>
                     <textarea
-                      rows={18}
+                      rows={12}
                       value={editPayload}
                       onChange={(event) => setEditPayload(event.target.value)}
                       className="mt-1 w-full px-3 py-2 font-mono text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
                     />
                   </label>
                   <p className="text-xs text-gray-500">
-                    Edit any business field here. Immutable fields (`id`, `created_at`, `updated_at`) are excluded automatically.
+                    Structured fields above are the primary editor. Use the JSON block only for advanced manual fields not exposed here. Immutable fields (`id`, `created_at`, `updated_at`) are excluded automatically.
                   </p>
                   <div className="flex gap-3">
                     <button

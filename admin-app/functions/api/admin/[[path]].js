@@ -2573,6 +2573,84 @@ const routeExplicit = async (ctx, request, segments) => {
     return json({ ok: true, data: archiveResult.payload.data }, 200);
   }
 
+  if (segments.length === 3 && segments[0] === "businesses" && segments[2] === "metrics" && method === "GET") {
+    const businessId = String(segments[1] || "").trim();
+    if (!businessId) {
+      return json({ ok: false, error: { code: "invalid_business_id", message: "Business id is required." } }, 400);
+    }
+
+    const [receiptResult, commissionResult, cashbackResult] = await Promise.all([
+      runQuery({
+        table: "receipt_uploads",
+        action: "select",
+        select: "id,receipt_total_cents,review_status",
+        filters: [{ column: "business_id", op: "eq", value: businessId }],
+        limit: 2000,
+      }),
+      runQuery({
+        table: "commission_events",
+        action: "select",
+        select: "id,amount_cents,status",
+        filters: [{ column: "business_id", op: "eq", value: businessId }],
+        limit: 2000,
+      }),
+      runQuery({
+        table: "cashback_events",
+        action: "select",
+        select: "id,amount_cents,status,platform_subsidy_cents",
+        filters: [{ column: "business_id", op: "eq", value: businessId }],
+        limit: 2000,
+      }),
+    ]);
+
+    if (!receiptResult.ok) return json(receiptResult.payload, receiptResult.status || 400);
+    if (!commissionResult.ok) return json(commissionResult.payload, commissionResult.status || 400);
+    if (!cashbackResult.ok) return json(cashbackResult.payload, cashbackResult.status || 400);
+
+    const verifiedReceipts = Array.isArray(receiptResult.payload?.data)
+      ? receiptResult.payload.data.filter(
+          (row) => String(row?.review_status || "").toLowerCase() === "verified",
+        )
+      : [];
+    const chargeRows = Array.isArray(commissionResult.payload?.data)
+      ? commissionResult.payload.data.filter((row) =>
+          ["pending", "invoiced", "paid"].includes(
+            String(row?.status || "").toLowerCase(),
+          ),
+        )
+      : [];
+    const cashbackRows = Array.isArray(cashbackResult.payload?.data)
+      ? cashbackResult.payload.data.filter((row) =>
+          ["available", "reserved", "paid"].includes(
+            String(row?.status || "").toLowerCase(),
+          ),
+        )
+      : [];
+
+    const sumCents = (rows, field) =>
+      rows.reduce((total, row) => total + (Number(row?.[field]) || 0), 0);
+
+    const revenueCents = sumCents(verifiedReceipts, "receipt_total_cents");
+    const chargesCents = sumCents(chargeRows, "amount_cents");
+    const cashbackCents = sumCents(cashbackRows, "amount_cents");
+    const subsidyCents = sumCents(cashbackRows, "platform_subsidy_cents");
+
+    return json(
+      {
+        ok: true,
+        data: {
+          verifiedReceiptCount: verifiedReceipts.length,
+          revenueCents,
+          chargesCents,
+          cashbackCents,
+          subsidyCents,
+          profitCents: chargesCents - cashbackCents - subsidyCents,
+        },
+      },
+      200,
+    );
+  }
+
   if (segments.length === 3 && segments[0] === "businesses" && segments[2] === "review" && method === "POST") {
     return handleRpc(ctx, {
       name: "admin_review_business",
