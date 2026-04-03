@@ -796,8 +796,18 @@ const OPERATING_DAY_OPTIONS = [
   { key: "Sat", label: "Sat" },
   { key: "Sun", label: "Sun" },
 ];
+const OPERATING_DAY_FULL_LABEL = {
+  Mon: "Monday",
+  Tue: "Tuesday",
+  Wed: "Wednesday",
+  Thu: "Thursday",
+  Fri: "Friday",
+  Sat: "Saturday",
+  Sun: "Sunday",
+};
 const OPERATING_DAY_INDEX = OPERATING_DAY_OPTIONS.reduce((acc, day, index) => {
   acc[day.key.toLowerCase()] = index;
+  acc[String(OPERATING_DAY_FULL_LABEL[day.key] || "").toLowerCase()] = index;
   return acc;
 }, {});
 const CONFETTI_COLORS = [
@@ -1285,7 +1295,7 @@ const mapSupabaseOffer = (row) => ({
     ? Number(row.redemption_limit_count)
     : null,
   createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
-  business: row.business || null,
+  business: row.business ? mapSupabaseBusiness(row.business, 0) : null,
 });
 
 const mapSupabaseRedemption = (row) => ({
@@ -1919,6 +1929,165 @@ const formatPurchaseVerificationReason = (reasonCode, reasonDetail) => {
 
 const formatBusinessHours = (startTime, startMeridiem, endTime, endMeridiem) =>
   `${startTime} ${startMeridiem} - ${endTime} ${endMeridiem}`;
+
+const minutesToTimeValue = (minutes) => {
+  if (!Number.isFinite(minutes)) return "";
+  const normalized = ((Math.round(minutes) % (24 * 60)) + 24 * 60) % (24 * 60);
+  const hours = Math.floor(normalized / 60);
+  const mins = normalized % 60;
+  return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+};
+
+const parseTimeValueToMinutes = (value) => {
+  const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return null;
+  }
+  return hours * 60 + minutes;
+};
+
+const createDefaultBusinessHoursSchedule = () =>
+  OPERATING_DAY_OPTIONS.map((day) => ({
+    dayKey: day.key,
+    open: true,
+    start: "09:00",
+    end: "17:00",
+  }));
+
+const cloneBusinessHoursSchedule = (schedule) =>
+  OPERATING_DAY_OPTIONS.map((day) => {
+    const entry = Array.isArray(schedule)
+      ? schedule.find((item) => String(item?.dayKey || "") === day.key)
+      : null;
+    return {
+      dayKey: day.key,
+      open: entry?.open !== false,
+      start: String(entry?.start || "09:00"),
+      end: String(entry?.end || "17:00"),
+    };
+  });
+
+const getBusinessHoursScheduleEntry = (schedule, dayKey) =>
+  cloneBusinessHoursSchedule(schedule).find((entry) => entry.dayKey === dayKey) || {
+    dayKey,
+    open: false,
+    start: "09:00",
+    end: "17:00",
+  };
+
+const formatBusinessHoursScheduleForStorage = (schedule) =>
+  cloneBusinessHoursSchedule(schedule)
+    .map((entry) => {
+      const dayLabel = OPERATING_DAY_FULL_LABEL[entry.dayKey] || entry.dayKey;
+      if (!entry.open) return `${dayLabel}: Closed`;
+      const startMinutes = parseTimeValueToMinutes(entry.start);
+      const endMinutes = parseTimeValueToMinutes(entry.end);
+      if (!Number.isFinite(startMinutes) || !Number.isFinite(endMinutes)) {
+        return `${dayLabel}: Closed`;
+      }
+      return `${dayLabel}: ${formatClockLabelFromMinutes(startMinutes, false)} - ${formatClockLabelFromMinutes(endMinutes, false)}`;
+    })
+    .join("\n");
+
+const parseBusinessHoursSchedule = (value) => {
+  const raw = String(value || "").replace(/\r/g, "").trim();
+  if (!raw) return null;
+
+  const lines = raw
+    .split(/\n|;/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const parsedSchedule = createDefaultBusinessHoursSchedule().map((entry) => ({
+    ...entry,
+    open: false,
+  }));
+  let matchedCount = 0;
+
+  lines.forEach((line) => {
+    const match = line.match(
+      /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s*:\s*(Closed|(\d{1,2}:\d{2}\s*(?:AM|PM))\s*-\s*(\d{1,2}:\d{2}\s*(?:AM|PM)))$/i,
+    );
+    if (!match) return;
+    const dayKey =
+      OPERATING_DAY_OPTIONS[
+        OPERATING_DAY_INDEX[String(match[1] || "").toLowerCase()] ?? -1
+      ]?.key || "";
+    if (!dayKey) return;
+    const target = parsedSchedule.find((entry) => entry.dayKey === dayKey);
+    if (!target) return;
+    matchedCount += 1;
+    const closed = String(match[2] || "").toLowerCase() === "closed";
+    if (closed) {
+      target.open = false;
+      return;
+    }
+    const startPart = String(match[3] || "").trim();
+    const endPart = String(match[4] || "").trim();
+    const parseLegacyPart = (part) => {
+      const partMatch = part.match(/^(\d{1,2}:\d{2})\s*(AM|PM)$/i);
+      if (!partMatch) return null;
+      return parseClockMinutes(partMatch[1], partMatch[2].toUpperCase());
+    };
+    const startMinutes = parseLegacyPart(startPart);
+    const endMinutes = parseLegacyPart(endPart);
+    if (!Number.isFinite(startMinutes) || !Number.isFinite(endMinutes)) {
+      target.open = false;
+      return;
+    }
+    target.open = true;
+    target.start = minutesToTimeValue(startMinutes);
+    target.end = minutesToTimeValue(endMinutes);
+  });
+
+  if (matchedCount > 0) {
+    return parsedSchedule;
+  }
+
+  const parsedLegacy = parseBusinessHours(value);
+  if (!parsedLegacy) return null;
+  const selectedDays = new Set(parseOperatingDaysValue(parsedLegacy.days || ""));
+  const startMinutes = parseClockMinutes(
+    parsedLegacy.startTime,
+    parsedLegacy.startMeridiem,
+  );
+  const endMinutes = parseClockMinutes(
+    parsedLegacy.endTime,
+    parsedLegacy.endMeridiem,
+  );
+  if (!Number.isFinite(startMinutes) || !Number.isFinite(endMinutes)) {
+    return null;
+  }
+  return createDefaultBusinessHoursSchedule().map((entry) => ({
+    ...entry,
+    open: selectedDays.has(entry.dayKey),
+    start: minutesToTimeValue(startMinutes),
+    end: minutesToTimeValue(endMinutes),
+  }));
+};
+
+const hasValidBusinessHoursSchedule = (schedule) =>
+  cloneBusinessHoursSchedule(schedule).some((entry) => {
+    if (!entry.open) return false;
+    return (
+      Number.isFinite(parseTimeValueToMinutes(entry.start)) &&
+      Number.isFinite(parseTimeValueToMinutes(entry.end))
+    );
+  });
+
+const getBusinessHoursTimeLabel = (value) =>
+  OFFER_EXPIRY_TIME_OPTIONS.find((option) => option.value === String(value || "").trim())
+    ?.label || "Select time";
 
 const parseOperatingDaysValue = (value) => {
   const raw = String(value || "")
@@ -3596,7 +3765,7 @@ const withTimeOnDate = (baseDate, minutesFromMidnight, dayOffset = 0) => {
 const getBusinessHoursStatus = (value, fallbackOpen = null, nowDate = new Date()) => {
   const fallbackIsOpen =
     typeof fallbackOpen === "boolean" ? fallbackOpen : null;
-  const parsed = parseBusinessHours(value);
+  const parsedSchedule = parseBusinessHoursSchedule(value);
   const buildFallback = () => {
     if (fallbackIsOpen === null) {
       return {
@@ -3621,58 +3790,68 @@ const getBusinessHoursStatus = (value, fallbackOpen = null, nowDate = new Date()
       closedOverlayText: "Closed",
     };
   };
-  if (!parsed) return buildFallback();
+  if (!parsedSchedule) return buildFallback();
 
-  const start = parseClockMinutes(parsed.startTime, parsed.startMeridiem);
-  const end = parseClockMinutes(parsed.endTime, parsed.endMeridiem);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return buildFallback();
-
-  if (start === end) {
-    return {
-      sourceKnown: true,
-      isOpen: true,
-      minutesUntilClose: null,
-      opensAtLabel: "",
-      closesAtLabel: "",
-      statusText: "Open now",
-      statusVariant: "open",
-      closedOverlayText: "",
-    };
-  }
-
-  const selectedDays = new Set(parseOperatingDaysValue(parsed.days || ""));
   const now = new Date(nowDate.getTime());
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
   const todayKey = DAY_KEY_BY_WEEKDAY[now.getDay()] || "Mon";
   const prevDate = new Date(now.getTime());
   prevDate.setDate(prevDate.getDate() - 1);
   const previousDayKey = DAY_KEY_BY_WEEKDAY[prevDate.getDay()] || "Sun";
-  const includesToday = selectedDays.has(todayKey);
-  const includesPreviousDay = selectedDays.has(previousDayKey);
-  const overnight = end < start;
+  const todayEntry = getBusinessHoursScheduleEntry(parsedSchedule, todayKey);
+  const previousDayEntry = getBusinessHoursScheduleEntry(
+    parsedSchedule,
+    previousDayKey,
+  );
+  const todayStart = parseTimeValueToMinutes(todayEntry.start);
+  const todayEnd = parseTimeValueToMinutes(todayEntry.end);
+  const previousStart = parseTimeValueToMinutes(previousDayEntry.start);
+  const previousEnd = parseTimeValueToMinutes(previousDayEntry.end);
 
   let isOpen = false;
   let closeAtDate = null;
-  if (!overnight) {
-    if (includesToday && currentMinutes >= start && currentMinutes <= end) {
+  let activeEndMinutes = null;
+  if (
+    todayEntry.open &&
+    Number.isFinite(todayStart) &&
+    Number.isFinite(todayEnd)
+  ) {
+    if (todayStart === todayEnd) {
       isOpen = true;
-      closeAtDate = withTimeOnDate(now, end, 0);
+      activeEndMinutes = todayEnd;
+      closeAtDate = null;
+    } else if (todayEnd > todayStart) {
+      if (currentMinutes >= todayStart && currentMinutes <= todayEnd) {
+        isOpen = true;
+        activeEndMinutes = todayEnd;
+        closeAtDate = withTimeOnDate(now, todayEnd, 0);
+      }
+    } else if (currentMinutes >= todayStart) {
+      isOpen = true;
+      activeEndMinutes = todayEnd;
+      closeAtDate = withTimeOnDate(now, todayEnd, 1);
     }
-  } else {
-    if (includesToday && currentMinutes >= start) {
-      isOpen = true;
-      closeAtDate = withTimeOnDate(now, end, 1);
-    } else if (includesPreviousDay && currentMinutes <= end) {
-      isOpen = true;
-      closeAtDate = withTimeOnDate(now, end, 0);
-    }
+  }
+  if (
+    !isOpen &&
+    previousDayEntry.open &&
+    Number.isFinite(previousStart) &&
+    Number.isFinite(previousEnd) &&
+    previousEnd < previousStart &&
+    currentMinutes <= previousEnd
+  ) {
+    isOpen = true;
+    activeEndMinutes = previousEnd;
+    closeAtDate = withTimeOnDate(now, previousEnd, 0);
   }
 
   if (isOpen) {
     const minutesUntilClose = closeAtDate
       ? Math.max(0, Math.round((closeAtDate.getTime() - now.getTime()) / 60000))
       : null;
-    const closesAtLabel = formatClockLabelFromMinutes(end, true);
+    const closesAtLabel = Number.isFinite(activeEndMinutes)
+      ? formatClockLabelFromMinutes(activeEndMinutes, true)
+      : "";
     const shouldShowClosingTime =
       Number.isFinite(minutesUntilClose) &&
       minutesUntilClose < CLOSING_SOON_THRESHOLD_MINUTES;
@@ -3691,20 +3870,29 @@ const getBusinessHoursStatus = (value, fallbackOpen = null, nowDate = new Date()
   }
 
   let nextOpenDate = null;
-  if (includesToday && currentMinutes < start) {
-    nextOpenDate = withTimeOnDate(now, start, 0);
+  let nextOpenMinutes = null;
+  if (
+    todayEntry.open &&
+    Number.isFinite(todayStart) &&
+    currentMinutes < todayStart
+  ) {
+    nextOpenDate = withTimeOnDate(now, todayStart, 0);
+    nextOpenMinutes = todayStart;
   } else {
     for (let offset = 1; offset <= 7; offset += 1) {
       const candidate = new Date(now.getTime());
       candidate.setDate(candidate.getDate() + offset);
       const dayKey = DAY_KEY_BY_WEEKDAY[candidate.getDay()] || "";
-      if (!selectedDays.has(dayKey)) continue;
-      nextOpenDate = withTimeOnDate(now, start, offset);
+      const entry = getBusinessHoursScheduleEntry(parsedSchedule, dayKey);
+      const entryStart = parseTimeValueToMinutes(entry.start);
+      if (!entry.open || !Number.isFinite(entryStart)) continue;
+      nextOpenDate = withTimeOnDate(now, entryStart, offset);
+      nextOpenMinutes = entryStart;
       break;
     }
   }
-  const opensAtLabel = nextOpenDate
-    ? formatClockLabelFromMinutes(start, true)
+  const opensAtLabel = nextOpenDate && Number.isFinite(nextOpenMinutes)
+    ? formatClockLabelFromMinutes(nextOpenMinutes, true)
     : "";
   const closedOverlayText = opensAtLabel
     ? `Closed, opens at ${opensAtLabel}`
@@ -3929,18 +4117,31 @@ function isTradeBusinessLike(subject) {
   return rawTags.some((value) => isTradeCategoryValue(value));
 }
 
-const resolveBusinessEffectiveReceiptChargeRateBps = (value, subject) =>
-  isTradeBusinessLike(subject)
-    ? TRADES_RECEIPT_CHARGE_RATE_BPS
-    : resolveBusinessReceiptChargeRateCents(value) * 10;
+const resolveBusinessEffectiveReceiptChargeRateBps = (value) =>
+  resolveBusinessReceiptChargeRateCents(value) * 10;
 
-const resolveBusinessEffectiveDefaultCashbackRateBps = (value, subject) =>
-  isTradeBusinessLike(subject)
-    ? TRADES_RECEIPT_CASHBACK_RATE_BPS
-    : resolveBusinessDefaultCashbackRateBps(
-        value,
-        subject?.defaultCashbackRateBps ?? subject?.default_cashback_rate_bps,
-      );
+const resolveBusinessEffectiveDefaultCashbackRateBps = (
+  commissionRateCents,
+  subject,
+) =>
+  resolveBusinessDefaultCashbackRateBps(
+    commissionRateCents ??
+      subject?.commissionRateCents ??
+      subject?.commission_rate_cents,
+    subject?.defaultCashbackRateBps ?? subject?.default_cashback_rate_bps,
+  );
+
+const resolveDisplayedBusinessDefaultCashbackRateBps = (subject) => {
+  const explicitCashbackRateBps = Number(
+    subject?.defaultCashbackRateBps ?? subject?.default_cashback_rate_bps,
+  );
+  if (Number.isFinite(explicitCashbackRateBps)) {
+    return Math.max(0, Math.round(explicitCashbackRateBps));
+  }
+  return resolveBusinessDefaultCashbackRateBps(
+    subject?.commissionRateCents ?? subject?.commission_rate_cents,
+  );
+};
 
 function isKnownCategoryKey(categoryKey) {
   return KNOWN_CATEGORY_KEY_SET.has(String(categoryKey || "").trim());
@@ -4805,10 +5006,7 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
   const closedOverlayText = hoursStatus.closedOverlayText;
   const isTradeOffer = isTradeBusinessLike(item?.business);
   const cashbackLabel = `${formatPercentLabel(
-    resolveBusinessEffectiveDefaultCashbackRateBps(
-      item?.business?.commissionRateCents ?? item?.business?.commission_rate_cents,
-      item?.business,
-    ) / 100,
+    resolveDisplayedBusinessDefaultCashbackRateBps(item?.business) / 100,
   )}%`;
   return (
     <View style={styles.cardShell}>
@@ -5067,6 +5265,9 @@ export default function App() {
   const [businessPhone, setBusinessPhone] = useState("");
   const [businessDescriptorAliasesInput, setBusinessDescriptorAliasesInput] =
     useState("");
+  const [businessHoursSchedule, setBusinessHoursSchedule] = useState(
+    createDefaultBusinessHoursSchedule,
+  );
   const [businessHoursDays, setBusinessHoursDays] = useState(
     DEFAULT_OPERATING_DAYS,
   );
@@ -5444,6 +5645,9 @@ export default function App() {
     createBusinessHonorOffersChecked,
     setCreateBusinessHonorOffersChecked,
   ] = useState(false);
+  const [createHoursSchedule, setCreateHoursSchedule] = useState(
+    createDefaultBusinessHoursSchedule,
+  );
   const [createHoursStart, setCreateHoursStart] = useState("");
   const [createHoursDays, setCreateHoursDays] = useState(
     DEFAULT_OPERATING_DAYS,
@@ -5452,6 +5656,9 @@ export default function App() {
     useState("AM");
   const [createHoursEnd, setCreateHoursEnd] = useState("");
   const [createHoursEndMeridiem, setCreateHoursEndMeridiem] = useState("PM");
+  const [editHoursSchedule, setEditHoursSchedule] = useState(
+    createDefaultBusinessHoursSchedule,
+  );
   const [editHoursDays, setEditHoursDays] = useState(DEFAULT_OPERATING_DAYS);
   const [editHoursStart, setEditHoursStart] = useState("");
   const [editHoursStartMeridiem, setEditHoursStartMeridiem] = useState("AM");
@@ -5559,6 +5766,8 @@ export default function App() {
     periodTotalCents: 0,
     periodPaidCents: 0,
     periodVerifiedGrossCents: 0,
+    manualPendingCents: 0,
+    manualPeriodPaidCents: 0,
     updatedAt: null,
   });
   const [billingStatus, setBillingStatus] = useState({
@@ -9666,7 +9875,7 @@ export default function App() {
       const periodStart = periodStartDate.toISOString().slice(0, 10);
       const periodEnd = periodEndDate.toISOString().slice(0, 10);
 
-      const [eventsResult, receiptsResult] = await Promise.all([
+      const [eventsResult, receiptsResult, manualChargesResult] = await Promise.all([
         supabase
           .from("commission_events")
           .select("amount_cents, created_at, status")
@@ -9676,6 +9885,10 @@ export default function App() {
           .select("receipt_total_cents, reviewed_at, uploaded_at")
           .eq("business_id", businessId)
           .eq("review_status", "verified"),
+        supabase
+          .from("business_manual_charges")
+          .select("amount_cents, status, created_at, charged_at")
+          .eq("business_id", businessId),
       ]);
       if (eventsResult.error) {
         setBillingStatus({
@@ -9691,9 +9904,21 @@ export default function App() {
         });
         return;
       }
+      if (manualChargesResult.error) {
+        setBillingStatus({
+          loading: false,
+          error:
+            manualChargesResult.error.message ||
+            "Unable to load manual charges.",
+        });
+        return;
+      }
       const rows = Array.isArray(eventsResult.data) ? eventsResult.data : [];
       const receiptRows = Array.isArray(receiptsResult.data)
         ? receiptsResult.data
+        : [];
+      const manualChargeRows = Array.isArray(manualChargesResult.data)
+        ? manualChargesResult.data
         : [];
       const monthStart = new Date();
       monthStart.setDate(1);
@@ -9725,6 +9950,8 @@ export default function App() {
       let verifiedGrossCents = 0;
       let verifiedMonthCents = 0;
       let periodVerifiedGrossCents = 0;
+      let manualPendingCents = 0;
+      let manualPeriodPaidCents = 0;
       receiptRows.forEach((row) => {
         const amount = Number(row?.receipt_total_cents) || 0;
         verifiedGrossCents += amount;
@@ -9739,6 +9966,22 @@ export default function App() {
           }
         }
       });
+      manualChargeRows.forEach((row) => {
+        const amount = Number(row?.amount_cents) || 0;
+        const status = String(row?.status || "").toLowerCase();
+        if (["pending", "processing"].includes(status)) {
+          manualPendingCents += amount;
+        }
+        const chargedAt = row?.charged_at || row?.created_at;
+        if (
+          status === "paid" &&
+          chargedAt &&
+          new Date(chargedAt) >= periodStartDate &&
+          new Date(chargedAt) < periodEndDate
+        ) {
+          manualPeriodPaidCents += amount;
+        }
+      });
       setBillingMetrics({
         monthCents,
         pendingCents,
@@ -9751,6 +9994,8 @@ export default function App() {
         periodTotalCents,
         periodPaidCents,
         periodVerifiedGrossCents,
+        manualPendingCents,
+        manualPeriodPaidCents,
         updatedAt: Date.now(),
       });
       if (!silent) {
@@ -12185,18 +12430,10 @@ export default function App() {
     setFormData(buildFormFromBusiness(ownerBusiness));
     setFormMessage(null);
     setIsEditingBusiness(false);
-    const parsed = parseBusinessHours(ownerBusiness.hours);
-    if (parsed) {
-      setEditHoursDays(parsed.days || DEFAULT_OPERATING_DAYS);
-      setEditHoursStart(parsed.startTime);
-      setEditHoursStartMeridiem(parsed.startMeridiem);
-      setEditHoursEnd(parsed.endTime);
-      setEditHoursEndMeridiem(parsed.endMeridiem);
-    } else {
-      setEditHoursDays(DEFAULT_OPERATING_DAYS);
-      setEditHoursStart("");
-      setEditHoursEnd("");
-    }
+    setEditHoursSchedule(
+      parseBusinessHoursSchedule(ownerBusiness.hours) ||
+        createDefaultBusinessHoursSchedule(),
+    );
   }, [activeTab, ownerBusiness?.id]);
 
   useEffect(() => {
@@ -12267,39 +12504,23 @@ export default function App() {
           authBusinessDraft.merchantDescriptorAliases,
         ),
     }));
-    if (!createHoursStart && authBusinessDraft.hours) {
-      const parsed = parseBusinessHours(authBusinessDraft.hours);
-      if (parsed) {
-        if (parsed.days) setCreateHoursDays(parsed.days);
-        if (parsed.startTime) setCreateHoursStart(parsed.startTime);
-        if (parsed.startMeridiem)
-          setCreateHoursStartMeridiem(parsed.startMeridiem);
-        if (parsed.endTime) setCreateHoursEnd(parsed.endTime);
-        if (parsed.endMeridiem) setCreateHoursEndMeridiem(parsed.endMeridiem);
+    if (authBusinessDraft.hours) {
+      const parsedSchedule = parseBusinessHoursSchedule(authBusinessDraft.hours);
+      if (parsedSchedule) {
+        setCreateHoursSchedule(parsedSchedule);
       }
     }
-  }, [activeTab, ownerBusiness, isOwner, authBusinessDraft, createHoursStart]);
+  }, [activeTab, ownerBusiness, isOwner, authBusinessDraft]);
 
   useEffect(() => {
     if (!isEditingBusiness) return;
-    if (!editHoursStart || !editHoursEnd) return;
     setFormData((prev) => ({
       ...prev,
-      hours: formatBusinessSchedule(
-        editHoursDays,
-        editHoursStart,
-        editHoursStartMeridiem,
-        editHoursEnd,
-        editHoursEndMeridiem,
-      ),
+      hours: formatBusinessHoursScheduleForStorage(editHoursSchedule),
     }));
   }, [
     isEditingBusiness,
-    editHoursDays,
-    editHoursStart,
-    editHoursStartMeridiem,
-    editHoursEnd,
-    editHoursEndMeridiem,
+    editHoursSchedule,
   ]);
 
   useEffect(() => {
@@ -13622,7 +13843,7 @@ export default function App() {
       setBusinessSignUpError("Enter a valid phone number.");
       return;
     }
-    if (!businessHoursStart || !businessHoursEnd) {
+    if (!hasValidBusinessHoursSchedule(businessHoursSchedule)) {
       setBusinessSignUpError("Operating hours are required.");
       return;
     }
@@ -13657,12 +13878,8 @@ export default function App() {
         setBusinessSignUpError(emailAvailability.error);
         return;
       }
-      const hoursValue = formatBusinessSchedule(
-        businessHoursDays,
-        businessHoursStart,
-        businessHoursStartMeridiem,
-        businessHoursEnd,
-        businessHoursEndMeridiem,
+      const hoursValue = formatBusinessHoursScheduleForStorage(
+        businessHoursSchedule,
       );
       let signupCoords = businessAddressCoords;
       if (!signupCoords && businessAddress.trim()) {
@@ -14012,6 +14229,7 @@ export default function App() {
       setBusinessCategoryKey("restaurant");
       setBusinessCategoryCustomLabel("");
       setBusinessCategoryMenuOpen(false);
+      setBusinessHoursSchedule(createDefaultBusinessHoursSchedule());
       setBusinessHoursDays(DEFAULT_OPERATING_DAYS);
       setBusinessHoursStart("");
       setBusinessHoursEnd("");
@@ -14039,7 +14257,22 @@ export default function App() {
   };
 
   const handleSelectTime = (time) => {
-    if (timePickerTarget === "start") {
+    if (String(timePickerTarget || "").includes(":")) {
+      const [scope, dayKey, field] = String(timePickerTarget).split(":");
+      const updateSchedule = (setter) =>
+        setter((prev) =>
+          cloneBusinessHoursSchedule(prev).map((entry) =>
+            entry.dayKey === dayKey ? { ...entry, [field]: time } : entry,
+          ),
+        );
+      if (scope === "signup") {
+        updateSchedule(setBusinessHoursSchedule);
+      } else if (scope === "create") {
+        updateSchedule(setCreateHoursSchedule);
+      } else if (scope === "edit") {
+        updateSchedule(setEditHoursSchedule);
+      }
+    } else if (timePickerTarget === "start") {
       setBusinessHoursStart(time);
     } else if (timePickerTarget === "end") {
       setBusinessHoursEnd(time);
@@ -14054,6 +14287,97 @@ export default function App() {
     }
     setTimePickerVisible(false);
   };
+
+  const renderBusinessHoursEditor = ({
+    schedule,
+    setSchedule,
+    scope,
+    disabled = false,
+  }) => (
+    <View style={styles.hoursScheduleWrap}>
+      {OPERATING_DAY_OPTIONS.map((day) => {
+        const entry = getBusinessHoursScheduleEntry(schedule, day.key);
+        return (
+          <View key={`${scope}-${day.key}`} style={styles.hoursScheduleRow}>
+            <Text style={styles.hoursScheduleDay}>
+              {OPERATING_DAY_FULL_LABEL[day.key] || day.label}
+            </Text>
+            <TouchableOpacity
+              style={[
+                styles.hoursScheduleToggle,
+                entry.open
+                  ? styles.hoursScheduleToggleOpen
+                  : styles.hoursScheduleToggleClosed,
+                disabled && styles.hoursScheduleToggleDisabled,
+              ]}
+              disabled={disabled}
+              onPress={() =>
+                setSchedule((prev) =>
+                  cloneBusinessHoursSchedule(prev).map((item) =>
+                    item.dayKey === day.key
+                      ? { ...item, open: !item.open }
+                      : item,
+                  ),
+                )
+              }
+            >
+              <Text
+                style={[
+                  styles.hoursScheduleToggleText,
+                  entry.open
+                    ? styles.hoursScheduleToggleTextOpen
+                    : styles.hoursScheduleToggleTextClosed,
+                ]}
+              >
+                {entry.open ? "Open" : "Closed"}
+              </Text>
+            </TouchableOpacity>
+            {entry.open ? (
+              <View style={styles.hoursScheduleTimeRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.hoursScheduleTimeButton,
+                    disabled && styles.hoursScheduleTimeButtonDisabled,
+                  ]}
+                  disabled={disabled}
+                  onPress={() => openTimePicker(`${scope}:${day.key}:start`)}
+                >
+                  <Text style={styles.hoursScheduleTimeText}>
+                    {getBusinessHoursTimeLabel(entry.start)}
+                  </Text>
+                  <Ionicons
+                    name="chevron-down"
+                    size={16}
+                    color={COLORS.muted}
+                  />
+                </TouchableOpacity>
+                <Text style={styles.hoursScheduleToText}>to</Text>
+                <TouchableOpacity
+                  style={[
+                    styles.hoursScheduleTimeButton,
+                    disabled && styles.hoursScheduleTimeButtonDisabled,
+                  ]}
+                  disabled={disabled}
+                  onPress={() => openTimePicker(`${scope}:${day.key}:end`)}
+                >
+                  <Text style={styles.hoursScheduleTimeText}>
+                    {getBusinessHoursTimeLabel(entry.end)}
+                  </Text>
+                  <Ionicons
+                    name="chevron-down"
+                    size={16}
+                    color={COLORS.muted}
+                  />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <Text style={styles.hoursScheduleClosedText}>Closed</Text>
+            )}
+          </View>
+        );
+      })}
+    </View>
+  );
 
   const handleProfileSave = async () => {
     if (!ensureSupabaseReady(setProfileMessage)) return;
@@ -14236,6 +14560,7 @@ export default function App() {
     setBusinessCategoryKey("restaurant");
     setBusinessCategoryCustomLabel("");
     setBusinessCategoryMenuOpen(false);
+    setBusinessHoursSchedule(createDefaultBusinessHoursSchedule());
     setBusinessHoursDays(DEFAULT_OPERATING_DAYS);
     setBusinessHoursStart("");
     setBusinessHoursEnd("");
@@ -14263,6 +14588,7 @@ export default function App() {
     setCreateBusinessError(null);
     setCreateBusinessAuthorizedChecked(false);
     setCreateBusinessHonorOffersChecked(false);
+    setCreateHoursSchedule(createDefaultBusinessHoursSchedule());
     setCreateHoursDays(DEFAULT_OPERATING_DAYS);
     setCreateHoursStart("");
     setCreateHoursEnd("");
@@ -14554,6 +14880,10 @@ export default function App() {
         statusLabel: isOpen ? "Open now" : "Closed",
         businessCommissionRateCents:
           business?.commissionRateCents ?? business?.commission_rate_cents ?? 150,
+        businessDefaultCashbackRateBps:
+          business?.defaultCashbackRateBps ??
+          business?.default_cashback_rate_bps ??
+          null,
       },
     });
     setPostRedeemBankPromptOpen(false);
@@ -19042,18 +19372,6 @@ export default function App() {
       setOfferError("Offer title is required.");
       return;
     }
-    const normalizedType = resolveOfferTypeDraftValue(
-      offerForm.typePreset,
-      offerForm.typeCustom,
-    );
-    if (!normalizedType) {
-      setOfferError("Offer type is required.");
-      return;
-    }
-    if (!offerForm.description.trim()) {
-      setOfferError("Description is required.");
-      return;
-    }
     const hasScheduleInput = Boolean(
       offerForm.startsDate ||
         offerForm.startsTime ||
@@ -19106,35 +19424,6 @@ export default function App() {
       );
       return;
     }
-    const redemptionLimitMode = String(
-      offerForm.redemptionLimitMode || "unlimited",
-    );
-    const redemptionLimitEnabled = redemptionLimitMode !== "unlimited";
-    const redemptionLimitPeriod =
-      redemptionLimitMode === "day"
-        ? "day"
-        : redemptionLimitMode === "week"
-          ? "week"
-          : String(offerForm.redemptionLimitPeriod || "day");
-    const redemptionLimitCount =
-      redemptionLimitMode === "custom"
-        ? Math.floor(Number(offerForm.redemptionLimitCount))
-        : redemptionLimitMode === "unlimited"
-          ? null
-          : 1;
-    if (redemptionLimitEnabled) {
-      if (!["day", "week"].includes(redemptionLimitPeriod)) {
-        setOfferError("Choose a valid redemption limit period.");
-        return;
-      }
-      if (
-        !Number.isFinite(Number(redemptionLimitCount)) ||
-        redemptionLimitCount <= 0
-      ) {
-        setOfferError("Enter a valid redemption limit.");
-        return;
-      }
-    }
     if (!ensureSupabaseReady(setOfferError)) return;
     setOfferBusy(true);
     setOfferError(null);
@@ -19167,8 +19456,8 @@ export default function App() {
       .insert({
         business_id: ownerBusiness.id,
         title: offerForm.title.trim(),
-        description: offerForm.description.trim() || null,
-        offer_type: normalizedType,
+        description: null,
+        offer_type: "cashback",
         image_url: imageUrl,
         active: true,
         starts_at: startIso,
@@ -19178,12 +19467,8 @@ export default function App() {
         offer_honor_commitment_version: OFFER_HONOR_POLICY_VERSION,
         offer_honor_commitment_accepted_at: offerHonorAcceptedAt,
         offer_honor_commitment_accepted_by: authUserId || null,
-        redemption_limit_period: redemptionLimitEnabled
-          ? redemptionLimitPeriod
-          : null,
-        redemption_limit_count: redemptionLimitEnabled
-          ? redemptionLimitCount
-          : null,
+        redemption_limit_period: null,
+        redemption_limit_count: null,
       })
       .select(
         [
@@ -19272,7 +19557,7 @@ export default function App() {
             onPress={() =>
               openInfoTooltip(
                 "Create offer",
-                `Keep titles short and clear. Add a description with any conditions (limits, dates, eligible items). Offer type is used for filtering and reporting. Your business commission rate is ${formatPercentLabel(ownerCommissionRatePercent)}% on verified receipts.`,
+                `Keep titles short and clear. Add a photo customers will recognize. Your business commission rate is ${formatPercentLabel(ownerCommissionRatePercent)}% on verified receipts.`,
               )
             }
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -19305,54 +19590,7 @@ export default function App() {
               returnKeyType="next"
             />
           </View>
-          <View style={styles.formField}>
-            <Text style={styles.formLabel}>Offer type</Text>
-            <TouchableOpacity
-              style={[styles.formInput, styles.selectInput]}
-              onPress={() => openOfferTypePicker("create")}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.selectInputText}>
-                {getOfferTypePickerLabel(offerForm.typePreset)}
-              </Text>
-              <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
-            </TouchableOpacity>
-            {offerForm.typePreset === OFFER_TYPE_OTHER_KEY && (
-              <AutoFocusInput
-                style={styles.formInput}
-                placeholder="Type custom offer type"
-                placeholderTextColor={COLORS.muted}
-                value={offerForm.typeCustom}
-                onChangeText={(value) =>
-                  setOfferForm((prev) => ({
-                    ...prev,
-                    typeCustom: value,
-                  }))
-                }
-                maxLength={32}
-              />
-            )}
-          </View>
         </View>
-
-        <Text style={styles.formLabel}>Description</Text>
-        <AutoFocusInput
-          style={[styles.formInput, styles.formTextarea]}
-          placeholder="Add the details customers should know (limits, dates, eligible items)."
-          placeholderTextColor={COLORS.muted}
-          value={offerForm.description}
-          onChangeText={(value) => {
-            setOfferForm((prev) => ({
-              ...prev,
-              description: value,
-            }));
-            if (offerError) setOfferError(null);
-            if (offerNotice) setOfferNotice(null);
-          }}
-          multiline
-          textAlignVertical="top"
-          maxLength={360}
-        />
         <Text style={styles.formLabel}>Expiration (optional)</Text>
         <View style={styles.formRow}>
           <View style={styles.formField}>
@@ -19432,133 +19670,6 @@ export default function App() {
         <Text style={styles.formHint}>
           Optional. Set when this offer starts and ends, including both times.
         </Text>
-        <Text style={styles.formLabel}>Redemption limit</Text>
-        <View style={styles.limitOptionRow}>
-          {[
-            { key: "unlimited", label: "Unlimited" },
-            { key: "day", label: "1/day" },
-            { key: "week", label: "1/week" },
-            { key: "custom", label: "Custom" },
-          ].map((option) => {
-            const active = offerForm.redemptionLimitMode === option.key;
-            const optionStyles =
-              option.key === "unlimited"
-                ? {
-                    pill: styles.limitOptionUnlimited,
-                    pillActive: styles.limitOptionUnlimitedActive,
-                    text: styles.limitOptionTextUnlimited,
-                  }
-                : option.key === "day"
-                  ? {
-                      pill: styles.limitOptionDay,
-                      pillActive: styles.limitOptionDayActive,
-                      text: styles.limitOptionTextDay,
-                    }
-                  : option.key === "week"
-                    ? {
-                        pill: styles.limitOptionWeek,
-                        pillActive: styles.limitOptionWeekActive,
-                        text: styles.limitOptionTextWeek,
-                      }
-                    : {
-                        pill: styles.limitOptionCustom,
-                        pillActive: styles.limitOptionCustomActive,
-                        text: styles.limitOptionTextCustom,
-                      };
-            return (
-              <TouchableOpacity
-                key={option.key}
-                style={[
-                  styles.limitOption,
-                  optionStyles.pill,
-                  active && optionStyles.pillActive,
-                ]}
-                onPress={() => {
-                  setOfferForm((prev) => ({
-                    ...prev,
-                    redemptionLimitMode: option.key,
-                    redemptionLimitPeriod:
-                      option.key === "week"
-                        ? "week"
-                        : option.key === "day"
-                          ? "day"
-                          : prev.redemptionLimitPeriod,
-                    redemptionLimitCount:
-                      option.key === "custom"
-                        ? prev.redemptionLimitCount || "1"
-                        : "1",
-                  }));
-                  if (offerError) setOfferError(null);
-                  if (offerNotice) setOfferNotice(null);
-                }}
-                activeOpacity={0.85}
-              >
-                <Text
-                  style={[
-                    styles.limitOptionText,
-                    optionStyles.text,
-                    active && styles.limitOptionTextActive,
-                  ]}
-                >
-                  {option.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        {offerForm.redemptionLimitMode === "custom" && (
-          <View style={styles.limitCustomRow}>
-            <View style={styles.limitCountWrap}>
-              <AutoFocusInput
-                style={[styles.formInput, styles.limitCountInput]}
-                placeholder="Count"
-                placeholderTextColor={COLORS.muted}
-                value={String(offerForm.redemptionLimitCount || "")}
-                onChangeText={(value) => {
-                  setOfferForm((prev) => ({
-                    ...prev,
-                    redemptionLimitCount: value.replace(/[^\d]/g, ""),
-                  }));
-                  if (offerError) setOfferError(null);
-                  if (offerNotice) setOfferNotice(null);
-                }}
-                keyboardType="number-pad"
-                maxLength={3}
-              />
-            </View>
-            <View style={styles.limitPeriodRow}>
-              {["day", "week"].map((period) => {
-                const active = offerForm.redemptionLimitPeriod === period;
-                return (
-                  <TouchableOpacity
-                    key={period}
-                    style={[
-                      styles.limitPeriodOption,
-                      active && styles.limitPeriodOptionActive,
-                    ]}
-                    onPress={() =>
-                      setOfferForm((prev) => ({
-                        ...prev,
-                        redemptionLimitPeriod: period,
-                      }))
-                    }
-                    activeOpacity={0.85}
-                  >
-                    <Text
-                      style={[
-                        styles.limitPeriodText,
-                        active && styles.limitPeriodTextActive,
-                      ]}
-                    >
-                      per {period}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </View>
-        )}
         <Text style={styles.formHint}>
           Applies per customer (rolling 24h/7d).
         </Text>
@@ -21027,7 +21138,7 @@ export default function App() {
       setCreateBusinessError("Phone number is required.");
       return;
     }
-    if (!createHoursStart || !createHoursEnd) {
+    if (!hasValidBusinessHoursSchedule(createHoursSchedule)) {
       setCreateBusinessError("Operating hours are required.");
       return;
     }
@@ -21056,12 +21167,8 @@ export default function App() {
     setCreateBusinessError(null);
     try {
       const offerHonorAcceptedAt = new Date().toISOString();
-      const hoursValue = formatBusinessSchedule(
-        createHoursDays,
-        createHoursStart,
-        createHoursStartMeridiem,
-        createHoursEnd,
-        createHoursEndMeridiem,
+      const hoursValue = formatBusinessHoursScheduleForStorage(
+        createHoursSchedule,
       );
       let createCoords = createBusinessForm.addressCoords;
       if (!createCoords && createBusinessForm.address.trim()) {
@@ -21128,6 +21235,7 @@ export default function App() {
         tags: "",
         merchantDescriptorAliases: "",
       });
+      setCreateHoursSchedule(createDefaultBusinessHoursSchedule());
       setCreateHoursDays(DEFAULT_OPERATING_DAYS);
       setCreateHoursStart("");
       setCreateHoursEnd("");
@@ -21768,15 +21876,14 @@ export default function App() {
                       <View style={styles.offerActivationCashbackBadge}>
                         <Text style={styles.offerActivationCashbackValue}>
                           {formatPercentLabel(
-                            resolveBusinessEffectiveDefaultCashbackRateBps(
-                              redeemActivationModal.card?.businessCommissionRateCents,
-                              {
-                                categoryKey:
-                                  redeemActivationModal.card?.businessCategoryKey,
-                                categoryLabel:
-                                  redeemActivationModal.card?.businessCategoryLabel,
-                              },
-                            ) / 100,
+                            resolveDisplayedBusinessDefaultCashbackRateBps({
+                              commissionRateCents:
+                                redeemActivationModal.card
+                                  ?.businessCommissionRateCents,
+                              defaultCashbackRateBps:
+                                redeemActivationModal.card
+                                  ?.businessDefaultCashbackRateBps,
+                            }) / 100,
                           )}
                           %
                         </Text>
@@ -25748,13 +25855,13 @@ export default function App() {
                     contentContainerStyle={styles.timePickerList}
                     showsVerticalScrollIndicator={false}
                   >
-                    {TIME_OPTIONS.map((time) => (
+                    {OFFER_EXPIRY_TIME_OPTIONS.map((option) => (
                       <TouchableOpacity
-                        key={time}
+                        key={option.value}
                         style={styles.timePickerItem}
-                        onPress={() => handleSelectTime(time)}
+                        onPress={() => handleSelectTime(option.value)}
                       >
-                        <Text style={styles.timePickerText}>{time}</Text>
+                        <Text style={styles.timePickerText}>{option.label}</Text>
                       </TouchableOpacity>
                     ))}
                   </ScrollView>
@@ -27064,6 +27171,9 @@ export default function App() {
                                       ) || 0) -
                                         (Number(
                                           billingMetrics.periodPaidCents,
+                                        ) || 0) +
+                                        (Number(
+                                          billingMetrics.manualPendingCents,
                                         ) || 0),
                                     ),
                                   )}
@@ -27526,186 +27636,18 @@ export default function App() {
                                 </View>
 
                                 <Text style={styles.formLabel}>
-                                  Operating days
+                                  Standard hours
                                 </Text>
-                                <View
-                                  style={[
-                                    styles.operatingDaysRow,
-                                    !canEditBusiness &&
-                                      styles.operatingDaysRowDisabled,
-                                  ]}
-                                >
-                                  {OPERATING_DAY_OPTIONS.map((day) => {
-                                    const selected = parseOperatingDaysValue(
-                                      editHoursDays,
-                                    ).includes(day.key);
-                                    return (
-                                      <TouchableOpacity
-                                        key={`edit-day-${day.key}`}
-                                        style={[
-                                          styles.operatingDayChip,
-                                          selected &&
-                                            styles.operatingDayChipActive,
-                                          !canEditBusiness &&
-                                            styles.operatingDayChipDisabled,
-                                        ]}
-                                        disabled={!canEditBusiness}
-                                        onPress={() =>
-                                          setEditHoursDays((prev) =>
-                                            toggleOperatingDayValue(
-                                              prev,
-                                              day.key,
-                                            ),
-                                          )
-                                        }
-                                      >
-                                        <Text
-                                          style={[
-                                            styles.operatingDayChipText,
-                                            selected &&
-                                              styles.operatingDayChipTextActive,
-                                          ]}
-                                        >
-                                          {day.label}
-                                        </Text>
-                                      </TouchableOpacity>
-                                    );
-                                  })}
-                                </View>
+                                {renderBusinessHoursEditor({
+                                  schedule: editHoursSchedule,
+                                  setSchedule: setEditHoursSchedule,
+                                  scope: "edit",
+                                  disabled: !canEditBusiness,
+                                })}
                                 <Text style={styles.formHint}>
-                                  Selected:{" "}
-                                  {formatOperatingDaysValue(editHoursDays)}
+                                  Set open or closed for each day and choose a
+                                  time range for open days.
                                 </Text>
-
-                                <Text style={styles.formLabel}>
-                                  Operating hours
-                                </Text>
-                                <View style={styles.timeRow}>
-                                  <View style={styles.timeBlock}>
-                                    <Text style={styles.timeLabel}>Start</Text>
-                                    <View style={styles.timeInputRow}>
-                                      <TouchableOpacity
-                                        style={[
-                                          styles.timeSelect,
-                                          !canEditBusiness &&
-                                            styles.timeSelectDisabled,
-                                        ]}
-                                        onPress={() =>
-                                          openTimePicker("editStart")
-                                        }
-                                        disabled={!canEditBusiness}
-                                      >
-                                        <Text style={styles.timeSelectText}>
-                                          {editHoursStart ||
-                                            (IS_COMPACT
-                                              ? "Select"
-                                              : "Select time")}
-                                        </Text>
-                                        <Ionicons
-                                          name="chevron-down"
-                                          size={16}
-                                          color={COLORS.muted}
-                                        />
-                                      </TouchableOpacity>
-                                      <View style={styles.timeMeridiem}>
-                                        {["AM", "PM"].map((label) => {
-                                          const isActive =
-                                            editHoursStartMeridiem === label;
-                                          return (
-                                            <TouchableOpacity
-                                              key={label}
-                                              style={[
-                                                styles.timeMeridiemPill,
-                                                isActive &&
-                                                  styles.timeMeridiemPillActive,
-                                                !canEditBusiness &&
-                                                  styles.timeMeridiemPillDisabled,
-                                              ]}
-                                              onPress={() =>
-                                                setEditHoursStartMeridiem(label)
-                                              }
-                                              disabled={!canEditBusiness}
-                                            >
-                                              <Text
-                                                style={[
-                                                  styles.timeMeridiemText,
-                                                  isActive &&
-                                                    styles.timeMeridiemTextActive,
-                                                  !canEditBusiness &&
-                                                    styles.timeMeridiemTextDisabled,
-                                                ]}
-                                              >
-                                                {label}
-                                              </Text>
-                                            </TouchableOpacity>
-                                          );
-                                        })}
-                                      </View>
-                                    </View>
-                                  </View>
-                                  <View style={styles.timeBlock}>
-                                    <Text style={styles.timeLabel}>End</Text>
-                                    <View style={styles.timeInputRow}>
-                                      <TouchableOpacity
-                                        style={[
-                                          styles.timeSelect,
-                                          !canEditBusiness &&
-                                            styles.timeSelectDisabled,
-                                        ]}
-                                        onPress={() =>
-                                          openTimePicker("editEnd")
-                                        }
-                                        disabled={!canEditBusiness}
-                                      >
-                                        <Text style={styles.timeSelectText}>
-                                          {editHoursEnd ||
-                                            (IS_COMPACT
-                                              ? "Select"
-                                              : "Select time")}
-                                        </Text>
-                                        <Ionicons
-                                          name="chevron-down"
-                                          size={16}
-                                          color={COLORS.muted}
-                                        />
-                                      </TouchableOpacity>
-                                      <View style={styles.timeMeridiem}>
-                                        {["AM", "PM"].map((label) => {
-                                          const isActive =
-                                            editHoursEndMeridiem === label;
-                                          return (
-                                            <TouchableOpacity
-                                              key={label}
-                                              style={[
-                                                styles.timeMeridiemPill,
-                                                isActive &&
-                                                  styles.timeMeridiemPillActive,
-                                                !canEditBusiness &&
-                                                  styles.timeMeridiemPillDisabled,
-                                              ]}
-                                              onPress={() =>
-                                                setEditHoursEndMeridiem(label)
-                                              }
-                                              disabled={!canEditBusiness}
-                                            >
-                                              <Text
-                                                style={[
-                                                  styles.timeMeridiemText,
-                                                  isActive &&
-                                                    styles.timeMeridiemTextActive,
-                                                  !canEditBusiness &&
-                                                    styles.timeMeridiemTextDisabled,
-                                                ]}
-                                              >
-                                                {label}
-                                              </Text>
-                                            </TouchableOpacity>
-                                          );
-                                        })}
-                                      </View>
-                                    </View>
-                                  </View>
-                                </View>
 
                                 <Text style={styles.formLabel}>
                                   Descriptor aliases (optional)
@@ -28103,159 +28045,17 @@ export default function App() {
                                 />
 
                                 <Text style={styles.formLabel}>
-                                  Operating days
+                                  Standard hours
                                 </Text>
-                                <View style={styles.operatingDaysRow}>
-                                  {OPERATING_DAY_OPTIONS.map((day) => {
-                                    const selected = parseOperatingDaysValue(
-                                      createHoursDays,
-                                    ).includes(day.key);
-                                    return (
-                                      <TouchableOpacity
-                                        key={`create-day-${day.key}`}
-                                        style={[
-                                          styles.operatingDayChip,
-                                          selected &&
-                                            styles.operatingDayChipActive,
-                                        ]}
-                                        onPress={() =>
-                                          setCreateHoursDays((prev) =>
-                                            toggleOperatingDayValue(
-                                              prev,
-                                              day.key,
-                                            ),
-                                          )
-                                        }
-                                      >
-                                        <Text
-                                          style={[
-                                            styles.operatingDayChipText,
-                                            selected &&
-                                              styles.operatingDayChipTextActive,
-                                          ]}
-                                        >
-                                          {day.label}
-                                        </Text>
-                                      </TouchableOpacity>
-                                    );
-                                  })}
-                                </View>
+                                {renderBusinessHoursEditor({
+                                  schedule: createHoursSchedule,
+                                  setSchedule: setCreateHoursSchedule,
+                                  scope: "create",
+                                })}
                                 <Text style={styles.formHint}>
-                                  Selected:{" "}
-                                  {formatOperatingDaysValue(createHoursDays)}
+                                  Set open or closed for each day and choose a
+                                  time range for open days.
                                 </Text>
-
-                                <Text style={styles.formLabel}>
-                                  Operating hours
-                                </Text>
-                                <View style={styles.timeRow}>
-                                  <View style={styles.timeBlock}>
-                                    <Text style={styles.timeLabel}>Start</Text>
-                                    <View style={styles.timeInputRow}>
-                                      <TouchableOpacity
-                                        style={styles.timeSelect}
-                                        onPress={() =>
-                                          openTimePicker("createStart")
-                                        }
-                                      >
-                                        <Text style={styles.timeSelectText}>
-                                          {createHoursStart ||
-                                            (IS_COMPACT
-                                              ? "Select"
-                                              : "Select time")}
-                                        </Text>
-                                        <Ionicons
-                                          name="chevron-down"
-                                          size={16}
-                                          color={COLORS.muted}
-                                        />
-                                      </TouchableOpacity>
-                                      <View style={styles.timeMeridiem}>
-                                        {["AM", "PM"].map((label) => {
-                                          const isActive =
-                                            createHoursStartMeridiem === label;
-                                          return (
-                                            <TouchableOpacity
-                                              key={label}
-                                              style={[
-                                                styles.timeMeridiemPill,
-                                                isActive &&
-                                                  styles.timeMeridiemPillActive,
-                                              ]}
-                                              onPress={() =>
-                                                setCreateHoursStartMeridiem(
-                                                  label,
-                                                )
-                                              }
-                                            >
-                                              <Text
-                                                style={[
-                                                  styles.timeMeridiemText,
-                                                  isActive &&
-                                                    styles.timeMeridiemTextActive,
-                                                ]}
-                                              >
-                                                {label}
-                                              </Text>
-                                            </TouchableOpacity>
-                                          );
-                                        })}
-                                      </View>
-                                    </View>
-                                  </View>
-                                  <View style={styles.timeBlock}>
-                                    <Text style={styles.timeLabel}>End</Text>
-                                    <View style={styles.timeInputRow}>
-                                      <TouchableOpacity
-                                        style={styles.timeSelect}
-                                        onPress={() =>
-                                          openTimePicker("createEnd")
-                                        }
-                                      >
-                                        <Text style={styles.timeSelectText}>
-                                          {createHoursEnd ||
-                                            (IS_COMPACT
-                                              ? "Select"
-                                              : "Select time")}
-                                        </Text>
-                                        <Ionicons
-                                          name="chevron-down"
-                                          size={16}
-                                          color={COLORS.muted}
-                                        />
-                                      </TouchableOpacity>
-                                      <View style={styles.timeMeridiem}>
-                                        {["AM", "PM"].map((label) => {
-                                          const isActive =
-                                            createHoursEndMeridiem === label;
-                                          return (
-                                            <TouchableOpacity
-                                              key={label}
-                                              style={[
-                                                styles.timeMeridiemPill,
-                                                isActive &&
-                                                  styles.timeMeridiemPillActive,
-                                              ]}
-                                              onPress={() =>
-                                                setCreateHoursEndMeridiem(label)
-                                              }
-                                            >
-                                              <Text
-                                                style={[
-                                                  styles.timeMeridiemText,
-                                                  isActive &&
-                                                    styles.timeMeridiemTextActive,
-                                                ]}
-                                              >
-                                                {label}
-                                              </Text>
-                                            </TouchableOpacity>
-                                          );
-                                        })}
-                                      </View>
-                                    </View>
-                                  </View>
-                                </View>
 
                                 <Text style={styles.formLabel}>
                                   Descriptor aliases (optional)
@@ -31016,158 +30816,17 @@ export default function App() {
                                 </Text>
 
                                 <Text style={styles.formLabel}>
-                                  Operating days
+                                  Standard hours
                                 </Text>
-                                <View style={styles.operatingDaysRow}>
-                                  {OPERATING_DAY_OPTIONS.map((day) => {
-                                    const selected = parseOperatingDaysValue(
-                                      businessHoursDays,
-                                    ).includes(day.key);
-                                    return (
-                                      <TouchableOpacity
-                                        key={`signup-day-${day.key}`}
-                                        style={[
-                                          styles.operatingDayChip,
-                                          selected &&
-                                            styles.operatingDayChipActive,
-                                        ]}
-                                        onPress={() =>
-                                          setBusinessHoursDays((prev) =>
-                                            toggleOperatingDayValue(
-                                              prev,
-                                              day.key,
-                                            ),
-                                          )
-                                        }
-                                      >
-                                        <Text
-                                          style={[
-                                            styles.operatingDayChipText,
-                                            selected &&
-                                              styles.operatingDayChipTextActive,
-                                          ]}
-                                        >
-                                          {day.label}
-                                        </Text>
-                                      </TouchableOpacity>
-                                    );
-                                  })}
-                                </View>
+                                {renderBusinessHoursEditor({
+                                  schedule: businessHoursSchedule,
+                                  setSchedule: setBusinessHoursSchedule,
+                                  scope: "signup",
+                                })}
                                 <Text style={styles.formHint}>
-                                  Selected:{" "}
-                                  {formatOperatingDaysValue(businessHoursDays)}
+                                  Set open or closed for each day and choose a
+                                  time range for open days.
                                 </Text>
-
-                                <Text style={styles.formLabel}>
-                                  Operating hours
-                                </Text>
-                                <View style={styles.timeRow}>
-                                  <View style={styles.timeBlock}>
-                                    <Text style={styles.timeLabel}>Start</Text>
-                                    <View style={styles.timeInputRow}>
-                                      <TouchableOpacity
-                                        style={styles.timeSelect}
-                                        onPress={() => openTimePicker("start")}
-                                      >
-                                        <Text style={styles.timeSelectText}>
-                                          {businessHoursStart ||
-                                            (IS_COMPACT
-                                              ? "Select"
-                                              : "Select time")}
-                                        </Text>
-                                        <Ionicons
-                                          name="chevron-down"
-                                          size={16}
-                                          color={COLORS.muted}
-                                        />
-                                      </TouchableOpacity>
-                                      <View style={styles.timeMeridiem}>
-                                        {["AM", "PM"].map((label) => {
-                                          const isActive =
-                                            businessHoursStartMeridiem ===
-                                            label;
-                                          return (
-                                            <TouchableOpacity
-                                              key={label}
-                                              style={[
-                                                styles.timeMeridiemPill,
-                                                isActive &&
-                                                  styles.timeMeridiemPillActive,
-                                              ]}
-                                              onPress={() =>
-                                                setBusinessHoursStartMeridiem(
-                                                  label,
-                                                )
-                                              }
-                                            >
-                                              <Text
-                                                style={[
-                                                  styles.timeMeridiemText,
-                                                  isActive &&
-                                                    styles.timeMeridiemTextActive,
-                                                ]}
-                                              >
-                                                {label}
-                                              </Text>
-                                            </TouchableOpacity>
-                                          );
-                                        })}
-                                      </View>
-                                    </View>
-                                  </View>
-                                  <View style={styles.timeBlock}>
-                                    <Text style={styles.timeLabel}>End</Text>
-                                    <View style={styles.timeInputRow}>
-                                      <TouchableOpacity
-                                        style={styles.timeSelect}
-                                        onPress={() => openTimePicker("end")}
-                                      >
-                                        <Text style={styles.timeSelectText}>
-                                          {businessHoursEnd ||
-                                            (IS_COMPACT
-                                              ? "Select"
-                                              : "Select time")}
-                                        </Text>
-                                        <Ionicons
-                                          name="chevron-down"
-                                          size={16}
-                                          color={COLORS.muted}
-                                        />
-                                      </TouchableOpacity>
-                                      <View style={styles.timeMeridiem}>
-                                        {["AM", "PM"].map((label) => {
-                                          const isActive =
-                                            businessHoursEndMeridiem === label;
-                                          return (
-                                            <TouchableOpacity
-                                              key={label}
-                                              style={[
-                                                styles.timeMeridiemPill,
-                                                isActive &&
-                                                  styles.timeMeridiemPillActive,
-                                              ]}
-                                              onPress={() =>
-                                                setBusinessHoursEndMeridiem(
-                                                  label,
-                                                )
-                                              }
-                                            >
-                                              <Text
-                                                style={[
-                                                  styles.timeMeridiemText,
-                                                  isActive &&
-                                                    styles.timeMeridiemTextActive,
-                                                ]}
-                                              >
-                                                {label}
-                                              </Text>
-                                            </TouchableOpacity>
-                                          );
-                                        })}
-                                      </View>
-                                    </View>
-                                  </View>
-                                </View>
 
                                 <Text style={styles.formLabel}>Email</Text>
                                 <AutoFocusInput
@@ -34078,93 +33737,6 @@ export default function App() {
 
                         {adminWorkspaceTab === "management" && (
                           <>
-                            {isAdmin ? (
-                              <View style={styles.adminCashbackCard}>
-                                <View style={styles.adminCashbackHeader}>
-                                  <Text style={styles.adminCashbackTitle}>
-                                    Global user cashback
-                                  </Text>
-                                  <View style={styles.adminQuickMetaChip}>
-                                    <Text style={styles.adminQuickMetaText}>
-                                      {`${(globalCashbackRateBps / 100).toFixed(2)}% live`}
-                                    </Text>
-                                  </View>
-                                </View>
-                                <Text style={styles.adminCashbackSubtitle}>
-                                  Set the default cashback % for consumers
-                                  across the app. Promo codes can still override
-                                  this.
-                                </Text>
-                                <View style={styles.adminCashbackInputRow}>
-                                  <AutoFocusInput
-                                    style={[
-                                      styles.formInput,
-                                      styles.adminCashbackInput,
-                                    ]}
-                                    value={globalCashbackRateInput}
-                                    onChangeText={(value) => {
-                                      setGlobalCashbackRateInput(value);
-                                      if (globalCashbackConfig.error) {
-                                        setGlobalCashbackConfig((prev) => ({
-                                          ...prev,
-                                          error: null,
-                                        }));
-                                      }
-                                      if (globalCashbackConfig.success) {
-                                        setGlobalCashbackConfig((prev) => ({
-                                          ...prev,
-                                          success: null,
-                                        }));
-                                      }
-                                    }}
-                                    placeholder="7.50"
-                                    placeholderTextColor={COLORS.muted}
-                                    keyboardType="decimal-pad"
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
-                                    returnKeyType="done"
-                                    onSubmitEditing={() => {
-                                      if (!globalCashbackConfig.saving) {
-                                        handleSaveGlobalCashbackRate();
-                                      }
-                                    }}
-                                  />
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.primaryButton,
-                                      styles.adminCashbackSaveButton,
-                                      (globalCashbackConfig.saving ||
-                                        globalCashbackConfig.loading) &&
-                                        styles.primaryButtonDisabled,
-                                    ]}
-                                    disabled={
-                                      globalCashbackConfig.saving ||
-                                      globalCashbackConfig.loading
-                                    }
-                                    onPress={handleSaveGlobalCashbackRate}
-                                  >
-                                    <Text style={styles.primaryButtonText}>
-                                      {globalCashbackConfig.saving
-                                        ? "Saving..."
-                                        : "Save"}
-                                    </Text>
-                                  </TouchableOpacity>
-                                </View>
-                                <Text style={styles.formHint}>
-                                  Enter a percent value (for example `7.5`).
-                                </Text>
-                                {globalCashbackConfig.error ? (
-                                  <Text style={styles.formError}>
-                                    {globalCashbackConfig.error}
-                                  </Text>
-                                ) : null}
-                                {globalCashbackConfig.success ? (
-                                  <Text style={styles.formSuccess}>
-                                    {globalCashbackConfig.success}
-                                  </Text>
-                                ) : null}
-                              </View>
-                            ) : null}
                             <View style={styles.adminDangerNotice}>
                               <View style={styles.adminDangerHeader}>
                                 <View style={styles.adminDangerIconWrap}>
@@ -35129,6 +34701,91 @@ const styles = StyleSheet.create({
     flexDirection: "column",
     gap: 12,
     marginBottom: 12,
+  },
+  hoursScheduleWrap: {
+    gap: 10,
+    marginBottom: 8,
+  },
+  hoursScheduleRow: {
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 16,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    gap: 10,
+  },
+  hoursScheduleDay: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  hoursScheduleToggle: {
+    alignSelf: "flex-start",
+    minWidth: 78,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  hoursScheduleToggleOpen: {
+    backgroundColor: "rgba(16, 185, 129, 0.12)",
+    borderColor: "rgba(16, 185, 129, 0.26)",
+  },
+  hoursScheduleToggleClosed: {
+    backgroundColor: COLORS.mint,
+    borderColor: COLORS.sand,
+  },
+  hoursScheduleToggleDisabled: {
+    opacity: 0.6,
+  },
+  hoursScheduleToggleText: {
+    fontSize: 12,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  hoursScheduleToggleTextOpen: {
+    color: "#047857",
+  },
+  hoursScheduleToggleTextClosed: {
+    color: COLORS.muted,
+  },
+  hoursScheduleTimeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  hoursScheduleTimeButton: {
+    flex: 1,
+    minHeight: 42,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    borderRadius: 14,
+    backgroundColor: COLORS.mint,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  hoursScheduleTimeButtonDisabled: {
+    opacity: 0.6,
+  },
+  hoursScheduleTimeText: {
+    fontSize: 14,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+  },
+  hoursScheduleToText: {
+    fontSize: 13,
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
+    textTransform: "uppercase",
+  },
+  hoursScheduleClosedText: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
   },
   timeBlock: {
     flex: 1,

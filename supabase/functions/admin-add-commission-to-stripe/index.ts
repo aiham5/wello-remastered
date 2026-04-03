@@ -1,7 +1,5 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import Stripe from "npm:stripe@14.25.0";
 import { createClient } from "npm:@supabase/supabase-js@2.40.0";
-import { syncStripeCustomerIdentity } from "../_shared/stripeCustomer.ts";
 
 export const config = { verify_jwt: false };
 
@@ -16,10 +14,9 @@ const SUPABASE_ANON_KEY =
   Deno.env.get("SUPABASE_ANON_KEY") ??
   Deno.env.get("EDGE_SUPABASE_ANON_KEY") ??
   "";
-const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 const PUSH_CRON_SECRET = Deno.env.get("PUSH_CRON_SECRET") ?? "";
-
-const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+const BIWEEKLY_PERIOD_DAYS = 14;
+const BILLING_ANCHOR_END_DATE = "2026-04-03";
 
 const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
   .split(",")
@@ -59,40 +56,27 @@ const getPeriodForDate = (value?: string) => {
   if (Number.isNaN(date.getTime())) {
     return null;
   }
-  const year = date.getUTCFullYear();
-  const month = date.getUTCMonth();
-  const start = new Date(Date.UTC(year, month, 1));
-  const end = new Date(Date.UTC(year, month + 1, 1));
+  const anchorEnd = new Date(`${BILLING_ANCHOR_END_DATE}T00:00:00.000Z`);
+  if (Number.isNaN(anchorEnd.getTime())) {
+    return null;
+  }
+  const targetDate = new Date(Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+  ));
+  const millisecondsPerDay = 24 * 60 * 60 * 1000;
+  const diffDays = Math.floor(
+    (targetDate.getTime() - anchorEnd.getTime()) / millisecondsPerDay,
+  );
+  const endOffset = Math.floor(diffDays / BIWEEKLY_PERIOD_DAYS) + 1;
+  const end = new Date(anchorEnd);
+  end.setUTCDate(
+    end.getUTCDate() + (endOffset * BIWEEKLY_PERIOD_DAYS),
+  );
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - BIWEEKLY_PERIOD_DAYS);
   return { start, end };
-};
-
-const findStripeDraftInvoiceForPeriod = async ({
-  customerId,
-  businessId,
-  periodStart,
-  periodEnd,
-}: {
-  customerId: string;
-  businessId: string;
-  periodStart: string;
-  periodEnd: string;
-}) => {
-  const response = await stripe.invoices.list({
-    customer: customerId,
-    status: "draft",
-    limit: 100,
-  });
-  const match = (response.data || [])
-    .filter((invoice) => {
-      const metadata = invoice.metadata || {};
-      return (
-        String(metadata.business_id || "") === businessId &&
-        String(metadata.period_start || "") === periodStart &&
-        String(metadata.period_end || "") === periodEnd
-      );
-    })
-    .sort((a, b) => Number(b.created || 0) - Number(a.created || 0))[0];
-  return match?.id || "";
 };
 
 serve(async (req) => {
@@ -112,7 +96,7 @@ serve(async (req) => {
       headers: corsHeaders,
     });
   }
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !STRIPE_SECRET_KEY) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return new Response(
       JSON.stringify({ error: "Missing server configuration." }),
       { status: 500, headers: corsHeaders },
@@ -230,120 +214,13 @@ serve(async (req) => {
     const periodStart = period.start.toISOString().slice(0, 10);
     const periodEnd = period.end.toISOString().slice(0, 10);
 
-    const { data: business } = await adminClient
-      .from("businesses")
-      .select("stripe_customer_id, name")
-      .eq("id", businessId)
-      .maybeSingle();
-    if (!business?.stripe_customer_id) {
-      return new Response(
-        JSON.stringify({ error: "Business has no Stripe customer id." }),
-        { status: 400, headers: corsHeaders },
-      );
-    }
-
-    await syncStripeCustomerIdentity({
-      stripe,
-      customerId: business.stripe_customer_id,
-      businessName: business.name,
-      context: "admin-add-commission-to-stripe",
-      businessId,
-    });
-
-    const { data: existingInvoice } = await adminClient
-      .from("commission_invoices")
-      .select("id, stripe_invoice_id, status")
-      .eq("business_id", businessId)
-      .eq("period_start", periodStart)
-      .eq("period_end", periodEnd)
-      .in("status", ["draft", "open"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    let invoiceId = existingInvoice?.stripe_invoice_id || "";
-    if (!invoiceId) {
-      invoiceId = await findStripeDraftInvoiceForPeriod({
-        customerId: business.stripe_customer_id,
-        businessId,
-        periodStart,
-        periodEnd,
-      });
-      if (invoiceId) {
-        const draftInvoice = await stripe.invoices.retrieve(invoiceId);
-        await adminClient.from("commission_invoices").insert({
-          business_id: businessId,
-          stripe_invoice_id: invoiceId,
-          period_start: periodStart,
-          period_end: periodEnd,
-          amount_cents: draftInvoice.amount_due || draftInvoice.total || 0,
-          status: draftInvoice.status || "draft",
-        });
-      }
-    }
-    if (!invoiceId) {
-      const invoice = await stripe.invoices.create({
-        customer: business.stripe_customer_id,
-        collection_method: "charge_automatically",
-        auto_advance: false,
-        metadata: {
-          business_id: businessId,
-          period_start: periodStart,
-          period_end: periodEnd,
-          mode: "draft",
-        },
-      });
-      invoiceId = invoice.id;
-      await adminClient.from("commission_invoices").insert({
-        business_id: businessId,
-        stripe_invoice_id: invoiceId,
-        period_start: periodStart,
-        period_end: periodEnd,
-        amount_cents: invoice.amount_due || 0,
-        status: invoice.status || "draft",
-      });
-    }
-
-    await stripe.invoiceItems.create(
-      {
-        customer: business.stripe_customer_id,
-        amount: amountCents,
-        currency: "usd",
-        description: `Wello commission (${periodStart} to ${periodEnd})`,
-        invoice: invoiceId,
-        metadata: {
-          business_id: businessId,
-          redemption_id: redemptionId,
-          commission_event_id: event.id,
-        },
-      },
-      { idempotencyKey: `commission_${event.id}` },
-    );
-
-    const updatedInvoice = await stripe.invoices.retrieve(invoiceId);
-    const invoiceTotal =
-      updatedInvoice.amount_due || updatedInvoice.total || amountCents;
-
-    await adminClient
-      .from("commission_invoices")
-      .update({
-        amount_cents: invoiceTotal,
-        status: updatedInvoice.status || "draft",
-      })
-      .eq("stripe_invoice_id", invoiceId);
-
-    await adminClient
-      .from("commission_events")
-      .update({ status: "invoiced" })
-      .eq("id", event.id)
-      .eq("status", "pending");
-
     return new Response(
       JSON.stringify({
         ok: true,
-        invoiceId,
-        invoiceTotalCents: invoiceTotal,
+        mode: "local_only",
         eventId: event.id,
+        amountCents,
+        eventStatus: event.status,
         periodStart,
         periodEnd,
       }),

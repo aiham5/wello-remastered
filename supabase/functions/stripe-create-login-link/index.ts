@@ -1,7 +1,10 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import Stripe from "https://esm.sh/stripe@14.25.0?target=deno";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { syncStripeCustomerIdentity } from "../_shared/stripeCustomer.ts";
+import {
+  resolveStripeBusinessCustomer,
+  syncStripeCustomerIdentity,
+} from "../_shared/stripeCustomer.ts";
 
 export const config = { verify_jwt: false };
 
@@ -89,37 +92,17 @@ serve(async (req) => {
       });
     }
 
-    let customerId = normalizeStripeId(business.stripe_customer_id);
-    let needsNewCustomer =
-      !customerId || !/^cus_[A-Za-z0-9]+$/.test(customerId);
+    const previousCustomerId = normalizeStripeId(business.stripe_customer_id);
+    const customerId = await resolveStripeBusinessCustomer({
+      stripe,
+      currentCustomerId: previousCustomerId,
+      businessName: business.name,
+      email: authData.user.email,
+      businessId: business.id,
+      context: "stripe-create-login-link",
+    });
 
-    if (!needsNewCustomer && customerId) {
-      try {
-        await stripe.customers.retrieve(customerId);
-      } catch (error) {
-        const message = String(error?.message || "").toLowerCase();
-        const code = String(error?.code || "").toLowerCase();
-        const type = String(error?.type || "").toLowerCase();
-        const noAccess = message.includes("does not have access to customer");
-        const isMissing =
-          code === "resource_missing" || message.includes("no such customer");
-        const isInvalid =
-          code === "customer_invalid" || noAccess || type === "stripepermissionerror";
-        if (isMissing || isInvalid) {
-          needsNewCustomer = true;
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    if (needsNewCustomer) {
-      const customer = await stripe.customers.create({
-        name: business.name ?? undefined,
-        email: authData.user.email ?? undefined,
-        metadata: { business_id: business.id },
-      });
-      customerId = customer.id;
+    if (customerId !== previousCustomerId) {
       await supabaseAdmin
         .from("businesses")
         .update({ stripe_customer_id: customerId })

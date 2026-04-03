@@ -44,6 +44,24 @@ const getPeriod = () => {
   return { start, end };
 };
 
+const parseOptionalPeriod = (rawStart?: string, rawEnd?: string) => {
+  const startValue = String(rawStart || "").trim();
+  const endValue = String(rawEnd || "").trim();
+  if (!startValue && !endValue) {
+    return null;
+  }
+
+  const start = new Date(startValue);
+  const end = new Date(endValue);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return { error: "Invalid period dates." as const };
+  }
+  if (start.getTime() >= end.getTime()) {
+    return { error: "periodStart must be before periodEnd." as const };
+  }
+  return { start, end };
+};
+
 const getInvoiceIdempotencyKey = (
   businessId: string,
   periodStart: string,
@@ -59,6 +77,7 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const body = await req.json().catch(() => ({}));
     const cronSecret = req.headers.get("x-cron-secret") ?? "";
     const isCronAuthorized =
       Boolean(BILLING_CRON_SECRET) &&
@@ -106,7 +125,14 @@ Deno.serve(async (req) => {
       }
     }
 
-    const { start, end } = getPeriod();
+    const parsedPeriod = parseOptionalPeriod(body?.periodStart, body?.periodEnd);
+    if (parsedPeriod?.error) {
+      return new Response(JSON.stringify({ error: parsedPeriod.error }), {
+        status: 400,
+      });
+    }
+
+    const { start, end } = parsedPeriod || getPeriod();
     const periodStart = start.toISOString().slice(0, 10);
     const periodEnd = end.toISOString().slice(0, 10);
 

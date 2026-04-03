@@ -178,6 +178,33 @@ const clearBusinessPaymentMethodFromCustomer = async (
   await pauseActiveOffersForBusinesses(supabase, businessIds);
 };
 
+const clearBusinessPaymentMethodByPaymentMethodId = async (
+  supabase: any,
+  paymentMethodId: string,
+) => {
+  const { data, error } = await supabase
+    .from("businesses")
+    .update({
+      stripe_payment_method_id: null,
+      stripe_payment_method_brand: null,
+      stripe_payment_method_last4: null,
+    })
+    .eq("stripe_payment_method_id", paymentMethodId)
+    .select("id");
+  if (error) {
+    throw new Error(
+      error.message || "Failed to clear business payment method by payment method id.",
+    );
+  }
+
+  const businessIds = Array.isArray(data)
+    ? data
+      .map((row) => asNonEmptyString((row as { id?: string | null }).id))
+      .filter((value): value is string => Boolean(value))
+    : [];
+  await pauseActiveOffersForBusinesses(supabase, businessIds);
+};
+
 type BusinessNotificationTarget = {
   id: string;
   name: string;
@@ -463,9 +490,44 @@ serve(async (req) => {
       customerId = asNonEmptyString(customer.id);
     } else {
       const paymentMethod = event.data.object as Stripe.PaymentMethod;
+      if (event.type === "payment_method.attached") {
+        const paymentMethodId = asNonEmptyString(paymentMethod.id);
+        const attachedCustomerId = typeof paymentMethod.customer === "string"
+          ? asNonEmptyString(paymentMethod.customer)
+          : asNonEmptyString(paymentMethod.customer?.id);
+        if (paymentMethodId && attachedCustomerId) {
+          await stripe.customers.update(attachedCustomerId, {
+            invoice_settings: { default_payment_method: paymentMethodId },
+          });
+        }
+      }
+      if (event.type === "payment_method.detached") {
+        console.log("stripe-webhook payment_method.detached", {
+          paymentMethodId: asNonEmptyString(paymentMethod.id),
+          paymentMethodCustomer:
+            typeof paymentMethod.customer === "string"
+              ? asNonEmptyString(paymentMethod.customer)
+              : asNonEmptyString(paymentMethod.customer?.id),
+          rawCustomerType:
+            paymentMethod.customer === null
+              ? "null"
+              : Array.isArray(paymentMethod.customer)
+                ? "array"
+                : typeof paymentMethod.customer,
+        });
+      }
       customerId = typeof paymentMethod.customer === "string"
         ? asNonEmptyString(paymentMethod.customer)
         : asNonEmptyString(paymentMethod.customer?.id);
+      if (!customerId && event.type === "payment_method.detached") {
+        const paymentMethodId = asNonEmptyString(paymentMethod.id);
+        if (paymentMethodId) {
+          await clearBusinessPaymentMethodByPaymentMethodId(
+            supabase,
+            paymentMethodId,
+          );
+        }
+      }
     }
     if (customerId) {
       await syncBusinessPaymentMethodFromCustomer(supabase, customerId);
@@ -500,16 +562,27 @@ serve(async (req) => {
         })
         .eq("id", cashoutUserId);
     } else {
+      const nowIso = new Date().toISOString();
+      const businessUpdate = {
+        stripe_charges_enabled: account.charges_enabled ?? false,
+        stripe_payouts_enabled: account.payouts_enabled ?? false,
+        stripe_onboarded_at: account.charges_enabled
+          ? nowIso
+          : null,
+        ...(account.charges_enabled
+          ? {
+              stripe_account_id: account.id,
+              stripe_pending_account_id: null,
+            }
+          : {}),
+      };
+
       await supabase
         .from("businesses")
-        .update({
-          stripe_charges_enabled: account.charges_enabled ?? false,
-          stripe_payouts_enabled: account.payouts_enabled ?? false,
-          stripe_onboarded_at: account.charges_enabled
-            ? new Date().toISOString()
-            : null,
-        })
-        .eq("stripe_account_id", account.id);
+        .update(businessUpdate)
+        .or(
+          `stripe_account_id.eq.${account.id},stripe_pending_account_id.eq.${account.id}`,
+        );
     }
   }
 

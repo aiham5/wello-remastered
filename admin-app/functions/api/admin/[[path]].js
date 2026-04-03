@@ -5,6 +5,7 @@ const ALLOWED_TABLES = new Set([
   "admin_action_logs",
   "admin_auth_events",
   "business_review_audit_log",
+  "business_manual_charges",
   "businesses",
   "cashback_events",
   "cashout_payouts",
@@ -25,6 +26,7 @@ const ALLOWED_TABLES = new Set([
 
 const ALLOWED_MUTATION_TABLES = new Set([
   "businesses",
+  "business_manual_charges",
   "offers",
   "profiles",
   "promo_codes",
@@ -46,6 +48,7 @@ const ALLOWED_RPCS = new Set([
 const ALLOWED_FUNCTIONS = new Set([
   "admin-run-monthly-invoices",
   "admin-add-commission-to-stripe",
+  "admin-charge-manual-business-charge",
   "admin-get-plaid-transaction",
   "admin-send-promo-push",
   "cashout-bank-decision",
@@ -272,6 +275,29 @@ const toNullableIso = (value) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "__invalid_date__";
   return date.toISOString();
+};
+
+const sanitizeManualChargePayload = (payload) => {
+  const body = payload && typeof payload === "object" ? payload : {};
+  const errors = [];
+
+  const amountValue = toNullableInteger(body.amount_cents ?? body.amountCents);
+  if (amountValue === "__invalid_number__" || amountValue == null || amountValue === 0) {
+    errors.push("amount_cents must be a non-zero integer.");
+  }
+
+  const reason = toNullableString(body.reason, 240);
+  if (!reason) {
+    errors.push("reason is required.");
+  }
+
+  const notes = toNullableString(body.notes, 4000);
+  return {
+    amountCents: typeof amountValue === "number" ? amountValue : null,
+    reason,
+    notes,
+    errors,
+  };
 };
 
 const toTextArray = (value, { maxItems = 30, maxItemLength = 120 } = {}) => {
@@ -1591,28 +1617,48 @@ const handleInvokeFunction = async (ctx, fnName, body) => {
       500,
     );
   }
-  const response = await fetch(`${supabaseUrl}/functions/v1/${encodeURIComponent(fnName)}`, {
-    method: "POST",
-    headers: {
-      apikey: key,
-      authorization: `Bearer ${key}`,
-      "content-type": "application/json",
-      ...(ctx?.profile?.id
-        ? {
-          "x-admin-actor-id": String(ctx.profile.id),
-          "x-admin-actor-role": String(ctx.profile.role || ""),
-        }
-        : {}),
-      ...(fnName === "cashout-bank-decision" && ctx.env.CASHOUT_ADMIN_DECISION_SECRET
-        ? {
-          "x-admin-decision-secret": String(
-            ctx.env.CASHOUT_ADMIN_DECISION_SECRET,
-          ).trim(),
-        }
-        : {}),
-    },
-    body: JSON.stringify(body || {}),
+  const adminActorHeaders = ctx?.profile?.id
+    ? {
+      "x-admin-actor-id": String(ctx.profile.id),
+      "x-admin-actor-role": String(ctx.profile.role || ""),
+    }
+    : {};
+  const extraHeaders =
+    fnName === "cashout-bank-decision" && ctx.env.CASHOUT_ADMIN_DECISION_SECRET
+      ? {
+        "x-admin-decision-secret": String(
+          ctx.env.CASHOUT_ADMIN_DECISION_SECRET,
+        ).trim(),
+      }
+      : {};
+  const functionUrl = `${supabaseUrl}/functions/v1/${encodeURIComponent(fnName)}`;
+  const payload = JSON.stringify(body || {});
+  const canUseBearerAuth =
+    /^eyJ[a-zA-Z0-9_-]+\./.test(key) &&
+    !String(key).startsWith("sb_secret_");
+  const buildInvokeHeaders = (includeAuthorization = true) => ({
+    apikey: key,
+    ...(includeAuthorization && canUseBearerAuth
+      ? { authorization: `Bearer ${key}` }
+      : {}),
+    "content-type": "application/json",
+    ...adminActorHeaders,
+    ...extraHeaders,
   });
+
+  let response = await fetch(functionUrl, {
+    method: "POST",
+    headers: buildInvokeHeaders(true),
+    body: payload,
+  });
+
+  if (response.status === 401) {
+    response = await fetch(functionUrl, {
+      method: "POST",
+      headers: buildInvokeHeaders(false),
+      body: payload,
+    });
+  }
 
   const parsed = await parseResponseBody(response);
   if (!response.ok) {
@@ -1637,22 +1683,37 @@ const invokeEdgeFunctionData = async (ctx, fnName, body) => {
   if (!key) {
     return { ok: false, status: 500, error: "Server secret is not configured." };
   }
+  const canUseBearerAuth =
+    /^eyJ[a-zA-Z0-9_-]+\./.test(key) &&
+    !String(key).startsWith("sb_secret_");
+  const adminActorHeaders = ctx?.profile?.id
+    ? {
+      "x-admin-actor-id": String(ctx.profile.id),
+      "x-admin-actor-role": String(ctx.profile.role || ""),
+    }
+    : {};
+  const buildInvokeHeaders = (includeAuthorization = true) => ({
+    apikey: key,
+    ...(includeAuthorization && canUseBearerAuth
+      ? { authorization: `Bearer ${key}` }
+      : {}),
+    "content-type": "application/json",
+    ...adminActorHeaders,
+  });
 
-  const response = await fetch(`${supabaseUrl}/functions/v1/${encodeURIComponent(fnName)}`, {
+  let response = await fetch(`${supabaseUrl}/functions/v1/${encodeURIComponent(fnName)}`, {
     method: "POST",
-    headers: {
-      apikey: key,
-      authorization: `Bearer ${key}`,
-      "content-type": "application/json",
-      ...(ctx?.profile?.id
-        ? {
-          "x-admin-actor-id": String(ctx.profile.id),
-          "x-admin-actor-role": String(ctx.profile.role || ""),
-        }
-        : {}),
-    },
+    headers: buildInvokeHeaders(true),
     body: JSON.stringify(body || {}),
   });
+
+  if (response.status === 401) {
+    response = await fetch(`${supabaseUrl}/functions/v1/${encodeURIComponent(fnName)}`, {
+      method: "POST",
+      headers: buildInvokeHeaders(false),
+      body: JSON.stringify(body || {}),
+    });
+  }
 
   const parsed = await parseResponseBody(response);
   if (!response.ok) {
@@ -2579,7 +2640,7 @@ const routeExplicit = async (ctx, request, segments) => {
       return json({ ok: false, error: { code: "invalid_business_id", message: "Business id is required." } }, 400);
     }
 
-    const [receiptResult, commissionResult, cashbackResult] = await Promise.all([
+    const [receiptResult, commissionResult, cashbackResult, manualChargeResult] = await Promise.all([
       runQuery({
         table: "receipt_uploads",
         action: "select",
@@ -2601,11 +2662,19 @@ const routeExplicit = async (ctx, request, segments) => {
         filters: [{ column: "business_id", op: "eq", value: businessId }],
         limit: 2000,
       }),
+      runQuery({
+        table: "business_manual_charges",
+        action: "select",
+        select: "id,amount_cents,status,created_at,charged_at",
+        filters: [{ column: "business_id", op: "eq", value: businessId }],
+        limit: 2000,
+      }),
     ]);
 
     if (!receiptResult.ok) return json(receiptResult.payload, receiptResult.status || 400);
     if (!commissionResult.ok) return json(commissionResult.payload, commissionResult.status || 400);
     if (!cashbackResult.ok) return json(cashbackResult.payload, cashbackResult.status || 400);
+    if (!manualChargeResult.ok) return json(manualChargeResult.payload, manualChargeResult.status || 400);
 
     const verifiedReceipts = Array.isArray(receiptResult.payload?.data)
       ? receiptResult.payload.data.filter(
@@ -2626,12 +2695,30 @@ const routeExplicit = async (ctx, request, segments) => {
           ),
         )
       : [];
+    const manualChargeRows = Array.isArray(manualChargeResult.payload?.data)
+      ? manualChargeResult.payload.data.filter((row) =>
+          ["pending", "processing", "paid"].includes(
+            String(row?.status || "").toLowerCase(),
+          ),
+        )
+      : [];
 
     const sumCents = (rows, field) =>
       rows.reduce((total, row) => total + (Number(row?.[field]) || 0), 0);
 
     const revenueCents = sumCents(verifiedReceipts, "receipt_total_cents");
     const chargesCents = sumCents(chargeRows, "amount_cents");
+    const manualChargesCents = sumCents(manualChargeRows, "amount_cents");
+    const manualPendingCents = sumCents(
+      manualChargeRows.filter((row) =>
+        ["pending", "processing"].includes(String(row?.status || "").toLowerCase()),
+      ),
+      "amount_cents",
+    );
+    const manualPaidCents = sumCents(
+      manualChargeRows.filter((row) => String(row?.status || "").toLowerCase() === "paid"),
+      "amount_cents",
+    );
     const cashbackCents = sumCents(cashbackRows, "amount_cents");
     const subsidyCents = sumCents(cashbackRows, "platform_subsidy_cents");
 
@@ -2641,14 +2728,252 @@ const routeExplicit = async (ctx, request, segments) => {
         data: {
           verifiedReceiptCount: verifiedReceipts.length,
           revenueCents,
-          chargesCents,
+          chargesCents: chargesCents + manualChargesCents,
+          manualChargesCents,
+          manualPendingCents,
+          manualPaidCents,
           cashbackCents,
           subsidyCents,
-          profitCents: chargesCents - cashbackCents - subsidyCents,
+          profitCents: chargesCents + manualChargesCents - cashbackCents - subsidyCents,
         },
       },
       200,
     );
+  }
+
+  if (segments.length === 3 && segments[0] === "businesses" && segments[2] === "manual-charges" && method === "GET") {
+    const businessId = String(segments[1] || "").trim();
+    if (!businessId) {
+      return json({ ok: false, error: { code: "invalid_business_id", message: "Business id is required." } }, 400);
+    }
+    return handleQuery(ctx, {
+      table: "business_manual_charges",
+      action: "select",
+      select:
+        "id,business_id,amount_cents,reason,notes,status,stripe_payment_intent_id,"
+        + "stripe_charge_id,failure_reason,charged_at,canceled_at,created_by,updated_by,created_at,updated_at",
+      order: [{ column: "created_at", ascending: false }],
+      filters: [{ column: "business_id", op: "eq", value: businessId }],
+      limit: 200,
+    });
+  }
+
+  if (segments.length === 4 && segments[0] === "businesses" && segments[2] === "manual-charges" && segments[3] === "create" && method === "POST") {
+    const businessId = String(segments[1] || "").trim();
+    if (!businessId) {
+      return json({ ok: false, error: { code: "invalid_business_id", message: "Business id is required." } }, 400);
+    }
+    const parsed = sanitizeManualChargePayload(body);
+    if (parsed.errors.length) {
+      return json({ ok: false, error: { code: "invalid_manual_charge", message: parsed.errors.join(" ") } }, 400);
+    }
+    const result = await runQuery({
+      table: "business_manual_charges",
+      action: "insert",
+      body: {
+        business_id: businessId,
+        amount_cents: parsed.amountCents,
+        reason: parsed.reason,
+        notes: parsed.notes,
+        status: "pending",
+        created_by: ctx.profile.id,
+        updated_by: ctx.profile.id,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      select:
+        "id,business_id,amount_cents,reason,notes,status,stripe_payment_intent_id,"
+        + "stripe_charge_id,failure_reason,charged_at,canceled_at,created_by,updated_by,created_at,updated_at",
+      filters: [],
+      single: "maybe",
+    });
+    if (!result.ok) {
+      return json(result.payload, result.status || 400);
+    }
+    await logAdminActionInternal(ctx, {
+      action: "business_manual_charge_created",
+      entity: "business_manual_charges",
+      entityId: result.payload?.data?.id || null,
+      status: "success",
+      meta: { businessId, amountCents: parsed.amountCents },
+      after: result.payload?.data || null,
+    });
+    return json({ ok: true, data: result.payload?.data || null }, 200);
+  }
+
+  if (segments.length === 5 && segments[0] === "businesses" && segments[2] === "manual-charges" && segments[4] === "update" && method === "POST") {
+    const businessId = String(segments[1] || "").trim();
+    const chargeId = String(segments[3] || "").trim();
+    if (!businessId || !chargeId) {
+      return json({ ok: false, error: { code: "invalid_request", message: "Business id and charge id are required." } }, 400);
+    }
+    const current = await runQuery({
+      table: "business_manual_charges",
+      action: "select",
+      select:
+        "id,business_id,amount_cents,reason,notes,status,stripe_payment_intent_id,"
+        + "stripe_charge_id,failure_reason,charged_at,canceled_at,created_by,updated_by,created_at,updated_at",
+      filters: [
+        { column: "id", op: "eq", value: chargeId },
+        { column: "business_id", op: "eq", value: businessId },
+      ],
+      single: "maybe",
+    });
+    if (!current.ok || !current.payload?.data?.id) {
+      return json({ ok: false, error: { code: "manual_charge_not_found", message: "Manual charge not found." } }, 404);
+    }
+    const currentStatus = String(current.payload.data.status || "").toLowerCase();
+    if (!["pending", "failed"].includes(currentStatus)) {
+      return json({ ok: false, error: { code: "manual_charge_locked", message: "Only pending or failed manual charges can be edited." } }, 400);
+    }
+    const parsed = sanitizeManualChargePayload(body);
+    if (parsed.errors.length) {
+      return json({ ok: false, error: { code: "invalid_manual_charge", message: parsed.errors.join(" ") } }, 400);
+    }
+    const result = await runQuery({
+      table: "business_manual_charges",
+      action: "update",
+      body: {
+        amount_cents: parsed.amountCents,
+        reason: parsed.reason,
+        notes: parsed.notes,
+        status: "pending",
+        failure_reason: null,
+        updated_by: ctx.profile.id,
+        updated_at: new Date().toISOString(),
+      },
+      select:
+        "id,business_id,amount_cents,reason,notes,status,stripe_payment_intent_id,"
+        + "stripe_charge_id,failure_reason,charged_at,canceled_at,created_by,updated_by,created_at,updated_at",
+      filters: [
+        { column: "id", op: "eq", value: chargeId },
+        { column: "business_id", op: "eq", value: businessId },
+      ],
+      single: "maybe",
+    });
+    if (!result.ok) {
+      return json(result.payload, result.status || 400);
+    }
+    await logAdminActionInternal(ctx, {
+      action: "business_manual_charge_updated",
+      entity: "business_manual_charges",
+      entityId: chargeId,
+      status: "success",
+      before: current.payload.data,
+      after: result.payload?.data || null,
+      meta: { businessId },
+    });
+    return json({ ok: true, data: result.payload?.data || null }, 200);
+  }
+
+  if (segments.length === 5 && segments[0] === "businesses" && segments[2] === "manual-charges" && segments[4] === "cancel" && method === "POST") {
+    const businessId = String(segments[1] || "").trim();
+    const chargeId = String(segments[3] || "").trim();
+    if (!businessId || !chargeId) {
+      return json({ ok: false, error: { code: "invalid_request", message: "Business id and charge id are required." } }, 400);
+    }
+    const current = await runQuery({
+      table: "business_manual_charges",
+      action: "select",
+      select:
+        "id,business_id,amount_cents,reason,notes,status,stripe_payment_intent_id,"
+        + "stripe_charge_id,failure_reason,charged_at,canceled_at,created_by,updated_by,created_at,updated_at",
+      filters: [
+        { column: "id", op: "eq", value: chargeId },
+        { column: "business_id", op: "eq", value: businessId },
+      ],
+      single: "maybe",
+    });
+    if (!current.ok || !current.payload?.data?.id) {
+      return json({ ok: false, error: { code: "manual_charge_not_found", message: "Manual charge not found." } }, 404);
+    }
+    const currentStatus = String(current.payload.data.status || "").toLowerCase();
+    if (!["pending", "failed", "processing"].includes(currentStatus)) {
+      return json({ ok: false, error: { code: "manual_charge_locked", message: "Paid or canceled manual charges cannot be canceled again." } }, 400);
+    }
+    const result = await runQuery({
+      table: "business_manual_charges",
+      action: "update",
+      body: {
+        status: "canceled",
+        canceled_at: new Date().toISOString(),
+        updated_by: ctx.profile.id,
+        updated_at: new Date().toISOString(),
+      },
+      select:
+        "id,business_id,amount_cents,reason,notes,status,stripe_payment_intent_id,"
+        + "stripe_charge_id,failure_reason,charged_at,canceled_at,created_by,updated_by,created_at,updated_at",
+      filters: [
+        { column: "id", op: "eq", value: chargeId },
+        { column: "business_id", op: "eq", value: businessId },
+      ],
+      single: "maybe",
+    });
+    if (!result.ok) {
+      return json(result.payload, result.status || 400);
+    }
+    await logAdminActionInternal(ctx, {
+      action: "business_manual_charge_canceled",
+      entity: "business_manual_charges",
+      entityId: chargeId,
+      status: "success",
+      before: current.payload.data,
+      after: result.payload?.data || null,
+      meta: { businessId },
+    });
+    return json({ ok: true, data: result.payload?.data || null }, 200);
+  }
+
+  if (segments.length === 5 && segments[0] === "businesses" && segments[2] === "manual-charges" && segments[4] === "charge" && method === "POST") {
+    const businessId = String(segments[1] || "").trim();
+    const chargeId = String(segments[3] || "").trim();
+    if (!businessId || !chargeId) {
+      return json({ ok: false, error: { code: "invalid_request", message: "Business id and charge id are required." } }, 400);
+    }
+    const current = await runQuery({
+      table: "business_manual_charges",
+      action: "select",
+      select: "id,business_id,amount_cents,reason,status",
+      filters: [
+        { column: "id", op: "eq", value: chargeId },
+        { column: "business_id", op: "eq", value: businessId },
+      ],
+      single: "maybe",
+    });
+    if (!current.ok || !current.payload?.data?.id) {
+      return json({ ok: false, error: { code: "manual_charge_not_found", message: "Manual charge not found." } }, 404);
+    }
+    const response = await handleInvokeFunction(ctx, "admin-charge-manual-business-charge", {
+      chargeId,
+    });
+    if (response.status >= 400) {
+      return response;
+    }
+    const refreshed = await runQuery({
+      table: "business_manual_charges",
+      action: "select",
+      select:
+        "id,business_id,amount_cents,reason,notes,status,stripe_payment_intent_id,"
+        + "stripe_charge_id,failure_reason,charged_at,canceled_at,created_by,updated_by,created_at,updated_at",
+      filters: [
+        { column: "id", op: "eq", value: chargeId },
+        { column: "business_id", op: "eq", value: businessId },
+      ],
+      single: "maybe",
+    });
+    await logAdminActionInternal(ctx, {
+      action: "business_manual_charge_charged",
+      entity: "business_manual_charges",
+      entityId: chargeId,
+      status:
+        String(refreshed.payload?.data?.status || "").toLowerCase() === "paid"
+          ? "success"
+          : "failed",
+      before: current.payload.data,
+      after: refreshed.payload?.data || null,
+      meta: { businessId },
+    });
+    return json({ ok: true, data: refreshed.payload?.data || null }, 200);
   }
 
   if (segments.length === 3 && segments[0] === "businesses" && segments[2] === "review" && method === "POST") {

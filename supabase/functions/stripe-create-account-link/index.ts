@@ -139,7 +139,7 @@ serve(async (req) => {
     phase = "load_business";
     const { data: business, error: businessError } = await supabaseAdmin
       .from("businesses")
-      .select("id, owner_id, name, stripe_account_id")
+      .select("id, owner_id, name, stripe_account_id, stripe_pending_account_id")
       .eq("id", businessId)
       .maybeSingle();
 
@@ -158,8 +158,11 @@ serve(async (req) => {
     debug.userId = authData.user.id;
     debug.ownerMatches = business.owner_id === authData.user.id;
     debug.existingAccountId = maskStripeId(business.stripe_account_id);
+    debug.pendingAccountId = maskStripeId(business.stripe_pending_account_id);
 
-    let accountId = normalizeStripeId(business.stripe_account_id);
+    let accountId = normalizeStripeId(
+      business.stripe_pending_account_id || business.stripe_account_id,
+    );
     debug.normalizedAccountId = maskStripeId(accountId);
     let needsNewAccount =
       !accountId || !/^acct_[A-Za-z0-9]+$/.test(accountId);
@@ -213,7 +216,7 @@ serve(async (req) => {
       phase = "persist_account";
       await supabaseAdmin
         .from("businesses")
-        .update({ stripe_account_id: accountId })
+        .update({ stripe_pending_account_id: accountId })
         .eq("id", businessId);
     } else {
       debug.createdNewAccount = false;

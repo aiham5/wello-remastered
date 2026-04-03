@@ -50,9 +50,28 @@ interface BusinessMetricsSummary {
   verifiedReceiptCount: number;
   revenueCents: number;
   chargesCents: number;
+  manualChargesCents?: number;
+  manualPendingCents?: number;
+  manualPaidCents?: number;
   cashbackCents: number;
   subsidyCents: number;
   profitCents: number;
+}
+
+interface ManualChargeRow {
+  id: string;
+  business_id: string;
+  amount_cents: number;
+  reason?: string | null;
+  notes?: string | null;
+  status?: string | null;
+  stripe_payment_intent_id?: string | null;
+  stripe_charge_id?: string | null;
+  failure_reason?: string | null;
+  charged_at?: string | null;
+  canceled_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 interface BusinessEditForm {
@@ -320,6 +339,13 @@ export function Businesses() {
   const [editForm, setEditForm] = useState<BusinessEditForm>(createEmptyBusinessEditForm());
   const [businessMetrics, setBusinessMetrics] = useState<BusinessMetricsSummary | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
+  const [manualCharges, setManualCharges] = useState<ManualChargeRow[]>([]);
+  const [manualChargesLoading, setManualChargesLoading] = useState(false);
+  const [manualChargeAmountInput, setManualChargeAmountInput] = useState("");
+  const [manualChargeReasonInput, setManualChargeReasonInput] = useState("");
+  const [manualChargeNotesInput, setManualChargeNotesInput] = useState("");
+  const [manualChargeEditingId, setManualChargeEditingId] = useState<string | null>(null);
+  const [manualChargeBusyId, setManualChargeBusyId] = useState<string | null>(null);
   const [rateModalBusiness, setRateModalBusiness] = useState<BusinessRow | null>(null);
   const [rateDraft, setRateDraft] = useState<RateDraft | null>(null);
 
@@ -368,6 +394,60 @@ export function Businesses() {
     };
   }, [drawerOpen, drawerMode, selectedBusiness?.id]);
 
+  useEffect(() => {
+    if (!drawerOpen || drawerMode !== "view" || !selectedBusiness?.id) {
+      setManualCharges([]);
+      setManualChargesLoading(false);
+      setManualChargeEditingId(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadManualCharges = async () => {
+      setManualChargesLoading(true);
+      const res = await apiRequest<ManualChargeRow[]>(
+        `/api/admin/businesses/${encodeURIComponent(selectedBusiness.id)}/manual-charges`,
+      );
+      if (cancelled) return;
+      setManualCharges(Array.isArray(res.data) ? res.data : []);
+      setManualChargesLoading(false);
+    };
+
+    void loadManualCharges();
+    return () => {
+      cancelled = true;
+    };
+  }, [drawerOpen, drawerMode, selectedBusiness?.id]);
+
+  const resetManualChargeForm = () => {
+    setManualChargeEditingId(null);
+    setManualChargeAmountInput("");
+    setManualChargeReasonInput("");
+    setManualChargeNotesInput("");
+  };
+
+  const loadSelectedBusinessManualCharges = async (businessId: string) => {
+    setManualChargesLoading(true);
+    const res = await apiRequest<ManualChargeRow[]>(
+      `/api/admin/businesses/${encodeURIComponent(businessId)}/manual-charges`,
+    );
+    setManualCharges(Array.isArray(res.data) ? res.data : []);
+    setManualChargesLoading(false);
+  };
+
+  const loadSelectedBusinessMetrics = async (businessId: string) => {
+    setMetricsLoading(true);
+    const res = await apiRequest<BusinessMetricsSummary>(
+      `/api/admin/businesses/${encodeURIComponent(businessId)}/metrics`,
+    );
+    if (res.error || !res.data) {
+      setBusinessMetrics(null);
+    } else {
+      setBusinessMetrics(res.data);
+    }
+    setMetricsLoading(false);
+  };
+
   const categories = useMemo(() => {
     const set = new Set<string>();
     rows.forEach((row) => {
@@ -401,6 +481,96 @@ export function Businesses() {
     }),
     [rows],
   );
+
+  const startEditingManualCharge = (charge: ManualChargeRow) => {
+    setManualChargeEditingId(charge.id);
+    setManualChargeAmountInput(
+      Number.isFinite(Number(charge.amount_cents))
+        ? (Number(charge.amount_cents) / 100).toFixed(2)
+        : "",
+    );
+    setManualChargeReasonInput(String(charge.reason || ""));
+    setManualChargeNotesInput(String(charge.notes || ""));
+  };
+
+  const submitManualCharge = async () => {
+    if (!selectedBusiness?.id) return;
+    const amountCents = Math.round((Number(manualChargeAmountInput) || 0) * 100);
+    if (!amountCents || !manualChargeReasonInput.trim()) {
+      setMessage("Adjustment amount and reason are required.");
+      return;
+    }
+    setManualChargeBusyId(manualChargeEditingId || "create");
+    const endpoint = manualChargeEditingId
+      ? `/api/admin/businesses/${encodeURIComponent(selectedBusiness.id)}/manual-charges/${encodeURIComponent(manualChargeEditingId)}/update`
+      : `/api/admin/businesses/${encodeURIComponent(selectedBusiness.id)}/manual-charges/create`;
+    const res = await apiRequest<ManualChargeRow>(endpoint, {
+      method: "POST",
+      body: {
+        amountCents,
+        reason: manualChargeReasonInput,
+        notes: manualChargeNotesInput,
+      },
+    });
+    if (res.error) {
+      setMessage(summarizeError(res.error, "Unable to save manual charge."));
+      setManualChargeBusyId(null);
+      return;
+    }
+    await Promise.all([
+      loadSelectedBusinessManualCharges(selectedBusiness.id),
+      loadSelectedBusinessMetrics(selectedBusiness.id),
+    ]);
+    resetManualChargeForm();
+    setManualChargeBusyId(null);
+    setMessage(manualChargeEditingId ? "Adjustment updated." : "Adjustment added.");
+  };
+
+  const cancelManualCharge = async (charge: ManualChargeRow) => {
+    if (!selectedBusiness?.id) return;
+    if (!window.confirm(`Cancel adjustment "${charge.reason || charge.id}"?`)) return;
+    setManualChargeBusyId(charge.id);
+    const res = await apiRequest<ManualChargeRow>(
+      `/api/admin/businesses/${encodeURIComponent(selectedBusiness.id)}/manual-charges/${encodeURIComponent(charge.id)}/cancel`,
+      { method: "POST", body: {} },
+    );
+    if (res.error) {
+      setMessage(summarizeError(res.error, "Unable to cancel manual charge."));
+      setManualChargeBusyId(null);
+      return;
+    }
+    await Promise.all([
+      loadSelectedBusinessManualCharges(selectedBusiness.id),
+      loadSelectedBusinessMetrics(selectedBusiness.id),
+    ]);
+    if (manualChargeEditingId === charge.id) resetManualChargeForm();
+    setManualChargeBusyId(null);
+    setMessage("Manual charge canceled.");
+  };
+
+  const chargeManualCharge = async (charge: ManualChargeRow) => {
+    if (!selectedBusiness?.id) return;
+    if (!window.confirm(`Charge ${formatCurrencyFromCents(Number(charge.amount_cents) || 0)} to ${selectedBusiness.name}?`)) {
+      return;
+    }
+    setManualChargeBusyId(charge.id);
+    const res = await apiRequest<ManualChargeRow>(
+      `/api/admin/businesses/${encodeURIComponent(selectedBusiness.id)}/manual-charges/${encodeURIComponent(charge.id)}/charge`,
+      { method: "POST", body: {} },
+    );
+    if (res.error) {
+      setMessage(summarizeError(res.error, "Unable to charge manual balance."));
+      setManualChargeBusyId(null);
+      return;
+    }
+    await Promise.all([
+      loadSelectedBusinessManualCharges(selectedBusiness.id),
+      loadSelectedBusinessMetrics(selectedBusiness.id),
+    ]);
+    if (manualChargeEditingId === charge.id) resetManualChargeForm();
+    setManualChargeBusyId(null);
+    setMessage("Manual charge processed.");
+  };
 
   const submitDecision = async (
     business: BusinessRow,
@@ -498,6 +668,8 @@ export function Businesses() {
     setDrawerMode(mode);
     setEditForm(businessToEditForm(business));
     setEditPayload(buildBusinessEditPayload(business));
+    resetManualChargeForm();
+    setManualCharges([]);
     setRateDraft(
       createBusinessRateDraft(
         business.commission_rate_cents ?? 150,
@@ -1006,6 +1178,11 @@ export function Businesses() {
                           <p className="mt-1 text-lg font-semibold text-slate-900">
                             {formatCurrencyFromCents(businessMetrics.chargesCents)}
                           </p>
+                          {Number(businessMetrics.manualChargesCents || 0) !== 0 ? (
+                            <p className="mt-1 text-xs text-slate-500">
+                              Includes {formatCurrencyFromCents(businessMetrics.manualChargesCents || 0)} manual adjustments
+                            </p>
+                          ) : null}
                         </div>
                         <div className="rounded-xl bg-slate-50 p-4 border border-slate-200">
                           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
@@ -1047,6 +1224,184 @@ export function Businesses() {
                           : "No business metrics available yet."}
                       </div>
                     )}
+                  </div>
+                  <div className="rounded-2xl border border-gray-200 p-5 space-y-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                          Manual adjustments
+                        </p>
+                        <p className="text-sm text-gray-600">
+                          Add positive charges or negative credits. Positive pending amounts can be charged on demand.
+                        </p>
+                      </div>
+                      {manualChargesLoading ? (
+                        <span className="text-xs font-medium text-gray-500">Loading...</span>
+                      ) : null}
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-xl bg-amber-50 p-4 border border-amber-200">
+                        <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
+                          Pending adjustments
+                        </p>
+                        <p className="mt-1 text-lg font-semibold text-amber-700">
+                          {formatCurrencyFromCents(Number(businessMetrics?.manualPendingCents || 0))}
+                        </p>
+                      </div>
+                      <div className="rounded-xl bg-slate-50 p-4 border border-slate-200">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Paid adjustments
+                        </p>
+                        <p className="mt-1 text-lg font-semibold text-slate-900">
+                          {formatCurrencyFromCents(Number(businessMetrics?.manualPaidCents || 0))}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <label className="block">
+                        <span className="text-sm font-medium text-gray-700">Adjustment amount (USD)</span>
+                        <input
+                          value={manualChargeAmountInput}
+                          onChange={(event) => setManualChargeAmountInput(event.target.value)}
+                          placeholder="25.00 or -25.00"
+                          className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-sm font-medium text-gray-700">Reason</span>
+                        <input
+                          value={manualChargeReasonInput}
+                          onChange={(event) => setManualChargeReasonInput(event.target.value)}
+                          placeholder="Platform adjustment"
+                          className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        />
+                      </label>
+                      <label className="block col-span-2">
+                        <span className="text-sm font-medium text-gray-700">Notes</span>
+                        <textarea
+                          value={manualChargeNotesInput}
+                          onChange={(event) => setManualChargeNotesInput(event.target.value)}
+                          rows={3}
+                          placeholder="Optional internal note"
+                          className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        />
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {(() => {
+                        const isSubmitting =
+                          manualChargeBusyId === "create" ||
+                          (!!manualChargeEditingId && manualChargeBusyId === manualChargeEditingId);
+                        return (
+                      <button
+                        type="button"
+                        className={`px-4 py-2.5 rounded-lg font-medium transition-colors ${
+                          isSubmitting
+                            ? "bg-amber-200 text-white opacity-50 cursor-not-allowed"
+                            : "bg-slate-900 text-white hover:bg-slate-800 cursor-pointer shadow-sm"
+                        }`}
+                        onClick={submitManualCharge}
+                        disabled={isSubmitting}
+                      >
+                        {manualChargeEditingId ? "Save adjustment" : "Add adjustment"}
+                      </button>
+                        );
+                      })()}
+                      {manualChargeEditingId ? (
+                        <button
+                          type="button"
+                          className="px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+                          onClick={resetManualChargeForm}
+                        >
+                          Cancel edit
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="space-y-3">
+                      {manualCharges.length ? (
+                        manualCharges.map((charge) => {
+                          const status = String(charge.status || "pending").toLowerCase();
+                          const isActionable = ["pending", "failed"].includes(status);
+                          const isBusy = manualChargeBusyId === charge.id;
+                          const amountCents = Number(charge.amount_cents) || 0;
+                          const isCredit = amountCents < 0;
+                          const canChargeNow = isActionable && amountCents > 0;
+                          return (
+                            <div
+                              key={charge.id}
+                              className={`rounded-xl border p-4 flex items-start justify-between gap-4 ${
+                                isCredit ? "border-emerald-200 bg-emerald-50/60" : "border-gray-200"
+                              }`}
+                            >
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <p className={`text-base font-semibold ${isCredit ? "text-emerald-700" : "text-gray-900"}`}>
+                                    {formatCurrencyFromCents(amountCents)}
+                                  </p>
+                                  <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 uppercase">
+                                    {status}
+                                  </span>
+                                  {isCredit ? (
+                                    <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700 uppercase">
+                                      Credit
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <p className="mt-1 text-sm font-medium text-gray-900">
+                                  {charge.reason || "Manual adjustment"}
+                                </p>
+                                {charge.notes ? (
+                                  <p className="mt-1 text-sm text-gray-600">{charge.notes}</p>
+                                ) : null}
+                                <p className="mt-2 text-xs text-gray-500">
+                                  Created {formatDateTime(charge.created_at)}
+                                  {charge.charged_at ? ` • Charged ${formatDateTime(charge.charged_at)}` : ""}
+                                </p>
+                                {charge.failure_reason ? (
+                                  <p className="mt-1 text-xs text-red-600">{charge.failure_reason}</p>
+                                ) : null}
+                              </div>
+                              <div className="flex flex-col gap-2 shrink-0">
+                                {isActionable ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50"
+                                      onClick={() => startEditingManualCharge(charge)}
+                                      disabled={isBusy}
+                                    >
+                                      Edit
+                                    </button>
+                                    {canChargeNow ? (
+                                      <button
+                                        type="button"
+                                        className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-800 transition-colors disabled:opacity-50"
+                                        onClick={() => chargeManualCharge(charge)}
+                                        disabled={isBusy}
+                                      >
+                                        Charge now
+                                      </button>
+                                    ) : null}
+                                    <button
+                                      type="button"
+                                      className="px-3 py-2 rounded-lg border border-red-200 text-red-700 text-sm hover:bg-red-50 transition-colors disabled:opacity-50"
+                                      onClick={() => cancelManualCharge(charge)}
+                                      disabled={isBusy}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="rounded-xl border border-dashed border-gray-300 p-4 text-sm text-gray-500">
+                          No manual adjustments yet.
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <button
                     type="button"

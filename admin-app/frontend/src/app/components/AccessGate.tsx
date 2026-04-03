@@ -12,6 +12,8 @@ type GateState =
   | { status: "ready"; profile: AdminProfile; message: string }
   | { status: "error"; profile: null; message: string };
 
+const ACCESS_LOGIN_BASE = "https://wello-admin.cloudflareaccess.com/cdn-cgi/access/login";
+
 const normalizeErrorMessage = (error: unknown) => {
   const message = String((error as { message?: string })?.message || "").trim();
   if (!message) return "Unable to verify admin access.";
@@ -94,7 +96,7 @@ export function AccessGate({ children }: PropsWithChildren) {
             </button>
             <a
               className="w-full px-4 py-2 border border-gray-300 text-center text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-              href="/cdn-cgi/access/login"
+              href={`${ACCESS_LOGIN_BASE}?returnTo=${encodeURIComponent(typeof window !== "undefined" ? window.location.href : "/")}`}
             >
               Re-authenticate
             </a>

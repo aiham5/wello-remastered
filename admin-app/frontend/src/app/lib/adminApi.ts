@@ -18,6 +18,7 @@ interface RequestOptions {
 }
 
 const REQUEST_TIMEOUT_MS = 45000;
+const ACCESS_LOGIN_BASE = "https://wello-admin.cloudflareaccess.com/cdn-cgi/access/login";
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number) => {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -64,7 +65,7 @@ const normalizeApiError = (error: unknown, fallback = "Request failed."): string
 const redirectToAccessLogin = () => {
   if (typeof window === "undefined") return;
   const returnTo = encodeURIComponent(window.location.href);
-  window.location.assign(`/cdn-cgi/access/login?returnTo=${returnTo}`);
+  window.location.assign(`${ACCESS_LOGIN_BASE}?returnTo=${returnTo}`);
 };
 
 export const apiRequest = async <T>(
