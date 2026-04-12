@@ -3,7 +3,7 @@
     "name": "Wello",
     "slug": "wello",
     "scheme": "wello",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "backgroundColor": "#FFF03B",
     "icon": "./assets/logo/app-icon.png",

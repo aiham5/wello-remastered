@@ -11,6 +11,7 @@ import {
   ActionSheetIOS,
   Animated,
   ActivityIndicator,
+  BackHandler,
   Dimensions,
   FlatList,
   Image,
@@ -29,6 +30,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  ToastAndroid,
   TouchableOpacity,
   TurboModuleRegistry,
   View,
@@ -39,16 +41,27 @@ import {
   PinchGestureHandler,
   State as GestureState,
 } from "react-native-gesture-handler";
-import BottomSheet, { BottomSheetScrollView } from "@gorhom/bottom-sheet";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import {
+import Reanimated, {
   configureReanimatedLogger,
+  Easing as ReanimatedEasing,
+  Extrapolation,
+  interpolate,
   ReanimatedLogLevel,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
 } from "react-native-reanimated";
 import MapView, { Marker } from "react-native-maps";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Font from "expo-font";
-import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import {
+  SafeAreaProvider,
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
 import * as ImagePicker from "expo-image-picker";
@@ -77,7 +90,20 @@ import {
   refreshAccessTokenWithRefreshToken,
   clearSupabaseSession,
 } from "./lib/supabase";
+import { getBusinessStripeStatus } from "./lib/business";
 import { getEnv } from "./lib/env";
+import SwipeableTabView from "./components/SwipeableTabView";
+import BusinessSwitcher from "./components/BusinessSwitcher";
+import AddBusinessScreen from "./screens/AddBusinessScreen";
+import CreateOfferScreen from "./screens/CreateOfferScreen";
+import EditBusinessScreen from "./screens/EditBusinessScreen";
+import ReviewsScreen from "./screens/ReviewsScreen";
+import BusinessReviewsScreen from "./screens/BusinessReviewsScreen";
+import EmptyBusinessState from "./components/EmptyBusinessState";
+import {
+  ActiveBusinessProvider,
+  useActiveBusiness,
+} from "./context/ActiveBusinessContext";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 const DEVICE_FONT_SCALE = Math.max(Number(PixelRatio.getFontScale()) || 1, 1);
@@ -87,6 +113,15 @@ const FONT_SCALING_LOCK_PROPS = {
 };
 
 const FONT_SCALING_LOCK_COMPONENTS = new Set();
+const EMPTY_BUSINESS_STRIPE_STATUS = {
+  businessId: null,
+  loading: false,
+  stripeAccountId: null,
+  onboardingComplete: false,
+  hasPaymentMethod: false,
+  stripeOnboarded: false,
+  stripeGated: false,
+};
 
 const lockFontScaling = (Component) => {
   if (!Component) return;
@@ -434,6 +469,7 @@ const APP_SCHEME = Array.isArray(APP_SCHEME_RAW)
 const AUTH_CALLBACK_PATH = "auth/callback";
 const DEV_CLIENT_SCHEME = `exp+${APP_SCHEME}`;
 const GOOGLE_AUTH_REDIRECT_URL = `${APP_SCHEME}://${AUTH_CALLBACK_PATH}`;
+const STRIPE_BILLING_PORTAL_APP_RETURN_URL = `${GOOGLE_AUTH_REDIRECT_URL}?flow=stripe_return`;
 const STRIPE_CONNECT_RETURN_URL = "https://www.wellopartners.com/stripe/return";
 const STRIPE_CONNECT_REFRESH_URL =
   "https://www.wellopartners.com/stripe/refresh";
@@ -991,8 +1027,8 @@ const BUSINESSES = [
   {
     id: "1",
     name: "Sunrise Cafe",
-    category: "Cafe and Bakery",
-    categoryKey: "cafe",
+    category: "Food",
+    categoryKey: "food",
     offer: "Buy 1 latte, get a croissant",
     qrCode: "WELLO-1-9FQ7K2A1",
     distance: "0.6 mi",
@@ -1011,8 +1047,8 @@ const BUSINESSES = [
   {
     id: "2",
     name: "Harbor Fitness",
-    category: "Activities & Entertainment",
-    categoryKey: "activity",
+    category: "Trades",
+    categoryKey: "trades",
     offer: "First month 30% off",
     qrCode: "WELLO-2-L4M8Z0T7",
     distance: "1.1 mi",
@@ -1031,7 +1067,7 @@ const BUSINESSES = [
   {
     id: "3",
     name: "Cedar Auto Spa",
-    category: "Autocare",
+    category: "Auto",
     categoryKey: "auto",
     offer: "Deluxe wash w/ ceramic coat",
     qrCode: "WELLO-3-7P2X5N9C",
@@ -1051,8 +1087,8 @@ const BUSINESSES = [
   {
     id: "4",
     name: "Luna Nail Studio",
-    category: "Barbershop / Salon",
-    categoryKey: "barbersalon",
+    category: "Beauty",
+    categoryKey: "beauty",
     offer: "Free gloss with any set",
     qrCode: "WELLO-4-K3T8Q1B6",
     distance: "1.4 mi",
@@ -1071,8 +1107,8 @@ const BUSINESSES = [
   {
     id: "5",
     name: "Rivertown Cafe & Bar",
-    category: "Drink places",
-    categoryKey: "drink",
+    category: "Food",
+    categoryKey: "food",
     offer: "Evening cocktail flight $18",
     qrCode: "WELLO-5-M9R2V7D4",
     distance: "0.5 mi",
@@ -1091,7 +1127,7 @@ const BUSINESSES = [
   {
     id: "6",
     name: "Steel & Stone Auto Detail",
-    category: "Autocare",
+    category: "Auto",
     categoryKey: "auto",
     offer: "Bundle any 2 services",
     qrCode: "WELLO-6-J5C1Y8W3",
@@ -1111,8 +1147,8 @@ const BUSINESSES = [
   {
     id: "7",
     name: "Harbor Barbers",
-    category: "Barbershop",
-    categoryKey: "barber",
+    category: "Beauty",
+    categoryKey: "beauty",
     offer: "Free line-up with any cut",
     qrCode: "WELLO-7-H2N6F9S4",
     distance: "1.0 mi",
@@ -1131,8 +1167,8 @@ const BUSINESSES = [
   {
     id: "8",
     name: "Riverfront Grill",
-    category: "Restaurant",
-    categoryKey: "restaurant",
+    category: "Food",
+    categoryKey: "food",
     offer: "Lunch special $14",
     qrCode: "WELLO-8-Q4B7U1X9",
     distance: "0.8 mi",
@@ -1207,7 +1243,9 @@ const createDemoCoordinate = (index = 0) => {
 };
 
 const mapSupabaseBusiness = (row, index) => {
-  const categoryKey = row.category_key || "restaurant";
+  const categoryKey = normalizeBusinessCategoryKey(
+    row.category_key || row.category_label,
+  );
   const categoryConfig = getCategoryConfig(categoryKey);
   const offerHighlight =
     typeof row.offer_highlight === "string" ? row.offer_highlight.trim() : "";
@@ -1229,7 +1267,8 @@ const mapSupabaseBusiness = (row, index) => {
     ownerId: row.owner_id || null,
     name: row.name || "Wello business",
     address: row.address || "",
-    category: row.category_label || categoryConfig.display,
+    category: categoryConfig.display,
+    categoryLabel: categoryConfig.display,
     categoryKey,
     offer: offerHighlight,
     distance: "--",
@@ -1244,6 +1283,8 @@ const mapSupabaseBusiness = (row, index) => {
     city: row.city || "",
     state: row.state || "",
     postalCode: row.postal_code || "",
+    imageUrl: String(row.image_url || "").trim() || "",
+    coverImageUrl: String(row.image_url || "").trim() || "",
     createdAt: row.created_at ? new Date(row.created_at).getTime() : daysAgo(5),
     coordinate: USE_FAKE_LOCATION
       ? demoCoordinate
@@ -1266,6 +1307,16 @@ const mapSupabaseBusiness = (row, index) => {
     stripeOnboardedAt: row.stripe_onboarded_at
       ? new Date(row.stripe_onboarded_at).getTime()
       : null,
+    stripeOnboarded:
+      row.stripe_onboarded ??
+      Boolean(row.stripe_account_id && row.stripe_charges_enabled),
+    stripeGated:
+      row.stripe_gated ??
+      Boolean(
+        (row.stripe_onboarded ??
+          Boolean(row.stripe_account_id && row.stripe_charges_enabled)) &&
+          row.stripe_payment_method_id,
+      ),
     commissionRateCents: normalizeBusinessCommissionRateCents(
       row.commission_rate_cents,
     ),
@@ -1278,13 +1329,63 @@ const mapSupabaseBusiness = (row, index) => {
   };
 };
 
+function ActiveBusinessBridge({
+  onBusinessesChange,
+  onActiveBusinessChange,
+  controlsRef,
+}) {
+  const {
+    activeBusiness,
+    businesses,
+    loading,
+    loaded,
+    error,
+    refreshBusinesses,
+    setActiveBusiness,
+  } = useActiveBusiness();
+
+  useEffect(() => {
+    onBusinessesChange?.({
+      businesses,
+      loading,
+      loaded,
+      error,
+    });
+  }, [businesses, error, loaded, loading, onBusinessesChange]);
+
+  useEffect(() => {
+    onActiveBusinessChange?.(activeBusiness);
+  }, [activeBusiness, onActiveBusinessChange]);
+
+  useEffect(() => {
+    if (!controlsRef) return undefined;
+    controlsRef.current = {
+      refreshBusinesses,
+      setActiveBusiness,
+      selectBusinessById: (businessId) => {
+        const match = businesses.find((entry) => entry.id === businessId);
+        if (match) {
+          setActiveBusiness(match);
+        }
+      },
+    };
+    return () => {
+      if (controlsRef.current) {
+        controlsRef.current = null;
+      }
+    };
+  }, [businesses, controlsRef, refreshBusinesses, setActiveBusiness]);
+
+  return null;
+}
+
 const mapSupabaseOffer = (row) => ({
   id: String(row.id),
   businessId: row.business_id,
   title: row.title || "",
-  description: row.description || "",
-  offerType: row.offer_type || "",
-  imageUrl: row.image_url || "",
+  description: "",
+  offerType: "cashback",
+  imageUrl: "",
   active: row.active ?? true,
   status: row.status || "active",
   startsAt: row.starts_at ? new Date(row.starts_at).getTime() : null,
@@ -1389,8 +1490,8 @@ const SCREENSHOT_MOCK_BUSINESSES = [
     ...BUSINESSES[0],
     id: "ss-1",
     name: "Corner Matcha",
-    category: "Cafe",
-    categoryKey: "cafe",
+    category: "Food",
+    categoryKey: "food",
     offer: "BOGO matcha latte",
     distance: "0.4 mi",
     rating: 4.9,
@@ -1412,8 +1513,8 @@ const SCREENSHOT_MOCK_BUSINESSES = [
     ...BUSINESSES[7],
     id: "ss-2",
     name: "North Table",
-    category: "Restaurant",
-    categoryKey: "restaurant",
+    category: "Food",
+    categoryKey: "food",
     offer: "Free appetizer with 2 entrees",
     distance: "0.7 mi",
     rating: 4.8,
@@ -1435,7 +1536,7 @@ const SCREENSHOT_MOCK_BUSINESSES = [
     ...BUSINESSES[2],
     id: "ss-3",
     name: "Metro Lube Express",
-    category: "Oil Change",
+    category: "Auto",
     categoryKey: "auto",
     offer: "Full synthetic oil change for $39",
     distance: "0.9 mi",
@@ -1459,7 +1560,7 @@ const SCREENSHOT_MOCK_BUSINESSES = [
     id: "ss-4",
     name: "Luna Gloss Bar",
     category: "Beauty",
-    categoryKey: "barbersalon",
+    categoryKey: "beauty",
     offer: "Free gloss with any set",
     distance: "1.2 mi",
     rating: 4.9,
@@ -1560,8 +1661,8 @@ const SCREENSHOT_MOCK_REDEMPTIONS = [
     business: {
       id: "ss-1",
       name: "Corner Matcha",
-      category_key: "cafe",
-      category_label: "Cafe",
+      category_key: "food",
+      category_label: "Food",
     },
     purchaseVerification: {
       id: "ss-pv-1",
@@ -1602,8 +1703,8 @@ const SCREENSHOT_MOCK_REDEMPTIONS = [
     business: {
       id: "ss-2",
       name: "North Table",
-      category_key: "restaurant",
-      category_label: "Restaurant",
+      category_key: "food",
+      category_label: "Food",
     },
     purchaseVerification: {
       id: "ss-pv-2",
@@ -1645,7 +1746,7 @@ const SCREENSHOT_MOCK_REDEMPTIONS = [
       id: "ss-3",
       name: "Metro Lube Express",
       category_key: "auto",
-      category_label: "Oil Change",
+      category_label: "Auto",
     },
     purchaseVerification: {
       id: "ss-pv-3",
@@ -2253,6 +2354,23 @@ const parseBusinessHours = (value) => {
     endTime: end.time,
     endMeridiem: end.meridiem,
   };
+};
+
+const summarizeBusinessHoursValue = (value) => {
+  const parsed = parseBusinessHours(value);
+  if (parsed) {
+    const timeRange = formatBusinessHours(
+      parsed.startTime,
+      parsed.startMeridiem,
+      parsed.endTime,
+      parsed.endMeridiem,
+    );
+    return parsed.days ? `${parsed.days}: ${timeRange}` : timeRange;
+  }
+  const raw = String(value || "").trim();
+  if (!raw) return "Hours vary";
+  if (raw.includes("{") || raw.includes("[")) return "Hours vary";
+  return raw;
 };
 
 const levenshteinDistance = (value, target) => {
@@ -3995,60 +4113,89 @@ const DISCOVER_RADIUS_OPTIONS = [
   { key: "50mi", label: "50 mi", miles: 50 },
   { key: "100mi", label: "100 mi", miles: 100 },
 ];
+const DISCOVER_HOME_TABS = [
+  { key: "all", label: "All" },
+  { key: "food", label: "Food" },
+  { key: "trades", label: "Trades" },
+  { key: "auto", label: "Auto" },
+  { key: "gas", label: "Gas" },
+  { key: "beauty", label: "Beauty" },
+];
 
-const CATEGORY_OPTIONS = [
-  { key: "cafe", label: "Cafes" },
-  { key: "drink", label: "Drinks" },
-  { key: "restaurant", label: "Restaurants/Food" },
-  { key: "barbersalon", label: "Barbershops/Salons" },
-  { key: "activity", label: "Activities/Entertainment" },
-  { key: "auto", label: "Autocare" },
+const CATEGORY_OPTIONS = DISCOVER_HOME_TABS.filter((tab) => tab.key !== "all").map(
+  ({ key, label }) => ({ key, label }),
+);
+const DEFAULT_BUSINESS_CATEGORY_KEY = CATEGORY_OPTIONS[0]?.key || "food";
+const SWIPEABLE_DRAWER_TAB_ORDER = [
+  "discover",
+  "history",
+  "cashout",
+  "business",
+  "admin",
+  "profile",
 ];
 const CATEGORY_OTHER_KEY = "other";
-const CATEGORY_OPTIONS_WITH_OTHER = [
-  ...CATEGORY_OPTIONS,
-  { key: CATEGORY_OTHER_KEY, label: "Other" },
-];
+const CATEGORY_OPTIONS_WITH_OTHER = [...CATEGORY_OPTIONS];
 const KNOWN_CATEGORY_KEY_SET = new Set(
   CATEGORY_OPTIONS.map((item) => item.key),
 );
 
+const LEGACY_TO_DISCOVER_CATEGORY_KEY_MAP = {
+  cafe: "food",
+  drink: "food",
+  restaurant: "food",
+  food: "food",
+  barbersalon: "beauty",
+  barber: "beauty",
+  salon: "beauty",
+  beauty: "beauty",
+  activity: "trades",
+  electric: "trades",
+  plumbing: "trades",
+  hvac: "trades",
+  towing: "trades",
+  appliancerepair: "trades",
+  lawncare: "trades",
+  auto: "auto",
+  autocare: "auto",
+  mechanic: "auto",
+  mobilemechanic: "auto",
+  tiresrims: "auto",
+  bodyshop: "auto",
+  oilchange: "auto",
+  gas: "gas",
+};
+
 const CATEGORY_CONFIG = {
-  cafe: {
-    label: "CA",
-    color: "#C45B3C",
-    display: "Cafe",
-    icon: "cafe",
-  },
-  drink: {
-    label: "DR",
-    color: "#3F6DF6",
-    display: "Drinks",
-    icon: "water",
-  },
-  restaurant: {
+  food: {
     label: "FO",
     color: "#B33E2A",
-    display: "Restaurant / Food",
+    display: "Food",
     icon: "restaurant",
-  },
-  barbersalon: {
-    label: "BA",
-    color: "#0F172A",
-    display: "Barbershop / Salon",
-    icon: "cut",
-  },
-  activity: {
-    label: "AC",
-    color: "#9A4FFF",
-    display: "Activities / Entertainment",
-    icon: "play-circle",
   },
   auto: {
     label: "AU",
     color: "#1E3A8A",
-    display: "Autocare",
+    display: "Auto",
     icon: "car",
+  },
+  trades: {
+    label: "TR",
+    color: "#F59E0B",
+    display: "Trades",
+    icon: "construct",
+  },
+  gas: {
+    label: "GA",
+    color: "#0EA5E9",
+    display: "Gas",
+    icon: "water",
+  },
+  beauty: {
+    label: "BE",
+    color: "#7C3AED",
+    display: "Beauty",
+    icon: "cut",
   },
   default: {
     label: "LO",
@@ -4058,29 +4205,45 @@ const CATEGORY_CONFIG = {
   },
 };
 
-const NON_TRADE_CATEGORY_KEYS = new Set([
-  "activity",
-  "restaurant",
-  "drink",
-  "cafe",
-]);
+const NON_TRADE_CATEGORY_KEYS = new Set(["food", "gas", "beauty"]);
 const NON_TRADE_CATEGORY_TERMS = new Set([
-  "activity",
-  "activities",
-  "activities-entertainment",
-  "entertainment",
+  "food",
   "restaurant",
   "restaurants",
   "restaurant-food",
-  "food",
   "drinks",
   "drink",
   "cafe",
   "cafes",
+  "gas",
+  "beauty",
+  "barbersalon",
+  "barber",
+  "salon",
 ]);
 
+const CREATE_BUSINESS_SENTINEL_ID = "__create_business__";
+
+function normalizeBusinessCategoryKey(categoryKey) {
+  const normalized = String(categoryKey || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+  if (!normalized) return DEFAULT_BUSINESS_CATEGORY_KEY;
+  return (
+    LEGACY_TO_DISCOVER_CATEGORY_KEY_MAP[normalized] ||
+    (KNOWN_CATEGORY_KEY_SET.has(normalized)
+      ? normalized
+      : DEFAULT_BUSINESS_CATEGORY_KEY)
+  );
+}
+
 function getCategoryConfig(categoryKey) {
-  return CATEGORY_CONFIG[categoryKey] || CATEGORY_CONFIG.default;
+  return CATEGORY_CONFIG[normalizeBusinessCategoryKey(categoryKey)] || CATEGORY_CONFIG.default;
+}
+
+function getDiscoverHomeCategoryLabel(categoryKey) {
+  return getCategoryConfig(categoryKey).display;
 }
 
 function isTradeCategoryValue(value) {
@@ -4144,7 +4307,7 @@ const resolveDisplayedBusinessDefaultCashbackRateBps = (subject) => {
 };
 
 function isKnownCategoryKey(categoryKey) {
-  return KNOWN_CATEGORY_KEY_SET.has(String(categoryKey || "").trim());
+  return KNOWN_CATEGORY_KEY_SET.has(normalizeBusinessCategoryKey(categoryKey));
 }
 
 function getCategoryPickerLabel(categoryKey, customLabel = "") {
@@ -4181,7 +4344,7 @@ function resolveSelectedCategory(categoryKey, customLabel = "") {
     };
   }
 
-  const resolvedKey = isKnownCategoryKey(key) ? key : "restaurant";
+  const resolvedKey = normalizeBusinessCategoryKey(key);
   return {
     ok: true,
     categoryKey: resolvedKey,
@@ -4543,6 +4706,57 @@ const uploadReceiptImage = async (image, businessId, redemptionId) => {
   }
 };
 
+const uploadBusinessImage = async (image, businessId) => {
+  if (!image?.uri && !image?.base64) return { url: null, error: null };
+  const safeBusinessId = String(businessId || "business").replace(
+    /[^a-zA-Z0-9-]/g,
+    "",
+  );
+  const uri = image.uri || "";
+  const rawName = image.fileName || uri.split("/").pop() || "business-cover.jpg";
+  const cleanedName = rawName.split("?")[0];
+  const extension = cleanedName.split(".").pop()?.toLowerCase() || "jpg";
+  const fileName = `business-cover-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+  const filePath = `business-covers/${safeBusinessId}/${fileName}`;
+
+  try {
+    const contentType =
+      image.mimeType ||
+      (extension === "jpg" || extension === "jpeg"
+        ? "image/jpeg"
+        : `image/${extension}`);
+    const base64 =
+      image.base64 ||
+      (uri
+        ? await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          })
+        : "");
+    if (!base64) {
+      return { url: null, error: "Unable to read image data." };
+    }
+    const normalizedBase64 = base64.includes(",")
+      ? base64.split(",")[1]
+      : base64;
+    const data = toByteArray(normalizedBase64);
+    const { error } = await supabase.storage
+      .from(OFFER_IMAGE_BUCKET)
+      .upload(filePath, data, {
+        contentType,
+        upsert: false,
+      });
+    if (error) {
+      return { url: null, error: error.message || "Upload failed." };
+    }
+    const { data: publicData } = supabase.storage
+      .from(OFFER_IMAGE_BUCKET)
+      .getPublicUrl(filePath);
+    return { url: publicData?.publicUrl || null, error: null };
+  } catch (error) {
+    return { url: null, error: error?.message || "Upload failed." };
+  }
+};
+
 const computeReceiptImageHash = async (base64Value) => {
   const normalizedBase64 = String(base64Value || "")
     .trim()
@@ -4568,6 +4782,96 @@ const computeReceiptImageHash = async (base64Value) => {
     hash = Math.imul(hash, 16777619);
   }
   return `fnv1a_${(hash >>> 0).toString(16).padStart(8, "0")}_${bytes.length}`;
+};
+
+const DiscoverSearchScreenContent = ({
+  closeDiscoverSearch,
+  query,
+  setQuery,
+  discoverSearchResults,
+  handleSearchResultPress,
+  discoverSearchInputRef,
+}) => {
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={[styles.searchScreenSafe, { paddingTop: insets.top }]}>
+      <View style={styles.searchScreenHeader}>
+        <TouchableOpacity
+          style={styles.searchScreenClose}
+          onPress={closeDiscoverSearch}
+          activeOpacity={0.88}
+          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+        >
+          <Ionicons name="close" size={28} color="#445064" />
+        </TouchableOpacity>
+        <TextInput
+          ref={discoverSearchInputRef}
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search businesses..."
+          placeholderTextColor="#8893A7"
+          style={styles.searchScreenInput}
+          selectionColor="#2F63F1"
+          autoCorrect={false}
+          autoCapitalize="none"
+          returnKeyType="search"
+          showSoftInputOnFocus
+        />
+      </View>
+      <View style={styles.searchScreenDivider} />
+      {discoverSearchResults.length ? (
+        <ScrollView
+          style={styles.searchScreenResults}
+          contentContainerStyle={styles.searchScreenResultsContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="always"
+        >
+          {discoverSearchResults.map((business) => (
+            <TouchableOpacity
+              key={business.id}
+              style={styles.searchResultCard}
+              onPress={() => handleSearchResultPress(business)}
+              activeOpacity={0.9}
+            >
+              {business.previewImageUrl ? (
+                <Image
+                  source={{ uri: business.previewImageUrl }}
+                  style={styles.searchResultImage}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={styles.searchResultImageFallback}>
+                  <Ionicons
+                    name="image-outline"
+                    size={18}
+                    color="#9AA5B8"
+                  />
+                </View>
+              )}
+              <View style={styles.searchResultCopy}>
+                <Text style={styles.searchResultTitle} numberOfLines={1}>
+                  {business.name || "Business"}
+                </Text>
+                <Text style={styles.searchResultMeta} numberOfLines={1}>
+                  {business.distanceLabel || "Nearby"} {"\u00b7"}{" "}
+                  {business.categoryLabel}
+                </Text>
+              </View>
+              <Ionicons
+                name="chevron-forward"
+                size={18}
+                color="#9AA5B8"
+              />
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      ) : (
+        <View style={styles.searchScreenEmptyWrap}>
+          <Text style={styles.searchScreenEmptyText}>No businesses found.</Text>
+        </View>
+      )}
+    </View>
+  );
 };
 
 const createReceiptSignedUrl = async (path) => {
@@ -4770,17 +5074,32 @@ const insertReceiptUploadRecord = async ({
   }
 };
 
-const getOfferImagePath = (url) => {
+const getStoragePublicPath = (url, bucket) => {
   if (!url) return null;
-  const token = `/storage/v1/object/public/${OFFER_IMAGE_BUCKET}/`;
+  const token = `/storage/v1/object/public/${bucket}/`;
   const index = url.indexOf(token);
   if (index === -1) return null;
   return url.slice(index + token.length).split("?")[0];
 };
 
+const getOfferImagePath = (url) => getStoragePublicPath(url, OFFER_IMAGE_BUCKET);
+
 const removeOfferImageByUrl = async (url) => {
   if (!url || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
   const path = getOfferImagePath(url);
+  if (!path) return null;
+  const { error } = await supabase.storage
+    .from(OFFER_IMAGE_BUCKET)
+    .remove([path]);
+  return error?.message || null;
+};
+
+const getBusinessImagePath = (url) =>
+  getStoragePublicPath(url, OFFER_IMAGE_BUCKET);
+
+const removeBusinessImageByUrl = async (url) => {
+  if (!url || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  const path = getBusinessImagePath(url);
   if (!path) return null;
   const { error } = await supabase.storage
     .from(OFFER_IMAGE_BUCKET)
@@ -4941,6 +5260,33 @@ function formatDistanceMetersLabel(meters) {
   return formatDistanceMilesLabel(miles);
 }
 
+function resolveBusinessCoordinateForDistance(business) {
+  if (!business || business.hasCoordinates === false) return null;
+  const latitude = Number(
+    business.coordinate?.latitude ?? business.latitude ?? business.lat,
+  );
+  const longitude = Number(
+    business.coordinate?.longitude ?? business.longitude ?? business.lng,
+  );
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return null;
+  }
+  if (latitude === 0 && longitude === 0) return null;
+  if (business.fallbackCoordinate) {
+    const deltaLat = Math.abs(latitude - business.fallbackCoordinate.latitude);
+    const deltaLng = Math.abs(longitude - business.fallbackCoordinate.longitude);
+    if (deltaLat < 0.0001 && deltaLng < 0.0001) return null;
+  }
+  if (business.address) {
+    const deltaLatDefault = Math.abs(latitude - MAP_REGION.latitude);
+    const deltaLngDefault = Math.abs(longitude - MAP_REGION.longitude);
+    if (deltaLatDefault < 0.001 && deltaLngDefault < 0.001) {
+      return null;
+    }
+  }
+  return { latitude, longitude };
+}
+
 function parseTimestampMs(value) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const ms = new Date(value || "").getTime();
@@ -4971,9 +5317,16 @@ const readAnimatedValueNow = async (animatedValue, fallback = 0) => {
   }
 };
 
-function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
+function OfferCard({ item, onPress, selected }) {
   const category = getCategoryConfig(item.categoryKey);
-  const offerTitle = String(item?.offerTitle || item?.offer || "Offer").trim();
+  const discoverCategoryLabel = getDiscoverHomeCategoryLabel(
+    item?.categoryKey || item?.business?.categoryKey,
+  );
+  const cashbackRateBps = resolveDisplayedBusinessDefaultCashbackRateBps(
+    item?.business || item,
+  );
+  const cashbackLabel =
+    formatPercentOnlyLabel(cashbackRateBps / 100) || null;
   const businessName = String(item?.name || item?.business?.name || "Business").trim();
   const ratingNumeric = Number(item?.rating);
   const ratingLabel =
@@ -5004,14 +5357,13 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
   const statusText = hoursStatus.statusText;
   const statusVariant = hoursStatus.statusVariant;
   const closedOverlayText = hoursStatus.closedOverlayText;
-  const isTradeOffer = isTradeBusinessLike(item?.business);
-  const cashbackLabel = `${formatPercentLabel(
-    resolveDisplayedBusinessDefaultCashbackRateBps(item?.business) / 100,
-  )}%`;
   return (
     <View style={styles.cardShell}>
       <TouchableOpacity
-        style={styles.liveEditorialStackCard}
+        style={[
+          styles.liveEditorialStackCard,
+          selected && styles.liveEditorialStackCardSelected,
+        ]}
         onPress={onPress}
         activeOpacity={0.85}
       >
@@ -5071,18 +5423,12 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
                 numberOfLines={1}
                 ellipsizeMode="tail"
               >
-                {category.display}
+                {discoverCategoryLabel || category.display}
               </Text>
             </View>
           </View>
           <View style={styles.liveEditorialStackHeadlineWrap}>
             <Text style={styles.liveEditorialStackName} numberOfLines={1}>
-              {offerTitle}
-            </Text>
-            <Text
-              style={styles.liveEditorialStackBusinessName}
-              numberOfLines={1}
-            >
               {businessName}
             </Text>
             <View style={styles.liveEditorialStackHeadlineMetaRow}>
@@ -5100,37 +5446,14 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
                 {ratingLabel}
               </Text>
             </View>
+            {cashbackLabel ? (
+              <View style={styles.liveEditorialStackBusinessCashbackPill}>
+                <Text style={styles.liveEditorialStackBusinessCashbackText}>
+                  {cashbackLabel} cashback
+                </Text>
+              </View>
+            ) : null}
           </View>
-        </View>
-        <View style={styles.liveEditorialStackPanel}>
-          <TouchableOpacity
-            style={styles.liveEditorialStackCashbackPill}
-            activeOpacity={0.88}
-            onPress={onRedeem}
-            disabled={!isOpen}
-          >
-            <View style={styles.liveEditorialStackCashbackContent}>
-              <View style={styles.liveEditorialStackCashbackIconWrap}>
-                <Text style={styles.liveEditorialStackCashbackPercentIcon}>%</Text>
-              </View>
-              <View style={styles.liveEditorialStackCashbackCopy}>
-                <Text style={styles.liveEditorialStackCashbackText}>
-                  {cashbackLabel} Cashback
-                </Text>
-                {isTradeOffer ? (
-                  <Text style={styles.liveEditorialStackCashbackCapText}>
-                    Up to {TRADES_RECEIPT_CAP_COPY} back
-                  </Text>
-                ) : null}
-                <Text style={styles.liveEditorialStackCashbackSubtext}>
-                  {isOpen ? "Tap to redeem" : "Closed now"}
-                </Text>
-              </View>
-            </View>
-            <View style={styles.liveEditorialStackCashbackArrow}>
-              <Ionicons name="arrow-forward" size={22} color="#059669" />
-            </View>
-          </TouchableOpacity>
         </View>
       </TouchableOpacity>
     </View>
@@ -5140,17 +5463,24 @@ function OfferCard({ item, onPress, onRedeem, selected, cashbackRatePercent }) {
 export default function App() {
   const uiTopInset =
     Platform.OS === "ios"
-      ? (Constants.statusBarHeight || 0) + (IS_COMPACT ? 8 : 12)
+      ? Math.max(Constants.statusBarHeight || 0, 44) + (IS_COMPACT ? 6 : 10)
       : SAFE_TOP;
+  const topChromeOffset =
+    Platform.OS === "ios" ? uiTopInset + 14 : uiTopInset + 6;
   const modalTopInset =
-    Platform.OS === "ios" ? Math.max(Constants.statusBarHeight || 0, 20) : 0;
+    Platform.OS === "ios"
+      ? Math.max(Constants.statusBarHeight || 0, 44)
+      : 0;
   const mapRef = useRef(null);
   const mapReadyRef = useRef(false);
   const pendingMapRegionRef = useRef(null);
   const cardListRef = useRef(null);
   const sheetScrollRef = useRef(null);
+  const sheetPanRef = useRef(null);
   const bottomSheetRef = useRef(null);
   const sheetIndexRef = useRef(0);
+  const businessDetailReturnSheetIndexRef = useRef(0);
+  const sheetDragStartYRef = useRef(0);
   const pendingMapCollapseClearRef = useRef(false);
   const discoverScrollDebugRef = useRef({
     sessionId: `${Date.now().toString(36)}-${Math.random()
@@ -5174,13 +5504,141 @@ export default function App() {
     blockProbeTimer: null,
   });
   const isMountedRef = useRef(true);
+  const discoverSearchInputRef = useRef(null);
   const [query, setQuery] = useState("");
   const [discoverSearchFocused, setDiscoverSearchFocused] = useState(false);
   const [demoQuery, setDemoQuery] = useState("");
   const [demoSearchFocused, setDemoSearchFocused] = useState(false);
   const [activeTab, setActiveTab] = useState("discover");
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [discoverSheetIndex, setDiscoverSheetIndex] = useState(0);
+  const [discoverSheetExpanded, setDiscoverSheetExpanded] = useState(false);
+  const [discoverSearchOpen, setDiscoverSearchOpen] = useState(false);
+  const [ownerBusinessScreen, setOwnerBusinessScreen] = useState("dashboard");
   const [navRowWidth, setNavRowWidth] = useState(0);
   const activeTabRef = useRef("discover");
+  const lastBackPressAtRef = useRef(0);
+  const pendingTabSwitchSheetIndexRef = useRef(null);
+  const drawerPanelWidth = Math.min(SCREEN_WIDTH * 0.82, 340);
+  const drawerTranslateX = useSharedValue(-drawerPanelWidth);
+  const drawerOverlayOpacity = useSharedValue(0);
+  const discoverSheetMetrics = useMemo(() => {
+    const closedVisibleHeight = Math.max(
+      Math.round(SCREEN_HEIGHT * (IS_SHORT ? 0.21 : 0.19)),
+      132,
+    );
+    const midVisibleHeight = Math.max(
+      Math.round(SCREEN_HEIGHT * (IS_SHORT ? 0.72 : 0.68)),
+      closedVisibleHeight + 180,
+    );
+    const fullVisibleHeight = Math.min(
+      SCREEN_HEIGHT,
+      Math.max(
+        SCREEN_HEIGHT - uiTopInset - 12,
+        midVisibleHeight + 120,
+      ),
+    );
+    const panelHeight = fullVisibleHeight;
+    const translateForIndex = [
+      panelHeight - closedVisibleHeight,
+      panelHeight - midVisibleHeight,
+      0,
+    ];
+    return {
+      closedVisibleHeight,
+      midVisibleHeight,
+      fullVisibleHeight,
+      panelHeight,
+      translateForIndex,
+      closedTranslateY: translateForIndex[0],
+    };
+  }, []);
+  const sheetTranslateY = useSharedValue(
+    discoverSheetMetrics.translateForIndex[0],
+  );
+  const drawerPanelAnimatedStyle = useAnimatedStyle(
+    () => ({
+      transform: [{ translateX: drawerTranslateX.value }],
+    }),
+    [drawerTranslateX],
+  );
+  const drawerBackdropAnimatedStyle = useAnimatedStyle(
+    () => ({
+      opacity: drawerOverlayOpacity.value,
+    }),
+    [drawerOverlayOpacity],
+  );
+  const sheetPanelAnimatedStyle = useAnimatedStyle(
+    () => ({
+      transform: [{ translateY: sheetTranslateY.value }],
+    }),
+    [sheetTranslateY],
+  );
+  const sheetBackdropAnimatedStyle = useAnimatedStyle(
+    () => {
+      return {
+        opacity:
+          activeTab === "discover"
+            ? interpolate(
+                sheetTranslateY.value,
+                [
+                  discoverSheetMetrics.translateForIndex[2],
+                  discoverSheetMetrics.translateForIndex[1],
+                  discoverSheetMetrics.translateForIndex[0],
+                ],
+                [0.4, 0, 0],
+                Extrapolation.CLAMP,
+              )
+            : 0,
+      };
+    },
+    [activeTab, discoverSheetMetrics.translateForIndex, sheetTranslateY],
+  );
+  const discoverMiniAnimatedStyle = useAnimatedStyle(
+    () => {
+      return {
+        height: interpolate(
+          sheetTranslateY.value,
+          [
+            discoverSheetMetrics.translateForIndex[2],
+            discoverSheetMetrics.translateForIndex[1],
+            discoverSheetMetrics.translateForIndex[0],
+          ],
+          [0, 0, 112],
+          Extrapolation.CLAMP,
+        ),
+        minHeight: 0,
+        opacity: interpolate(
+          sheetTranslateY.value,
+          [
+            discoverSheetMetrics.translateForIndex[2],
+            discoverSheetMetrics.translateForIndex[1],
+            discoverSheetMetrics.translateForIndex[0],
+          ],
+          [0, 0, 1],
+          Extrapolation.CLAMP,
+        ),
+      };
+    },
+    [discoverSheetMetrics.translateForIndex, sheetTranslateY],
+  );
+  const sheetMainContentAnimatedStyle = useAnimatedStyle(
+    () => {
+      return {
+        opacity: interpolate(
+          sheetTranslateY.value,
+          [
+            discoverSheetMetrics.translateForIndex[0],
+            discoverSheetMetrics.translateForIndex[1],
+            discoverSheetMetrics.translateForIndex[2],
+          ],
+          [0, 1, 1],
+          Extrapolation.CLAMP,
+        ),
+      };
+    },
+    [discoverSheetMetrics.translateForIndex, sheetTranslateY],
+  );
   const tabIndicatorIndex = useRef(new Animated.Value(0)).current;
   const launchOverlayOpacity = useRef(new Animated.Value(1)).current;
   const authHydrationUserIdRef = useRef(null);
@@ -5189,6 +5647,8 @@ export default function App() {
   const [discoverDemoLayout, setDiscoverDemoLayout] =
     useState("editorial_split");
   const [activeFilters, setActiveFilters] = useState([]);
+  const [discoverCategoryTab, setDiscoverCategoryTab] = useState("all");
+  const [discoverSortMode, setDiscoverSortMode] = useState("distance");
   const [discoverRadiusKey, setDiscoverRadiusKey] = useState("20mi");
   const [showFilters, setShowFilters] = useState(false);
   const [demoActiveFilters, setDemoActiveFilters] = useState([]);
@@ -5252,7 +5712,7 @@ export default function App() {
   ] = useState(false);
   const [businessOwnerName, setBusinessOwnerName] = useState("");
   const [businessName, setBusinessName] = useState("");
-  const [businessCategoryKey, setBusinessCategoryKey] = useState("restaurant");
+const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const [businessCategoryCustomLabel, setBusinessCategoryCustomLabel] =
     useState("");
   const [businessCategoryMenuOpen, setBusinessCategoryMenuOpen] =
@@ -5512,6 +5972,13 @@ export default function App() {
   });
   const [userReviews, setUserReviews] = useState([]);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [ownerReviewsStatus, setOwnerReviewsStatus] = useState({
+    loading: false,
+    error: null,
+  });
+  const [ownerReviewGroups, setOwnerReviewGroups] = useState([]);
+  const [selectedBusinessReviewsGroup, setSelectedBusinessReviewsGroup] =
+    useState(null);
   const [receiptsModalOpen, setReceiptsModalOpen] = useState(false);
   const [tradeReceiptReviewOpen, setTradeReceiptReviewOpen] = useState(false);
   const [expandedReceiptOffers, setExpandedReceiptOffers] = useState({});
@@ -5605,6 +6072,21 @@ export default function App() {
     success: null,
   });
   const [ownerBusinessId, setOwnerBusinessId] = useState(defaultOwnerId);
+  const [memberBusinesses, setMemberBusinesses] = useState([]);
+  const [memberBusinessesLoaded, setMemberBusinessesLoaded] = useState(false);
+  const [memberBusinessesLoading, setMemberBusinessesLoading] = useState(false);
+  const [memberBusinessesError, setMemberBusinessesError] = useState(null);
+  const [activeMemberBusiness, setActiveMemberBusiness] = useState(null);
+  const [preferredManagedBusinessId, setPreferredManagedBusinessId] =
+    useState(null);
+  const [createBusinessPageOpen, setCreateBusinessPageOpen] = useState(false);
+  const [createOfferPageOpen, setCreateOfferPageOpen] = useState(false);
+  const [editBusinessPageOpen, setEditBusinessPageOpen] = useState(false);
+  const [reviewsPageOpen, setReviewsPageOpen] = useState(false);
+  const [businessReviewsPageOpen, setBusinessReviewsPageOpen] = useState(false);
+  const activeBusinessControlsRef = useRef(null);
+  const pendingMerchantOnboardingUserIdRef = useRef(null);
+  const addBusinessReturnBusinessIdRef = useRef(null);
   const [androidMarkerIcons, setAndroidMarkerIcons] = useState(null);
   const [formData, setFormData] = useState({
     name: "",
@@ -5614,12 +6096,13 @@ export default function App() {
     city: "",
     state: "",
     postalCode: "",
-    categoryKey: "restaurant",
+    categoryKey: DEFAULT_BUSINESS_CATEGORY_KEY,
     offer: "",
     hours: "",
     tags: "",
     merchantDescriptorAliases: "",
     isOpen: true,
+    imageUrl: "",
   });
   const [createBusinessForm, setCreateBusinessForm] = useState({
     name: "",
@@ -5628,12 +6111,28 @@ export default function App() {
     city: "",
     state: "",
     postalCode: "",
-    categoryKey: "restaurant",
+    categoryKey: DEFAULT_BUSINESS_CATEGORY_KEY,
     categoryCustomLabel: "",
     offer: "",
     phone: "",
     tags: "",
     merchantDescriptorAliases: "",
+    imageUrl: "",
+  });
+  const [editBusinessImage, setEditBusinessImage] = useState(null);
+  const [editBusinessImageStatus, setEditBusinessImageStatus] = useState({
+    uploading: false,
+    error: null,
+  });
+  const [createBusinessImage, setCreateBusinessImage] = useState(null);
+  const [createBusinessImageStatus, setCreateBusinessImageStatus] = useState({
+    uploading: false,
+    error: null,
+  });
+  const [businessSignUpImage, setBusinessSignUpImage] = useState(null);
+  const [businessSignUpImageStatus, setBusinessSignUpImageStatus] = useState({
+    uploading: false,
+    error: null,
   });
   const [createBusinessCategoryMenuOpen, setCreateBusinessCategoryMenuOpen] =
     useState(false);
@@ -5672,9 +6171,6 @@ export default function App() {
   const createAddressSelectionRef = useRef(false);
   const [offerForm, setOfferForm] = useState({
     title: "",
-    description: "",
-    typePreset: "Discount",
-    typeCustom: "",
     startsDate: "",
     startsTime: "",
     expiresDate: "",
@@ -5712,10 +6208,6 @@ export default function App() {
   const [editOfferDraft, setEditOfferDraft] = useState({
     id: null,
     title: "",
-    description: "",
-    typePreset: "Discount",
-    typeCustom: "",
-    imageUrl: "",
   });
   const [editOfferTypeMenuOpen, setEditOfferTypeMenuOpen] = useState(false);
   const [editOfferImage, setEditOfferImage] = useState(null);
@@ -5774,11 +6266,15 @@ export default function App() {
     loading: false,
     error: null,
   });
+  const [activeBusinessStripeStatus, setActiveBusinessStripeStatus] = useState(
+    EMPTY_BUSINESS_STRIPE_STATUS,
+  );
   const [stripeActionStatus, setStripeActionStatus] = useState({
     loading: false,
     error: null,
     success: null,
   });
+  const [ownerOfferActionErrors, setOwnerOfferActionErrors] = useState({});
   const [cashoutStatus, setCashoutStatus] = useState({
     connected: false,
     bankSelected: false,
@@ -6519,11 +7015,10 @@ export default function App() {
   // Use percentage snap points to keep behavior consistent across iOS/Android
   // and avoid device-specific pixel rounding jitter.
   const sheetSnapPoints = useMemo(() => {
-    // Slightly taller collapsed state on short screens so the handle/search
-    // does not feel cramped.
-    const min = IS_SHORT ? "24%" : "22%";
+    const min = IS_SHORT ? "16%" : "14%";
+    const mid = IS_SHORT ? "52%" : "48%";
     const max = "78%";
-    return [min, max];
+    return [min, mid, max];
   }, []);
   const logDiscoverGestureDebug = useCallback(
     (eventName, payload = {}) => {
@@ -6779,6 +7274,8 @@ export default function App() {
     (index) => {
       const nextIndex = Number.isFinite(index) ? index : 0;
       sheetIndexRef.current = nextIndex;
+      setDiscoverSheetIndex(nextIndex);
+      setDiscoverSheetExpanded(nextIndex > 0);
       if (nextIndex === 0 && pendingMapCollapseClearRef.current) {
         pendingMapCollapseClearRef.current = false;
         setMarkerFocusedBusinessId(null);
@@ -6802,11 +7299,129 @@ export default function App() {
     },
     [logDiscoverGestureDebug],
   );
-  const expandSheetForSearch = useCallback(() => {
-    if (sheetIndexRef.current === 1) return;
+  const applySheetIndexChange = useCallback(
+    (nextIndex) => {
+      handleSheetChange(nextIndex);
+    },
+    [handleSheetChange],
+  );
+  const animateSheetToIndex = useCallback(
+    (nextIndex, options = {}) => {
+      const { gestureDriven = false } = options;
+      const normalizedIndex = Math.max(0, Math.min(2, Number(nextIndex) || 0));
+      const fromIndex = sheetIndexRef.current;
+      const nextTranslateY =
+        discoverSheetMetrics.translateForIndex[normalizedIndex];
+      handleSheetAnimate(fromIndex, normalizedIndex);
+      sheetIndexRef.current = normalizedIndex;
+      setDiscoverSheetExpanded(normalizedIndex > 0);
+      if (gestureDriven) {
+        sheetTranslateY.value = withSpring(
+          nextTranslateY,
+          {
+            damping: 32,
+            stiffness: 280,
+            mass: 0.8,
+          },
+          (finished) => {
+            if (finished) {
+              runOnJS(applySheetIndexChange)(normalizedIndex);
+            }
+          },
+        );
+        return;
+      }
+      sheetTranslateY.value = withTiming(
+        nextTranslateY,
+        {
+          duration: 300,
+          easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
+        },
+        (finished) => {
+          if (finished) {
+            runOnJS(applySheetIndexChange)(normalizedIndex);
+          }
+        },
+      );
+    },
+    [
+      applySheetIndexChange,
+      discoverSheetMetrics.translateForIndex,
+      handleSheetAnimate,
+      sheetTranslateY,
+    ],
+  );
+  const handleSheetGestureEvent = useCallback(
+    (event) => {
+      const translationY = Number(event?.nativeEvent?.translationY) || 0;
+      const nextValue = Math.max(
+        0,
+        Math.min(
+          discoverSheetMetrics.closedTranslateY,
+          sheetDragStartYRef.current + translationY,
+        ),
+      );
+      sheetTranslateY.value = nextValue;
+    },
+    [discoverSheetMetrics.closedTranslateY, sheetTranslateY],
+  );
+  const handleSheetGestureStateChange = useCallback(
+    (event) => {
+      const nativeEvent = event?.nativeEvent;
+      if (!nativeEvent) return;
+      if (nativeEvent.oldState === GestureState.ACTIVE) {
+        const offsets = discoverSheetMetrics.translateForIndex;
+        const current = sheetTranslateY.value;
+        let nextIndex = 0;
+        let smallestDistance = Number.POSITIVE_INFINITY;
+        offsets.forEach((offset, index) => {
+          const distance = Math.abs(current - offset);
+          if (distance < smallestDistance) {
+            smallestDistance = distance;
+            nextIndex = index;
+          }
+        });
+        if ((nativeEvent.velocityY || 0) < -500 && nextIndex < 2) {
+          nextIndex += 1;
+        } else if ((nativeEvent.velocityY || 0) > 500 && nextIndex > 0) {
+          nextIndex -= 1;
+        }
+        animateSheetToIndex(nextIndex, { gestureDriven: true });
+        return;
+      }
+      if (nativeEvent.state === GestureState.BEGAN) {
+        sheetDragStartYRef.current = sheetTranslateY.value;
+      }
+    },
+    [animateSheetToIndex, discoverSheetMetrics.translateForIndex, sheetTranslateY],
+  );
+  useEffect(() => {
+    bottomSheetRef.current = {
+      snapToIndex: (nextIndex) => {
+        animateSheetToIndex(nextIndex);
+      },
+    };
+    return () => {
+      bottomSheetRef.current = null;
+    };
+  }, [animateSheetToIndex]);
+  useEffect(() => {
+    sheetTranslateY.value = discoverSheetMetrics.translateForIndex[
+      sheetIndexRef.current
+    ];
+  }, [discoverSheetMetrics.translateForIndex, sheetTranslateY]);
+  useEffect(() => {
+    const savedIndex = pendingTabSwitchSheetIndexRef.current;
+    if (savedIndex == null) return;
+    pendingTabSwitchSheetIndexRef.current = null;
+    if (savedIndex <= 0) return;
     requestAnimationFrame(() => {
-      bottomSheetRef.current?.snapToIndex(1);
+      bottomSheetRef.current?.snapToIndex(savedIndex);
     });
+  }, [activeTab]);
+  const expandSheetForSearch = useCallback(() => {
+    setActiveTab("discover");
+    setDiscoverSearchOpen(true);
   }, []);
   useEffect(() => {
     if (!DEBUG_DISCOVER_SCROLL) return;
@@ -6837,78 +7452,22 @@ export default function App() {
     if (activeTab !== "discover") return;
     logDiscoverScrollSnapshot("discoverTabActive");
   }, [activeTab, logDiscoverScrollSnapshot]);
+  useEffect(() => {
+    if (activeTab !== "business" && ownerBusinessScreen !== "dashboard") {
+      setOwnerBusinessScreen("dashboard");
+    }
+    if (activeTab !== "discover" && discoverSearchOpen) {
+      setDiscoverSearchOpen(false);
+      setQuery("");
+    }
+  }, [activeTab, discoverSearchOpen, ownerBusinessScreen]);
   const renderSheetHandle = useCallback(() => {
     return (
       <View style={styles.sheetHandle}>
         <View style={styles.handleBar} />
-        <View style={styles.sheetTabsRail}>
-          {visibleTabs.map((tab) => {
-            const isActive = activeTab === tab.key;
-            const iconName = isActive ? tab.iconActive || tab.icon : tab.icon;
-            return (
-              <TouchableOpacity
-                key={`sheet-tab-${tab.key}`}
-                style={[
-                  styles.sheetTabButton,
-                  IS_SMALL_PHONE && styles.sheetTabButtonSmallPhone,
-                  navNeedsTightFit && styles.sheetTabButtonTight,
-                  isActive && styles.sheetTabButtonActive,
-                ]}
-                onPress={() => {
-                  setShowFilters(false);
-                  setShowDemoFilters(false);
-                  setDiscoverSearchFocused(false);
-                  setDemoSearchFocused(false);
-                  setActiveTab(tab.key);
-                  bottomSheetRef.current?.snapToIndex(1);
-                }}
-                activeOpacity={0.88}
-              >
-                <View
-                  style={[
-                    styles.sheetTabIconWrap,
-                    IS_SMALL_PHONE && styles.sheetTabIconWrapSmallPhone,
-                  ]}
-                >
-                  <Ionicons
-                    name={iconName}
-                    size={IS_SMALL_PHONE ? 17 : 18}
-                    color={isActive ? COLORS.ink : "#8A94A6"}
-                  />
-                </View>
-                {tab.key === "history" && pendingHistoryCount > 0 ? (
-                  <View style={styles.sheetTabBadge}>
-                    <Text style={styles.sheetTabBadgeText}>
-                      {pendingHistoryCount > 9 ? "9+" : pendingHistoryCount}
-                    </Text>
-                  </View>
-                ) : null}
-                <Text
-                  style={[
-                    styles.sheetTabLabel,
-                    IS_SMALL_PHONE && styles.sheetTabLabelSmallPhone,
-                    navNeedsTightFit && styles.sheetTabLabelTight,
-                    isActive && styles.sheetTabLabelActive,
-                  ]}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.78}
-                  ellipsizeMode="clip"
-                >
-                  {tab.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
       </View>
     );
-  }, [
-    activeTab,
-    navNeedsTightFit,
-    pendingHistoryCount,
-    visibleTabs,
-  ]);
+  }, []);
   const receiptPinchScale = useRef(new Animated.Value(1)).current;
   const receiptBaseScale = useRef(new Animated.Value(1)).current;
   const receiptPanX = useRef(new Animated.Value(0)).current;
@@ -7146,6 +7705,9 @@ export default function App() {
         const nextRole = await hydrateProfile(user);
         const stillActive = await hasActiveSessionForUser(userId);
         if (!stillActive) return nextRole;
+        if (nextRole === "business_owner") {
+          pendingMerchantOnboardingUserIdRef.current = userId;
+        }
         if (nextRole === "consumer") {
           loadPromoStatus().catch(() => {});
           loadReferralStatus().catch(() => {});
@@ -7174,6 +7736,17 @@ export default function App() {
       loadReferralStatus,
     ],
   );
+
+  const handleActiveBusinessStateChange = useCallback((nextState) => {
+    setMemberBusinesses(Array.isArray(nextState?.businesses) ? nextState.businesses : []);
+    setMemberBusinessesLoading(Boolean(nextState?.loading));
+    setMemberBusinessesLoaded(Boolean(nextState?.loaded));
+    setMemberBusinessesError(nextState?.error || null);
+  }, []);
+
+  const handleActiveBusinessSelectionChange = useCallback((business) => {
+    setActiveMemberBusiness(business || null);
+  }, []);
 
   const loadGlobalCashbackRate = useCallback(
     async ({ silent = false } = {}) => {
@@ -8712,6 +9285,22 @@ export default function App() {
   }, [activeTab]);
 
   useEffect(() => {
+    drawerTranslateX.value = withTiming(drawerOpen ? 0 : -drawerPanelWidth, {
+      duration: 260,
+      easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
+    });
+    drawerOverlayOpacity.value = withTiming(drawerOpen ? 1 : 0, {
+      duration: 260,
+      easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
+    });
+  }, [
+    drawerOpen,
+    drawerOverlayOpacity,
+    drawerPanelWidth,
+    drawerTranslateX,
+  ]);
+
+  useEffect(() => {
     isProfilePhoneFocusedRef.current = isProfilePhoneFocused;
   }, [isProfilePhoneFocused]);
 
@@ -8799,25 +9388,37 @@ export default function App() {
   }, []);
 
   const ownerBusiness = useMemo(() => {
+    if (preferredManagedBusinessId === CREATE_BUSINESS_SENTINEL_ID) {
+      return null;
+    }
+    if (ownerBusinessId) {
+      return (
+        businesses.find((business) => business.id === ownerBusinessId) || null
+      );
+    }
     if (authUserId) {
       return (
         businesses.find((business) => business.ownerId === authUserId) || null
       );
     }
-    if (!ownerBusinessId) return null;
-    return (
-      businesses.find((business) => business.id === ownerBusinessId) || null
-    );
-  }, [businesses, ownerBusinessId, authUserId]);
+    return null;
+  }, [businesses, ownerBusinessId, authUserId, preferredManagedBusinessId]);
 
   const resolvedOwnerBusiness = useMemo(() => {
     if (ownerBusiness) return ownerBusiness;
+    if (preferredManagedBusinessId === CREATE_BUSINESS_SENTINEL_ID) return null;
     if (authUserId) return null;
     if (!ownerBusinessId) return null;
     return (
       businesses.find((business) => business.id === ownerBusinessId) || null
     );
-  }, [ownerBusiness, authUserId, ownerBusinessId, businesses]);
+  }, [
+    ownerBusiness,
+    authUserId,
+    ownerBusinessId,
+    businesses,
+    preferredManagedBusinessId,
+  ]);
   const ownerCommissionRatePercent = useMemo(
     () =>
       commissionRateCentsToPercent(resolvedOwnerBusiness?.commissionRateCents),
@@ -8843,13 +9444,69 @@ export default function App() {
       ) / 100,
     [resolvedOwnerBusiness?.commissionRateCents, resolvedOwnerBusiness],
   );
+  const activeBusinessStripeSummary = useMemo(() => {
+    if (activeBusinessStripeStatus.businessId === resolvedOwnerBusiness?.id) {
+      return activeBusinessStripeStatus;
+    }
+    const fallbackStripeAccountId = resolvedOwnerBusiness?.stripeAccountId || null;
+    const fallbackOnboardingComplete = Boolean(
+      resolvedOwnerBusiness?.stripeOnboarded ??
+        (fallbackStripeAccountId && resolvedOwnerBusiness?.stripeChargesEnabled),
+    );
+    const fallbackHasPaymentMethod = Boolean(
+      resolvedOwnerBusiness?.stripePaymentMethodId,
+    );
+    return {
+      businessId: resolvedOwnerBusiness?.id || null,
+      loading: false,
+      stripeAccountId: fallbackStripeAccountId,
+      onboardingComplete: fallbackOnboardingComplete,
+      hasPaymentMethod: fallbackHasPaymentMethod,
+      stripeOnboarded: fallbackOnboardingComplete,
+      stripeGated:
+        Boolean(resolvedOwnerBusiness?.stripeGated) ||
+        (fallbackOnboardingComplete && fallbackHasPaymentMethod),
+    };
+  }, [activeBusinessStripeStatus, resolvedOwnerBusiness]);
+  const activeBusinessNeedsStripeConnect = Boolean(
+    resolvedOwnerBusiness?.id && !activeBusinessStripeSummary.onboardingComplete,
+  );
+  const activeBusinessNeedsPaymentMethod = Boolean(
+    resolvedOwnerBusiness?.id &&
+      activeBusinessStripeSummary.onboardingComplete &&
+      !activeBusinessStripeSummary.hasPaymentMethod,
+  );
+  const activeBusinessCanEnableOffers = Boolean(
+    resolvedOwnerBusiness?.id && activeBusinessStripeSummary.stripeGated,
+  );
+  const activeBusinessOfferGateMessage = useMemo(() => {
+    if (!resolvedOwnerBusiness?.id) {
+      return "Create your business profile first.";
+    }
+    if (activeBusinessNeedsStripeConnect || activeBusinessNeedsPaymentMethod) {
+      return "You must have a connected Stripe account and a payment method on file to enable offers.";
+    }
+    return null;
+  }, [
+    activeBusinessNeedsPaymentMethod,
+    activeBusinessNeedsStripeConnect,
+    resolvedOwnerBusiness?.id,
+  ]);
 
   const resolveStripeBusiness = useCallback(
     async (options = {}) => {
       const forceRefresh = Boolean(options?.forceRefresh);
       if (!forceRefresh && resolvedOwnerBusiness?.id)
         return resolvedOwnerBusiness;
-      if (!authUserId || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+      const targetBusinessId =
+        resolvedOwnerBusiness?.id ||
+        ownerBusinessId ||
+        activeMemberBusiness?.id ||
+        (preferredManagedBusinessId === CREATE_BUSINESS_SENTINEL_ID
+          ? null
+          : preferredManagedBusinessId) ||
+        null;
+      if (!targetBusinessId || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
       const { data, error } = await supabase
         .from("businesses")
         .select(
@@ -8882,15 +9539,15 @@ export default function App() {
             "stripe_charges_enabled",
             "stripe_payouts_enabled",
             "stripe_onboarded_at",
+            "stripe_onboarded",
+            "stripe_gated",
             "commission_rate_cents",
             "default_cashback_rate_bps",
             "commission_enabled",
             "created_at",
           ].join(","),
         )
-        .eq("owner_id", authUserId)
-        .order("created_at", { ascending: false })
-        .limit(1)
+        .eq("id", targetBusinessId)
         .maybeSingle();
 
       if (error || !data) {
@@ -8906,7 +9563,12 @@ export default function App() {
       setOwnerBusinessId(mapped.id);
       return mapped;
     },
-    [resolvedOwnerBusiness, authUserId],
+    [
+      activeMemberBusiness?.id,
+      ownerBusinessId,
+      preferredManagedBusinessId,
+      resolvedOwnerBusiness,
+    ],
   );
 
   const handleStripeConnect = useCallback(async () => {
@@ -9047,7 +9709,10 @@ export default function App() {
     setStripeActionStatus({ loading: true, error: null, success: null });
     const { data, error } = await callStripeFunction(
       "stripe-create-login-link",
-      { businessId: targetBusiness.id },
+      {
+        businessId: targetBusiness.id,
+        returnUrl: STRIPE_BILLING_PORTAL_APP_RETURN_URL,
+      },
     );
     if (error || !data?.url) {
       const errorMessage =
@@ -9066,8 +9731,57 @@ export default function App() {
       error: null,
       success: "Stripe dashboard opened.",
     });
+    try {
+      const authResult = await WebBrowser.openAuthSessionAsync(
+        data.url,
+        STRIPE_BILLING_PORTAL_APP_RETURN_URL,
+      );
+      if (
+        authResult?.type === "success" &&
+        String(authResult?.url || "").trim()
+      ) {
+        await handleAuthCallbackUrl(authResult.url);
+        return;
+      }
+      if (authResult?.type === "dismiss" || authResult?.type === "cancel") {
+        return;
+      }
+    } catch {
+      // Fallback for environments where auth sessions are unavailable.
+    }
     Linking.openURL(data.url).catch(() => null);
-  }, [resolveStripeBusiness]);
+  }, [handleAuthCallbackUrl, resolveStripeBusiness]);
+
+  const ownerDashboardStripeWarning = useMemo(() => {
+    if (!resolvedOwnerBusiness?.id || activeBusinessStripeSummary.stripeGated) {
+      return null;
+    }
+    if (activeBusinessNeedsStripeConnect) {
+      return {
+        title: "Connect Stripe to go live",
+        body:
+          "Your offers won't show to customers until you connect a Stripe account and add a payment method.",
+        ctaLabel: "Connect Stripe",
+        ctaAction: handleStripeConnect,
+      };
+    }
+    if (activeBusinessNeedsPaymentMethod) {
+      return {
+        title: "Payment method required",
+        body:
+          "Your offers are currently hidden. Add a payment method to your Stripe account to reactivate them.",
+        ctaLabel: "Add Payment Method",
+        ctaAction: () => setOwnerBusinessScreen("payments"),
+      };
+    }
+    return null;
+  }, [
+    activeBusinessNeedsPaymentMethod,
+    activeBusinessNeedsStripeConnect,
+    activeBusinessStripeSummary.stripeGated,
+    handleStripeConnect,
+    resolvedOwnerBusiness?.id,
+  ]);
 
   const loadCashoutStatus = useCallback(
     async ({ silent } = {}) => {
@@ -10254,6 +10968,7 @@ export default function App() {
               "state",
               "postal_code",
               "phone",
+              "image_url",
               "category_key",
               "category_label",
               "offer_highlight",
@@ -10274,6 +10989,8 @@ export default function App() {
               "stripe_charges_enabled",
               "stripe_payouts_enabled",
               "stripe_onboarded_at",
+              "stripe_onboarded",
+              "stripe_gated",
               "commission_rate_cents",
               "default_cashback_rate_bps",
               "commission_enabled",
@@ -10395,6 +11112,51 @@ export default function App() {
     loadOwnerAnalytics,
     loadBillingMetrics,
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const businessId = resolvedOwnerBusiness?.id || null;
+    setStripeActionStatus({ loading: false, error: null, success: null });
+    setOwnerOfferActionErrors({});
+    if (!businessId) {
+      setActiveBusinessStripeStatus(EMPTY_BUSINESS_STRIPE_STATUS);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setActiveBusinessStripeStatus({
+      ...EMPTY_BUSINESS_STRIPE_STATUS,
+      businessId,
+      loading: true,
+    });
+
+    void getBusinessStripeStatus(businessId)
+      .then((status) => {
+        if (cancelled) return;
+        setActiveBusinessStripeStatus({
+          businessId,
+          loading: false,
+          stripeAccountId: status.stripeAccountId,
+          onboardingComplete: status.onboardingComplete,
+          hasPaymentMethod: status.hasPaymentMethod,
+          stripeOnboarded: status.stripeOnboarded,
+          stripeGated: status.stripeGated,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setActiveBusinessStripeStatus({
+          ...EMPTY_BUSINESS_STRIPE_STATUS,
+          businessId,
+          loading: false,
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resolvedOwnerBusiness?.id]);
 
   useEffect(() => {
     if (activeTab !== "business" || !ownerBusiness?.id) return;
@@ -10817,104 +11579,99 @@ export default function App() {
           offer.active &&
           offer.approvalStatus === "approved" &&
           String(offer.status || "active").toLowerCase() === "active" &&
+          Boolean(
+            (offer.business ||
+              businesses.find((business) => business.id === offer.businessId))
+              ?.stripeGated,
+          ) &&
           (offer.expiresAt == null ||
             !Number.isFinite(Number(offer.expiresAt)) ||
             Number(offer.expiresAt) > Date.now()),
       ),
-    [offers],
+    [businesses, offers],
   );
   const offerCards = useMemo(() => {
     const businessMap = new Map(
-      businesses.map((business) => [business.id, business]),
+      approvedBusinesses.map((business) => [business.id, business]),
     );
     const nearbyCoordinate =
       Number.isFinite(Number(nearbyOrigin?.latitude)) &&
       Number.isFinite(Number(nearbyOrigin?.longitude))
         ? {
             latitude: Number(nearbyOrigin.latitude),
-            longitude: Number(nearbyOrigin.longitude),
-          }
-        : null;
-    return publicOffers
-      .map((offer) => {
-        const business = businessMap.get(offer.businessId) || offer.business;
-        if (!business) return null;
-        const categoryKey =
-          business.categoryKey || business.category_key || "restaurant";
-        const categoryLabel =
-          business.category ||
-          business.category_label ||
-          getCategoryConfig(categoryKey).display;
-        const offerTitle = offer.title || business.offer || "New offer";
-        const offerType = offer.offerType || offer.offer_type || "";
-        const offerDescription = offer.description || "";
-        const searchText = [
-          business.name,
-          categoryLabel,
-          offerTitle,
-          offerDescription,
-          offerType,
-          business.tags?.join(" ") || "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        const openFromHours = isBusinessOpenNow(business.hours);
-        const isOpen =
-          openFromHours === null ? (business.isOpen ?? true) : openFromHours;
-        const coordinateLatitude = Number(
-          business?.coordinate?.latitude ?? business?.latitude,
-        );
-        const coordinateLongitude = Number(
-          business?.coordinate?.longitude ?? business?.longitude,
-        );
-        const businessCoordinate =
-          Number.isFinite(coordinateLatitude) &&
-          Number.isFinite(coordinateLongitude)
-            ? {
-                latitude: coordinateLatitude,
-                longitude: coordinateLongitude,
-              }
-            : null;
-        const distanceMeters =
-          nearbyCoordinate && businessCoordinate
-            ? distanceBetweenCoordsMeters(nearbyCoordinate, businessCoordinate)
-            : null;
-        const distanceMiles = Number.isFinite(distanceMeters)
-          ? distanceMeters / 1609.34
+          longitude: Number(nearbyOrigin.longitude),
+        }
+      : null;
+    const offersByBusiness = new Map();
+    publicOffers.forEach((offer) => {
+      const business = businessMap.get(offer.businessId) || offer.business;
+      if (!business?.id) return;
+      const existing = offersByBusiness.get(business.id) || [];
+      existing.push(offer);
+      offersByBusiness.set(business.id, existing);
+    });
+
+    return approvedBusinesses
+      .filter((business) => Boolean(business.stripeOnboarded))
+      .map((business) => {
+      const categoryKey = normalizeBusinessCategoryKey(
+        business.categoryKey || business.category_key || business.category_label,
+      );
+      const categoryLabel = getCategoryConfig(categoryKey).display;
+      const relatedOffers = offersByBusiness.get(business.id) || [];
+      const newestOffer = relatedOffers.reduce(
+        (latest, offer) =>
+          (Number(offer?.createdAt) || 0) > (Number(latest?.createdAt) || 0)
+            ? offer
+            : latest,
+        null,
+      );
+      const searchParts = [
+        business.name,
+        categoryLabel,
+        business.tags?.join(" ") || "",
+        ...relatedOffers.map((offer) => offer?.title || ""),
+      ];
+      const openFromHours = isBusinessOpenNow(business.hours);
+      const isOpen =
+        openFromHours === null ? (business.isOpen ?? true) : openFromHours;
+      const businessCoordinate = resolveBusinessCoordinateForDistance(business);
+      const distanceMeters =
+        nearbyCoordinate && businessCoordinate
+          ? distanceBetweenCoordsMeters(nearbyCoordinate, businessCoordinate)
           : null;
-        return {
-          id: offer.id,
-          offerId: offer.id,
-          businessId: business.id,
-          business,
-          name: business.name,
-          categoryKey,
-          offer: offerTitle,
-          offerTitle,
-          offerDescription,
-          offerType,
-          distance: Number.isFinite(distanceMeters)
-            ? formatDistanceMetersLabel(distanceMeters)
-            : "--",
-          distanceMiles,
-          rating: Number.isFinite(business.rating) ? business.rating : null,
-          tags: business.tags || [],
-          imageUrl:
-            offer.imageUrl ||
-            business.imageUrl ||
-            business.image_url ||
-            business.photoUrl ||
-            business.photo_url ||
-            "",
-          redemptionLimitPeriod: offer.redemptionLimitPeriod,
-          redemptionLimitCount: offer.redemptionLimitCount,
-          searchText,
-          isOpen,
-          offerCreatedAt: offer.createdAt,
-        };
-      })
-      .filter(Boolean);
-  }, [publicOffers, businesses, nearbyOrigin]);
+      const distanceMiles = Number.isFinite(distanceMeters)
+        ? distanceMeters / 1609.34
+        : null;
+      return {
+        id: business.id,
+        offerId: newestOffer?.id || null,
+        businessId: business.id,
+        business,
+        name: business.name,
+        categoryKey,
+        offer: business.offer || "",
+        offerTitle: business.name || "Business",
+        offerDescription: "",
+        offerType: "",
+        distance: Number.isFinite(distanceMeters)
+          ? formatDistanceMetersLabel(distanceMeters)
+          : "--",
+        distanceMiles,
+        rating: Number.isFinite(business.rating) ? business.rating : null,
+        tags: business.tags || [],
+        imageUrl:
+          business.imageUrl ||
+          business.coverImageUrl ||
+          business.image_url ||
+          "",
+        searchText: searchParts.join(" ").toLowerCase(),
+        isOpen,
+        offerCreatedAt: Number(newestOffer?.createdAt) || Number(business.createdAt) || 0,
+        offerCount: relatedOffers.length,
+      };
+    });
+  }, [approvedBusinesses, publicOffers, nearbyOrigin]);
   const discoverTagFilters = useMemo(() => {
     const tagStats = new Map();
     offerCards.forEach((card) => {
@@ -10954,6 +11711,30 @@ export default function App() {
     [discoverTagFilters],
   );
 
+  const cycleDiscoverSortMode = useCallback(() => {
+    setDiscoverSortMode((current) => {
+      if (current === "distance") return "top";
+      if (current === "top") return "new";
+      return "distance";
+    });
+  }, []);
+
+  const cycleDiscoverRadius = useCallback(() => {
+    setDiscoverRadiusKey((current) => {
+      const index = DISCOVER_RADIUS_OPTIONS.findIndex((option) => option.key === current);
+      if (index < 0) return DISCOVER_RADIUS_OPTIONS[0]?.key || "20mi";
+      return DISCOVER_RADIUS_OPTIONS[(index + 1) % DISCOVER_RADIUS_OPTIONS.length]?.key || current;
+    });
+  }, []);
+
+  const toggleDiscoverOpenNow = useCallback(() => {
+    setActiveFilters((prev) =>
+      prev.includes("open")
+        ? prev.filter((key) => key !== "open")
+        : [...prev.filter((key) => key !== "open"), "open"],
+    );
+  }, []);
+
   useEffect(() => {
     const allowed = new Set(discoverFilterOptions.map((option) => option.key));
     setActiveFilters((prev) => {
@@ -10963,10 +11744,20 @@ export default function App() {
   }, [discoverFilterOptions]);
 
   const filteredOfferCards = useMemo(() => {
-    const trimmed = query.trim().toLowerCase();
+    const trimmed = "";
     const selectedRadiusMiles =
       DISCOVER_RADIUS_OPTIONS.find((option) => option.key === discoverRadiusKey)
         ?.miles ?? 20;
+    const matchesDiscoverCategory = (card) => {
+      const categoryKey = normalizeBusinessCategoryKey(
+        card?.categoryKey ||
+          card?.business?.categoryKey ||
+          card?.business?.category_key ||
+          card?.business?.category_label,
+      );
+      if (!categoryKey || discoverCategoryTab === "all") return true;
+      return categoryKey === discoverCategoryTab;
+    };
     const getDistanceMiles = (card) => {
       const numeric = Number(card?.distanceMiles);
       if (Number.isFinite(numeric)) return numeric;
@@ -10986,14 +11777,11 @@ export default function App() {
       return 0;
     };
     const base = offerCards.filter((card) => {
+      if (!matchesDiscoverCategory(card)) return false;
       const matchesFilters = activeFilters.every((filterKey) => {
         switch (filterKey) {
           case "open":
             return Boolean(card.isOpen);
-          case "family":
-            return ["cafe", "activity"].includes(
-              String(card.categoryKey || "").toLowerCase(),
-            );
           default: {
             if (filterKey.startsWith("tag:")) {
               const tagValue = normalizeTagFilterValue(
@@ -11020,11 +11808,8 @@ export default function App() {
       return card.searchText.includes(trimmed);
     });
 
-    const wantsTop = activeFilters.includes("top");
-    const wantsNew = activeFilters.includes("new");
-
     let filtered = base;
-    if (wantsTop) {
+    if (discoverSortMode === "top") {
       filtered = filtered.filter(
         (card) => Number.isFinite(card.rating) && card.rating >= 4.0,
       );
@@ -11032,7 +11817,7 @@ export default function App() {
         filtered = base;
       }
     }
-    if (wantsNew) {
+    if (discoverSortMode === "new") {
       const newFiltered = filtered.filter(
         (card) =>
           card.offerCreatedAt &&
@@ -11044,21 +11829,13 @@ export default function App() {
     }
 
     const sorted = [...filtered];
-    if (wantsTop && wantsNew) {
-      sorted.sort((a, b) => {
-        const ratingDelta = (b.rating || 0) - (a.rating || 0);
-        if (ratingDelta !== 0) return ratingDelta;
-        const createdDelta = (b.offerCreatedAt || 0) - (a.offerCreatedAt || 0);
-        if (createdDelta !== 0) return createdDelta;
-        return compareByDistanceAsc(a, b);
-      });
-    } else if (wantsTop) {
+    if (discoverSortMode === "top") {
       sorted.sort((a, b) => {
         const ratingDelta = (b.rating || 0) - (a.rating || 0);
         if (ratingDelta !== 0) return ratingDelta;
         return compareByDistanceAsc(a, b);
       });
-    } else if (wantsNew) {
+    } else if (discoverSortMode === "new") {
       sorted.sort((a, b) => {
         const createdDelta = (b.offerCreatedAt || 0) - (a.offerCreatedAt || 0);
         if (createdDelta !== 0) return createdDelta;
@@ -11068,7 +11845,7 @@ export default function App() {
       sorted.sort(compareByDistanceAsc);
     }
     return sorted;
-  }, [offerCards, activeFilters, query, discoverRadiusKey]);
+  }, [offerCards, activeFilters, discoverRadiusKey, discoverCategoryTab, discoverSortMode, query]);
   const nearbyOriginAvailable =
     Number.isFinite(Number(nearbyOrigin?.latitude)) &&
     Number.isFinite(Number(nearbyOrigin?.longitude));
@@ -11102,6 +11879,23 @@ export default function App() {
     );
     return [selectedForFocused, ...focusedWithoutSelected, ...remainingCards];
   }, [filteredOfferCards, markerFocusedBusinessId, selectedOfferCardId]);
+  const selectedBusinessDetailCard = useMemo(() => {
+    if (!businessDetail?.id) return null;
+    const selectedKey = String(selectedOfferCardId || "").trim();
+    if (selectedKey) {
+      const exact = filteredOfferCards.find(
+        (item) =>
+          String(item?.businessId || "") === String(businessDetail.id) &&
+          getOfferCardSelectionKey(item) === selectedKey,
+      );
+      if (exact) return exact;
+    }
+    return (
+      filteredOfferCards.find(
+        (item) => String(item?.businessId || "") === String(businessDetail.id),
+      ) || null
+    );
+  }, [businessDetail?.id, filteredOfferCards, selectedOfferCardId]);
 
   useEffect(() => {
     if (!markerFocusedBusinessId) return;
@@ -11122,6 +11916,104 @@ export default function App() {
       visibleBusinessIds.has(business.id),
     );
   }, [approvedBusinesses, filteredOfferCards]);
+  const discoverSearchResults = useMemo(() => {
+    const trimmed = String(query || "")
+      .trim()
+      .toLowerCase();
+    const seen = new Set();
+    return filteredOfferCards.reduce((acc, card) => {
+      const business =
+        businesses.find((item) => item.id === card?.businessId) ||
+        card?.business ||
+        card ||
+        null;
+      const businessId = String(business?.id || card?.businessId || "").trim();
+      if (!businessId || seen.has(businessId)) return acc;
+      const categoryLabel =
+        String(business?.category || "").trim() ||
+        getCategoryConfig(business?.categoryKey).display;
+      const searchableText = [
+        business?.name,
+        categoryLabel,
+        business?.address,
+        business?.city,
+        business?.state,
+        business?.phone,
+        card?.title,
+        card?.name,
+        card?.description,
+        card?.offerType,
+      ]
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter(Boolean)
+        .join(" ");
+      if (trimmed && !searchableText.includes(trimmed)) return acc;
+      seen.add(businessId);
+      acc.push({
+        ...business,
+        id: businessId,
+        businessId,
+        distanceMiles:
+          Number(card?.distanceMiles) ||
+          parseDistanceLabelMiles(card?.distance || business?.distance),
+        distanceLabel:
+          formatDistanceMilesLabel(
+            Number(card?.distanceMiles) ||
+              parseDistanceLabelMiles(card?.distance || business?.distance),
+          ) || String(card?.distance || "").trim(),
+        previewImageUrl: String(
+          business?.imageUrl || business?.coverImageUrl || card?.imageUrl || "",
+        ).trim(),
+        categoryLabel,
+        card,
+      });
+      return acc;
+    }, []);
+  }, [businesses, filteredOfferCards, query]);
+  const activeSheetPeekLabel = useMemo(() => {
+    switch (activeTab) {
+      case "history":
+        return "History";
+      case "cashout":
+        return "Cash out";
+      case "profile":
+        return "Profile";
+      case "business":
+        return ownerBusinessScreen === "billing"
+          ? "Billing & Payments"
+          : "Dashboard";
+      case "admin":
+        return "Admin";
+      case "discover":
+      default:
+        return "Explore";
+    }
+  }, [activeTab, ownerBusinessScreen]);
+  const activeSheetPeekMeta =
+    activeTab === "discover" ? `${discoverSheetOfferCards.length} nearby` : "";
+  const SheetPeekRow = ({
+    label,
+    meta,
+    onPress,
+    animatedStyle,
+    interactive,
+  }) => (
+    <Reanimated.View
+      pointerEvents={interactive ? "auto" : "none"}
+      style={[
+        styles.discoverMiniSheet,
+        styles.discoverMiniSheetMounted,
+        animatedStyle,
+      ]}
+    >
+      <Pressable style={styles.discoverMiniSheetPressable} onPress={onPress}>
+        <View>
+          <Text style={styles.discoverMiniTitle}>{label}</Text>
+        </View>
+        {meta ? <Text style={styles.discoverMiniMeta}>{meta}</Text> : null}
+      </Pressable>
+    </Reanimated.View>
+  );
   const demoOfferCards = useMemo(() => {
     return (Array.isArray(offerCards) ? offerCards : []).slice(0, 12);
   }, [offerCards]);
@@ -11198,6 +12090,31 @@ export default function App() {
     if (!ownerBusiness?.id) return [];
     return offers.filter((offer) => offer.businessId === ownerBusiness.id);
   }, [offers, ownerBusiness?.id]);
+  const ownerBusinessHoursSummary = useMemo(
+    () => summarizeBusinessHoursValue(ownerBusiness?.hours),
+    [ownerBusiness?.hours],
+  );
+  const businessSignUpPasswordInlineError = useMemo(() => {
+    const message = String(businessSignUpError || "").trim();
+    if (!message) return null;
+    if (
+      message === "Password is required." ||
+      message === "Confirm your password." ||
+      message === "Use at least 8 characters for password." ||
+      message === "Passwords do not match." ||
+      message ===
+        "Password must include at least one uppercase letter, one number, and one special character."
+    ) {
+      return message;
+    }
+    return null;
+  }, [businessSignUpError]);
+  const fullScreenOverlayOpen =
+    createBusinessPageOpen ||
+    createOfferPageOpen ||
+    editBusinessPageOpen ||
+    reviewsPageOpen ||
+    businessReviewsPageOpen;
 
   const canRequestEdits =
     Boolean(ownerBusiness) && !ownerBusiness?.pendingEdits;
@@ -11377,6 +12294,23 @@ export default function App() {
       ].filter((tab) => tab.show),
     [isOwner, isStaff, showHistoryTab, showCashoutTab],
   );
+  const drawerTabs = useMemo(
+    () =>
+      visibleTabs.filter((tab) =>
+        ["discover", "history", "cashout", "profile", "business", "admin"].includes(
+          tab.key,
+        ),
+      ),
+    [visibleTabs],
+  );
+  const swipeableDrawerTabs = useMemo(
+    () =>
+      SWIPEABLE_DRAWER_TAB_ORDER.filter((key) =>
+        drawerTabs.some((tab) => tab.key === key),
+      ),
+    [drawerTabs],
+  );
+  const [swipeActiveIndex, setSwipeActiveIndex] = useState(0);
   const navContainerWidth = useMemo(() => {
     const horizontalInset = IS_COMPACT ? 24 : 32;
     return Math.max(260, SCREEN_WIDTH - horizontalInset);
@@ -11440,6 +12374,16 @@ export default function App() {
       useNativeDriver: true,
     }).start();
   }, [activeTab, tabIndicatorIndex, visibleTabs]);
+  useEffect(() => {
+    if (!swipeableDrawerTabs.length) {
+      setSwipeActiveIndex(0);
+      return;
+    }
+    const nextIndex = swipeableDrawerTabs.findIndex((key) => key === activeTab);
+    if (nextIndex >= 0) {
+      setSwipeActiveIndex(nextIndex);
+    }
+  }, [activeTab, swipeableDrawerTabs]);
   useEffect(() => {
     if (!sessionReady) {
       launchOverlayOpacity.stopAnimation();
@@ -12243,6 +13187,27 @@ export default function App() {
     }
   }, [cashoutBankModalVisible]);
   useEffect(() => {
+    if (memberBusinesses.length) {
+      if (preferredManagedBusinessId === CREATE_BUSINESS_SENTINEL_ID) {
+        if (ownerBusinessId !== null) {
+          setOwnerBusinessId(null);
+        }
+        return;
+      }
+      const preferred =
+        memberBusinesses.find(
+          (business) => business.id === preferredManagedBusinessId,
+        ) || null;
+      const nextManagedBusiness =
+        preferred || activeMemberBusiness || memberBusinesses[0] || null;
+      if (nextManagedBusiness?.id && ownerBusinessId !== nextManagedBusiness.id) {
+        setOwnerBusinessId(nextManagedBusiness.id);
+      }
+      if (preferredManagedBusinessId && preferred?.id) {
+        setPreferredManagedBusinessId(null);
+      }
+      return;
+    }
     if (!businesses.length) return;
     if (authUserId) {
       const owned = businesses.find(
@@ -12259,7 +13224,39 @@ export default function App() {
     if (!exists && businesses[0]?.id) {
       setOwnerBusinessId(businesses[0].id);
     }
-  }, [businesses, ownerBusinessId, authUserId]);
+  }, [
+    activeMemberBusiness,
+    authUserId,
+    businesses,
+    memberBusinesses,
+    ownerBusinessId,
+    preferredManagedBusinessId,
+  ]);
+
+  useEffect(() => {
+    if (!isSignedIn || accountRole !== "business_owner") return;
+    if (!memberBusinessesLoaded || memberBusinessesLoading) return;
+    if (pendingMerchantOnboardingUserIdRef.current !== authUserId) return;
+
+    if (!memberBusinesses.length) {
+      setActiveTab("business");
+      setOwnerBusinessScreen("dashboard");
+      setPreferredManagedBusinessId(CREATE_BUSINESS_SENTINEL_ID);
+      setCreateBusinessPageOpen(true);
+    } else {
+      setActiveTab("business");
+      setOwnerBusinessScreen("dashboard");
+      setCreateBusinessPageOpen(false);
+    }
+    pendingMerchantOnboardingUserIdRef.current = null;
+  }, [
+    accountRole,
+    authUserId,
+    isSignedIn,
+    memberBusinesses.length,
+    memberBusinessesLoaded,
+    memberBusinessesLoading,
+  ]);
 
   useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
@@ -12395,16 +13392,7 @@ export default function App() {
 
   useEffect(() => {
     if (!sessionReady || !isSignedIn || !authUserId) return;
-    const launchTab = isOwner ? "business" : isStaff ? "admin" : null;
-    if (!launchTab) return;
-    const launchKey = `${authUserId}:${launchTab}`;
-    if (roleLaunchTabAppliedRef.current === launchKey) return;
-    roleLaunchTabAppliedRef.current = launchKey;
-    setActiveTab((current) =>
-      current === "discover" || current === "history" || current === "cashout"
-        ? launchTab
-        : current,
-    );
+    roleLaunchTabAppliedRef.current = `${authUserId}:discover`;
   }, [authUserId, isOwner, isSignedIn, isStaff, sessionReady]);
 
   const buildFormFromBusiness = (business) => ({
@@ -12415,7 +13403,7 @@ export default function App() {
     city: business?.city || "",
     state: business?.state || "",
     postalCode: business?.postalCode || "",
-    categoryKey: business?.categoryKey || "restaurant",
+    categoryKey: business?.categoryKey || DEFAULT_BUSINESS_CATEGORY_KEY,
     offer: business?.offer || "",
     hours: business?.hours || "",
     tags: business?.tags?.join(", ") || "",
@@ -12423,11 +13411,17 @@ export default function App() {
       business?.merchantDescriptorAliases,
     ),
     isOpen: business?.isOpen ?? true,
+    imageUrl:
+      String(
+        business?.imageUrl || business?.coverImageUrl || business?.image_url || "",
+      ).trim() || "",
   });
 
   useEffect(() => {
     if (activeTab !== "business" || !ownerBusiness) return;
     setFormData(buildFormFromBusiness(ownerBusiness));
+    setEditBusinessImage(null);
+    setEditBusinessImageStatus({ uploading: false, error: null });
     setFormMessage(null);
     setIsEditingBusiness(false);
     setEditHoursSchedule(
@@ -12469,7 +13463,7 @@ export default function App() {
           String(prev.categoryCustomLabel || "").trim(),
         );
         const hasUserChosenCategory =
-          prev.categoryKey !== "restaurant" || hasCustom;
+          prev.categoryKey !== DEFAULT_BUSINESS_CATEGORY_KEY || hasCustom;
         const fallbackCustomLabel = draftCategoryKey.startsWith("other-")
           ? draftCategoryKey.slice(6).replace(/-/g, " ")
           : draftCategoryKey;
@@ -12479,7 +13473,7 @@ export default function App() {
             ? draftCategoryKnown
               ? draftCategoryKey
               : CATEGORY_OTHER_KEY
-            : prev.categoryKey || "restaurant";
+            : prev.categoryKey || DEFAULT_BUSINESS_CATEGORY_KEY;
         const nextCategoryCustomLabel = hasUserChosenCategory
           ? prev.categoryCustomLabel || ""
           : draftCategoryKnown
@@ -13067,6 +14061,7 @@ export default function App() {
       .maybeSingle()
       .then(({ data }) => {
         if (cancelled) return;
+        if (lastLocationHashRef.current) return;
         const latitude = Number(data?.latitude);
         const longitude = Number(data?.longitude);
         if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
@@ -13823,48 +14818,45 @@ export default function App() {
   }, []);
 
   const handleBusinessSignUp = async () => {
-    if (!businessEmail.trim()) {
+    const email = String(businessEmail || "").trim().toLowerCase();
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!email) {
       setBusinessSignUpError("Email is required.");
+      return;
+    }
+    if (!emailPattern.test(email)) {
+      setBusinessSignUpError("Enter a valid email address.");
       return;
     }
     if (!businessOwnerName.trim()) {
       setBusinessSignUpError("Full name is required.");
       return;
     }
-    if (!businessName.trim() || !businessAddress.trim()) {
-      setBusinessSignUpError("Business name and address are required.");
+    const nextPassword = String(businessVerifyPassword || "");
+    const confirmPassword = String(businessVerifyPasswordConfirm || "");
+    if (!nextPassword) {
+      setBusinessSignUpError("Password is required.");
       return;
     }
-    if (!businessPhone.trim()) {
-      setBusinessSignUpError("Phone number is required.");
+    if (!confirmPassword) {
+      setBusinessSignUpError("Confirm your password.");
       return;
     }
-    if (!isValidBusinessPhoneNumber(businessPhone)) {
-      setBusinessSignUpError("Enter a valid phone number.");
+    if (nextPassword.length < 8) {
+      setBusinessSignUpError("Use at least 8 characters for password.");
       return;
     }
-    if (!hasValidBusinessHoursSchedule(businessHoursSchedule)) {
-      setBusinessSignUpError("Operating hours are required.");
-      return;
-    }
-    if (!businessSignUpAuthorizedChecked) {
+    const hasUppercase = /[A-Z]/.test(nextPassword);
+    const hasNumber = /[0-9]/.test(nextPassword);
+    const hasSpecial = /[^A-Za-z0-9]/.test(nextPassword);
+    if (!hasUppercase || !hasNumber || !hasSpecial) {
       setBusinessSignUpError(
-        "Confirm you are authorized to act on behalf of this business.",
+        "Password must include at least one uppercase letter, one number, and one special character.",
       );
       return;
     }
-    if (!businessSignUpHonorOffersChecked) {
-      setBusinessSignUpError(
-        "Confirm your business will honor each approved offer as published.",
-      );
-      return;
-    }
-    const categorySelection = resolveSelectedCategory(
-      businessCategoryKey,
-      businessCategoryCustomLabel,
-    );
-    if (!categorySelection.ok) {
-      setBusinessSignUpError(categorySelection.error);
+    if (nextPassword !== confirmPassword) {
+      setBusinessSignUpError("Passwords do not match.");
       return;
     }
     if (!ensureSupabaseReady(setBusinessSignUpError)) return;
@@ -13872,41 +14864,15 @@ export default function App() {
     setBusinessSignUpError(null);
     setBusinessSignUpNotice(null);
     try {
-      const email = businessEmail.trim().toLowerCase();
       const emailAvailability = await checkBusinessEmailAvailability(email);
       if (!emailAvailability.ok) {
         setBusinessSignUpError(emailAvailability.error);
         return;
       }
-      const hoursValue = formatBusinessHoursScheduleForStorage(
-        businessHoursSchedule,
-      );
-      let signupCoords = businessAddressCoords;
-      if (!signupCoords && businessAddress.trim()) {
-        signupCoords = await geocodeAddress(businessAddress.trim());
-        if (signupCoords) {
-          setBusinessAddressCoords(signupCoords);
-        }
-      }
-      const offerHonorAcceptedAt = new Date().toISOString();
       const pendingSignup = {
         email,
         startedAtIso: new Date().toISOString(),
         ownerName: businessOwnerName.trim(),
-        name: businessName.trim(),
-        address: businessAddress.trim(),
-        phone: businessPhone.trim(),
-        categoryKey: categorySelection.categoryKey,
-        categoryLabel: categorySelection.categoryLabel,
-        hours: hoursValue,
-        city: businessAddressCity.trim(),
-        state: businessAddressState.trim(),
-        postalCode: businessAddressPostal.trim(),
-        addressCoords: signupCoords,
-        merchantDescriptorAliases: normalizeMerchantDescriptorAliasesInput(
-          businessDescriptorAliasesInput,
-        ),
-        offerHonorAcceptedAt,
       };
       const { error: otpError } = await supabase.auth.signInWithOtp({
         email,
@@ -13915,22 +14881,6 @@ export default function App() {
           data: {
             role: "business_owner",
             full_name: pendingSignup.ownerName,
-            phone: pendingSignup.phone,
-            company: pendingSignup.name,
-            business_draft: {
-              name: pendingSignup.name,
-              address: pendingSignup.address,
-              phone: pendingSignup.phone,
-              categoryKey: pendingSignup.categoryKey,
-              categoryLabel: pendingSignup.categoryLabel,
-              hours: pendingSignup.hours,
-              city: pendingSignup.city,
-              state: pendingSignup.state,
-              postalCode: pendingSignup.postalCode,
-              addressCoords: pendingSignup.addressCoords,
-              merchantDescriptorAliases:
-                pendingSignup.merchantDescriptorAliases,
-            },
           },
         },
       });
@@ -13951,8 +14901,6 @@ export default function App() {
       setBusinessPendingSignup(pendingSignup);
       setBusinessOtpSentEmail(email);
       setBusinessOtpCode("");
-      setBusinessVerifyPassword("");
-      setBusinessVerifyPasswordConfirm("");
       setShowBusinessVerifyPassword(false);
       setShowBusinessVerifyPasswordConfirm(false);
       setAuthView("business_verify");
@@ -13996,7 +14944,6 @@ export default function App() {
   const handleVerifyBusinessSignUpCode = async () => {
     const code = String(businessOtpCode || "").trim();
     const nextPassword = String(businessVerifyPassword || "");
-    const confirmPassword = String(businessVerifyPasswordConfirm || "");
     if (!businessPendingSignup || !businessOtpSentEmail) {
       setBusinessSignUpError("Start business sign-up again.");
       setAuthView("business");
@@ -14008,14 +14955,6 @@ export default function App() {
     }
     if (code.length !== 8) {
       setBusinessSignUpError("Enter the full 8-digit code.");
-      return;
-    }
-    if (nextPassword.length < 8) {
-      setBusinessSignUpError("Use at least 8 characters for password.");
-      return;
-    }
-    if (nextPassword !== confirmPassword) {
-      setBusinessSignUpError("Passwords do not match.");
       return;
     }
     if (!ensureSupabaseReady(setBusinessSignUpError)) return;
@@ -14099,22 +15038,6 @@ export default function App() {
           data: {
             role: "business_owner",
             full_name: businessPendingSignup.ownerName,
-            phone: businessPendingSignup.phone,
-            company: businessPendingSignup.name,
-            business_draft: {
-              name: businessPendingSignup.name,
-              address: businessPendingSignup.address,
-              phone: businessPendingSignup.phone,
-              categoryKey: businessPendingSignup.categoryKey,
-              categoryLabel: businessPendingSignup.categoryLabel,
-              hours: businessPendingSignup.hours,
-              city: businessPendingSignup.city,
-              state: businessPendingSignup.state,
-              postalCode: businessPendingSignup.postalCode,
-              addressCoords: businessPendingSignup.addressCoords,
-              merchantDescriptorAliases:
-                businessPendingSignup.merchantDescriptorAliases,
-            },
           },
         });
       if (updateError) {
@@ -14129,8 +15052,8 @@ export default function App() {
         id: activeUser.id,
         email: businessPendingSignup.email,
         full_name: businessPendingSignup.ownerName,
-        phone: businessPendingSignup.phone || null,
-        company: businessPendingSignup.name,
+        phone: null,
+        company: null,
         role: "business_owner",
       });
       if (profileUpsertError) {
@@ -14141,102 +15064,11 @@ export default function App() {
       }
 
       await hydrateProfile(activeUser, "business_owner");
-
-      const { data: businessRows, error: businessError } = await supabase
-        .from("businesses")
-        .insert({
-          owner_id: activeUser.id,
-          name: businessPendingSignup.name,
-          address: businessPendingSignup.address,
-          city: businessPendingSignup.city || null,
-          state: businessPendingSignup.state || null,
-          postal_code: businessPendingSignup.postalCode || null,
-          phone: businessPendingSignup.phone || null,
-          merchant_descriptor_aliases:
-            businessPendingSignup.merchantDescriptorAliases,
-          category_key: businessPendingSignup.categoryKey,
-          category_label: businessPendingSignup.categoryLabel,
-          hours: businessPendingSignup.hours,
-          approval_status: "pending",
-          status: "active",
-          is_open: true,
-          latitude: businessPendingSignup.addressCoords?.latitude ?? null,
-          longitude: businessPendingSignup.addressCoords?.longitude ?? null,
-          offer_honor_policy_accepted: true,
-          offer_honor_policy_version: OFFER_HONOR_POLICY_VERSION,
-          offer_honor_policy_accepted_at:
-            businessPendingSignup.offerHonorAcceptedAt,
-          offer_honor_policy_accepted_by: activeUser.id,
-        })
-        .select(
-          [
-            "id",
-            "owner_id",
-            "name",
-            "address",
-            "city",
-            "state",
-            "postal_code",
-            "phone",
-            "category_key",
-            "category_label",
-            "offer_highlight",
-            "hours",
-            "tags",
-            "merchant_descriptor_aliases",
-            "latitude",
-            "longitude",
-            "qr_code",
-            "is_open",
-            "approval_status",
-            "status",
-            "stripe_account_id",
-            "stripe_customer_id",
-            "stripe_payment_method_id",
-            "stripe_payment_method_brand",
-            "stripe_payment_method_last4",
-            "stripe_charges_enabled",
-            "stripe_payouts_enabled",
-            "stripe_onboarded_at",
-            "commission_rate_cents",
-            "default_cashback_rate_bps",
-            "commission_enabled",
-            "created_at",
-          ].join(","),
-        )
-        .limit(1);
-
-      if (businessError) {
-        setBusinessSignUpError(
-          "Account created, but business profile needs review.",
-        );
-      } else if (businessRows?.[0]) {
-        const mapped = mapSupabaseBusiness(businessRows[0], 0);
-        setBusinesses((prev) => [mapped, ...prev]);
-        setOwnerBusinessId(mapped.id);
-      }
+      pendingMerchantOnboardingUserIdRef.current = activeUser.id;
 
       setIsSignedIn(true);
       setBusinessOwnerName("");
-      setBusinessName("");
-      setBusinessAddress("");
-      setBusinessAddressCoords(null);
-      setBusinessAddressCity("");
-      setBusinessAddressState("");
-      setBusinessAddressPostal("");
-      setBusinessPhone("");
-      setBusinessDescriptorAliasesInput("");
-      setBusinessCategoryKey("restaurant");
-      setBusinessCategoryCustomLabel("");
-      setBusinessCategoryMenuOpen(false);
-      setBusinessHoursSchedule(createDefaultBusinessHoursSchedule());
-      setBusinessHoursDays(DEFAULT_OPERATING_DAYS);
-      setBusinessHoursStart("");
-      setBusinessHoursEnd("");
-      setBusinessHoursStartMeridiem("AM");
-      setBusinessHoursEndMeridiem("PM");
-      setBusinessSignUpAuthorizedChecked(false);
-      setBusinessSignUpHonorOffersChecked(false);
+      setBusinessEmail("");
       setBusinessVerifyPassword("");
       setBusinessVerifyPasswordConfirm("");
       setShowBusinessVerifyPassword(false);
@@ -14245,6 +15077,8 @@ export default function App() {
       setBusinessOtpSentEmail("");
       setBusinessPendingSignup(null);
       setBusinessSignUpNotice(null);
+      setActiveTab("business");
+      setOwnerBusinessScreen("dashboard");
       setAuthView("signin");
     } finally {
       setAuthBusy(false);
@@ -14557,7 +15391,7 @@ export default function App() {
     setBusinessDescriptorAliasesInput("");
     setShowPasswordResetDraft(false);
     setShowPasswordResetConfirm(false);
-    setBusinessCategoryKey("restaurant");
+    setBusinessCategoryKey(DEFAULT_BUSINESS_CATEGORY_KEY);
     setBusinessCategoryCustomLabel("");
     setBusinessCategoryMenuOpen(false);
     setBusinessHoursSchedule(createDefaultBusinessHoursSchedule());
@@ -14577,7 +15411,7 @@ export default function App() {
       city: "",
       state: "",
       postalCode: "",
-      categoryKey: "restaurant",
+      categoryKey: DEFAULT_BUSINESS_CATEGORY_KEY,
       categoryCustomLabel: "",
       offer: "",
       phone: "",
@@ -14600,9 +15434,6 @@ export default function App() {
     setActiveTab("discover");
     setOfferForm({
       title: "",
-      description: "",
-      typePreset: "Discount",
-      typeCustom: "",
       startsDate: "",
       startsTime: "",
       expiresDate: "",
@@ -14874,9 +15705,13 @@ export default function App() {
         distanceLabel,
         categoryLabel,
         businessCategoryKey:
-          business?.categoryKey || business?.category_key || "",
+          normalizeBusinessCategoryKey(
+            business?.categoryKey || business?.category_key || business?.category_label,
+          ),
         businessCategoryLabel:
-          business?.categoryLabel || business?.category_label || categoryLabel,
+          getCategoryConfig(
+            business?.categoryKey || business?.category_key || business?.category_label,
+          ).display || categoryLabel,
         statusLabel: isOpen ? "Open now" : "Closed",
         businessCommissionRateCents:
           business?.commissionRateCents ?? business?.commission_rate_cents ?? 150,
@@ -14977,6 +15812,13 @@ export default function App() {
     setBusinessDetailReviews([]);
     setBusinessDetailOffers([]);
     setBusinessDetailOffersStatus({ loading: false, error: null });
+    if (activeTabRef.current === "discover") {
+      requestAnimationFrame(() => {
+        bottomSheetRef.current?.snapToIndex(
+          Math.max(0, Math.min(2, Number(businessDetailReturnSheetIndexRef.current) || 0)),
+        );
+      });
+    }
   };
 
   const handleSubmitReview = async () => {
@@ -15056,22 +15898,18 @@ export default function App() {
       if (SCREENSHOT_MOCK_MODE || String(business.id || "").startsWith("ss-")) {
         const createdAt = Date.now();
         const localRedemptionId = `ss-live-redemption-${business.id}-${createdAt}`;
-        const businessCategoryKey = String(
-          business?.categoryKey || offerCard?.categoryKey || "restaurant",
-        ).trim();
+        const businessCategoryKey = normalizeBusinessCategoryKey(
+          business?.categoryKey ||
+            business?.category_key ||
+            offerCard?.categoryKey ||
+            offerCard?.business?.categoryKey ||
+            offerCard?.business?.category_key,
+        );
         const businessCategoryLabel = String(
-          business?.category ||
-            getCategoryConfig(businessCategoryKey).display ||
-            "Local business",
+          getCategoryConfig(businessCategoryKey).display || "Local business",
         ).trim();
         const offerTitle = String(
           offerCard?.offerTitle || offerCard?.offer || business?.offer || "Offer",
-        ).trim();
-        const offerDescription = String(
-          offerCard?.description || offerCard?.offerDescription || "",
-        ).trim();
-        const offerImageUrl = String(
-          offerCard?.imageUrl || business?.imageUrl || "",
         ).trim();
         setRedemptionHistory((prev) => [
           {
@@ -15082,11 +15920,9 @@ export default function App() {
             offer: {
               id: offerId ? String(offerId) : localRedemptionId,
               title: offerTitle,
-              description: offerDescription,
-              offer_type: String(
-                offerCard?.offerType || offerCard?.offer_type || "offer",
-              ).trim(),
-              image_url: offerImageUrl,
+              description: "",
+              offer_type: "cashback",
+              image_url: "",
             },
             business: {
               id: String(business.id),
@@ -15213,14 +16049,15 @@ export default function App() {
       const createdAt = insertedRedemption.created_at
         ? new Date(insertedRedemption.created_at).getTime()
         : Date.now();
-      const businessCategoryKey = String(
-        business?.categoryKey || offerCard?.categoryKey || "restaurant",
-      ).trim();
+      const businessCategoryKey = normalizeBusinessCategoryKey(
+        business?.categoryKey ||
+          business?.category_key ||
+          offerCard?.categoryKey ||
+          offerCard?.business?.categoryKey ||
+          offerCard?.business?.category_key,
+      );
       const businessCategoryLabel = String(
-        business?.category ||
-          business?.categoryLabel ||
-          getCategoryConfig(businessCategoryKey).display ||
-          "Local business",
+        getCategoryConfig(businessCategoryKey).display || "Local business",
       ).trim();
       setRedemptionHistory((prev) => {
         const nextEntry = {
@@ -15234,15 +16071,9 @@ export default function App() {
             title: String(
               offerCard?.offerTitle || offerCard?.offer || business?.offer || "Offer",
             ).trim(),
-            description: String(
-              offerCard?.description || offerCard?.offerDescription || "",
-            ).trim(),
-            offer_type: String(
-              offerCard?.offerType || offerCard?.offer_type || "offer",
-            ).trim(),
-            image_url: String(
-              offerCard?.imageUrl || business?.imageUrl || "",
-            ).trim(),
+            description: "",
+            offer_type: "cashback",
+            image_url: "",
           },
           business: {
             id: String(insertedRedemption.business_id || business.id || ""),
@@ -15358,8 +16189,31 @@ export default function App() {
 
   const openSheet = (nextTab = "discover") => {
     setActiveTab(nextTab);
-    bottomSheetRef.current?.snapToIndex(1);
+    requestAnimationFrame(() => {
+      bottomSheetRef.current?.snapToIndex(nextTab === "discover" ? 0 : 1);
+    });
   };
+  const applyDrawerTabChange = useCallback(
+    (nextTab, options = {}) => {
+      const { closeDrawer = false } = options;
+      if (!nextTab) return;
+      const preservedSheetIndex = Math.max(
+        0,
+        Math.min(2, Number(sheetIndexRef.current) || 0),
+      );
+      pendingTabSwitchSheetIndexRef.current = preservedSheetIndex;
+      if (closeDrawer) {
+        setDrawerOpen(false);
+      }
+      setDiscoverSearchOpen(false);
+      setQuery("");
+      if (nextTab !== "business") {
+        setOwnerBusinessScreen("dashboard");
+      }
+      setActiveTab(nextTab);
+    },
+    [],
+  );
 
   const getFirstVisibleOfferForBusiness = (businessId) =>
     filteredOfferCards.find((item) => item.businessId === businessId) || null;
@@ -15397,35 +16251,7 @@ export default function App() {
     card;
 
   const getBusinessCoordinate = (business) => {
-    if (!business) return null;
-    if (business.hasCoordinates === false) return null;
-    const latitude = Number(
-      business.coordinate?.latitude ?? business.latitude ?? business.lat,
-    );
-    const longitude = Number(
-      business.coordinate?.longitude ?? business.longitude ?? business.lng,
-    );
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      return null;
-    }
-    if (latitude === 0 && longitude === 0) return null;
-    if (business.fallbackCoordinate) {
-      const deltaLat = Math.abs(
-        latitude - business.fallbackCoordinate.latitude,
-      );
-      const deltaLng = Math.abs(
-        longitude - business.fallbackCoordinate.longitude,
-      );
-      if (deltaLat < 0.0001 && deltaLng < 0.0001) return null;
-    }
-    if (business.address) {
-      const deltaLatDefault = Math.abs(latitude - MAP_REGION.latitude);
-      const deltaLngDefault = Math.abs(longitude - MAP_REGION.longitude);
-      if (deltaLatDefault < 0.001 && deltaLngDefault < 0.001) {
-        return null;
-      }
-    }
-    return { latitude, longitude };
+    return resolveBusinessCoordinateForDistance(business);
   };
 
   const geocodeAddress = useCallback(async (address) => {
@@ -15499,7 +16325,13 @@ export default function App() {
     trackOfferView(business.id, card?.offerId || card?.id);
     setSelectedId(business.id);
     setSelectedOfferCardId(offerCardKey || null);
-    openSheet("discover");
+    businessDetailReturnSheetIndexRef.current = sheetIndexRef.current;
+    setActiveTab("discover");
+    requestAnimationFrame(() => {
+      bottomSheetRef.current?.snapToIndex(
+        Math.max(0, Math.min(2, Number(businessDetailReturnSheetIndexRef.current) || 0)),
+      );
+    });
     openBusinessDetail(business);
     let coordinate = getBusinessCoordinate(business);
     if (!coordinate && business.address) {
@@ -15525,6 +16357,118 @@ export default function App() {
     setMapRegion(nextRegion);
     animateMapToRegion(nextRegion, 500);
   };
+
+  const closeDiscoverSearch = useCallback(() => {
+    setDiscoverSearchOpen(false);
+    setQuery("");
+    Keyboard.dismiss();
+  }, []);
+
+  const handleSearchResultPress = useCallback(
+    async (business) => {
+      const businessId = String(business?.id || business?.businessId || "").trim();
+      if (!businessId) return;
+      const card =
+        discoverSheetOfferCards.find((item) => item.businessId === businessId) ||
+        filteredOfferCards.find((item) => item.businessId === businessId) ||
+        offerCards.find((item) => item.businessId === businessId) ||
+        business?.card ||
+        null;
+      setDiscoverSearchOpen(false);
+      if (card) {
+        await handleCardPress(card);
+        return;
+      }
+      openBusinessDetail(business);
+    },
+    [discoverSheetOfferCards, filteredOfferCards, offerCards, handleCardPress],
+  );
+
+  const handleDrawerTabSelect = useCallback((nextTab) => {
+    applyDrawerTabChange(nextTab, { closeDrawer: true });
+  }, [applyDrawerTabChange]);
+  const handleSwipeTabIndexChange = useCallback(
+    (nextIndex) => {
+      const nextTab = swipeableDrawerTabs[nextIndex];
+      if (!nextTab || nextTab === activeTabRef.current) return;
+      setSwipeActiveIndex(nextIndex);
+      applyDrawerTabChange(nextTab);
+    },
+    [applyDrawerTabChange, swipeableDrawerTabs],
+  );
+  useEffect(() => {
+    if (Platform.OS !== "android") return undefined;
+    const handleHardwareBackPress = () => {
+      if (businessReviewsPageOpen) {
+        closeBusinessReviewsPage();
+        return true;
+      }
+      if (reviewsPageOpen) {
+        closeReviewsPage();
+        return true;
+      }
+      if (editBusinessPageOpen) {
+        closeEditBusinessPage();
+        return true;
+      }
+      if (createOfferPageOpen) {
+        closeCreateOfferPage();
+        return true;
+      }
+      if (createBusinessPageOpen) {
+        closeCreateBusinessPage();
+        return true;
+      }
+      if (discoverSearchOpen) {
+        setDiscoverSearchOpen(false);
+        return true;
+      }
+      if (businessDetailOpen) {
+        closeBusinessDetail();
+        return true;
+      }
+      if (drawerOpen) {
+        setDrawerOpen(false);
+        return true;
+      }
+      if (activeTabRef.current !== "discover") {
+        applyDrawerTabChange("discover");
+        return true;
+      }
+      if (sheetIndexRef.current > 0) {
+        bottomSheetRef.current?.snapToIndex(0);
+        return true;
+      }
+      const now = Date.now();
+      if (now - lastBackPressAtRef.current < 2000) {
+        return false;
+      }
+      lastBackPressAtRef.current = now;
+      ToastAndroid.show("Press back again to exit", ToastAndroid.SHORT);
+      return true;
+    };
+    const subscription = BackHandler.addEventListener(
+      "hardwareBackPress",
+      handleHardwareBackPress,
+    );
+    return () => subscription.remove();
+  }, [
+    applyDrawerTabChange,
+    businessReviewsPageOpen,
+    businessDetailOpen,
+    closeBusinessReviewsPage,
+    closeBusinessDetail,
+    closeCreateBusinessPage,
+    closeCreateOfferPage,
+    closeEditBusinessPage,
+    closeReviewsPage,
+    createBusinessPageOpen,
+    createOfferPageOpen,
+    discoverSearchOpen,
+    drawerOpen,
+    editBusinessPageOpen,
+    reviewsPageOpen,
+  ]);
 
   const handleMarkerPress = (business) => {
     markerPressAtRef.current = Date.now();
@@ -15874,11 +16818,33 @@ export default function App() {
           : "Changes saved.",
       });
       setIsEditingBusiness(false);
+      setEditBusinessPageOpen(false);
       return;
     }
 
     setBusinessSaveBusy(true);
     try {
+      let nextImageUrl = String(formData.imageUrl || "").trim() || null;
+      const currentImageUrl =
+        String(ownerBusiness.imageUrl || ownerBusiness.coverImageUrl || "").trim() ||
+        null;
+      let uploadedBusinessImageUrl = null;
+      if (editBusinessImage?.uri) {
+        const upload = await uploadBusinessImage(editBusinessImage, ownerBusiness.id);
+        if (upload.error || !upload.url) {
+          setEditBusinessImageStatus({
+            uploading: false,
+            error: upload.error || "Unable to upload business photo.",
+          });
+          setFormMessage({
+            type: "error",
+            text: upload.error || "Unable to upload business photo.",
+          });
+          return;
+        }
+        uploadedBusinessImageUrl = upload.url;
+        nextImageUrl = upload.url;
+      }
       let pendingRequestId = ownerBusiness.pendingRequestId || null;
       if (hasPendingEdits) {
         const { data: request, error: requestError } = await supabase
@@ -15914,6 +16880,7 @@ export default function App() {
         merchant_descriptor_aliases: merchantDescriptorAliases,
         hours: formData.hours.trim() || ownerBusiness.hours || null,
         is_open: formData.isOpen,
+        image_url: nextImageUrl,
       };
       if (!hasPendingEdits) {
         updatePayload.name = trimmedName;
@@ -15945,6 +16912,7 @@ export default function App() {
             "state",
             "postal_code",
             "phone",
+            "image_url",
             "category_key",
             "category_label",
             "offer_highlight",
@@ -15962,6 +16930,9 @@ export default function App() {
         )
         .maybeSingle();
       if (error || !data) {
+        if (uploadedBusinessImageUrl) {
+          await removeBusinessImageByUrl(uploadedBusinessImageUrl);
+        }
         setFormMessage({
           type: "error",
           text: error?.message || "Unable to save business updates.",
@@ -15980,6 +16951,15 @@ export default function App() {
           business.id === ownerBusiness.id ? finalBusiness : business,
         ),
       );
+      setEditBusinessImage(null);
+      setEditBusinessImageStatus({ uploading: false, error: null });
+      if (
+        currentImageUrl &&
+        currentImageUrl !== nextImageUrl &&
+        (uploadedBusinessImageUrl || !nextImageUrl)
+      ) {
+        await removeBusinessImageByUrl(currentImageUrl);
+      }
       setFormMessage({
         type: "success",
         text: hasPendingEdits
@@ -15987,6 +16967,7 @@ export default function App() {
           : "Changes saved.",
       });
       setIsEditingBusiness(false);
+      setEditBusinessPageOpen(false);
     } finally {
       setBusinessSaveBusy(false);
     }
@@ -16468,7 +17449,7 @@ export default function App() {
               "redemption_limit_period",
               "redemption_limit_count",
               "created_at",
-              "business:businesses (id, name, category_key, category_label, tags, latitude, longitude, is_open, approval_status, status, commission_rate_cents, default_cashback_rate_bps)",
+              "business:businesses (id, name, image_url, hours, phone, category_key, category_label, tags, latitude, longitude, is_open, approval_status, status, commission_rate_cents, default_cashback_rate_bps, stripe_onboarded, stripe_gated)",
             ].join(","),
           )
           .eq("active", true)
@@ -16674,7 +17655,7 @@ export default function App() {
           "redemption_limit_period",
           "redemption_limit_count",
           "created_at",
-          "business:businesses (id, name, category_key, category_label, created_at)",
+          "business:businesses (id, name, image_url, category_key, category_label, created_at)",
         ].join(","),
       )
       .eq("approval_status", "pending")
@@ -16713,7 +17694,7 @@ export default function App() {
           "redemption_limit_period",
           "redemption_limit_count",
           "created_at",
-          "business:businesses (id, name, category_key, category_label, created_at)",
+          "business:businesses (id, name, image_url, category_key, category_label, created_at)",
         ].join(","),
       )
       .maybeSingle();
@@ -16750,7 +17731,7 @@ export default function App() {
           "redemption_limit_period",
           "redemption_limit_count",
           "created_at",
-          "business:businesses (id, name, category_key, category_label, created_at)",
+          "business:businesses (id, name, image_url, category_key, category_label, created_at)",
         ].join(","),
       )
       .maybeSingle();
@@ -16820,6 +17801,12 @@ export default function App() {
     }
     setAdminActionStatus({ loading: true, error: null, success: null });
     let imageCleanupError = null;
+    const businessImageError = await removeBusinessImageByUrl(
+      business.imageUrl || business.coverImageUrl || "",
+    );
+    if (businessImageError) {
+      imageCleanupError = businessImageError;
+    }
     const { data: offerRows, error: offerError } = await supabase
       .from("offers")
       .select("id, image_url")
@@ -17293,6 +18280,85 @@ export default function App() {
         error: error?.message || "Unable to open photo library.",
       });
     }
+  };
+
+  const selectBusinessPhotoAsset = async (setImage, setStatus) => {
+    setStatus({ uploading: false, error: null });
+    const permission = await requestImageLibraryAccessAsync();
+    const hasPermission = permission.granted || permission.status === "limited";
+    if (!hasPermission) {
+      setStatus({
+        uploading: false,
+        error: "Photo access is required. Enable it in Settings.",
+      });
+      return;
+    }
+    try {
+      const mediaTypes = getImagePickerMediaTypes();
+      const pickerOptions = {
+        ...(mediaTypes ? { mediaTypes } : {}),
+        allowsEditing: true,
+        aspect: [191, 100],
+        quality: 0.9,
+        base64: false,
+      };
+      const result = await ImagePicker.launchImageLibraryAsync({
+        ...pickerOptions,
+      });
+      if (result.canceled) return;
+      const asset = result.assets?.[0];
+      if (!asset?.uri) {
+        setStatus({
+          uploading: false,
+          error: "Unable to load that photo. Please try again.",
+        });
+        return;
+      }
+      if (!isImageAsset(asset)) {
+        setStatus({
+          uploading: false,
+          error: "Please select an image file.",
+        });
+        return;
+      }
+      setStatus({ uploading: true, error: null });
+      const { image, error } = await normalizeOfferImage(asset);
+      if (error || !image?.uri) {
+        setStatus({
+          uploading: false,
+          error: error || "Unable to process this photo.",
+        });
+        return;
+      }
+      setImage(image);
+      setStatus({ uploading: false, error: null });
+    } catch (error) {
+      setStatus({
+        uploading: false,
+        error: error?.message || "Unable to open photo library.",
+      });
+    }
+  };
+
+  const handlePickBusinessSignUpImage = async () => {
+    await selectBusinessPhotoAsset(
+      setBusinessSignUpImage,
+      setBusinessSignUpImageStatus,
+    );
+  };
+
+  const handlePickCreateBusinessImage = async () => {
+    await selectBusinessPhotoAsset(
+      setCreateBusinessImage,
+      setCreateBusinessImageStatus,
+    );
+  };
+
+  const handlePickEditBusinessImage = async () => {
+    await selectBusinessPhotoAsset(
+      setEditBusinessImage,
+      setEditBusinessImageStatus,
+    );
   };
 
   const handlePickEditOfferImage = async () => {
@@ -18843,21 +19909,10 @@ export default function App() {
 
   const handleOpenOfferEdit = (offer) => {
     if (!offer) return;
-    const offerTypeDraft = getOfferTypeDraftFromValue(
-      offer.offerType || offer.offer_type,
-    );
     setEditOfferDraft({
       id: offer.id,
       title: offer.title || "",
-      description: offer.description || "",
-      typePreset: offerTypeDraft.typePreset,
-      typeCustom: offerTypeDraft.typeCustom,
-      imageUrl: offer.imageUrl || "",
     });
-    setEditOfferTypeMenuOpen(false);
-    setEditOfferImage(
-      offer.imageUrl ? { uri: offer.imageUrl, isRemote: true } : null,
-    );
     setEditOfferStatus({ saving: false, error: null });
     setEditOfferHonorChecked(false);
     setEditOfferOpen(true);
@@ -18869,17 +19924,6 @@ export default function App() {
       setEditOfferStatus({
         saving: false,
         error: "Offer title is required.",
-      });
-      return;
-    }
-    const normalizedType = resolveOfferTypeDraftValue(
-      editOfferDraft.typePreset,
-      editOfferDraft.typeCustom,
-    );
-    if (!normalizedType) {
-      setEditOfferStatus({
-        saving: false,
-        error: "Offer type is required.",
       });
       return;
     }
@@ -18899,20 +19943,11 @@ export default function App() {
       return;
     }
     try {
-      let imageUrl = editOfferDraft.imageUrl || "";
-      if (editOfferImage && !editOfferImage.isRemote) {
-        const upload = await uploadOfferImage(editOfferImage, ownerBusiness.id);
-        if (upload.error) {
-          setEditOfferStatus({ saving: false, error: upload.error });
-          return;
-        }
-        imageUrl = upload.url || "";
-      }
       const payload = {
         title: editOfferDraft.title.trim(),
-        description: editOfferDraft.description.trim() || null,
-        offer_type: normalizedType,
-        image_url: imageUrl || null,
+        description: null,
+        offer_type: "cashback",
+        image_url: null,
         approval_status: "pending",
         offer_honor_commitment_accepted: true,
         offer_honor_commitment_version: OFFER_HONOR_POLICY_VERSION,
@@ -19356,15 +20391,10 @@ export default function App() {
       setOfferError("Create your business profile first.");
       return;
     }
-    const isBusinessStripeReadyForOffers = Boolean(
-      (resolvedOwnerBusiness?.stripeAccountId ||
-        ownerBusiness?.stripeAccountId) &&
-      (resolvedOwnerBusiness?.stripePaymentMethodId ||
-        ownerBusiness?.stripePaymentMethodId),
-    );
-    if (!isBusinessStripeReadyForOffers) {
+    if (!activeBusinessCanEnableOffers) {
       setOfferError(
-        "Connect Stripe and add a payment method in Dashboard > Payments before creating offers.",
+        activeBusinessOfferGateMessage ||
+          "You must have a connected Stripe account and a payment method on file to enable offers.",
       );
       return;
     }
@@ -19414,10 +20444,6 @@ export default function App() {
       setOfferError("End date must be on or after the start date.");
       return;
     }
-    if (!offerImage?.uri) {
-      setOfferError("Offer photo is required.");
-      return;
-    }
     if (!offerCreateHonorChecked) {
       setOfferError(
         "Confirm you will honor this offer exactly as published before submitting.",
@@ -19427,30 +20453,7 @@ export default function App() {
     if (!ensureSupabaseReady(setOfferError)) return;
     setOfferBusy(true);
     setOfferError(null);
-    setOfferImageStatus((prev) => ({ ...prev, error: null }));
     const offerHonorAcceptedAt = new Date().toISOString();
-
-    let imageUrl = null;
-    if (offerImage?.uri) {
-      setOfferImageStatus({ uploading: true, error: null });
-      const { url, error } = await uploadOfferImage(
-        offerImage,
-        ownerBusiness.id,
-      );
-      console.log("Wello offer image upload", {
-        businessId: ownerBusiness.id,
-        ok: !error,
-        url,
-        error,
-      });
-      setOfferImageStatus({ uploading: false, error });
-      if (error) {
-        setOfferError(error);
-        setOfferBusy(false);
-        return;
-      }
-      imageUrl = url;
-    }
     const { data, error } = await supabase
       .from("offers")
       .insert({
@@ -19458,7 +20461,7 @@ export default function App() {
         title: offerForm.title.trim(),
         description: null,
         offer_type: "cashback",
-        image_url: imageUrl,
+        image_url: null,
         active: true,
         starts_at: startIso,
         expires_at: expirationIso,
@@ -19502,9 +20505,6 @@ export default function App() {
     mergeOffers([mapSupabaseOffer(data)]);
     setOfferForm({
       title: "",
-      description: "",
-      typePreset: "Discount",
-      typeCustom: "",
       startsDate: "",
       startsTime: "",
       expiresDate: "",
@@ -19521,8 +20521,8 @@ export default function App() {
       options: [],
       selectedValue: null,
     });
-    setOfferImage(null);
     setOfferCreateHonorChecked(false);
+    setCreateOfferPageOpen(false);
     if (SUPABASE_URL && SUPABASE_ANON_KEY) {
       loadOwnerOffers(ownerBusiness.id);
       loadRemoteOffers({ silent: true });
@@ -19533,6 +20533,11 @@ export default function App() {
     });
     setOfferBusy(false);
   };
+
+  const clearOfferFeedback = useCallback(() => {
+    setOfferError(null);
+    setOfferNotice(null);
+  }, []);
 
   const renderCreateOfferCard = () => {
     const stripeReadyForOffers = Boolean(
@@ -19806,17 +20811,19 @@ export default function App() {
   const handleToggleOffer = async (offer) => {
     if (!offer?.id) return;
     const nextActive = !offer.active;
+    setOwnerOfferActionErrors((prev) => {
+      if (!prev?.[offer.id]) return prev;
+      const next = { ...prev };
+      delete next[offer.id];
+      return next;
+    });
     if (nextActive) {
-      const isBusinessStripeReadyForOffers = Boolean(
-        (resolvedOwnerBusiness?.stripeAccountId ||
-          ownerBusiness?.stripeAccountId) &&
-        (resolvedOwnerBusiness?.stripePaymentMethodId ||
-          ownerBusiness?.stripePaymentMethodId),
-      );
-      if (!isBusinessStripeReadyForOffers) {
-        setOfferError(
-          "Add a payment method in Dashboard > Payments before re-activating offers.",
-        );
+      if (!activeBusinessCanEnableOffers) {
+        setOwnerOfferActionErrors((prev) => ({
+          ...prev,
+          [offer.id]:
+            "You must have a connected Stripe account and a payment method on file to enable offers.",
+        }));
         return;
       }
     }
@@ -20510,6 +21517,112 @@ export default function App() {
     [],
   );
 
+  const loadOwnerBusinessReviews = useCallback(
+    async ({ silent } = {}) => {
+      const businessList = Array.isArray(memberBusinesses) ? memberBusinesses : [];
+      const businessIds = businessList
+        .map((business) => String(business?.id || "").trim())
+        .filter(Boolean);
+
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        setOwnerReviewsStatus({
+          loading: false,
+          error: "Supabase is not configured for reviews yet.",
+        });
+        setOwnerReviewGroups([]);
+        return;
+      }
+
+      if (!businessIds.length) {
+        setOwnerReviewGroups([]);
+        setOwnerReviewsStatus({ loading: false, error: null });
+        return;
+      }
+
+      if (!silent) {
+        setOwnerReviewsStatus({ loading: true, error: null });
+      }
+
+      const { data, error } = await supabase
+        .from("reviews")
+        .select("id, business_id, user_id, rating, review_text, created_at")
+        .in("business_id", businessIds)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        if (!silent) {
+          setOwnerReviewsStatus({
+            loading: false,
+            error: error.message || "Unable to load reviews.",
+          });
+        }
+        return;
+      }
+
+      const rows = Array.isArray(data) ? data : [];
+      const reviewerIds = Array.from(
+        new Set(
+          rows
+            .map((row) => String(row?.user_id || "").trim())
+            .filter(Boolean),
+        ),
+      );
+
+      const reviewerNames = new Map();
+      if (reviewerIds.length) {
+        const { data: profilesData } = await supabase
+          .from("profiles")
+          .select("id, full_name")
+          .in("id", reviewerIds);
+        (profilesData || []).forEach((profile) => {
+          const fullName = String(profile?.full_name || "").trim();
+          if (!profile?.id) return;
+          reviewerNames.set(
+            String(profile.id),
+            fullName ? fullName.split(/\s+/)[0] : "Anonymous",
+          );
+        });
+      }
+
+      const reviewsByBusiness = new Map();
+      rows.forEach((row) => {
+        const businessId = String(row?.business_id || "").trim();
+        if (!businessId) return;
+        const list = reviewsByBusiness.get(businessId) || [];
+        list.push({
+          id: String(row.id || `${businessId}-${list.length}`),
+          businessId,
+          rating: Math.max(0, Math.min(5, Number(row?.rating) || 0)),
+          reviewText: String(row?.review_text || "").trim(),
+          createdAt: row?.created_at ? new Date(row.created_at).getTime() : Date.now(),
+          reviewDate: row?.created_at
+            ? new Date(row.created_at).toLocaleDateString()
+            : "",
+          reviewerName:
+            reviewerNames.get(String(row?.user_id || "").trim()) || "Anonymous",
+        });
+        reviewsByBusiness.set(businessId, list);
+      });
+
+      setOwnerReviewGroups(
+        businessList.map((business) => ({
+          businessId: business.id,
+          businessName: business.name || "Business",
+          reviews: reviewsByBusiness.get(String(business.id || "").trim()) || [],
+        })),
+      );
+      if (!silent) {
+        setOwnerReviewsStatus({ loading: false, error: null });
+      }
+    },
+    [memberBusinesses],
+  );
+
+  useEffect(() => {
+    if (!reviewsPageOpen || !isOwner) return;
+    void loadOwnerBusinessReviews({ silent: false });
+  }, [isOwner, loadOwnerBusinessReviews, reviewsPageOpen]);
+
   const loadBusinessOffers = useCallback(
     async (businessId, { silent } = {}) => {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -21025,10 +22138,16 @@ export default function App() {
   useEffect(() => {
     if (!businessDetailOpen || !businessDetail?.id) return;
     loadBusinessReviews(businessDetail.id);
+    if (businessDetail?.stripeGated === false) {
+      setBusinessDetailOffers([]);
+      setBusinessDetailOffersStatus({ loading: false, error: null });
+      return;
+    }
     loadBusinessOffers(businessDetail.id);
   }, [
     businessDetailOpen,
     businessDetail?.id,
+    businessDetail?.stripeGated,
     loadBusinessReviews,
     loadBusinessOffers,
   ]);
@@ -21125,6 +22244,99 @@ export default function App() {
     }
   };
 
+  const openCreateBusinessPage = useCallback(() => {
+    addBusinessReturnBusinessIdRef.current =
+      ownerBusinessId ||
+      activeMemberBusiness?.id ||
+      memberBusinesses[0]?.id ||
+      null;
+    setOwnerBusinessScreen("dashboard");
+    setActiveTab("business");
+    setDrawerOpen(false);
+    setCreateBusinessPageOpen(true);
+  }, [activeMemberBusiness, memberBusinesses, ownerBusinessId]);
+
+  const openCreateOfferPage = useCallback(() => {
+    setActiveTab("business");
+    setOwnerBusinessScreen("dashboard");
+    setDrawerOpen(false);
+    setOfferError(null);
+    setOfferNotice(null);
+    setCreateOfferPageOpen(true);
+  }, []);
+
+  const closeCreateBusinessPage = useCallback(() => {
+    const restoreBusinessId =
+      addBusinessReturnBusinessIdRef.current ||
+      activeMemberBusiness?.id ||
+      memberBusinesses[0]?.id ||
+      null;
+    setCreateBusinessPageOpen(false);
+    if (restoreBusinessId) {
+      setPreferredManagedBusinessId(restoreBusinessId);
+      setOwnerBusinessId(restoreBusinessId);
+    } else {
+      setPreferredManagedBusinessId(CREATE_BUSINESS_SENTINEL_ID);
+      setOwnerBusinessId(null);
+    }
+  }, [activeMemberBusiness, memberBusinesses]);
+
+  const closeCreateOfferPage = useCallback(() => {
+    setCreateOfferPageOpen(false);
+    setOfferError(null);
+    setOfferNotice(null);
+  }, []);
+
+  const openEditBusinessPage = useCallback(() => {
+    if (!ownerBusiness || !canRequestEdits) return;
+    setFormData(buildFormFromBusiness(ownerBusiness));
+    setEditHoursSchedule(parseBusinessHoursSchedule(ownerBusiness.hours));
+    setEditBusinessImage(null);
+    setEditBusinessImageStatus({ uploading: false, error: null });
+    setBusinessCategoryMenuOpen(false);
+    setFormMessage(null);
+    setIsEditingBusiness(true);
+    setActiveTab("business");
+    setOwnerBusinessScreen("dashboard");
+    setDrawerOpen(false);
+    setEditBusinessPageOpen(true);
+  }, [buildFormFromBusiness, canRequestEdits, ownerBusiness]);
+
+  const closeEditBusinessPage = useCallback(() => {
+    if (ownerBusiness) {
+      setFormData(buildFormFromBusiness(ownerBusiness));
+      setEditHoursSchedule(parseBusinessHoursSchedule(ownerBusiness.hours));
+    }
+    setBusinessCategoryMenuOpen(false);
+    setEditBusinessImage(null);
+    setEditBusinessImageStatus({ uploading: false, error: null });
+    setFormMessage(null);
+    setIsEditingBusiness(false);
+    setEditBusinessPageOpen(false);
+  }, [buildFormFromBusiness, ownerBusiness]);
+
+  const openReviewsPage = useCallback(() => {
+    setDrawerOpen(false);
+    setActiveTab("business");
+    setOwnerBusinessScreen("dashboard");
+    setReviewsPageOpen(true);
+  }, []);
+
+  const closeReviewsPage = useCallback(() => {
+    setReviewsPageOpen(false);
+  }, []);
+
+  const openBusinessReviewsPage = useCallback((group) => {
+    if (!group) return;
+    setSelectedBusinessReviewsGroup(group);
+    setBusinessReviewsPageOpen(true);
+  }, []);
+
+  const closeBusinessReviewsPage = useCallback(() => {
+    setBusinessReviewsPageOpen(false);
+    setSelectedBusinessReviewsGroup(null);
+  }, []);
+
   const handleCreateBusinessProfile = async () => {
     if (!authUserId) {
       setCreateBusinessError("Sign in to create your business profile.");
@@ -21210,6 +22422,32 @@ export default function App() {
         );
         return;
       }
+      let createdBusinessRow = data;
+      if (createBusinessImage?.uri) {
+        const upload = await uploadBusinessImage(createBusinessImage, data.id);
+        if (upload.error || !upload.url) {
+          setCreateBusinessError(
+            upload.error ||
+              "Business profile created, but the cover photo could not be uploaded.",
+          );
+        } else {
+          const { data: imageRow, error: imageError } = await supabase
+            .from("businesses")
+            .update({ image_url: upload.url })
+            .eq("id", data.id)
+            .select("*")
+            .maybeSingle();
+          if (imageError || !imageRow) {
+            await removeBusinessImageByUrl(upload.url);
+            setCreateBusinessError(
+              imageError?.message ||
+                "Business profile created, but the cover photo could not be saved.",
+            );
+          } else {
+            createdBusinessRow = imageRow;
+          }
+        }
+      }
       const profileEmailValue = profileEmail || authEmail || null;
       await supabase.from("profiles").upsert({
         id: authUserId,
@@ -21218,9 +22456,14 @@ export default function App() {
         phone: createBusinessForm.phone.trim() || null,
         company: createBusinessForm.name.trim() || null,
       });
-      const mapped = mapSupabaseBusiness(data, 0);
+      const mapped = mapSupabaseBusiness(createdBusinessRow, 0);
       setBusinesses((prev) => [mapped, ...prev]);
       setOwnerBusinessId(mapped.id);
+      setPreferredManagedBusinessId(mapped.id);
+      setCreateBusinessPageOpen(false);
+      addBusinessReturnBusinessIdRef.current = null;
+      await activeBusinessControlsRef.current?.refreshBusinesses?.();
+      activeBusinessControlsRef.current?.selectBusinessById?.(mapped.id);
       setCreateBusinessForm({
         name: "",
         address: "",
@@ -21228,13 +22471,16 @@ export default function App() {
         city: "",
         state: "",
         postalCode: "",
-        categoryKey: "restaurant",
+        categoryKey: DEFAULT_BUSINESS_CATEGORY_KEY,
         categoryCustomLabel: "",
         offer: "",
         phone: "",
         tags: "",
         merchantDescriptorAliases: "",
+        imageUrl: "",
       });
+      setCreateBusinessImage(null);
+      setCreateBusinessImageStatus({ uploading: false, error: null });
       setCreateHoursSchedule(createDefaultBusinessHoursSchedule());
       setCreateHoursDays(DEFAULT_OPERATING_DAYS);
       setCreateHoursStart("");
@@ -21341,13 +22587,23 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <SafeAreaView style={styles.screen} edges={["left", "right"]}>
-          <StatusBar
-            barStyle="dark-content"
-            translucent
-            backgroundColor="transparent"
+        <ActiveBusinessProvider
+          userId={authUserId}
+          enabled={isSignedIn}
+          preferredBusinessId={preferredManagedBusinessId}
+        >
+          <ActiveBusinessBridge
+            onBusinessesChange={handleActiveBusinessStateChange}
+            onActiveBusinessChange={handleActiveBusinessSelectionChange}
+            controlsRef={activeBusinessControlsRef}
           />
-          <View style={styles.container}>
+          <SafeAreaView style={styles.screen} edges={["left", "right"]}>
+            <StatusBar
+              barStyle="dark-content"
+              translucent
+              backgroundColor="transparent"
+            />
+            <View style={styles.container}>
             <MapView
               ref={mapRef}
               style={styles.map}
@@ -21457,29 +22713,322 @@ export default function App() {
               })}
             </MapView>
 
-            <View
-              style={[styles.topMeta, { top: uiTopInset }]}
-              pointerEvents="box-none"
-            >
-              <View style={styles.locateRow} pointerEvents="box-none">
+            {(activeTab === "discover" ||
+              (activeTab === "business" &&
+                isOwner &&
+                ownerBusinessScreen === "dashboard")) &&
+            !businessDetailOpen &&
+            !discoverSearchOpen &&
+            !fullScreenOverlayOpen ? (
+              <View
+                style={[styles.discoverTopShell, { top: topChromeOffset }]}
+                pointerEvents="box-none"
+              >
                 <TouchableOpacity
-                  style={styles.locateButton}
-                  onPress={handleLocateMe}
-                  disabled={locating}
+                  style={styles.discoverTopActionButton}
+                  onPress={() => setDrawerOpen(true)}
+                  activeOpacity={0.88}
+                  hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
                 >
-                  <Ionicons
-                    name={locating ? "locate" : "locate-outline"}
-                    size={21}
-                    color={COLORS.pine}
-                  />
+                  <Ionicons name="menu" size={24} color={COLORS.ink} />
                 </TouchableOpacity>
-                {locationError && (
-                  <View style={styles.locateError}>
-                    <Text style={styles.locateErrorText}>{locationError}</Text>
-                  </View>
-                )}
+                <View style={styles.discoverTopActionGroup}>
+                  <TouchableOpacity
+                    style={styles.discoverTopActionButton}
+                    onPress={expandSheetForSearch}
+                    activeOpacity={0.88}
+                    hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                  >
+                    <Ionicons name="search-outline" size={24} color={COLORS.ink} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.discoverTopActionButton}
+                    onPress={handleLocateMe}
+                    disabled={locating}
+                    activeOpacity={0.88}
+                    hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                  >
+                    <Ionicons
+                      name={locating ? "locate" : "locate-outline"}
+                      size={24}
+                      color="#2F63F1"
+                    />
+                  </TouchableOpacity>
+                </View>
               </View>
+            ) : null}
+            {activeTab !== "discover" &&
+            !(activeTab === "business" && isOwner && ownerBusinessScreen === "dashboard") &&
+            !businessDetailOpen &&
+            !discoverSearchOpen &&
+            !fullScreenOverlayOpen ? (
+              <View
+                style={[styles.globalMenuShell, { top: topChromeOffset }]}
+                pointerEvents="box-none"
+              >
+                <TouchableOpacity
+                  style={styles.discoverTopActionButton}
+                  onPress={() => setDrawerOpen(true)}
+                  activeOpacity={0.88}
+                  hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                >
+                  <Ionicons name="menu" size={24} color={COLORS.ink} />
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            {activeTab === "discover" &&
+            locationError &&
+            !businessDetailOpen &&
+            !discoverSearchOpen &&
+            !fullScreenOverlayOpen ? (
+              <View style={[styles.discoverTopErrorWrap, { top: topChromeOffset + 66 }]}>
+                <View style={styles.locateError}>
+                  <Text style={styles.locateErrorText}>{locationError}</Text>
+                </View>
+              </View>
+            ) : null}
+
+            <View
+              style={styles.drawerOverlay}
+              pointerEvents={drawerOpen ? "auto" : "none"}
+            >
+              <Reanimated.View
+                pointerEvents="none"
+                style={[
+                  styles.drawerBackdrop,
+                  drawerBackdropAnimatedStyle,
+                ]}
+              />
+              <Pressable
+                style={styles.drawerBackdropPressable}
+                pointerEvents={drawerOpen ? "auto" : "none"}
+                onPress={() => setDrawerOpen(false)}
+              />
+              <Reanimated.View
+                pointerEvents={drawerOpen ? "auto" : "none"}
+                style={[
+                  styles.drawerPanel,
+                  drawerPanelAnimatedStyle,
+                ]}
+              >
+                  <LinearGradient
+                    colors={[LOADING_BRAND_YELLOW, "#FFE44A"]}
+                    style={styles.drawerHeader}
+                  >
+                    <View style={styles.drawerAvatar}>
+                      <Ionicons name="person-outline" size={34} color={COLORS.ink} />
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.drawerCloseButton,
+                        modalTopInset > 0 && { top: modalTopInset + 8 },
+                      ]}
+                      onPress={() => setDrawerOpen(false)}
+                      hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+                    >
+                      <Ionicons name="close" size={24} color={COLORS.ink} />
+                    </TouchableOpacity>
+                    <Text style={styles.drawerName}>
+                      {profileName?.trim() || "Wello User"}
+                    </Text>
+                    <Text style={styles.drawerEmail}>
+                      {profileEmail?.trim() || authEmail?.trim() || "Not signed in"}
+                    </Text>
+                  </LinearGradient>
+
+                  <View style={styles.drawerMenuList}>
+                    {drawerTabs.map((tab) => {
+                      const selected = activeTab === tab.key;
+                      return (
+                        <TouchableOpacity
+                          key={tab.key}
+                          style={[
+                            styles.drawerMenuItem,
+                            selected && styles.drawerMenuItemActive,
+                          ]}
+                          onPress={() => handleDrawerTabSelect(tab.key)}
+                          activeOpacity={0.88}
+                        >
+                          <Ionicons
+                            name={selected ? tab.iconActive : tab.icon}
+                            size={22}
+                            color={selected ? "#2F63F1" : "#30394A"}
+                          />
+                          <Text
+                            style={[
+                              styles.drawerMenuText,
+                              selected && styles.drawerMenuTextActive,
+                            ]}
+                          >
+                            {tab.key === "business" ? "Dashboard" : tab.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  {isSignedIn ? (
+                    <TouchableOpacity
+                      style={styles.drawerSignOutRow}
+                      onPress={() => {
+                        setDrawerOpen(false);
+                        handleSignOut();
+                      }}
+                      activeOpacity={0.88}
+                    >
+                      <Text style={styles.drawerSignOutText}>Sign Out</Text>
+                    </TouchableOpacity>
+                  ) : null}
+              </Reanimated.View>
             </View>
+            <Modal
+              visible={discoverSearchOpen}
+              animationType="slide"
+              presentationStyle="fullScreen"
+              onRequestClose={closeDiscoverSearch}
+            >
+              <DiscoverSearchScreenContent
+                closeDiscoverSearch={closeDiscoverSearch}
+                query={query}
+                setQuery={setQuery}
+                discoverSearchResults={discoverSearchResults}
+                handleSearchResultPress={handleSearchResultPress}
+                discoverSearchInputRef={discoverSearchInputRef}
+              />
+            </Modal>
+            {createBusinessPageOpen ? (
+              <AddBusinessScreen
+                styles={styles}
+                modalTopInset={modalTopInset}
+                colors={{ ink: COLORS.ink, muted: COLORS.muted, pine: COLORS.pine }}
+                privacyPolicyUrl={PRIVACY_POLICY_URL}
+                AutoFocusInput={AutoFocusInput}
+                createBusinessForm={createBusinessForm}
+                setCreateBusinessForm={setCreateBusinessForm}
+                createBusinessCategoryMenuOpen={createBusinessCategoryMenuOpen}
+                setCreateBusinessCategoryMenuOpen={
+                  setCreateBusinessCategoryMenuOpen
+                }
+                categoryOptions={CATEGORY_OPTIONS_WITH_OTHER}
+                categoryOtherKey={CATEGORY_OTHER_KEY}
+                getCategoryPickerLabel={getCategoryPickerLabel}
+                createAddressLoading={createAddressLoading}
+                createAddressError={createAddressError}
+                createAddressResults={createAddressResults}
+                addressLookupEnabled={ADDRESS_LOOKUP_ENABLED}
+                addressLookupUnavailableCopy={ADDRESS_LOOKUP_UNAVAILABLE_COPY}
+                handleCreateAddressChange={handleCreateAddressChange}
+                handleSelectCreateSuggestion={handleSelectCreateSuggestion}
+                createBusinessImage={createBusinessImage}
+                setCreateBusinessImage={setCreateBusinessImage}
+                createBusinessImageStatus={createBusinessImageStatus}
+                setCreateBusinessImageStatus={setCreateBusinessImageStatus}
+                handlePickCreateBusinessImage={handlePickCreateBusinessImage}
+                renderBusinessHoursEditor={renderBusinessHoursEditor}
+                createHoursSchedule={createHoursSchedule}
+                setCreateHoursSchedule={setCreateHoursSchedule}
+                tagOptions={TAG_OPTIONS}
+                selectedCreateTags={selectedCreateTags}
+                createBusinessAuthorizedChecked={
+                  createBusinessAuthorizedChecked
+                }
+                setCreateBusinessAuthorizedChecked={
+                  setCreateBusinessAuthorizedChecked
+                }
+                createBusinessHonorOffersChecked={
+                  createBusinessHonorOffersChecked
+                }
+                setCreateBusinessHonorOffersChecked={
+                  setCreateBusinessHonorOffersChecked
+                }
+                createBusinessError={createBusinessError}
+                setCreateBusinessError={setCreateBusinessError}
+                createBusinessBusy={createBusinessBusy}
+                handleCreateBusinessProfile={handleCreateBusinessProfile}
+                closeCreateBusinessPage={closeCreateBusinessPage}
+              />
+            ) : null}
+            {createOfferPageOpen ? (
+              <CreateOfferScreen
+                styles={styles}
+                colors={{ ink: COLORS.ink, muted: COLORS.muted, white: COLORS.white }}
+                privacyPolicyUrl={PRIVACY_POLICY_URL}
+                AutoFocusInput={AutoFocusInput}
+                offerForm={offerForm}
+                setOfferForm={setOfferForm}
+                offerError={offerError}
+                offerBusy={offerBusy}
+                offerNotice={offerNotice}
+                ownerCommissionRateLabel={`${formatPercentLabel(ownerCommissionRatePercent)}%`}
+                offerCreateHonorChecked={offerCreateHonorChecked}
+                setOfferCreateHonorChecked={setOfferCreateHonorChecked}
+                openOfferDatePicker={openOfferDatePicker}
+                openOfferTimePicker={openOfferTimePicker}
+                getOfferDateOptionLabel={getOfferDateOptionLabel}
+                offerExpiryTimeOptions={offerExpiryTimeOptions}
+                canCreateOffer={activeBusinessCanEnableOffers}
+                createOfferGateError={activeBusinessOfferGateMessage}
+                handleCreateOffer={handleCreateOffer}
+                closeCreateOfferPage={closeCreateOfferPage}
+                clearOfferFeedback={clearOfferFeedback}
+              />
+            ) : null}
+            {editBusinessPageOpen ? (
+              <EditBusinessScreen
+                styles={styles}
+                colors={{ ink: COLORS.ink, muted: COLORS.muted, pine: COLORS.pine }}
+                AutoFocusInput={AutoFocusInput}
+                formData={formData}
+                setFormData={setFormData}
+                handleFormChange={handleFormChange}
+                editBusinessCategoryMenuOpen={businessCategoryMenuOpen}
+                setEditBusinessCategoryMenuOpen={setBusinessCategoryMenuOpen}
+                categoryOptions={CATEGORY_OPTIONS}
+                getCategoryPickerLabel={getCategoryPickerLabel}
+                editAddressLoading={addressLoading}
+                editAddressError={addressError}
+                editAddressResults={addressResults}
+                addressLookupEnabled={ADDRESS_LOOKUP_ENABLED}
+                addressLookupUnavailableCopy={ADDRESS_LOOKUP_UNAVAILABLE_COPY}
+                handleAddressChange={handleAddressChange}
+                handleSelectSuggestion={handleSelectSuggestion}
+                editBusinessImage={editBusinessImage}
+                setEditBusinessImage={setEditBusinessImage}
+                editBusinessImageStatus={editBusinessImageStatus}
+                setEditBusinessImageStatus={setEditBusinessImageStatus}
+                handlePickEditBusinessImage={handlePickEditBusinessImage}
+                renderBusinessHoursEditor={renderBusinessHoursEditor}
+                editHoursSchedule={editHoursSchedule}
+                setEditHoursSchedule={setEditHoursSchedule}
+                tagOptions={TAG_OPTIONS}
+                selectedEditTags={selectedBusinessTags}
+                businessSaveBusy={businessSaveBusy}
+                formMessage={formMessage}
+                handleSaveBusiness={handleSaveBusiness}
+                closeEditBusinessPage={closeEditBusinessPage}
+              />
+            ) : null}
+            {reviewsPageOpen ? (
+              <ReviewsScreen
+                styles={styles}
+                colors={{ ink: COLORS.ink, muted: COLORS.muted }}
+                groupedReviews={ownerReviewGroups}
+                reviewsStatus={ownerReviewsStatus}
+                openBusinessReviewsPage={openBusinessReviewsPage}
+                closeReviewsPage={closeReviewsPage}
+              />
+            ) : null}
+            {businessReviewsPageOpen ? (
+              <BusinessReviewsScreen
+                styles={styles}
+                colors={{ ink: COLORS.ink, muted: COLORS.muted }}
+                businessName={
+                  selectedBusinessReviewsGroup?.businessName || "Business Reviews"
+                }
+                reviews={selectedBusinessReviewsGroup?.reviews || []}
+                closeBusinessReviewsPage={closeBusinessReviewsPage}
+              />
+            ) : null}
             <Modal
               transparent
               visible={Boolean(infoTooltip)}
@@ -22238,13 +23787,9 @@ export default function App() {
               </View>
             </Modal>
 
-            <Modal
-              transparent
-              visible={businessDetailOpen}
-              animationType="slide"
-            >
-              <View style={styles.detailOverlay}>
-                <View style={styles.detailCard}>
+            {businessDetailOpen && businessDetail ? (
+              <View style={styles.businessPageOverlay}>
+                <View style={styles.businessPageSurface}>
                   {(() => {
                     const businessPhone = String(
                       businessDetail?.phone ||
@@ -22255,309 +23800,409 @@ export default function App() {
                     const hasBusinessPhone = Boolean(
                       businessPhone.replace(/[^\d+]/g, ""),
                     );
+                    const reviewCount = businessDetailReviews.length;
+                    const reviewAverage =
+                      reviewCount > 0
+                        ? businessDetailReviews.reduce(
+                            (sum, review) => sum + (review.rating || 0),
+                            0,
+                          ) / reviewCount
+                        : null;
+                    const hoursStatus = getBusinessHoursStatus(
+                      businessDetail?.hours || businessDetail?.business?.hours || "",
+                      businessDetail?.isOpen ?? true,
+                    );
+                    const heroImageUrl = String(
+                      businessDetail?.imageUrl ||
+                        businessDetail?.coverImageUrl ||
+                        businessDetailOffers.find((offer) =>
+                          String(offer?.imageUrl || "").trim(),
+                        )?.imageUrl ||
+                        "",
+                    ).trim();
+                    const categoryLabel =
+                      businessDetail?.category || "Local business";
+                    const businessCashbackRateBps =
+                      resolveDisplayedBusinessDefaultCashbackRateBps(
+                        businessDetail,
+                      );
+                    const businessCashbackLabel =
+                      formatPercentOnlyLabel(businessCashbackRateBps / 100) ||
+                      "Cashback";
+                    const distanceLabel = (() => {
+                      const fallbackDistance = String(businessDetail?.distance || "").trim();
+                      const selectedCardMiles = Number(
+                        selectedBusinessDetailCard?.distanceMiles,
+                      );
+                      const coordinate = resolveBusinessCoordinateForDistance(
+                        businessDetail,
+                      );
+                      const computedMeters =
+                        nearbyOrigin &&
+                        Number.isFinite(Number(nearbyOrigin?.latitude)) &&
+                        Number.isFinite(Number(nearbyOrigin?.longitude)) &&
+                        coordinate
+                          ? distanceBetweenCoordsMeters(
+                              {
+                                latitude: Number(nearbyOrigin.latitude),
+                                longitude: Number(nearbyOrigin.longitude),
+                              },
+                              coordinate,
+                            )
+                          : null;
+                      const miles = Number.isFinite(selectedCardMiles)
+                        ? selectedCardMiles
+                        : Number.isFinite(Number(computedMeters))
+                        ? Number(computedMeters) / 1609.34
+                        : Number(
+                            businessDetail?.distanceMiles ??
+                              parseDistanceLabelMiles(fallbackDistance),
+                          );
+                      return formatDistanceMilesLabel(miles);
+                    })();
                     return (
-                  <View style={styles.detailHeader}>
-                    <View>
-                      <Text style={styles.detailTitle}>
-                        {businessDetail?.name || "Business"}
-                      </Text>
-                      <Text style={styles.detailSubtitle}>
-                        {businessDetail?.category || "Local business"}
-                      </Text>
-                    </View>
-                    <View style={styles.detailHeaderActions}>
-                      {hasBusinessPhone ? (
-                        <TouchableOpacity
-                          style={styles.detailHeaderDirections}
-                          onPress={() => openPhoneForBusiness(businessDetail)}
-                        >
-                          <Ionicons
-                            name="call-outline"
-                            size={14}
-                            color={COLORS.pine}
-                          />
-                          <Text style={styles.detailHeaderDirectionsText}>
-                            Call
-                          </Text>
-                        </TouchableOpacity>
-                      ) : null}
-                      <TouchableOpacity
-                        style={styles.detailClose}
-                        onPress={closeBusinessDetail}
+                      <ScrollView
+                        style={styles.businessPageScroll}
+                        contentContainerStyle={styles.businessPageContent}
+                        showsVerticalScrollIndicator={false}
+                        keyboardShouldPersistTaps="handled"
                       >
-                        <Ionicons name="close" size={18} color={COLORS.ink} />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
+                        <View
+                          style={[
+                            styles.businessPageHeader,
+                            modalTopInset > 0 && {
+                              paddingTop: modalTopInset + 8,
+                            },
+                          ]}
+                        >
+                          <TouchableOpacity
+                            style={styles.businessPageBackButton}
+                            onPress={closeBusinessDetail}
+                            activeOpacity={0.85}
+                            hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+                          >
+                            <Ionicons
+                              name="arrow-back"
+                              size={24}
+                              color={COLORS.ink}
+                            />
+                          </TouchableOpacity>
+                          <Text
+                            style={styles.businessPageHeaderTitle}
+                            numberOfLines={1}
+                          >
+                            {businessDetail?.name || "Business"}
+                          </Text>
+                        </View>
+
+                        <View style={styles.businessPageHeroWrap}>
+                          {heroImageUrl ? (
+                            <Image
+                              source={{ uri: heroImageUrl }}
+                              style={styles.businessPageHeroImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <View style={styles.businessPageHeroPlaceholder}>
+                              <Ionicons
+                                name="image-outline"
+                                size={34}
+                                color="#C8D1E0"
+                              />
+                            </View>
+                          )}
+                        </View>
+
+                        <View style={styles.businessPageBody}>
+                          <View style={styles.businessPageTitleRow}>
+                            <Text style={styles.businessPageTitle}>
+                              {businessDetail?.name || "Business"}
+                            </Text>
+                            <View
+                              style={[
+                                styles.businessPageStatusPill,
+                                !hoursStatus.isOpen &&
+                                  styles.businessPageStatusPillClosed,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.businessPageStatusText,
+                                  !hoursStatus.isOpen &&
+                                    styles.businessPageStatusTextClosed,
+                                ]}
+                              >
+                                {hoursStatus.statusText}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <View style={styles.businessPageMetaRow}>
+                            <Ionicons
+                              name="location-outline"
+                              size={18}
+                              color={COLORS.muted}
+                            />
+                            <Text style={styles.businessPageMetaText}>
+                              {distanceLabel}
+                            </Text>
+                            <Text style={styles.businessPageMetaDot}>•</Text>
+                            <Ionicons
+                              name="star"
+                              size={18}
+                              color={COLORS.sun}
+                            />
+                            <Text style={styles.businessPageMetaText}>
+                              {reviewAverage ? reviewAverage.toFixed(1) : "--"}
+                            </Text>
+                            <Text style={styles.businessPageMetaText}>
+                              ({reviewCount} reviews)
+                            </Text>
+                          </View>
+
+                          <View style={styles.businessPageCategoryChip}>
+                            <Text style={styles.businessPageCategoryChipText}>
+                              {categoryLabel}
+                            </Text>
+                          </View>
+
+                          <View style={styles.businessPageFallbackRedeemCard}>
+                            <Text style={styles.businessPageOfferTitle}>
+                              {businessCashbackLabel} cashback
+                            </Text>
+                            <TouchableOpacity
+                              style={[
+                                styles.businessPageCashbackRedeemButton,
+                                !hoursStatus.isOpen &&
+                                  styles.businessPageCashbackRedeemButtonDisabled,
+                              ]}
+                              onPress={() =>
+                                handleRedeemOffer({
+                                  businessId: businessDetail.id,
+                                  business: businessDetail,
+                                  offerTitle: `${businessCashbackLabel} Cashback`,
+                                  offerType: "cashback",
+                                  description: `Earn ${businessCashbackLabel} cashback on your purchase.`,
+                                  imageUrl: heroImageUrl,
+                                  tags: businessDetail?.tags || [],
+                                })
+                              }
+                              disabled={redeemGateBusy || !hoursStatus.isOpen}
+                              activeOpacity={0.88}
+                            >
+                              <Text style={styles.businessPageCashbackRedeemButtonText}>
+                                {hoursStatus.isOpen
+                                  ? `Redeem ${businessCashbackLabel} cashback`
+                                  : "Closed now"}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+
+                          <View style={styles.businessPageActionRow}>
+                            <TouchableOpacity
+                              style={styles.businessPageDirectionsButton}
+                              onPress={() => openMapsForBusiness(businessDetail)}
+                              activeOpacity={0.88}
+                            >
+                              <Ionicons
+                                name="navigate-outline"
+                                size={20}
+                                color={COLORS.white}
+                              />
+                              <Text
+                                style={styles.businessPageDirectionsButtonText}
+                              >
+                                Get Directions
+                              </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={[
+                                styles.businessPageCallButton,
+                                !hasBusinessPhone &&
+                                  styles.businessPageCallButtonDisabled,
+                              ]}
+                              onPress={() =>
+                                hasBusinessPhone
+                                  ? openPhoneForBusiness(businessDetail)
+                                  : null
+                              }
+                              disabled={!hasBusinessPhone}
+                              activeOpacity={0.88}
+                            >
+                              <Ionicons
+                                name="call-outline"
+                                size={20}
+                                color={COLORS.ink}
+                              />
+                              <Text style={styles.businessPageCallButtonText}>
+                                Call
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+
+                          <View style={styles.businessPageOffersSection}>
+                            <Text style={styles.businessPageSectionTitle}>
+                              Special Offers
+                            </Text>
+
+                            {businessDetailOffersStatus.error ? (
+                              <Text style={styles.formError}>
+                                {businessDetailOffersStatus.error}
+                              </Text>
+                            ) : null}
+
+                            {businessDetailOffersStatus.loading ? (
+                              <View style={styles.remoteNotice}>
+                                <Text style={styles.remoteNoticeText}>
+                                  Loading offers...
+                                </Text>
+                              </View>
+                            ) : businessDetailOffers.length === 0 ? (
+                              <View style={styles.emptyState}>
+                                <Text style={styles.emptyTitle}>
+                                  No offers yet.
+                                </Text>
+                                <Text style={styles.emptyCopy}>
+                                  This business has not published any offers.
+                                </Text>
+                              </View>
+                            ) : (
+                              businessDetailOffers.map((offer) => {
+                                const expirationText = formatOfferExpiryLabel(
+                                  offer?.expiresAt,
+                                );
+                                const canRedeem = hoursStatus.isOpen;
+                                return (
+                                  <LinearGradient
+                                    key={offer.id}
+                                    colors={["#FFF7EF", "#FFFBE2"]}
+                                    start={{ x: 0, y: 0 }}
+                                    end={{ x: 1, y: 1 }}
+                                    style={styles.businessPageOfferCard}
+                                  >
+                                    <Text style={styles.businessPageOfferTitle}>
+                                      {offer.title || "Local offer"}
+                                    </Text>
+                                    <Text style={styles.businessPageOfferExpiry}>
+                                      {offer?.expiresAt
+                                        ? `Valid until ${expirationText}`
+                                        : "Available now"}
+                                    </Text>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.businessPageRedeemButton,
+                                        !canRedeem &&
+                                          styles.businessPageRedeemButtonDisabled,
+                                      ]}
+                                      onPress={() =>
+                                        handleRedeemOffer({
+                                          id: offer.id,
+                                          businessId: businessDetail.id,
+                                          business: businessDetail,
+                                          offerTitle:
+                                            offer.title ||
+                                            offer.offer ||
+                                            businessDetail.offer,
+                                          offerType: "cashback",
+                                          tags: businessDetail?.tags || [],
+                                        })
+                                      }
+                                      disabled={redeemGateBusy || !canRedeem}
+                                      activeOpacity={0.88}
+                                    >
+                                      <Text
+                                        style={styles.businessPageRedeemButtonText}
+                                      >
+                                        {canRedeem ? "Redeem" : "Closed now"}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </LinearGradient>
+                                );
+                              })
+                            )}
+                          </View>
+
+                          <View style={styles.businessPageReviewsSection}>
+                            <Text style={styles.businessPageSectionTitle}>
+                              Reviews
+                            </Text>
+                            {businessDetailReviews.length === 0 ? (
+                              <Text style={styles.businessPageReviewEmpty}>
+                                No reviews yet.
+                              </Text>
+                            ) : (
+                              businessDetailReviews.map((review) => {
+                                const reviewerName = String(
+                                  review?.userName ||
+                                    review?.profile_name ||
+                                    review?.authorName ||
+                                    "Wello user",
+                                ).trim();
+                                const reviewDate = review?.createdAt
+                                  ? new Date(review.createdAt).toLocaleDateString()
+                                  : "";
+                                const reviewBody = String(
+                                  review?.comment || review?.text || "",
+                                ).trim();
+                                const reviewRatingValue = Math.max(
+                                  0,
+                                  Math.min(5, Number(review?.rating) || 0),
+                                );
+                                return (
+                                  <View
+                                    key={review.id || `${reviewerName}-${reviewDate}`}
+                                    style={styles.businessPageReviewCard}
+                                  >
+                                    <View style={styles.businessPageReviewHeader}>
+                                      <View style={styles.businessPageReviewHeaderCopy}>
+                                        <Text
+                                          style={styles.businessPageReviewName}
+                                          numberOfLines={1}
+                                        >
+                                          {reviewerName}
+                                        </Text>
+                                        {reviewDate ? (
+                                          <Text style={styles.businessPageReviewDate}>
+                                            {reviewDate}
+                                          </Text>
+                                        ) : null}
+                                      </View>
+                                      <View style={styles.businessPageReviewStars}>
+                                        {[1, 2, 3, 4, 5].map((star) => (
+                                          <Ionicons
+                                            key={star}
+                                            name={
+                                              reviewRatingValue >= star
+                                                ? "star"
+                                                : "star-outline"
+                                            }
+                                            size={13}
+                                            color={
+                                              reviewRatingValue >= star
+                                                ? COLORS.sun
+                                                : "#CBD5E1"
+                                            }
+                                          />
+                                        ))}
+                                      </View>
+                                    </View>
+                                    {reviewBody ? (
+                                      <Text style={styles.businessPageReviewBody}>
+                                        {reviewBody}
+                                      </Text>
+                                    ) : null}
+                                  </View>
+                                );
+                              })
+                            )}
+                          </View>
+                        </View>
+                      </ScrollView>
                     );
                   })()}
-
-                  <ScrollView
-                    style={styles.detailBody}
-                    contentContainerStyle={styles.detailBodyContent}
-                    showsVerticalScrollIndicator={false}
-                    keyboardShouldPersistTaps="handled"
-                  >
-                    <View style={styles.detailRatingRow}>
-                      {(() => {
-                        const total = businessDetailReviews.length;
-                        const avg =
-                          total === 0
-                            ? null
-                            : businessDetailReviews.reduce(
-                                (sum, review) => sum + (review.rating || 0),
-                                0,
-                              ) / total;
-                        return (
-                          <>
-                            <View style={styles.detailMetaPill}>
-                              <Ionicons
-                                name="star"
-                                size={14}
-                                color={COLORS.sun}
-                              />
-                              <Text style={styles.detailRatingText}>
-                                {avg ? avg.toFixed(1) : "New"}
-                              </Text>
-                              <Text style={styles.detailRatingCount}>
-                                {total ? `${total} reviews` : "No reviews yet"}
-                              </Text>
-                            </View>
-                            {businessDetail?.hours ? (
-                              <View style={styles.detailMetaPill}>
-                                <Ionicons
-                                  name="time-outline"
-                                  size={13}
-                                  color={COLORS.muted}
-                                />
-                                <Text style={styles.detailHoursPillText}>
-                                  {businessDetail.hours}
-                                </Text>
-                              </View>
-                            ) : null}
-                          </>
-                        );
-                      })()}
-                    </View>
-
-                    {isSignedIn &&
-                      businessDetail?.id &&
-                      latestReviewEligibleRedemptionByBusiness.has(
-                        businessDetail.id,
-                      ) &&
-                      !reviewedBusinessIds.has(String(businessDetail.id)) && (
-                        <TouchableOpacity
-                          style={styles.detailReviewButton}
-                          onPress={() => {
-                            const entry =
-                              latestReviewEligibleRedemptionByBusiness.get(
-                                businessDetail.id,
-                              );
-                            openReviewForEntry(entry, businessDetail.name);
-                          }}
-                        >
-                          <Text style={styles.detailReviewButtonText}>
-                            Write a review
-                          </Text>
-                          <Ionicons
-                            name="star"
-                            size={16}
-                            color={COLORS.white}
-                          />
-                        </TouchableOpacity>
-                      )}
-
-                    <View style={styles.detailOffersSection}>
-                      <Text style={styles.detailSectionTitle}>Offers</Text>
-                      {businessDetailOffersStatus.error && (
-                        <Text style={styles.formError}>
-                          {businessDetailOffersStatus.error}
-                        </Text>
-                      )}
-                      {businessDetailOffersStatus.loading ? (
-                        <View style={styles.remoteNotice}>
-                          <Text style={styles.remoteNoticeText}>
-                            Loading offers...
-                          </Text>
-                        </View>
-                      ) : businessDetailOffers.length === 0 ? (
-                        <View style={styles.emptyState}>
-                          <Text style={styles.emptyTitle}>No offers yet.</Text>
-                          <Text style={styles.emptyCopy}>
-                            Offers will appear after you approve the business.
-                          </Text>
-                        </View>
-                      ) : (
-                        businessDetailOffers.map((offer) => {
-                          const detailHours =
-                            businessDetail?.hours ||
-                            businessDetail?.business?.hours ||
-                            "";
-                          const detailDescription = String(
-                            offer?.description ||
-                              offer?.offerDescription ||
-                              offer?.offer_description ||
-                              "",
-                          ).trim();
-                          const openFromHours = isBusinessOpenNow(detailHours);
-                          const isBusinessOpen =
-                            openFromHours === null
-                              ? (businessDetail?.isOpen ?? true)
-                              : openFromHours;
-                          return (
-                            <View key={offer.id} style={styles.detailOfferCard}>
-                              {offer.imageUrl ? (
-                                <Image
-                                  source={{ uri: offer.imageUrl }}
-                                  style={styles.detailOfferImage}
-                                />
-                              ) : null}
-                              <Text style={styles.detailOfferTitle}>
-                                {offer.title || "Local offer"}
-                              </Text>
-                              <View style={styles.detailOfferTagRow}>
-                                {sanitizeBusinessTags(businessDetail.tags).map(
-                                  (tag) => (
-                                    <View
-                                      key={tag}
-                                      style={styles.detailOfferTag}
-                                    >
-                                      <Text style={styles.detailOfferTagText}>
-                                        {tag}
-                                      </Text>
-                                    </View>
-                                  ),
-                                )}
-                              </View>
-                              {detailDescription ? (
-                                <Text style={styles.detailOfferText}>
-                                  {detailDescription}
-                                </Text>
-                              ) : null}
-                              <View style={styles.detailOfferMetaRow}>
-                                <Text style={styles.detailOfferMeta}>
-                                  {offer.offerType
-                                    ? normalizeOfferType(offer.offerType)
-                                    : "Offer"}
-                                </Text>
-                                <Text style={styles.detailOfferMeta}>
-                                  {formatOfferDate(offer.createdAt)}
-                                </Text>
-                              </View>
-                              <TouchableOpacity
-                                style={[
-                                  styles.detailOfferRedemption,
-                                  !isBusinessOpen &&
-                                    styles.detailOfferRedemptionDisabled,
-                                ]}
-                                onPress={() =>
-                                  handleRedeemOffer({
-                                    id: offer.id,
-                                    businessId: businessDetail.id,
-                                    business: businessDetail,
-                                    offerTitle:
-                                      offer.title ||
-                                      offer.offer ||
-                                      businessDetail.offer,
-                                    offerType:
-                                      offer.offerType || offer.offer_type,
-                                    tags: businessDetail.tags,
-                                  })
-                                }
-                                disabled={redeemGateBusy || !isBusinessOpen}
-                              >
-                                <Text style={styles.detailOfferRedemptionText}>
-                                  {isBusinessOpen
-                                    ? "Redeem this offer"
-                                    : "Closed now"}
-                                </Text>
-                              </TouchableOpacity>
-                              <Pressable
-                                style={({ pressed }) => [
-                                  styles.detailOfferDirections,
-                                  pressed &&
-                                    styles.detailOfferDirectionsPressed,
-                                ]}
-                                onPress={() =>
-                                  openMapsForBusiness(businessDetail)
-                                }
-                              >
-                                <Ionicons
-                                  name="navigate"
-                                  size={14}
-                                  color={COLORS.pine}
-                                />
-                                <Text style={styles.detailOfferDirectionsText}>
-                                  Get directions
-                                </Text>
-                              </Pressable>
-                            </View>
-                          );
-                        })
-                      )}
-                    </View>
-
-                    <View style={styles.detailReviewList}>
-                      {businessDetailStatus.error && (
-                        <Text style={styles.formError}>
-                          {businessDetailStatus.error}
-                        </Text>
-                      )}
-                      {businessDetailStatus.loading ? (
-                        <View style={styles.remoteNotice}>
-                          <Text style={styles.remoteNoticeText}>
-                            Loading reviews...
-                          </Text>
-                        </View>
-                      ) : businessDetailReviews.length === 0 ? (
-                        <View style={styles.emptyState}>
-                          <Text style={styles.emptyTitle}>No reviews yet.</Text>
-                          <Text style={styles.emptyCopy}>
-                            Earn cashback here to leave the first review.
-                          </Text>
-                        </View>
-                      ) : (
-                        businessDetailReviews.map((review) => (
-                          <View key={review.id} style={styles.detailReviewCard}>
-                            <View style={styles.detailReviewHeader}>
-                              <Text style={styles.detailReviewUser}>
-                                Wello member
-                              </Text>
-                              <Text style={styles.detailReviewTime}>
-                                {formatHistoryTimestamp(review.createdAt)}
-                              </Text>
-                            </View>
-                            <View style={styles.detailReviewStars}>
-                              {[1, 2, 3, 4, 5].map((star) => (
-                                <Ionicons
-                                  key={star}
-                                  name={
-                                    review.rating >= star
-                                      ? "star"
-                                      : "star-outline"
-                                  }
-                                  size={14}
-                                  color={
-                                    review.rating >= star
-                                      ? COLORS.sun
-                                      : COLORS.muted
-                                  }
-                                />
-                              ))}
-                            </View>
-                            {review.reviewText ? (
-                              <Text style={styles.detailReviewText}>
-                                {review.reviewText}
-                              </Text>
-                            ) : null}
-                          </View>
-                        ))
-                      )}
-                    </View>
-                  </ScrollView>
                 </View>
               </View>
-            </Modal>
+            ) : null}
 
             <Modal
               visible={receiptsModalOpen}
@@ -23087,12 +24732,18 @@ export default function App() {
                       <View style={styles.receiptPreviewOverlay}>
                         <View style={styles.receiptPreviewCard}>
                           <View style={styles.receiptPreviewHeader}>
-                            <View>
-                              <Text style={styles.receiptPreviewTitle}>
+                            <View style={styles.receiptPreviewHeaderInfo}>
+                              <Text
+                                style={styles.receiptPreviewTitle}
+                                numberOfLines={2}
+                              >
                                 {receiptPreview?.title || "Receipt"}
                               </Text>
                               {receiptPreview?.timestamp ? (
-                                <Text style={styles.receiptPreviewMeta}>
+                                <Text
+                                  style={styles.receiptPreviewMeta}
+                                  numberOfLines={1}
+                                >
                                   Uploaded{" "}
                                   {formatHistoryTimestamp(
                                     receiptPreview.timestamp,
@@ -23144,7 +24795,7 @@ export default function App() {
                                 />
                               </TouchableOpacity>
                               <TouchableOpacity
-                                style={styles.receiptsClose}
+                                style={styles.receiptPreviewClose}
                                 onPress={() => {
                                   setReceiptPreview(null);
                                   setReceiptReportStatus({
@@ -23781,93 +25432,6 @@ export default function App() {
                       setEditOfferDraft((prev) => ({ ...prev, title: value }))
                     }
                   />
-
-                  <Text style={styles.formLabel}>Description</Text>
-                  <AutoFocusInput
-                    style={[styles.formInput, styles.formTextarea]}
-                    placeholder="Include limits, dates, and eligible items"
-                    placeholderTextColor={COLORS.muted}
-                    value={editOfferDraft.description}
-                    onChangeText={(value) =>
-                      setEditOfferDraft((prev) => ({
-                        ...prev,
-                        description: value,
-                      }))
-                    }
-                    multiline
-                    textAlignVertical="top"
-                  />
-
-                  <Text style={styles.formLabel}>Offer type</Text>
-                  <TouchableOpacity
-                    style={[styles.formInput, styles.selectInput]}
-                    onPress={() => openOfferTypePicker("edit")}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.selectInputText}>
-                      {getOfferTypePickerLabel(editOfferDraft.typePreset)}
-                    </Text>
-                    <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
-                  </TouchableOpacity>
-                  {editOfferDraft.typePreset === OFFER_TYPE_OTHER_KEY && (
-                    <AutoFocusInput
-                      style={styles.formInput}
-                      placeholder="Type custom offer type"
-                      placeholderTextColor={COLORS.muted}
-                      value={editOfferDraft.typeCustom}
-                      onChangeText={(value) =>
-                        setEditOfferDraft((prev) => ({
-                          ...prev,
-                          typeCustom: value,
-                        }))
-                      }
-                      maxLength={32}
-                    />
-                  )}
-
-                  <Text style={styles.formLabel}>Offer photo</Text>
-                  <View style={styles.offerUploadRow}>
-                    <TouchableOpacity
-                      style={styles.secondaryButton}
-                      onPress={handlePickEditOfferImage}
-                      disabled={editOfferStatus.saving}
-                    >
-                      <Text style={styles.secondaryButtonText}>
-                        {editOfferImage ? "Replace photo" : "Upload photo"}
-                      </Text>
-                    </TouchableOpacity>
-                    {editOfferImage && (
-                      <TouchableOpacity
-                        style={styles.offerRemoveButton}
-                        onPress={() => setEditOfferImage(null)}
-                      >
-                        <Text style={styles.offerRemoveButtonText}>Remove</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                  <Text style={styles.formHint}>
-                    Choose and crop to control how the offer photo appears.
-                  </Text>
-                  <View style={styles.offerUploadFrame}>
-                    {editOfferImage?.uri ? (
-                      <Image
-                        source={{ uri: editOfferImage.uri }}
-                        style={styles.offerUploadPreview}
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <View style={styles.offerUploadPlaceholder}>
-                        <Ionicons
-                          name="image-outline"
-                          size={18}
-                          color={COLORS.muted}
-                        />
-                        <Text style={styles.offerUploadHint}>
-                          Upload a new photo for this offer.
-                        </Text>
-                      </View>
-                    )}
-                  </View>
                   <View style={styles.legalChecklist}>
                     <TouchableOpacity
                       style={styles.legalCheckRow}
@@ -24039,26 +25603,6 @@ export default function App() {
                               </TouchableOpacity>
                               {isExpanded && (
                                 <View style={styles.ownerOfferBody}>
-                                  {offer.imageUrl ? (
-                                    <Image
-                                      source={{ uri: offer.imageUrl }}
-                                      style={styles.detailOfferImage}
-                                      resizeMode="cover"
-                                    />
-                                  ) : (
-                                    <View
-                                      style={styles.ownerOfferImagePlaceholder}
-                                    >
-                                      <Ionicons
-                                        name="image-outline"
-                                        size={18}
-                                        color={COLORS.muted}
-                                      />
-                                      <Text style={styles.cardMediaLabel}>
-                                        Offer image
-                                      </Text>
-                                    </View>
-                                  )}
                                   <View style={styles.detailOfferTagRow}>
                                     {sanitizeBusinessTags(
                                       ownerBusiness?.tags,
@@ -24068,20 +25612,12 @@ export default function App() {
                                         style={styles.detailOfferTag}
                                       >
                                         <Text style={styles.detailOfferTagText}>
-                                          {tag}
-                                        </Text>
-                                      </View>
-                                    ))}
+                                        {tag}
+                                      </Text>
+                                    </View>
+                                  ))}
                                   </View>
-                                  {offer.description ? (
-                                    <Text style={styles.detailOfferText}>
-                                      {offer.description}
-                                    </Text>
-                                  ) : null}
                                   <View style={styles.detailOfferMetaRow}>
-                                    <Text style={styles.detailOfferMeta}>
-                                      {offerTypeLabel}
-                                    </Text>
                                     <Text style={styles.detailOfferMeta}>
                                       {expirationLabel}
                                     </Text>
@@ -25869,313 +27405,202 @@ export default function App() {
               </View>
             </Modal>
 
-            <BottomSheet
-              ref={bottomSheetRef}
-              snapPoints={sheetSnapPoints}
-              bottomInset={0}
-              onChange={handleSheetChange}
-              onAnimate={handleSheetAnimate}
-              handleComponent={renderSheetHandle}
-              enablePanDownToClose={false}
-              enableOverDrag={false}
-              enableDynamicSizing={false}
-              enableHandlePanningGesture
-              // Keep sheet drag constrained to the handle so vertical swipes
-              // inside Discover content scroll cards instead of moving the sheet.
-              enableContentPanningGesture={false}
-              backgroundStyle={styles.sheetBackground}
-              keyboardBehavior="extend"
-              keyboardBlurBehavior="restore"
-              android_keyboardInputMode="adjustResize"
-            >
+            {!fullScreenOverlayOpen ? (
+              <>
+                <Reanimated.View
+                  pointerEvents={
+                    activeTab === "discover" && discoverSheetIndex === 2
+                      ? "auto"
+                      : "none"
+                  }
+                  style={[styles.sheetBackdropLayer, sheetBackdropAnimatedStyle]}
+                />
+                <Reanimated.View
+                  style={[
+                    styles.reanimatedSheetContainer,
+                    styles.sheetBackground,
+                    { height: discoverSheetMetrics.panelHeight },
+                    sheetPanelAnimatedStyle,
+                  ]}
+                >
+              <PanGestureHandler
+                ref={sheetPanRef}
+                activeOffsetY={[-5, 5]}
+                onGestureEvent={handleSheetGestureEvent}
+                onHandlerStateChange={handleSheetGestureStateChange}
+              >
+                <View style={styles.sheetHeaderChrome}>
+                  {renderSheetHandle()}
+                  <SheetPeekRow
+                    label={activeSheetPeekLabel}
+                    meta={activeSheetPeekMeta}
+                    onPress={() => bottomSheetRef.current?.snapToIndex(1)}
+                    animatedStyle={discoverMiniAnimatedStyle}
+                    interactive={!discoverSheetExpanded}
+                  />
+                </View>
+              </PanGestureHandler>
+              <Reanimated.View
+                pointerEvents={discoverSheetExpanded ? "auto" : "none"}
+                style={[styles.sheetMainContent, sheetMainContentAnimatedStyle]}
+              >
+                <SwipeableTabView
+                  tabs={swipeableDrawerTabs}
+                  activeIndex={swipeActiveIndex}
+                  setActiveIndex={handleSwipeTabIndexChange}
+                  enabled={!drawerOpen && !businessDetailOpen && !discoverSearchOpen}
+                >
               {activeTab === "discover" ? (
-                <BottomSheetScrollView
-                  style={styles.sheetScroll}
-                  showsVerticalScrollIndicator={false}
-                  bounces={Platform.OS === "ios"}
-                  alwaysBounceVertical={Platform.OS === "ios"}
-                  onLayout={handleDiscoverScrollLayout}
+                <View style={styles.discoverSheetStage}>
+                  <ScrollView
+                    ref={sheetScrollRef}
+                    simultaneousHandlers={sheetPanRef}
+                    style={styles.sheetScroll}
+                    showsVerticalScrollIndicator={false}
+                    persistentScrollbar={false}
+                    overScrollMode="never"
+                    bounces={Platform.OS === "ios"}
+                    alwaysBounceVertical={Platform.OS === "ios"}
+                    onLayout={handleDiscoverScrollLayout}
                     contentContainerStyle={[
                       styles.sheetScrollContent,
                       styles.sheetContentInsets,
                       {
-                        paddingBottom: 24,
+                        paddingBottom:
+                          SAFE_BOTTOM + discoverSheetMetrics.closedVisibleHeight + 64,
                       },
                       discoverSheetOfferCards.length === 0 &&
                         styles.sheetScrollContentEmpty,
                     ]}
-                  keyboardShouldPersistTaps="handled"
-                  keyboardDismissMode="on-drag"
-                  onContentSizeChange={handleDiscoverContentSizeChange}
-                  onTouchStart={handleDiscoverTouchStart}
-                  onTouchMove={handleDiscoverTouchMove}
-                  onTouchEnd={handleDiscoverTouchEnd}
-                  onTouchCancel={handleDiscoverTouchCancel}
-                  onScrollBeginDrag={handleDiscoverScrollBeginDrag}
-                  onScroll={handleDiscoverScroll}
-                  onScrollEndDrag={handleDiscoverScrollEndDrag}
-                  onMomentumScrollBegin={handleDiscoverMomentumScrollBegin}
-                  onMomentumScrollEnd={handleDiscoverMomentumScrollEnd}
-                  scrollEventThrottle={16}
-                >
-                  <View
-                    style={[
-                      styles.searchRow,
-                      IS_COMPACT && styles.searchRowCompact,
-                    ]}
+                    contentInset={{
+                      bottom:
+                        SAFE_BOTTOM + discoverSheetMetrics.closedVisibleHeight + 64,
+                    }}
+                    scrollIndicatorInsets={{
+                      bottom:
+                        SAFE_BOTTOM + discoverSheetMetrics.closedVisibleHeight / 2,
+                    }}
+                    keyboardShouldPersistTaps="handled"
+                    keyboardDismissMode="on-drag"
+                    onContentSizeChange={handleDiscoverContentSizeChange}
+                    onTouchStart={handleDiscoverTouchStart}
+                    onTouchMove={handleDiscoverTouchMove}
+                    onTouchEnd={handleDiscoverTouchEnd}
+                    onTouchCancel={handleDiscoverTouchCancel}
+                    onScrollBeginDrag={handleDiscoverScrollBeginDrag}
+                    onScroll={handleDiscoverScroll}
+                    onScrollEndDrag={handleDiscoverScrollEndDrag}
+                    onMomentumScrollBegin={handleDiscoverMomentumScrollBegin}
+                    onMomentumScrollEnd={handleDiscoverMomentumScrollEnd}
+                    scrollEventThrottle={16}
                   >
-                    <View
-                      style={[
-                        styles.searchInputWrap,
-                        discoverSearchFocused && styles.searchInputWrapFocused,
-                      ]}
-                    >
-                      <Ionicons
-                        name="search"
-                        size={14}
-                        color={
-                          discoverSearchFocused ? COLORS.pine : COLORS.muted
-                        }
-                        style={styles.searchIcon}
-                      />
-                      <AutoFocusInput
-                        placeholder="Search nearby offers..."
-                        placeholderTextColor={COLORS.muted}
-                        style={styles.searchInput}
-                        value={query}
-                        onChangeText={setQuery}
-                        onFocus={() => {
-                          setDiscoverSearchFocused(true);
-                          expandSheetForSearch();
-                        }}
-                        onBlur={() => setDiscoverSearchFocused(false)}
-                        returnKeyType="search"
-                        autoCorrect={false}
-                        autoCapitalize="none"
-                      />
-                      {query.trim().length > 0 && (
-                        <TouchableOpacity
-                          style={styles.searchClearButton}
-                          onPress={() => setQuery("")}
-                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                        >
-                          <Ionicons
-                            name="close-circle"
-                            size={18}
-                            color={COLORS.muted}
-                          />
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                    <TouchableOpacity
-                      style={[
-                        styles.filterButton,
-                        showFilters && styles.filterButtonActive,
-                      ]}
-                      onPress={() => setShowFilters((prev) => !prev)}
-                      accessibilityLabel={
-                        showFilters ? "Hide filters" : "Show filters"
-                      }
-                    >
-                      <Ionicons
-                        name="options-outline"
-                        size={16}
-                        color={showFilters ? COLORS.pine : "#8A94A6"}
-                      />
-                    </TouchableOpacity>
-                  </View>
-
-                  {shouldShowDiscoverPlaidPrompt && (
-                    <View style={styles.discoverPlaidPrompt}>
-                      <View style={styles.discoverPlaidPromptIconWrap}>
-                        <Ionicons
-                          name="shield-checkmark-outline"
-                          size={15}
-                          color={COLORS.pine}
-                        />
-                      </View>
-                      <View style={styles.discoverPlaidPromptCopy}>
-                        <Text style={styles.discoverPlaidPromptTitle}>
-                          {plaidPromptCopy.title}
-                        </Text>
-                        <Text style={styles.discoverPlaidPromptBody}>
-                          {plaidPromptCopy.body}
-                        </Text>
-                      </View>
-                      <View style={styles.discoverPlaidPromptActions}>
-                        <TouchableOpacity
-                          style={[
-                            styles.discoverPlaidPromptConnect,
-                            plaidPromptBusy &&
-                              styles.discoverPlaidPromptConnectDisabled,
-                          ]}
-                          onPress={handleLinkPurchaseVerificationBank}
-                          disabled={plaidPromptBusy}
-                        >
-                          <Text style={styles.discoverPlaidPromptConnectText}>
-                            {plaidPromptBusy
-                              ? "Opening..."
-                              : plaidPromptCopy.cta}
-                          </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={styles.discoverPlaidPromptClose}
-                          onPress={() => setDiscoverPlaidPromptDismissed(true)}
-                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                          accessibilityLabel="Dismiss bank verification reminder"
-                        >
-                          <Ionicons
-                            name="close"
-                            size={16}
-                            color={COLORS.muted}
-                          />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  )}
-
-                  {showFilters && (
-                    <View>
-                      <View style={styles.filterRow}>
-                        {discoverFilterOptions.map((filter) => {
-                          const isActive = activeFilters.includes(filter.key);
+                    <View style={styles.discoverCategoriesRow}>
+                      <View style={styles.discoverCategoriesRail}>
+                        {DISCOVER_HOME_TABS.map((tab) => {
+                          const selected = discoverCategoryTab === tab.key;
                           return (
                             <TouchableOpacity
-                              key={filter.key}
+                              key={tab.key}
                               style={[
-                                styles.filterPill,
-                                isActive && styles.filterPillActive,
+                                styles.discoverCategoryTab,
+                                selected && styles.discoverCategoryTabActive,
                               ]}
-                              onPress={() => toggleFilter(filter.key)}
+                              onPress={() => setDiscoverCategoryTab(tab.key)}
+                              activeOpacity={0.85}
                             >
                               <Text
                                 style={[
-                                  styles.filterText,
-                                  isActive && styles.filterTextActive,
+                                  styles.discoverCategoryTabText,
+                                  selected && styles.discoverCategoryTabTextActive,
                                 ]}
                               >
-                                {filter.label}
+                                {tab.label}
                               </Text>
                             </TouchableOpacity>
                           );
                         })}
                       </View>
-                      <View style={styles.filterRadiusBlock}>
-                        <Text style={styles.filterRadiusLabel}>
-                          Radius (miles)
-                        </Text>
-                        <View style={styles.filterRadiusRow}>
-                          {DISCOVER_RADIUS_OPTIONS.map((option) => {
-                            const isActive = discoverRadiusKey === option.key;
-                            return (
-                              <TouchableOpacity
-                                key={option.key}
-                                style={[
-                                  styles.filterRadiusPill,
-                                  isActive && styles.filterRadiusPillActive,
-                                ]}
-                                onPress={() => setDiscoverRadiusKey(option.key)}
-                                activeOpacity={0.85}
-                              >
-                                <Text
-                                  style={[
-                                    styles.filterRadiusText,
-                                    isActive && styles.filterRadiusTextActive,
-                                  ]}
-                                >
-                                  {option.label}
-                                </Text>
-                              </TouchableOpacity>
-                            );
-                          })}
-                        </View>
-                      </View>
                     </View>
-                  )}
 
-                  {(remoteStatus.loading ||
-                    remoteStatus.error ||
-                    offerStatus.loading ||
-                    offerStatus.error) && (
-                    <View style={styles.remoteNotice}>
-                      <Text style={styles.remoteNoticeText}>
-                        {remoteStatus.loading
-                          ? "Loading businesses from Wello..."
-                          : offerStatus.loading
-                            ? "Loading offers from Wello..."
-                            : remoteStatus.error || offerStatus.error}
+                    {(remoteStatus.loading ||
+                      remoteStatus.error ||
+                      offerStatus.loading ||
+                      offerStatus.error) && (
+                      <View style={styles.remoteNotice}>
+                        <Text style={styles.remoteNoticeText}>
+                          {remoteStatus.loading
+                            ? "Loading businesses from Wello..."
+                            : offerStatus.loading
+                              ? "Loading offers from Wello..."
+                              : remoteStatus.error || offerStatus.error}
+                        </Text>
+                      </View>
+                    )}
+
+                    <View style={styles.cardHeaderRow}>
+                      <Text style={styles.discoverSectionTitle}>Nearby</Text>
+                      <Text style={styles.discoverSectionMeta}>
+                        {discoverSheetOfferCards.length} nearby
                       </Text>
                     </View>
-                  )}
 
-                  <View style={styles.cardHeaderRow}>
-                    <Text style={styles.sectionTitle}>Nearby</Text>
-                    <Text style={styles.sectionMeta}>
-                      {discoverSheetOfferCards.length} offers
-                    </Text>
-                  </View>
-
-                  {discoverSheetOfferCards.length === 0 ? (
-                    <View style={styles.emptyState}>
-                      {!nearbyOriginAvailable ? (
-                        <>
-                          <Text style={styles.emptyTitle}>
-                            Location is needed
-                          </Text>
-                          <Text style={styles.emptyCopy}>
-                            Enable location to see offers within your selected
-                            radius.
-                          </Text>
-                          <TouchableOpacity
-                            style={styles.secondaryButton}
-                            onPress={handleLocateMe}
-                            disabled={locating || nearbyOriginLoading}
-                          >
-                            <Text style={styles.secondaryButtonText}>
-                              {locating || nearbyOriginLoading
-                                ? "Checking location..."
-                                : "Use my location"}
+                    {discoverSheetOfferCards.length === 0 ? (
+                      <View style={styles.emptyState}>
+                        {!nearbyOriginAvailable ? (
+                          <>
+                            <Text style={styles.emptyTitle}>
+                              Location is needed
                             </Text>
-                          </TouchableOpacity>
-                        </>
-                      ) : (
-                        <>
-                          <Text style={styles.emptyTitle}>No listings match.</Text>
-                          <Text style={styles.emptyCopy}>
-                            Try a different search or expand your radius.
-                          </Text>
-                        </>
-                      )}
-                    </View>
-                  ) : (
-                    <View style={styles.demoListStack}>
-                      {discoverSheetOfferCards.map((item, index) => (
-                        <OfferCard
-                          key={
-                            item?.id ||
-                            item?.offerId ||
-                            item?.businessId ||
-                            `discover-${index}`
-                          }
-                          item={item}
-                          onPress={() => handleCardPress(item)}
-                          onRedeem={() => handleRedeemOffer(item)}
-                          selected={
-                            selectedOfferCardId ===
-                            getOfferCardSelectionKey(item)
-                          }
-                          cashbackRatePercent={
-                            accountRole === "consumer"
-                              ? cashbackRatePercent
-                              : null
-                          }
-                        />
-                      ))}
-                    </View>
-                  )}
-                </BottomSheetScrollView>
+                            <Text style={styles.emptyCopy}>
+                              Enable location to see offers within your selected
+                              radius.
+                            </Text>
+                            <TouchableOpacity
+                              style={styles.secondaryButton}
+                              onPress={handleLocateMe}
+                              disabled={locating || nearbyOriginLoading}
+                            >
+                              <Text style={styles.secondaryButtonText}>
+                                {locating || nearbyOriginLoading
+                                  ? "Checking location..."
+                                  : "Use my location"}
+                              </Text>
+                            </TouchableOpacity>
+                          </>
+                        ) : (
+                          <>
+                            <Text style={styles.emptyTitle}>No listings match.</Text>
+                            <Text style={styles.emptyCopy}>
+                              Try a different search or expand your radius.
+                            </Text>
+                          </>
+                        )}
+                      </View>
+                    ) : (
+                      <View style={styles.demoListStack}>
+                        {discoverSheetOfferCards.map((item, index) => (
+                          <OfferCard
+                            key={
+                              item?.id ||
+                              item?.offerId ||
+                              item?.businessId ||
+                              `discover-${index}`
+                            }
+                            item={item}
+                            onPress={() => handleCardPress(item)}
+                            selected={
+                              selectedOfferCardId ===
+                              getOfferCardSelectionKey(item)
+                            }
+                          />
+                        ))}
+                      </View>
+                    )}
+                  </ScrollView>
+                </View>
               ) : activeTab === "__demo_disabled__" ? (
-                <BottomSheetScrollView
+                <ScrollView
+                  simultaneousHandlers={sheetPanRef}
                   style={styles.sheetScroll}
                   showsVerticalScrollIndicator={false}
                   bounces={Platform.OS === "ios"}
@@ -26183,7 +27608,10 @@ export default function App() {
                   contentContainerStyle={[
                     styles.sheetScrollContent,
                     styles.sheetContentInsets,
-                    { paddingBottom: 24 },
+                    {
+                      paddingBottom:
+                        SAFE_BOTTOM + discoverSheetMetrics.closedVisibleHeight / 2,
+                    },
                   ]}
                 >
                   <View style={styles.tremendousDemoCard}>
@@ -26856,7 +28284,7 @@ export default function App() {
                       })}
                     </View>
                   )}
-                </BottomSheetScrollView>
+                </ScrollView>
               ) : (
                 <KeyboardAvoidingView
                   behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -26865,8 +28293,9 @@ export default function App() {
                   }
                   style={styles.sheetScroll}
                 >
-                  <BottomSheetScrollView
+                  <ScrollView
                     ref={sheetScrollRef}
+                    simultaneousHandlers={sheetPanRef}
                     showsVerticalScrollIndicator={false}
                     bounces={Platform.OS === "ios"}
                     alwaysBounceVertical={Platform.OS === "ios"}
@@ -26875,7 +28304,10 @@ export default function App() {
                       styles.sheetContentInsets,
                       {
                         paddingBottom:
-                          24 + (activeTab === "profile" ? 0 : keyboardInset) +
+                          SAFE_BOTTOM +
+                          discoverSheetMetrics.closedVisibleHeight +
+                          64 +
+                          (activeTab === "profile" ? 0 : keyboardInset) +
                           (activeTab === "profile" && isProfilePhoneFocused
                             ? Platform.OS === "ios"
                               ? 54
@@ -26883,66 +28315,323 @@ export default function App() {
                             : 0),
                       },
                     ]}
+                    contentInset={{
+                      bottom:
+                        SAFE_BOTTOM +
+                        discoverSheetMetrics.closedVisibleHeight +
+                        64,
+                    }}
+                    scrollIndicatorInsets={{
+                      bottom:
+                        SAFE_BOTTOM +
+                        discoverSheetMetrics.closedVisibleHeight / 2,
+                    }}
                     keyboardShouldPersistTaps="handled"
                     keyboardDismissMode="interactive"
                   >
                     {activeTab === "business" && isOwner ? (
                       <>
-                        <View style={styles.sectionBlock}>
-                          <View style={styles.sectionTitleRow}>
-                            <Text
-                              style={[
-                                styles.sectionTitleAlt,
-                                styles.sectionTitleTight,
-                              ]}
-                            >
-                              Dashboard
-                            </Text>
-                            <TouchableOpacity
-                              style={styles.sectionInfoButton}
-                              onPress={() =>
-                                openInfoTooltip(
-                                  "Dashboard",
-                                  "Track performance, review receipts, and manage your listing details. Changes to key business info are reviewed before they go live.",
-                                )
-                              }
-                              hitSlop={{
-                                top: 10,
-                                bottom: 10,
-                                left: 10,
-                                right: 10,
-                              }}
-                            >
-                              <Ionicons
-                                name="information-circle-outline"
-                                size={18}
-                                color={COLORS.muted}
-                              />
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-
-                        {ownerDashboardLocked ? (
-                          <View style={styles.dashboardReviewCard}>
-                            <View style={styles.dashboardReviewIconWrap}>
-                              <Ionicons
-                                name={ownerDashboardLockIconName}
-                                size={18}
-                                color={COLORS.pine}
-                              />
+                        {ownerBusinessScreen === "payments" ? (
+                          <>
+                            <View style={styles.ownerBillingHeader}>
+                              <TouchableOpacity
+                                style={styles.ownerBillingBackButton}
+                                onPress={() => setOwnerBusinessScreen("dashboard")}
+                                activeOpacity={0.88}
+                              >
+                                <Ionicons
+                                  name="arrow-back"
+                                  size={24}
+                                  color={COLORS.ink}
+                                />
+                              </TouchableOpacity>
+                              <View style={styles.ownerBillingHeaderCopy}>
+                                <Text style={styles.ownerBillingHeaderTitle}>
+                                  Billing & Payments
+                                </Text>
+                                <Text style={styles.ownerBillingHeaderSubtitle}>
+                                  {resolvedOwnerBusiness?.name
+                                    ? `Manage payment settings for ${resolvedOwnerBusiness.name}`
+                                    : "Manage payment settings"}
+                                </Text>
+                              </View>
                             </View>
-                            <Text style={styles.dashboardReviewTitle}>
-                              {ownerDashboardLockTitle}
-                            </Text>
-                            <Text style={styles.dashboardReviewBody}>
-                              {ownerDashboardLockMessage}
-                            </Text>
-                            <Text style={styles.dashboardReviewMeta}>
-                              {ownerDashboardLockMeta}
-                            </Text>
-                          </View>
+                            <BusinessSwitcher
+                              onAddBusiness={openCreateBusinessPage}
+                            />
+
+                            <View style={styles.ownerBillingSectionCard}>
+                              <Text style={styles.ownerBillingSectionTitle}>
+                                Account Status
+                              </Text>
+                              <View style={styles.ownerBillingStatusRow}>
+                                <View style={styles.ownerBillingStatusCopy}>
+                                  <Ionicons
+                                    name={
+                                      activeBusinessStripeSummary.stripeAccountId
+                                        ? "checkmark-circle-outline"
+                                        : "ellipse-outline"
+                                    }
+                                    size={22}
+                                    color={
+                                      activeBusinessStripeSummary.stripeAccountId
+                                        ? "#0B9B3E"
+                                        : "#98A2B3"
+                                    }
+                                  />
+                                  <Text style={styles.ownerBillingStatusLabel}>
+                                    Stripe Account
+                                  </Text>
+                                </View>
+                                <View
+                                  style={[
+                                    styles.ownerBillingStatusBadge,
+                                    activeBusinessStripeSummary.stripeAccountId
+                                      ? styles.ownerBillingStatusBadgePositive
+                                      : styles.ownerBillingStatusBadgeMuted,
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.ownerBillingStatusBadgeText,
+                                      activeBusinessStripeSummary.stripeAccountId
+                                        ? styles.ownerBillingStatusBadgeTextPositive
+                                        : styles.ownerBillingStatusBadgeTextMuted,
+                                    ]}
+                                  >
+                                    {activeBusinessStripeSummary.stripeAccountId
+                                      ? "Connected"
+                                      : "Needed"}
+                                  </Text>
+                                </View>
+                              </View>
+                              <View style={styles.ownerBillingDivider} />
+                              <View style={styles.ownerBillingStatusRow}>
+                                <View style={styles.ownerBillingStatusCopy}>
+                                  <Ionicons
+                                    name={
+                                      activeBusinessStripeSummary.hasPaymentMethod
+                                        ? "checkmark-circle-outline"
+                                        : "card-outline"
+                                    }
+                                    size={22}
+                                    color={
+                                      activeBusinessStripeSummary.hasPaymentMethod
+                                        ? "#0B9B3E"
+                                        : "#98A2B3"
+                                    }
+                                  />
+                                  <Text style={styles.ownerBillingStatusLabel}>
+                                    Payment Method
+                                  </Text>
+                                </View>
+                                <View
+                                  style={[
+                                    styles.ownerBillingStatusBadge,
+                                    activeBusinessStripeSummary.hasPaymentMethod
+                                      ? styles.ownerBillingStatusBadgePositive
+                                      : styles.ownerBillingStatusBadgeMuted,
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.ownerBillingStatusBadgeText,
+                                      activeBusinessStripeSummary.hasPaymentMethod
+                                        ? styles.ownerBillingStatusBadgeTextPositive
+                                        : styles.ownerBillingStatusBadgeTextMuted,
+                                    ]}
+                                  >
+                                    {activeBusinessStripeSummary.hasPaymentMethod
+                                      ? "On File"
+                                      : "Needed"}
+                                  </Text>
+                                </View>
+                              </View>
+                              <View style={styles.ownerBillingDivider} />
+                              <View style={styles.ownerBillingRateRow}>
+                                <Text style={styles.ownerBillingStatusLabel}>
+                                  Commission Rate
+                                </Text>
+                                <Text style={styles.ownerBillingRateValue}>
+                                  {formatPercentLabel(ownerCommissionRatePercent)}%
+                                </Text>
+                              </View>
+                            </View>
+
+                            <View style={styles.ownerBillingSectionCard}>
+                              <Text style={styles.ownerBillingSectionTitle}>
+                                Financial Details
+                              </Text>
+                              <View style={styles.ownerBillingAmountRow}>
+                                <Text style={styles.ownerBillingAmountLabel}>
+                                  Gross Income
+                                </Text>
+                                <Text style={styles.ownerBillingAmountValue}>
+                                  {formatCurrencyFromCents(
+                                    billingMetrics.periodVerifiedGrossCents,
+                                  )}
+                                </Text>
+                              </View>
+                              <View style={styles.ownerBillingAmountRow}>
+                                <Text style={styles.ownerBillingAmountLabel}>
+                                  Platform Fees ({formatPercentLabel(ownerCommissionRatePercent)}%)
+                                </Text>
+                                <Text style={styles.ownerBillingAmountValueNegative}>
+                                  -{formatCurrencyFromCents(
+                                    Math.max(
+                                      0,
+                                      (Number(billingMetrics.periodTotalCents) || 0) -
+                                        (Number(billingMetrics.periodPaidCents) || 0) +
+                                        (Number(billingMetrics.manualPendingCents) || 0),
+                                    ),
+                                  )}
+                                </Text>
+                              </View>
+                              <View style={styles.ownerBillingDivider} />
+                              <View style={styles.ownerBillingNetRow}>
+                                <Text style={styles.ownerBillingNetLabel}>
+                                  Net After Fees
+                                </Text>
+                                <Text style={styles.ownerBillingNetValue}>
+                                  {formatCurrencyFromCents(
+                                    Math.max(
+                                      0,
+                                      (Number(billingMetrics.periodVerifiedGrossCents) || 0) -
+                                        (Number(billingMetrics.periodTotalCents) || 0),
+                                    ),
+                                  )}
+                                </Text>
+                              </View>
+                            </View>
+
+                            {billingStatus.loading ? (
+                              <Text style={styles.formHint}>Updating charges...</Text>
+                            ) : null}
+                            {billingStatus.error ? (
+                              <Text style={styles.formError}>{billingStatus.error}</Text>
+                            ) : null}
+                            {stripeActionStatus.error ? (
+                              <Text style={styles.formError}>
+                                {formatStripeError(stripeActionStatus.error)}
+                              </Text>
+                            ) : null}
+                            {stripeActionStatus.success ? (
+                              <Text style={styles.formSuccess}>
+                                {stripeActionStatus.success}
+                              </Text>
+                            ) : null}
+                            {activeBusinessStripeStatus.loading ? (
+                              <Text style={styles.formHint}>Refreshing Stripe status...</Text>
+                            ) : null}
+
+                            {!activeBusinessStripeSummary.stripeAccountId ? (
+                              <TouchableOpacity
+                                style={[
+                                  styles.ownerBillingPrimaryButton,
+                                  stripeActionStatus.loading &&
+                                    styles.primaryButtonDisabled,
+                                ]}
+                                onPress={handleStripeConnect}
+                                disabled={stripeActionStatus.loading}
+                              >
+                                <Text style={styles.ownerBillingPrimaryButtonText}>
+                                  Connect Stripe
+                                </Text>
+                              </TouchableOpacity>
+                            ) : !activeBusinessStripeSummary.hasPaymentMethod ? (
+                              <TouchableOpacity
+                                style={[
+                                  styles.ownerBillingPrimaryButton,
+                                  stripeActionStatus.loading &&
+                                    styles.primaryButtonDisabled,
+                                ]}
+                                onPress={handleStripePaymentSetup}
+                                disabled={stripeActionStatus.loading}
+                              >
+                                <Text style={styles.ownerBillingPrimaryButtonText}>
+                                  Add Payment Method
+                                </Text>
+                              </TouchableOpacity>
+                            ) : (
+                              <TouchableOpacity
+                                style={[
+                                  styles.ownerBillingPrimaryButton,
+                                  stripeActionStatus.loading &&
+                                    styles.primaryButtonDisabled,
+                                ]}
+                                onPress={handleStripeManage}
+                                disabled={stripeActionStatus.loading}
+                              >
+                                <Text style={styles.ownerBillingPrimaryButtonText}>
+                                  Open Billing Portal
+                                </Text>
+                              </TouchableOpacity>
+                            )}
+                          </>
                         ) : (
                           <>
+                            {!memberBusinesses.length ? (
+                              <EmptyBusinessState
+                                styles={styles}
+                                colors={{
+                                  ink: COLORS.ink,
+                                  muted: COLORS.muted,
+                                  white: COLORS.white,
+                                }}
+                                onCreateBusiness={openCreateBusinessPage}
+                              />
+                            ) : ownerDashboardLocked ? (
+                              <View style={styles.dashboardReviewCard}>
+                                <View style={styles.dashboardReviewIconWrap}>
+                                  <Ionicons
+                                    name={ownerDashboardLockIconName}
+                                    size={18}
+                                    color={COLORS.pine}
+                                  />
+                                </View>
+                                <Text style={styles.dashboardReviewTitle}>
+                                  {ownerDashboardLockTitle}
+                                </Text>
+                                <Text style={styles.dashboardReviewBody}>
+                                  {ownerDashboardLockMessage}
+                                </Text>
+                                <Text style={styles.dashboardReviewMeta}>
+                                  {ownerDashboardLockMeta}
+                                </Text>
+                              </View>
+                            ) : (
+                              <>
+                            {ownerDashboardStripeWarning ? (
+                              <View
+                                style={[
+                                  styles.ownerDashboardWarningBanner,
+                                  { backgroundColor: "#FFF8E1" },
+                                ]}
+                              >
+                                <View style={styles.ownerDashboardWarningHeader}>
+                                  <Ionicons
+                                    name="warning-outline"
+                                    size={20}
+                                    color="#B54708"
+                                  />
+                                  <Text style={styles.ownerDashboardWarningTitle}>
+                                    {ownerDashboardStripeWarning.title}
+                                  </Text>
+                                </View>
+                                <Text style={styles.ownerDashboardWarningBody}>
+                                  {ownerDashboardStripeWarning.body}
+                                </Text>
+                                <TouchableOpacity
+                                  style={styles.ownerDashboardWarningButton}
+                                  onPress={ownerDashboardStripeWarning.ctaAction}
+                                  activeOpacity={0.88}
+                                >
+                                  <Text style={styles.ownerDashboardWarningButtonText}>
+                                    {ownerDashboardStripeWarning.ctaLabel}
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            ) : null}
                             <View style={styles.analyticsGrid}>
                               <TouchableOpacity
                                 style={[
@@ -27059,315 +28748,376 @@ export default function App() {
                               </TouchableOpacity>
                             ) : null}
 
-                            <View style={styles.sectionBlock}>
-                              <View style={styles.sectionTitleRow}>
-                                <Text
-                                  style={[
-                                    styles.sectionTitleAlt,
-                                    styles.sectionTitleTight,
-                                  ]}
-                                >
-                                  Payments
-                                </Text>
-                                <TouchableOpacity
-                                  style={styles.sectionInfoButton}
-                                  onPress={() =>
-                                    openInfoTooltip(
-                                      "Payments",
-                                      ownerIsTradeBusiness
-                                        ? `Your business is on the ${formatPercentLabel(ownerCommissionRatePercent)}% plan. Verified trades receipts are billed at ${formatPercentLabel(ownerReceiptChargePercent)}% of the verified receipt total, and customers earn ${formatPercentLabel(ownerDefaultCashbackPercent)}% cashback capped at ${TRADES_RECEIPT_CAP_COPY} total cashback. Billing remains monthly.`
-                                        : `Your business is on the ${formatPercentLabel(ownerCommissionRatePercent)}% plan. Verified receipts are billed at ${formatPercentLabel(ownerReceiptChargePercent)}% of receipt total, and your offers default to ${formatPercentLabel(ownerDefaultCashbackPercent)}% cashback. Promo codes can still increase customer cashback. Billing remains monthly.`,
-                                    )
-                                  }
-                                  hitSlop={{
-                                    top: 10,
-                                    bottom: 10,
-                                    left: 10,
-                                    right: 10,
-                                  }}
-                                >
-                                  <Ionicons
-                                    name="information-circle-outline"
-                                    size={18}
-                                    color={COLORS.muted}
-                                  />
-                                </TouchableOpacity>
-                              </View>
-                            </View>
-                            <View style={styles.paymentCard}>
-                              <View style={styles.paymentHeaderRow}>
-                                <View style={styles.paymentHeaderBadges}>
-                                  <View style={styles.paymentRow}>
-                                    <Text style={styles.paymentLabel}>
-                                      Stripe account
-                                    </Text>
-                                    <View
-                                      style={[
-                                        styles.paymentBadge,
-                                        resolvedOwnerBusiness?.stripeAccountId
-                                          ? styles.paymentBadgeActive
-                                          : styles.paymentBadgeInactive,
-                                      ]}
-                                    >
-                                      <Text style={styles.paymentBadgeText}>
-                                        {resolvedOwnerBusiness?.stripeAccountId
-                                          ? "Connected"
-                                          : "Not connected"}
-                                      </Text>
-                                    </View>
-                                  </View>
-                                  <View style={styles.paymentRow}>
-                                    <Text style={styles.paymentLabel}>
-                                      Payment method
-                                    </Text>
-                                    <View
-                                      style={[
-                                        styles.paymentBadge,
-                                        resolvedOwnerBusiness?.stripePaymentMethodId
-                                          ? styles.paymentBadgeActive
-                                          : styles.paymentBadgeInactive,
-                                      ]}
-                                    >
-                                      <Text style={styles.paymentBadgeText}>
-                                        {resolvedOwnerBusiness?.stripePaymentMethodId
-                                          ? "On file"
-                                          : "Needed"}
-                                      </Text>
-                                    </View>
-                                  </View>
-                                </View>
-                              </View>
-                              <View style={styles.paymentRow}>
-                                <Text style={styles.paymentLabel}>
-                                  Commission rate
-                                </Text>
-                                <Text style={styles.paymentAmount}>
-                                  {formatPercentLabel(
-                                    ownerCommissionRatePercent,
-                                  )}
-                                  %
-                                </Text>
-                              </View>
-                              <View style={styles.paymentRow}>
-                                <Text style={styles.paymentLabel}>
-                                  Gross income
-                                </Text>
-                                <Text style={styles.paymentAmount}>
-                                  {formatCurrencyFromCents(
-                                    billingMetrics.periodVerifiedGrossCents,
-                                  )}
-                                </Text>
-                              </View>
-                              <View style={styles.paymentRow}>
-                                <Text style={styles.paymentLabel}>
-                                  Charges due
-                                </Text>
-                                <Text style={styles.paymentAmount}>
-                                  {formatCurrencyFromCents(
-                                    Math.max(
-                                      0,
-                                      (Number(
-                                        billingMetrics.periodTotalCents,
-                                      ) || 0) -
-                                        (Number(
-                                          billingMetrics.periodPaidCents,
-                                        ) || 0) +
-                                        (Number(
-                                          billingMetrics.manualPendingCents,
-                                        ) || 0),
-                                    ),
-                                  )}
-                                </Text>
-                              </View>
-                              <View style={styles.paymentRow}>
-                                <Text style={styles.paymentLabel}>
-                                  Net after fees
-                                </Text>
-                                <Text style={styles.paymentAmount}>
-                                  {formatCurrencyFromCents(
-                                    Math.max(
-                                      0,
-                                      (Number(
-                                        billingMetrics.periodVerifiedGrossCents,
-                                      ) || 0) -
-                                        (Number(
-                                          billingMetrics.periodTotalCents,
-                                        ) || 0),
-                                    ),
-                                  )}
-                                </Text>
-                              </View>
-                              {billingStatus.loading && (
-                                <Text style={styles.formHint}>
-                                  Updating charges...
-                                </Text>
-                              )}
-                              {billingStatus.error && (
-                                <Text style={styles.formError}>
-                                  {billingStatus.error}
-                                </Text>
-                              )}
-                              <View style={styles.paymentActionsRow}>
-                                {!resolvedOwnerBusiness?.stripeAccountId ? (
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.primaryButton,
-                                      stripeActionStatus.loading &&
-                                        styles.primaryButtonDisabled,
-                                    ]}
-                                    onPress={handleStripeConnect}
-                                    disabled={stripeActionStatus.loading}
-                                  >
-                                    <Text style={styles.primaryButtonText}>
-                                      Connect Stripe
-                                    </Text>
-                                  </TouchableOpacity>
-                                ) : !resolvedOwnerBusiness?.stripePaymentMethodId ? (
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.primaryButton,
-                                      stripeActionStatus.loading &&
-                                        styles.primaryButtonDisabled,
-                                    ]}
-                                    onPress={handleStripePaymentSetup}
-                                    disabled={stripeActionStatus.loading}
-                                  >
-                                    <Text style={styles.primaryButtonText}>
-                                      Add payment method
-                                    </Text>
-                                  </TouchableOpacity>
-                                ) : (
-                                  <TouchableOpacity
-                                    style={[
-                                      styles.primaryButton,
-                                      stripeActionStatus.loading &&
-                                        styles.primaryButtonDisabled,
-                                    ]}
-                                    onPress={handleStripeManage}
-                                    disabled={stripeActionStatus.loading}
-                                  >
-                                    <Text style={styles.primaryButtonText}>
-                                      Billing portal
-                                    </Text>
-                                  </TouchableOpacity>
-                                )}
-                              </View>
-                              {stripeActionStatus.error && (
-                                <Text style={styles.formError}>
-                                  {formatStripeError(stripeActionStatus.error)}
-                                </Text>
-                              )}
-                              {stripeActionStatus.success && (
-                                <Text style={styles.formSuccess}>
-                                  {stripeActionStatus.success}
-                                </Text>
-                              )}
-                            </View>
-
-                            <View style={styles.sectionBlock}>
-                              <View
-                                style={[
-                                  styles.sectionTitleRow,
-                                  styles.offersSectionTitleRow,
-                                ]}
-                              >
-                                <Text
-                                  style={[
-                                    styles.sectionTitleAlt,
-                                    styles.sectionTitleTight,
-                                  ]}
-                                >
-                                  Offers
-                                </Text>
-                                <TouchableOpacity
-                                  style={styles.sectionInfoButton}
-                                  onPress={() =>
-                                    openInfoTooltip(
-                                      "Offers",
-                                      "Create and manage offers customers see on Discover. Redemption limits apply per customer.",
-                                    )
-                                  }
-                                  hitSlop={{
-                                    top: 10,
-                                    bottom: 10,
-                                    left: 10,
-                                    right: 10,
-                                  }}
-                                >
-                                  <Ionicons
-                                    name="information-circle-outline"
-                                    size={18}
-                                    color={COLORS.muted}
-                                  />
-                                </TouchableOpacity>
-                              </View>
+                            <View style={styles.ownerDashboardSection}>
+                              <Text style={styles.ownerDashboardSectionTitle}>
+                                Billing & Payments
+                              </Text>
                               <TouchableOpacity
-                                style={styles.offersCtaButton}
-                                onPress={() => setOwnerOffersModalOpen(true)}
+                                style={styles.dashboardPaymentsEntryCard}
+                                onPress={() => setOwnerBusinessScreen("payments")}
                                 activeOpacity={0.9}
                               >
-                                <View style={styles.offersCtaLeft}>
-                                  <View style={styles.offersCtaIconWrap}>
-                                    <Ionicons
-                                      name="sparkles-outline"
-                                      size={16}
-                                      color={COLORS.white}
-                                    />
-                                  </View>
-                                  <View style={styles.offersCtaCopy}>
-                                    <Text style={styles.offersCtaTitle}>
-                                      View current offers
-                                    </Text>
-                                    <Text style={styles.offersCtaMeta}>
-                                      Manage live and pending campaigns
-                                    </Text>
-                                  </View>
+                                <View style={styles.dashboardPaymentsEntryIcon}>
+                                  <Ionicons
+                                    name="cash-outline"
+                                    size={24}
+                                    color="#16A34A"
+                                  />
+                                </View>
+                                <View style={styles.dashboardPaymentsEntryCopy}>
+                                  <Text style={styles.dashboardPaymentsEntryTitle}>
+                                    Billing & Payments
+                                  </Text>
+                                  <Text style={styles.dashboardPaymentsEntryBody}>
+                                    Manage your payment settings
+                                  </Text>
                                 </View>
                                 <Ionicons
                                   name="chevron-forward"
-                                  size={18}
-                                  color={COLORS.white}
+                                  size={20}
+                                  color={COLORS.muted}
                                 />
                               </TouchableOpacity>
                             </View>
 
-                            {ownerBusiness && renderCreateOfferCard()}
-
-                            <View style={styles.sectionBlock}>
-                              <View style={styles.sectionTitleRow}>
-                                <Text
-                                  style={[
-                                    styles.sectionTitleAlt,
-                                    styles.sectionTitleTight,
-                                  ]}
-                                >
-                                  Business info
+                            <View style={styles.ownerDashboardSection}>
+                              <View style={styles.ownerDashboardSectionHeader}>
+                                <Text style={styles.ownerDashboardSectionTitle}>
+                                  Manage Offers
                                 </Text>
                                 <TouchableOpacity
-                                  style={styles.sectionInfoButton}
-                                  onPress={() =>
-                                    openInfoTooltip(
-                                      "Business info",
-                                      "Update what customers see on your listing. Changes to name, address, category, and offers are reviewed before they go live.",
-                                    )
-                                  }
-                                  hitSlop={{
-                                    top: 10,
-                                    bottom: 10,
-                                    left: 10,
-                                    right: 10,
-                                  }}
+                                  style={styles.ownerOffersAddButton}
+                                  onPress={openCreateOfferPage}
+                                  activeOpacity={0.88}
                                 >
+                                  <Ionicons name="add" size={20} color={COLORS.white} />
+                                </TouchableOpacity>
+                              </View>
+                              {ownerOffers.length ? (
+                                ownerOffers.map((offer) => {
+                                  const statusLabel = offer.pending
+                                    ? "Pending"
+                                    : offer.rejected
+                                      ? "Rejected"
+                                      : offer.active
+                                        ? "Active"
+                                        : "Paused";
+                                  return (
+                                    <View
+                                      key={offer.id}
+                                      style={styles.ownerDashboardOfferCard}
+                                    >
+                                      <View
+                                        style={[
+                                          styles.ownerDashboardOfferBadge,
+                                          offer.active
+                                            ? styles.ownerDashboardOfferBadgeActive
+                                            : offer.pending
+                                              ? styles.ownerDashboardOfferBadgePending
+                                              : offer.rejected
+                                                ? styles.ownerDashboardOfferBadgeRejected
+                                                : styles.ownerDashboardOfferBadgePaused,
+                                        ]}
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.ownerDashboardOfferBadgeText,
+                                            offer.active
+                                              ? styles.ownerDashboardOfferBadgeTextActive
+                                              : offer.pending
+                                                ? styles.ownerDashboardOfferBadgeTextPending
+                                                : offer.rejected
+                                                  ? styles.ownerDashboardOfferBadgeTextRejected
+                                                  : styles.ownerDashboardOfferBadgeTextPaused,
+                                          ]}
+                                        >
+                                          {statusLabel}
+                                        </Text>
+                                      </View>
+                                      <Text style={styles.ownerDashboardOfferTitle}>
+                                        {offer.title || "Untitled offer"}
+                                      </Text>
+                                      <Text style={styles.ownerDashboardOfferMeta}>
+                                        Valid until {formatOfferExpiryLabel(offer.expiresAt)}
+                                      </Text>
+                                      <View style={styles.ownerDashboardOfferActions}>
+                                        <TouchableOpacity
+                                          style={styles.ownerDashboardOfferAction}
+                                          onPress={() => handleOpenOfferEdit(offer)}
+                                          activeOpacity={0.88}
+                                        >
+                                          <Ionicons
+                                            name="pencil-outline"
+                                            size={18}
+                                            color={COLORS.ink}
+                                          />
+                                          <Text
+                                            style={styles.ownerDashboardOfferActionText}
+                                          >
+                                            Edit
+                                          </Text>
+                                        </TouchableOpacity>
+                                        <TouchableOpacity
+                                          style={styles.ownerDashboardOfferAction}
+                                          onPress={() => {
+                                            setExpandedOwnerOffers((prev) => ({
+                                              ...prev,
+                                              [offer.id]: true,
+                                            }));
+                                            setOwnerOffersModalOpen(true);
+                                          }}
+                                          activeOpacity={0.88}
+                                        >
+                                          <Ionicons
+                                            name="eye-outline"
+                                            size={18}
+                                            color={COLORS.ink}
+                                          />
+                                          <Text
+                                            style={styles.ownerDashboardOfferActionText}
+                                          >
+                                            View
+                                          </Text>
+                                        </TouchableOpacity>
+                                        <TouchableOpacity
+                                          style={[
+                                            styles.ownerDashboardOfferAction,
+                                            styles.ownerDashboardOfferDeleteAction,
+                                          ]}
+                                          onPress={() => handleDeleteOffer(offer)}
+                                          activeOpacity={0.88}
+                                        >
+                                          <Ionicons
+                                            name="trash-outline"
+                                            size={18}
+                                            color={COLORS.danger}
+                                          />
+                                        </TouchableOpacity>
+                                      </View>
+                                      {ownerOfferActionErrors?.[offer.id] ? (
+                                        <Text style={styles.ownerDashboardOfferError}>
+                                          {ownerOfferActionErrors[offer.id]}
+                                        </Text>
+                                      ) : null}
+                                    </View>
+                                  );
+                                })
+                              ) : (
+                                <View style={styles.ownerDashboardEmptyCard}>
+                                  <Text style={styles.ownerDashboardEmptyTitle}>
+                                    No offers yet
+                                  </Text>
+                                  <Text style={styles.ownerDashboardEmptyBody}>
+                                    Create your first offer to start appearing in
+                                    Discover.
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+
+                            {ownerBusiness ? (
+                              <View style={styles.ownerDashboardSection}>
+                                <View style={styles.ownerDashboardSectionHeader}>
+                                  <Text style={styles.ownerDashboardSectionTitle}>
+                                    Business Details
+                                  </Text>
+                                  <TouchableOpacity
+                                    onPress={() => {
+                                      if (!canRequestEdits) return;
+                                      openEditBusinessPage();
+                                    }}
+                                    disabled={!canRequestEdits}
+                                    activeOpacity={0.85}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.ownerDashboardEditLink,
+                                        !canRequestEdits &&
+                                          styles.ownerDashboardEditLinkDisabled,
+                                      ]}
+                                    >
+                                      Edit
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                                <View style={styles.ownerDashboardDetailsCard}>
+                                  <View style={styles.ownerDashboardDetailRow}>
+                                    <Ionicons
+                                      name="storefront-outline"
+                                      size={22}
+                                      color={COLORS.muted}
+                                    />
+                                    <View style={styles.ownerDashboardDetailCopy}>
+                                      <Text style={styles.ownerDashboardDetailLabel}>
+                                        Business Name
+                                      </Text>
+                                      <Text style={styles.ownerDashboardDetailValue}>
+                                        {ownerBusiness.name || "--"}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                  <View style={styles.ownerDashboardDetailRow}>
+                                    <Ionicons
+                                      name="location-outline"
+                                      size={22}
+                                      color={COLORS.muted}
+                                    />
+                                    <View style={styles.ownerDashboardDetailCopy}>
+                                      <Text style={styles.ownerDashboardDetailLabel}>
+                                        Address
+                                      </Text>
+                                      <Text style={styles.ownerDashboardDetailValue}>
+                                        {ownerBusiness.address || "--"}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                  <View style={styles.ownerDashboardDetailRow}>
+                                    <Ionicons
+                                      name="call-outline"
+                                      size={22}
+                                      color={COLORS.muted}
+                                    />
+                                    <View style={styles.ownerDashboardDetailCopy}>
+                                      <Text style={styles.ownerDashboardDetailLabel}>
+                                        Phone
+                                      </Text>
+                                      <Text style={styles.ownerDashboardDetailValue}>
+                                        {ownerBusiness.phone || "--"}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                  <View style={styles.ownerDashboardDetailRow}>
+                                    <Ionicons
+                                      name="time-outline"
+                                      size={22}
+                                      color={COLORS.muted}
+                                    />
+                                    <View style={styles.ownerDashboardDetailCopy}>
+                                      <Text style={styles.ownerDashboardDetailLabel}>
+                                        Hours
+                                      </Text>
+                                      <Text style={styles.ownerDashboardDetailValue}>
+                                        {ownerBusinessHoursSummary}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                </View>
+                              </View>
+                            ) : null}
+
+                            <View style={styles.ownerDashboardSection}>
+                              <Text style={styles.ownerDashboardSectionTitle}>
+                                Manage Business
+                              </Text>
+                              <View style={styles.ownerDashboardManageList}>
+                                <TouchableOpacity
+                                  style={styles.ownerDashboardManageRow}
+                                  onPress={() => {
+                                    if (!canRequestEdits) return;
+                                    openEditBusinessPage();
+                                  }}
+                                  activeOpacity={0.88}
+                                  disabled={!canRequestEdits}
+                                >
+                                  <View style={styles.ownerDashboardManageRowIcon}>
+                                    <Ionicons
+                                      name="create-outline"
+                                      size={22}
+                                      color={COLORS.muted}
+                                    />
+                                  </View>
+                                  <View style={styles.ownerDashboardManageRowCopy}>
+                                    <Text style={styles.ownerDashboardManageRowTitle}>
+                                      Edit Business Info
+                                    </Text>
+                                    <Text style={styles.ownerDashboardManageRowBody}>
+                                      {canRequestEdits
+                                        ? "Update name, address, hours"
+                                        : "Changes are currently under review"}
+                                    </Text>
+                                  </View>
                                   <Ionicons
-                                    name="information-circle-outline"
-                                    size={18}
+                                    name="chevron-forward"
+                                    size={20}
                                     color={COLORS.muted}
                                   />
                                 </TouchableOpacity>
+                                <BusinessSwitcher
+                                  variant="row"
+                                  onAddBusiness={openCreateBusinessPage}
+                                />
+                                <TouchableOpacity
+                                  style={styles.ownerDashboardManageRow}
+                                  onPress={openReviewsPage}
+                                  activeOpacity={0.88}
+                                >
+                                  <View style={styles.ownerDashboardManageRowIcon}>
+                                    <Ionicons
+                                      name="star-outline"
+                                      size={22}
+                                      color={COLORS.muted}
+                                    />
+                                  </View>
+                                  <View style={styles.ownerDashboardManageRowCopy}>
+                                    <Text style={styles.ownerDashboardManageRowTitle}>
+                                      Customer Reviews
+                                    </Text>
+                                    <Text style={styles.ownerDashboardManageRowBody}>
+                                      Manage feedback
+                                    </Text>
+                                  </View>
+                                  <Ionicons
+                                    name="chevron-forward"
+                                    size={20}
+                                    color={COLORS.muted}
+                                  />
+                                </TouchableOpacity>
+                                {ownerIsTradeBusiness ? (
+                                  <TouchableOpacity
+                                    style={styles.ownerDashboardManageRow}
+                                    onPress={() => {
+                                      setTradeReceiptReviewOpen(true);
+                                      setTradeReceiptDisputeDrafts({});
+                                      setTradeReceiptDecisionStatus({
+                                        loading: false,
+                                        targetId: null,
+                                        error: null,
+                                        success: null,
+                                      });
+                                    }}
+                                    activeOpacity={0.88}
+                                  >
+                                    <View style={styles.ownerDashboardManageRowIcon}>
+                                      <Ionicons
+                                        name="shield-checkmark-outline"
+                                        size={22}
+                                        color={COLORS.muted}
+                                      />
+                                    </View>
+                                    <View style={styles.ownerDashboardManageRowCopy}>
+                                      <Text style={styles.ownerDashboardManageRowTitle}>
+                                        Trade payout review
+                                      </Text>
+                                      <Text style={styles.ownerDashboardManageRowBody}>
+                                        Record accept or dispute answers for verified trade receipts
+                                      </Text>
+                                    </View>
+                                    <Ionicons
+                                      name="chevron-forward"
+                                      size={20}
+                                      color={COLORS.muted}
+                                    />
+                                  </TouchableOpacity>
+                                ) : null}
                               </View>
                             </View>
 
                             {ownerBusiness ? (
+                              isEditingBusiness ||
+                              ownerBusiness.pendingEdits ||
+                              formMessage ||
+                              ownerBusinessRejected ||
+                              ownerBusinessAwaitingApproval ? (
                               <View style={styles.formCard}>
                                 <View style={styles.formHeaderRow}>
                                   <View>
@@ -27439,11 +29189,7 @@ export default function App() {
                                         !canRequestEdits &&
                                           styles.primaryButtonDisabled,
                                       ]}
-                                      onPress={() => {
-                                        if (!canRequestEdits) return;
-                                        setIsEditingBusiness(true);
-                                        setFormMessage(null);
-                                      }}
+                                      onPress={openEditBusinessPage}
                                       disabled={!canRequestEdits}
                                     >
                                       <Text style={styles.primaryButtonText}>
@@ -27539,6 +29285,96 @@ export default function App() {
                                       ))}
                                     </View>
                                   )}
+
+                                <View style={styles.offerPhotoHeader}>
+                                  <Text style={styles.formLabel}>
+                                    Business photo
+                                  </Text>
+                                  {canEditBusiness &&
+                                  (editBusinessImage?.uri ||
+                                    formData.imageUrl) ? (
+                                    <TouchableOpacity
+                                      style={styles.offerRemoveButton}
+                                      onPress={() => {
+                                        setEditBusinessImage(null);
+                                        setEditBusinessImageStatus({
+                                          uploading: false,
+                                          error: null,
+                                        });
+                                        handleFormChange("imageUrl", "");
+                                      }}
+                                      disabled={!canEditBusiness}
+                                    >
+                                      <Text style={styles.offerRemoveButtonText}>
+                                        Remove
+                                      </Text>
+                                    </TouchableOpacity>
+                                  ) : null}
+                                </View>
+                                {editBusinessImageStatus.error && canEditBusiness ? (
+                                  <Text style={styles.formError}>
+                                    {editBusinessImageStatus.error}
+                                  </Text>
+                                ) : null}
+                                <TouchableOpacity
+                                  style={[
+                                    styles.offerUploadFrame,
+                                    styles.offerUploadFrameInteractive,
+                                    !canEditBusiness && styles.formInputDisabled,
+                                  ]}
+                                  onPress={() => {
+                                    if (!canEditBusiness) return;
+                                    handlePickEditBusinessImage();
+                                  }}
+                                  disabled={
+                                    !canEditBusiness ||
+                                    editBusinessImageStatus.uploading
+                                  }
+                                  activeOpacity={0.85}
+                                >
+                                  {editBusinessImage?.uri || formData.imageUrl ? (
+                                    <>
+                                      <Image
+                                        source={{
+                                          uri:
+                                            editBusinessImage?.uri ||
+                                            formData.imageUrl,
+                                        }}
+                                        style={styles.offerUploadPreview}
+                                        resizeMode="cover"
+                                      />
+                                      {canEditBusiness ? (
+                                        <View style={styles.offerUploadOverlay}>
+                                          <Text
+                                            style={styles.offerUploadOverlayText}
+                                          >
+                                            Tap to replace business photo
+                                          </Text>
+                                        </View>
+                                      ) : null}
+                                    </>
+                                  ) : (
+                                    <View style={styles.offerUploadPlaceholder}>
+                                      <Ionicons
+                                        name="image-outline"
+                                        size={18}
+                                        color={COLORS.muted}
+                                      />
+                                      <Text style={styles.offerUploadHint}>
+                                        Tap to choose a business cover photo.
+                                      </Text>
+                                    </View>
+                                  )}
+                                  {editBusinessImageStatus.uploading && (
+                                    <View style={styles.offerUploadBusy}>
+                                      <ActivityIndicator color={COLORS.pine} />
+                                    </View>
+                                  )}
+                                </TouchableOpacity>
+                                <Text style={styles.formHint}>
+                                  This photo is used for the business card in
+                                  Discover and is separate from offer photos.
+                                </Text>
 
                                 <View style={styles.formRow}>
                                   <View style={styles.formField}>
@@ -27792,6 +29628,11 @@ export default function App() {
                                             ),
                                           );
                                         }
+                                        setEditBusinessImage(null);
+                                        setEditBusinessImageStatus({
+                                          uploading: false,
+                                          error: null,
+                                        });
                                         setFormMessage(null);
                                         setIsEditingBusiness(false);
                                       }}
@@ -27803,6 +29644,7 @@ export default function App() {
                                   </View>
                                 )}
                               </View>
+                            ) : null
                             ) : (
                               <View style={styles.formCard}>
                                 <Text style={styles.formHeaderTitle}>
@@ -27883,6 +29725,79 @@ export default function App() {
                                     ))}
                                   </View>
                                 )}
+
+                                <View style={styles.offerPhotoHeader}>
+                                  <Text style={styles.formLabel}>
+                                    Business photo
+                                  </Text>
+                                  {createBusinessImage?.uri && (
+                                    <TouchableOpacity
+                                      style={styles.offerRemoveButton}
+                                      onPress={() => {
+                                        setCreateBusinessImage(null);
+                                        setCreateBusinessImageStatus({
+                                          uploading: false,
+                                          error: null,
+                                        });
+                                      }}
+                                    >
+                                      <Text style={styles.offerRemoveButtonText}>
+                                        Remove
+                                      </Text>
+                                    </TouchableOpacity>
+                                  )}
+                                </View>
+                                {createBusinessImageStatus.error && (
+                                  <Text style={styles.formError}>
+                                    {createBusinessImageStatus.error}
+                                  </Text>
+                                )}
+                                <TouchableOpacity
+                                  style={[
+                                    styles.offerUploadFrame,
+                                    styles.offerUploadFrameInteractive,
+                                  ]}
+                                  onPress={handlePickCreateBusinessImage}
+                                  disabled={createBusinessImageStatus.uploading}
+                                  activeOpacity={0.85}
+                                >
+                                  {createBusinessImage?.uri ? (
+                                    <>
+                                      <Image
+                                        source={{ uri: createBusinessImage.uri }}
+                                        style={styles.offerUploadPreview}
+                                        resizeMode="cover"
+                                      />
+                                      <View style={styles.offerUploadOverlay}>
+                                        <Text
+                                          style={styles.offerUploadOverlayText}
+                                        >
+                                          Tap to replace business photo
+                                        </Text>
+                                      </View>
+                                    </>
+                                  ) : (
+                                    <View style={styles.offerUploadPlaceholder}>
+                                      <Ionicons
+                                        name="image-outline"
+                                        size={18}
+                                        color={COLORS.muted}
+                                      />
+                                      <Text style={styles.offerUploadHint}>
+                                        Tap to choose a business cover photo.
+                                      </Text>
+                                    </View>
+                                  )}
+                                  {createBusinessImageStatus.uploading && (
+                                    <View style={styles.offerUploadBusy}>
+                                      <ActivityIndicator color={COLORS.pine} />
+                                    </View>
+                                  )}
+                                </TouchableOpacity>
+                                <Text style={styles.formHint}>
+                                  This photo is used for the business card in
+                                  Discover and is separate from offer photos.
+                                </Text>
 
                                 <View style={styles.formRow}>
                                   <View style={styles.formField}>
@@ -28245,6 +30160,8 @@ export default function App() {
                             {/* Offer management lives in the Business Dashboard tab. */}
                           </>
                         )}
+                      </>
+                    )}
                       </>
                     ) : activeTab === "history" ? (
                       <>
@@ -30594,240 +32511,6 @@ export default function App() {
                                   </View>
                                 </View>
 
-                                <Text style={styles.formLabel}>
-                                  Business name
-                                </Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="Company name"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={businessName}
-                                  onChangeText={setBusinessName}
-                                />
-
-                                <Text style={styles.formLabel}>Category</Text>
-                                <TouchableOpacity
-                                  style={[styles.authInput, styles.selectInput]}
-                                  onPress={() =>
-                                    setBusinessCategoryMenuOpen((prev) => !prev)
-                                  }
-                                  activeOpacity={0.8}
-                                >
-                                  <Text style={styles.selectInputText}>
-                                    {getCategoryPickerLabel(
-                                      businessCategoryKey,
-                                      businessCategoryCustomLabel,
-                                    )}
-                                  </Text>
-                                  <Ionicons
-                                    name={
-                                      businessCategoryMenuOpen
-                                        ? "chevron-up"
-                                        : "chevron-down"
-                                    }
-                                    size={16}
-                                    color={COLORS.muted}
-                                  />
-                                </TouchableOpacity>
-                                {businessCategoryMenuOpen && (
-                                  <View style={styles.selectMenu}>
-                                    {CATEGORY_OPTIONS_WITH_OTHER.map(
-                                      (option) => {
-                                        const isActive =
-                                          businessCategoryKey === option.key;
-                                        return (
-                                          <TouchableOpacity
-                                            key={option.key}
-                                            style={[
-                                              styles.selectMenuOption,
-                                              isActive &&
-                                                styles.selectMenuOptionActive,
-                                            ]}
-                                            onPress={() => {
-                                              setBusinessCategoryKey(
-                                                option.key,
-                                              );
-                                              if (
-                                                option.key !==
-                                                CATEGORY_OTHER_KEY
-                                              ) {
-                                                setBusinessCategoryCustomLabel(
-                                                  "",
-                                                );
-                                              }
-                                              setBusinessCategoryMenuOpen(
-                                                false,
-                                              );
-                                            }}
-                                          >
-                                            <Text
-                                              style={[
-                                                styles.selectMenuOptionText,
-                                                isActive &&
-                                                  styles.selectMenuOptionTextActive,
-                                              ]}
-                                            >
-                                              {option.label}
-                                            </Text>
-                                          </TouchableOpacity>
-                                        );
-                                      },
-                                    )}
-                                  </View>
-                                )}
-                                {businessCategoryKey === CATEGORY_OTHER_KEY && (
-                                  <>
-                                    <Text style={styles.formLabel}>
-                                      Custom category
-                                    </Text>
-                                    <AutoFocusInput
-                                      style={styles.authInput}
-                                      placeholder="Enter custom category"
-                                      placeholderTextColor={COLORS.muted}
-                                      value={businessCategoryCustomLabel}
-                                      onChangeText={
-                                        setBusinessCategoryCustomLabel
-                                      }
-                                    />
-                                  </>
-                                )}
-
-                                <Text style={styles.formLabel}>
-                                  Business address
-                                </Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="Street address"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={businessAddress}
-                                  onChangeText={handleBusinessAddressChange}
-                                />
-                                {!ADDRESS_LOOKUP_ENABLED && (
-                                  <Text style={styles.formHint}>
-                                    {ADDRESS_LOOKUP_UNAVAILABLE_COPY}
-                                  </Text>
-                                )}
-                                {businessAddressLoading && (
-                                  <Text style={styles.formHint}>
-                                    Searching addresses...
-                                  </Text>
-                                )}
-                                {businessAddressError && (
-                                  <Text style={styles.formError}>
-                                    {businessAddressError}
-                                  </Text>
-                                )}
-                                {businessAddressResults.length > 0 && (
-                                  <View style={styles.suggestionList}>
-                                    {businessAddressResults.map((result) => (
-                                      <TouchableOpacity
-                                        key={result.place_id}
-                                        style={styles.suggestionItem}
-                                        onPress={() =>
-                                          handleSelectBusinessSuggestion(result)
-                                        }
-                                      >
-                                        <Text style={styles.suggestionTitle}>
-                                          {result.structured_formatting
-                                            ?.main_text || result.description}
-                                        </Text>
-                                        {result.structured_formatting
-                                          ?.secondary_text && (
-                                          <Text
-                                            style={styles.suggestionSubtitle}
-                                          >
-                                            {
-                                              result.structured_formatting
-                                                .secondary_text
-                                            }
-                                          </Text>
-                                        )}
-                                      </TouchableOpacity>
-                                    ))}
-                                  </View>
-                                )}
-
-                                <View style={styles.formRow}>
-                                  <View style={styles.formField}>
-                                    <Text style={styles.formLabel}>City</Text>
-                                    <AutoFocusInput
-                                      style={styles.authInput}
-                                      placeholder="City"
-                                      placeholderTextColor={COLORS.muted}
-                                      value={businessAddressCity}
-                                      onChangeText={setBusinessAddressCity}
-                                    />
-                                  </View>
-                                  <View style={styles.formField}>
-                                    <Text style={styles.formLabel}>State</Text>
-                                    <AutoFocusInput
-                                      style={styles.authInput}
-                                      placeholder="State (e.g., OH)"
-                                      placeholderTextColor={COLORS.muted}
-                                      value={businessAddressState}
-                                      onChangeText={setBusinessAddressState}
-                                    />
-                                  </View>
-                                  <View style={styles.formField}>
-                                    <Text style={styles.formLabel}>
-                                      Zip code
-                                    </Text>
-                                    <AutoFocusInput
-                                      style={styles.authInput}
-                                      placeholder="ZIP code"
-                                      placeholderTextColor={COLORS.muted}
-                                      value={businessAddressPostal}
-                                      onChangeText={setBusinessAddressPostal}
-                                      keyboardType="number-pad"
-                                    />
-                                  </View>
-                                </View>
-
-                                <Text style={styles.formLabel}>Phone</Text>
-                                <AutoFocusInput
-                                  style={styles.authInput}
-                                  placeholder="(555) 123-4567"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={businessPhone}
-                                  onChangeText={setBusinessPhone}
-                                  keyboardType="phone-pad"
-                                />
-
-                                <Text style={styles.formLabel}>
-                                  Descriptor aliases (optional)
-                                </Text>
-                                <AutoFocusInput
-                                  style={[
-                                    styles.authInput,
-                                    styles.descriptorInput,
-                                  ]}
-                                  placeholder="One per line (example: SQ * YOUR BUSINESS)"
-                                  placeholderTextColor={COLORS.muted}
-                                  value={businessDescriptorAliasesInput}
-                                  onChangeText={
-                                    setBusinessDescriptorAliasesInput
-                                  }
-                                  multiline
-                                  textAlignVertical="top"
-                                />
-                                <Text style={styles.formHint}>
-                                  Optional: helps improve automatic bank
-                                  verification.
-                                </Text>
-
-                                <Text style={styles.formLabel}>
-                                  Standard hours
-                                </Text>
-                                {renderBusinessHoursEditor({
-                                  schedule: businessHoursSchedule,
-                                  setSchedule: setBusinessHoursSchedule,
-                                  scope: "signup",
-                                })}
-                                <Text style={styles.formHint}>
-                                  Set open or closed for each day and choose a
-                                  time range for open days.
-                                </Text>
-
                                 <Text style={styles.formLabel}>Email</Text>
                                 <AutoFocusInput
                                   style={styles.authInput}
@@ -30838,72 +32521,87 @@ export default function App() {
                                   keyboardType="email-address"
                                   autoCapitalize="none"
                                 />
-                                <View style={styles.legalChecklist}>
-                                  <TouchableOpacity
-                                    style={styles.legalCheckRow}
-                                    onPress={() => {
-                                      setBusinessSignUpAuthorizedChecked(
-                                        (prev) => !prev,
-                                      );
-                                      if (businessSignUpError) {
-                                        setBusinessSignUpError(null);
-                                      }
+                                <Text style={styles.formLabel}>Password</Text>
+                                <View style={styles.passwordInputWrapper}>
+                                  <AutoFocusInput
+                                    style={[
+                                      styles.authInput,
+                                      styles.passwordInputWithToggle,
+                                    ]}
+                                    placeholder="Create a password"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={businessVerifyPassword}
+                                    onChangeText={(value) => {
+                                      setBusinessVerifyPassword(value);
+                                      if (businessSignUpError) setBusinessSignUpError(null);
+                                      if (businessSignUpNotice) setBusinessSignUpNotice(null);
                                     }}
-                                    activeOpacity={0.85}
+                                    secureTextEntry={!showBusinessVerifyPassword}
+                                  />
+                                  <TouchableOpacity
+                                    style={styles.passwordToggleButton}
+                                    onPress={() =>
+                                      setShowBusinessVerifyPassword((prev) => !prev)
+                                    }
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                                   >
                                     <Ionicons
                                       name={
-                                        businessSignUpAuthorizedChecked
-                                          ? "checkmark-circle"
-                                          : "ellipse-outline"
+                                        showBusinessVerifyPassword
+                                          ? "eye-off-outline"
+                                          : "eye-outline"
                                       }
                                       size={18}
-                                      color={
-                                        businessSignUpAuthorizedChecked
-                                          ? COLORS.pine
-                                          : COLORS.muted
-                                      }
+                                      color={COLORS.muted}
                                     />
-                                    <Text style={styles.legalCheckText}>
-                                      I am authorized to act on behalf of this
-                                      business.
-                                    </Text>
-                                  </TouchableOpacity>
-                                  <TouchableOpacity
-                                    style={styles.legalCheckRow}
-                                    onPress={() => {
-                                      setBusinessSignUpHonorOffersChecked(
-                                        (prev) => !prev,
-                                      );
-                                      if (businessSignUpError) {
-                                        setBusinessSignUpError(null);
-                                      }
-                                    }}
-                                    activeOpacity={0.85}
-                                  >
-                                    <Ionicons
-                                      name={
-                                        businessSignUpHonorOffersChecked
-                                          ? "checkmark-circle"
-                                          : "ellipse-outline"
-                                      }
-                                      size={18}
-                                      color={
-                                        businessSignUpHonorOffersChecked
-                                          ? COLORS.pine
-                                          : COLORS.muted
-                                      }
-                                    />
-                                    <Text style={styles.legalCheckText}>
-                                      I agree this business will honor every
-                                      approved offer as published.
-                                    </Text>
                                   </TouchableOpacity>
                                 </View>
+                                <Text style={styles.formLabel}>Confirm password</Text>
+                                <View style={styles.passwordInputWrapper}>
+                                  <AutoFocusInput
+                                    style={[
+                                      styles.authInput,
+                                      styles.passwordInputWithToggle,
+                                    ]}
+                                    placeholder="Re-enter password"
+                                    placeholderTextColor={COLORS.muted}
+                                    value={businessVerifyPasswordConfirm}
+                                    onChangeText={(value) => {
+                                      setBusinessVerifyPasswordConfirm(value);
+                                      if (businessSignUpError) setBusinessSignUpError(null);
+                                      if (businessSignUpNotice) setBusinessSignUpNotice(null);
+                                    }}
+                                    secureTextEntry={!showBusinessVerifyPasswordConfirm}
+                                  />
+                                  <TouchableOpacity
+                                    style={styles.passwordToggleButton}
+                                    onPress={() =>
+                                      setShowBusinessVerifyPasswordConfirm((prev) => !prev)
+                                    }
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                  >
+                                    <Ionicons
+                                      name={
+                                        showBusinessVerifyPasswordConfirm
+                                          ? "eye-off-outline"
+                                          : "eye-outline"
+                                      }
+                                      size={18}
+                                      color={COLORS.muted}
+                                    />
+                                  </TouchableOpacity>
+                                </View>
+                                {businessSignUpPasswordInlineError ? (
+                                  <Text style={styles.formError}>
+                                    {businessSignUpPasswordInlineError}
+                                  </Text>
+                                ) : null}
                                 {businessSignUpError && (
+                                  !businessSignUpPasswordInlineError ? (
                                   <Text style={styles.formError}>
                                     {businessSignUpError}
                                   </Text>
+                                  ) : null
                                 )}
                                 {businessSignUpNotice && (
                                   <Text style={styles.formSuccess}>
@@ -30920,7 +32618,7 @@ export default function App() {
                                   disabled={authBusy}
                                 >
                                   <Text style={styles.authButtonText}>
-                                    {authBusy
+                                {authBusy
                                       ? "Please wait..."
                                       : "Send verification code"}
                                   </Text>
@@ -30980,10 +32678,6 @@ export default function App() {
                                   style={styles.authBack}
                                   onPress={() => {
                                     setBusinessOtpCode("");
-                                    setBusinessVerifyPassword("");
-                                    setBusinessVerifyPasswordConfirm("");
-                                    setShowBusinessVerifyPassword(false);
-                                    setShowBusinessVerifyPasswordConfirm(false);
                                     setBusinessSignUpError(null);
                                     setBusinessSignUpNotice(null);
                                     setAuthView("business");
@@ -31005,7 +32699,7 @@ export default function App() {
                                   Enter the one-time code sent to{" "}
                                   {businessOtpSentEmail ||
                                     businessEmail.trim().toLowerCase()}
-                                  . Then create your password.
+                                  }.
                                 </Text>
 
                                 <Text style={styles.formLabel}>
@@ -31033,105 +32727,6 @@ export default function App() {
                                       handleVerifyBusinessSignUpCode();
                                   }}
                                 />
-                                <Text style={styles.formLabel}>Password</Text>
-                                <View style={styles.passwordInputWrapper}>
-                                  <AutoFocusInput
-                                    style={[
-                                      styles.authInput,
-                                      styles.passwordInputWithToggle,
-                                    ]}
-                                    placeholder="Create a password"
-                                    placeholderTextColor={COLORS.muted}
-                                    value={businessVerifyPassword}
-                                    onChangeText={(value) => {
-                                      setBusinessVerifyPassword(value);
-                                      if (businessSignUpError)
-                                        setBusinessSignUpError(null);
-                                      if (businessSignUpNotice)
-                                        setBusinessSignUpNotice(null);
-                                    }}
-                                    secureTextEntry={
-                                      !showBusinessVerifyPassword
-                                    }
-                                  />
-                                  <TouchableOpacity
-                                    style={styles.passwordToggleButton}
-                                    onPress={() =>
-                                      setShowBusinessVerifyPassword(
-                                        (prev) => !prev,
-                                      )
-                                    }
-                                    hitSlop={{
-                                      top: 8,
-                                      bottom: 8,
-                                      left: 8,
-                                      right: 8,
-                                    }}
-                                  >
-                                    <Ionicons
-                                      name={
-                                        showBusinessVerifyPassword
-                                          ? "eye-off-outline"
-                                          : "eye-outline"
-                                      }
-                                      size={18}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                </View>
-                                <Text style={styles.formLabel}>
-                                  Confirm password
-                                </Text>
-                                <View style={styles.passwordInputWrapper}>
-                                  <AutoFocusInput
-                                    style={[
-                                      styles.authInput,
-                                      styles.passwordInputWithToggle,
-                                    ]}
-                                    placeholder="Re-enter password"
-                                    placeholderTextColor={COLORS.muted}
-                                    value={businessVerifyPasswordConfirm}
-                                    onChangeText={(value) => {
-                                      setBusinessVerifyPasswordConfirm(value);
-                                      if (businessSignUpError)
-                                        setBusinessSignUpError(null);
-                                      if (businessSignUpNotice)
-                                        setBusinessSignUpNotice(null);
-                                    }}
-                                    secureTextEntry={
-                                      !showBusinessVerifyPasswordConfirm
-                                    }
-                                    returnKeyType="go"
-                                    onSubmitEditing={() => {
-                                      if (!authBusy)
-                                        handleVerifyBusinessSignUpCode();
-                                    }}
-                                  />
-                                  <TouchableOpacity
-                                    style={styles.passwordToggleButton}
-                                    onPress={() =>
-                                      setShowBusinessVerifyPasswordConfirm(
-                                        (prev) => !prev,
-                                      )
-                                    }
-                                    hitSlop={{
-                                      top: 8,
-                                      bottom: 8,
-                                      left: 8,
-                                      right: 8,
-                                    }}
-                                  >
-                                    <Ionicons
-                                      name={
-                                        showBusinessVerifyPasswordConfirm
-                                          ? "eye-off-outline"
-                                          : "eye-outline"
-                                      }
-                                      size={18}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                </View>
 
                                 {businessSignUpError && (
                                   <Text style={styles.formError}>
@@ -32739,10 +34334,9 @@ export default function App() {
                                     )
                                   : null;
                                 const businessCategoryLabel =
-                                  offer.business?.category_label ||
                                   getCategoryConfig(
                                     offer.business?.category_key ||
-                                      "restaurant",
+                                      offer.business?.category_label,
                                   ).display;
                                 return (
                                   <View key={offer.id} style={styles.adminCard}>
@@ -32787,42 +34381,6 @@ export default function App() {
                                     </View>
                                     {isExpanded && (
                                       <View style={styles.adminDetails}>
-                                        <View style={styles.adminDetailRow}>
-                                          <Text style={styles.adminDetailLabel}>
-                                            Offer photo
-                                          </Text>
-                                          {offer.imageUrl ? (
-                                            <Image
-                                              source={{ uri: offer.imageUrl }}
-                                              style={styles.adminOfferImage}
-                                              resizeMode="cover"
-                                            />
-                                          ) : (
-                                            <View
-                                              style={
-                                                styles.adminOfferImagePlaceholder
-                                              }
-                                            >
-                                              <Text
-                                                style={
-                                                  styles.adminOfferImagePlaceholderText
-                                                }
-                                              >
-                                                No photo uploaded
-                                              </Text>
-                                            </View>
-                                          )}
-                                        </View>
-                                        <View style={styles.adminDetailRow}>
-                                          <Text style={styles.adminDetailLabel}>
-                                            Description
-                                          </Text>
-                                          <Text
-                                            style={styles.adminDetailValueFull}
-                                          >
-                                            {offer.description || "--"}
-                                          </Text>
-                                        </View>
                                         <View style={styles.adminDetailRow}>
                                           <Text style={styles.adminDetailLabel}>
                                             Redemption limit
@@ -33966,11 +35524,6 @@ export default function App() {
                                         </Text>
                                       </View>
                                     </View>
-                                    {offer.description ? (
-                                      <Text style={styles.adminOffer}>
-                                        {offer.description}
-                                      </Text>
-                                    ) : null}
                                     <View style={styles.adminDestructivePanel}>
                                       {!isOfferDeleteArmed ? (
                                         <TouchableOpacity
@@ -34321,10 +35874,14 @@ export default function App() {
                         </View>
                       </View>
                     </Modal>
-                  </BottomSheetScrollView>
+                  </ScrollView>
                 </KeyboardAvoidingView>
               )}
-            </BottomSheet>
+                </SwipeableTabView>
+              </Reanimated.View>
+                </Reanimated.View>
+              </>
+            ) : null}
             {showLaunchOverlay && (
               <Animated.View
                 style={[
@@ -34339,8 +35896,9 @@ export default function App() {
                 />
               </Animated.View>
             )}
-          </View>
-        </SafeAreaView>
+            </View>
+          </SafeAreaView>
+        </ActiveBusinessProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
@@ -35099,6 +36657,339 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
   },
+  discoverTopShell: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    zIndex: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  discoverTopActionGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  discoverTopActionButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "rgba(255,255,255,0.94)",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "rgba(15, 23, 42, 0.18)",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.16,
+    shadowRadius: 16,
+    elevation: 12,
+  },
+  discoverTopErrorWrap: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    zIndex: 24,
+  },
+  globalMenuShell: {
+    position: "absolute",
+    left: 16,
+    zIndex: 24,
+  },
+  discoverSheetStage: {
+    flex: 1,
+  },
+  discoverMiniSheetOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "flex-start",
+  },
+  discoverMiniSheet: {
+    minHeight: 112,
+    paddingHorizontal: 24,
+    paddingBottom: 18,
+    paddingTop: 10,
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 34,
+    borderTopRightRadius: 34,
+  },
+  discoverMiniSheetMounted: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    overflow: "hidden",
+  },
+  discoverMiniSheetPressable: {
+    minHeight: 60,
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  discoverMiniTitle: {
+    fontSize: 18,
+    color: "#111827",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  discoverMiniMeta: {
+    fontSize: 14,
+    color: "#4D74F6",
+    fontFamily: FONT_TEXT,
+  },
+  drawerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "flex-start",
+    zIndex: 80,
+    elevation: 80,
+  },
+  drawerBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.24)",
+  },
+  drawerBackdropPressable: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  drawerPanel: {
+    width: Math.min(SCREEN_WIDTH * 0.82, 340),
+    backgroundColor: COLORS.white,
+    borderTopRightRadius: 32,
+    borderBottomRightRadius: 32,
+    overflow: "hidden",
+    flex: 1,
+    maxWidth: Math.min(SCREEN_WIDTH * 0.82, 340),
+  },
+  drawerHeader: {
+    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 0) + 24 : 42,
+    paddingHorizontal: 18,
+    paddingBottom: 18,
+  },
+  drawerAvatar: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    backgroundColor: "rgba(15,23,42,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 18,
+  },
+  drawerCloseButton: {
+    position: "absolute",
+    top: Platform.OS === "android" ? (StatusBar.currentHeight || 0) + 14 : 22,
+    right: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  drawerName: {
+    fontSize: 22,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  drawerEmail: {
+    marginTop: 4,
+    fontSize: 14,
+    color: "rgba(15,23,42,0.82)",
+    fontFamily: FONT_TEXT,
+  },
+  drawerMenuList: {
+    paddingTop: 20,
+    flex: 1,
+  },
+  drawerMenuItem: {
+    minHeight: 58,
+    paddingHorizontal: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+  },
+  drawerMenuItemActive: {
+    backgroundColor: "#EEF4FF",
+    borderLeftWidth: 4,
+    borderLeftColor: "#2F63F1",
+  },
+  drawerMenuText: {
+    fontSize: 16,
+    color: "#30394A",
+    fontFamily: FONT_MEDIUM,
+  },
+  drawerMenuTextActive: {
+    color: "#2F63F1",
+  },
+  drawerSignOutRow: {
+    borderTopWidth: 1,
+    borderTopColor: "#E5EAF1",
+    paddingVertical: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  drawerSignOutText: {
+    fontSize: 15,
+    color: "#FF2D20",
+    fontFamily: FONT_MEDIUM,
+  },
+  searchScreenSafe: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+  },
+  searchScreenHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    paddingBottom: 16,
+  },
+  searchScreenClose: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  searchScreenInput: {
+    flex: 1,
+    fontSize: 17,
+    color: "#0F172A",
+    fontFamily: FONT_MEDIUM,
+    paddingVertical: 0,
+  },
+  searchScreenDivider: {
+    height: 1,
+    backgroundColor: "#E5E7EB",
+  },
+  searchScreenResults: {
+    flex: 1,
+  },
+  searchScreenResultsContent: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 28,
+    gap: 12,
+  },
+  searchScreenEmptyWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  searchScreenEmptyText: {
+    fontSize: 16,
+    color: "#9AA5B8",
+    fontFamily: FONT_TEXT,
+    textAlign: "center",
+  },
+  createBusinessPageOverlay: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+  },
+  createBusinessPageSurface: {
+    flex: 1,
+    backgroundColor: "#F6F8FC",
+  },
+  createBusinessPageHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 14,
+    backgroundColor: COLORS.white,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E8EDF5",
+  },
+  createBusinessPageBackButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F3F5F9",
+    marginRight: 10,
+  },
+  createBusinessPageHeaderCopy: {
+    flex: 1,
+  },
+  createBusinessPageTitle: {
+    fontSize: 22,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  createBusinessPageSubtitle: {
+    marginTop: 4,
+    fontSize: 14,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  createBusinessPageContent: {
+    padding: 18,
+    paddingBottom: SAFE_BOTTOM + 28,
+    gap: 14,
+  },
+  createBusinessSectionCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 22,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: "#E6EBF2",
+    ...ELEVATION.soft,
+  },
+  createBusinessSectionTitle: {
+    fontSize: 18,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+    marginBottom: 12,
+  },
+  createBusinessPageActions: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 12,
+  },
+  createBusinessFooter: {
+    flexDirection: "row",
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    paddingBottom: SAFE_BOTTOM + 14,
+    backgroundColor: COLORS.white,
+    borderTopWidth: 1,
+    borderTopColor: "#E8EDF5",
+  },
+  searchResultCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#E6EBF2",
+    backgroundColor: COLORS.white,
+    padding: 12,
+  },
+  searchResultImage: {
+    width: 58,
+    height: 58,
+    borderRadius: 16,
+  },
+  searchResultImageFallback: {
+    width: 58,
+    height: 58,
+    borderRadius: 16,
+    backgroundColor: "#F3F6FA",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  searchResultCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  searchResultTitle: {
+    fontSize: 16,
+    color: "#101828",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  searchResultMeta: {
+    fontSize: 13,
+    color: "#667085",
+    fontFamily: FONT_TEXT,
+  },
   topNavHost: {
     alignItems: "center",
     zIndex: 30,
@@ -35682,6 +37573,292 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     resizeMode: "cover",
   },
+  businessPageOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: COLORS.white,
+    zIndex: 40,
+    elevation: 40,
+  },
+  businessPageSurface: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+  },
+  businessPageScroll: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+  },
+  businessPageContent: {
+    paddingBottom: 40,
+  },
+  businessPageHeader: {
+    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 0) + 8 : 18,
+    paddingHorizontal: 18,
+    paddingBottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: COLORS.white,
+  },
+  businessPageBackButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  businessPageHeaderTitle: {
+    flex: 1,
+    fontSize: 17,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  businessPageHeroWrap: {
+    width: "100%",
+    height: Math.min(250, SCREEN_WIDTH * 0.44),
+    backgroundColor: "#EEF2F7",
+  },
+  businessPageHeroImage: {
+    width: "100%",
+    height: "100%",
+  },
+  businessPageHeroPlaceholder: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EEF2F7",
+  },
+  businessPageBody: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    gap: 14,
+  },
+  businessPageTitleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  businessPageTitle: {
+    flex: 1,
+    fontSize: 18,
+    lineHeight: 24,
+    color: "#070A12",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  businessPageStatusPill: {
+    marginTop: 4,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: "#11C7B4",
+  },
+  businessPageStatusPillClosed: {
+    backgroundColor: "#8894A7",
+  },
+  businessPageStatusText: {
+    fontSize: 12,
+    color: COLORS.white,
+    fontFamily: FONT_MEDIUM,
+  },
+  businessPageStatusTextClosed: {
+    color: COLORS.white,
+  },
+  businessPageMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: -8,
+  },
+  businessPageMetaText: {
+    fontSize: 13,
+    color: "#697589",
+    fontFamily: FONT_TEXT,
+  },
+  businessPageMetaDot: {
+    fontSize: 14,
+    lineHeight: 14,
+    color: "#697589",
+    fontFamily: FONT_MEDIUM,
+    marginHorizontal: 2,
+  },
+  businessPageCategoryChip: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#F1F3F7",
+    marginTop: -6,
+  },
+  businessPageCategoryChipText: {
+    fontSize: 12,
+    color: "#5E6778",
+    fontFamily: FONT_MEDIUM,
+  },
+  businessPageActionRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  businessPageDirectionsButton: {
+    flex: 1,
+    minHeight: 50,
+    borderRadius: 14,
+    backgroundColor: "#2F63F1",
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  businessPageDirectionsButtonText: {
+    fontSize: 15,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  businessPageCallButton: {
+    flex: 1,
+    minHeight: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#D6DBE4",
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  businessPageCallButtonDisabled: {
+    opacity: 0.45,
+  },
+  businessPageCallButtonText: {
+    fontSize: 15,
+    color: "#11131A",
+    fontFamily: FONT_MEDIUM,
+  },
+  businessPageOffersSection: {
+    gap: 14,
+  },
+  businessPageReviewsSection: {
+    gap: 10,
+    paddingBottom: 12,
+  },
+  businessPageSectionTitle: {
+    fontSize: 18,
+    color: "#11131A",
+    fontFamily: FONT_MEDIUM,
+  },
+  businessPageOfferCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#FFD1A9",
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    gap: 10,
+  },
+  businessPageFallbackRedeemCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#E7ECF3",
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    gap: 10,
+  },
+  businessPageOfferTitle: {
+    fontSize: 16,
+    color: "#8D3B12",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  businessPageOfferDescription: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: "#F15A08",
+    fontFamily: FONT_TEXT,
+  },
+  businessPageOfferExpiry: {
+    fontSize: 13,
+    color: "#FF5A0B",
+    fontFamily: FONT_TEXT,
+  },
+  businessPageRedeemButton: {
+    marginTop: 6,
+    minHeight: 48,
+    borderRadius: 14,
+    backgroundColor: "#FF5A00",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  businessPageRedeemButtonDisabled: {
+    backgroundColor: "#D7DDEA",
+  },
+  businessPageRedeemButtonText: {
+    fontSize: 16,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  businessPageCashbackRedeemButton: {
+    marginTop: 6,
+    minHeight: 48,
+    borderRadius: 14,
+    backgroundColor: "#16A34A",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  businessPageCashbackRedeemButtonDisabled: {
+    backgroundColor: "#D7DDEA",
+  },
+  businessPageCashbackRedeemButtonText: {
+    fontSize: 16,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  businessPageReviewEmpty: {
+    fontSize: 13,
+    color: "#7B8798",
+    fontFamily: FONT_TEXT,
+  },
+  businessPageReviewCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E7ECF3",
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 8,
+  },
+  businessPageReviewHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  businessPageReviewHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  businessPageReviewName: {
+    fontSize: 14,
+    color: "#11131A",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  businessPageReviewDate: {
+    marginTop: 2,
+    fontSize: 11,
+    color: "#8A94A6",
+    fontFamily: FONT_TEXT,
+  },
+  businessPageReviewStars: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+  },
+  businessPageReviewBody: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: "#536174",
+    fontFamily: FONT_TEXT,
+  },
   receiptsHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -35821,6 +37998,46 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     marginTop: 6,
     lineHeight: 16,
+  },
+  detailHoursSection: {
+    marginTop: 18,
+    paddingBottom: 10,
+  },
+  detailHoursCard: {
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.1)",
+    borderRadius: 22,
+    backgroundColor: COLORS.white,
+    overflow: "hidden",
+  },
+  detailHoursRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(15, 23, 42, 0.08)",
+  },
+  detailHoursRowLast: {
+    borderBottomWidth: 0,
+  },
+  detailHoursDayText: {
+    flex: 1,
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  detailHoursValueText: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_TEXT,
+    textAlign: "right",
+  },
+  detailHoursValueClosedText: {
+    color: COLORS.muted,
+    fontFamily: FONT_MEDIUM,
   },
   confettiOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -36211,8 +38428,30 @@ const styles = StyleSheet.create({
     shadowOpacity: 0,
     elevation: 0,
   },
+  sheetBackdropLayer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.16)",
+    zIndex: 25,
+  },
+  reanimatedSheetContainer: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 30,
+    overflow: "hidden",
+  },
+  sheetHeaderChrome: {
+    position: "relative",
+    zIndex: 2,
+    backgroundColor: COLORS.white,
+  },
   sheetScroll: {
     flex: 1,
+  },
+  sheetMainContent: {
+    flex: 1,
+    minHeight: 0,
   },
   sheetContentInsets: {
     paddingHorizontal: IS_COMPACT ? 14 : 22,
@@ -36332,6 +38571,541 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 12,
     marginBottom: 16,
+  },
+  discoverCategoriesRow: {
+    marginBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E7EB",
+  },
+  discoverCategoriesRail: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 2,
+  },
+  discoverCategoryTab: {
+    flex: 1,
+    alignItems: "center",
+    paddingBottom: 9,
+    paddingHorizontal: 1,
+    borderBottomWidth: 2,
+    borderBottomColor: "transparent",
+  },
+  discoverCategoryTabActive: {
+    borderBottomColor: "#2563FF",
+  },
+  discoverCategoryTabText: {
+    fontSize: 12,
+    color: "#334155",
+    fontFamily: FONT_MEDIUM,
+  },
+  discoverCategoryTabTextActive: {
+    color: "#2563FF",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerDashboardHeaderBar: {
+    minHeight: 60,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 18,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E7EB",
+  },
+  ownerDashboardHeaderButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ownerDashboardHeaderTitle: {
+    flex: 1,
+    textAlign: "center",
+    fontSize: 18,
+    color: "#111827",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  dashboardPaymentsEntryCard: {
+    minHeight: 104,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#E5EAF1",
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    marginBottom: 22,
+    shadowColor: "rgba(15, 23, 42, 0.12)",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
+    elevation: 5,
+  },
+  ownerDashboardSection: {
+    marginBottom: 24,
+  },
+  ownerDashboardWarningBanner: {
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(181, 71, 8, 0.16)",
+    padding: 16,
+    marginBottom: 18,
+  },
+  ownerDashboardWarningHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 8,
+  },
+  ownerDashboardWarningTitle: {
+    flex: 1,
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerDashboardWarningBody: {
+    fontSize: 14,
+    color: "#7A2E0E",
+    fontFamily: FONT_TEXT,
+    lineHeight: 20,
+  },
+  ownerDashboardWarningButton: {
+    marginTop: 14,
+    alignSelf: "flex-start",
+    minHeight: 40,
+    borderRadius: 999,
+    backgroundColor: COLORS.ink,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ownerDashboardWarningButtonText: {
+    fontSize: 14,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerDashboardSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 16,
+    gap: 12,
+  },
+  ownerDashboardSectionTitle: {
+    fontSize: 18,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerDashboardEditLink: {
+    fontSize: 15,
+    color: COLORS.info,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerDashboardEditLinkDisabled: {
+    color: COLORS.muted,
+  },
+  dashboardPaymentsEntryIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: "#DCFCE7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dashboardPaymentsEntryCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  dashboardPaymentsEntryTitle: {
+    fontSize: 16,
+    color: "#111827",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  dashboardPaymentsEntryBody: {
+    fontSize: 13,
+    color: "#667085",
+    fontFamily: FONT_TEXT,
+  },
+  ownerOffersHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  ownerOffersAddButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#2F63F1",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ownerDashboardOfferCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#E5EAF1",
+    backgroundColor: COLORS.white,
+    padding: 18,
+    marginBottom: 16,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 5,
+  },
+  ownerDashboardOfferBadge: {
+    alignSelf: "flex-start",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginBottom: 14,
+  },
+  ownerDashboardOfferBadgeActive: {
+    backgroundColor: "#DCFCE7",
+  },
+  ownerDashboardOfferBadgePending: {
+    backgroundColor: "#FEF3C7",
+  },
+  ownerDashboardOfferBadgeRejected: {
+    backgroundColor: "#FEE4E2",
+  },
+  ownerDashboardOfferBadgePaused: {
+    backgroundColor: "#EEF2F6",
+  },
+  ownerDashboardOfferBadgeText: {
+    fontSize: 13,
+    fontFamily: FONT_MEDIUM,
+  },
+  ownerDashboardOfferBadgeTextActive: {
+    color: "#067647",
+  },
+  ownerDashboardOfferBadgeTextPending: {
+    color: "#B45309",
+  },
+  ownerDashboardOfferBadgeTextRejected: {
+    color: COLORS.danger,
+  },
+  ownerDashboardOfferBadgeTextPaused: {
+    color: "#475467",
+  },
+  ownerDashboardOfferTitle: {
+    fontSize: 18,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+    marginBottom: 10,
+  },
+  ownerDashboardOfferMeta: {
+    fontSize: 14,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    marginBottom: 18,
+  },
+  ownerDashboardOfferActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  ownerDashboardOfferAction: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#D8E0EA",
+    backgroundColor: COLORS.white,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  ownerDashboardOfferDeleteAction: {
+    flex: 0,
+    width: 68,
+    borderColor: "#FCA5A5",
+  },
+  ownerDashboardOfferActionText: {
+    fontSize: 15,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerDashboardOfferError: {
+    marginTop: 12,
+    fontSize: 13,
+    color: COLORS.danger,
+    fontFamily: FONT_TEXT,
+    lineHeight: 18,
+  },
+  ownerDashboardEmptyCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#E5EAF1",
+    backgroundColor: COLORS.white,
+    padding: 18,
+    marginBottom: 16,
+    ...ELEVATION.medium,
+  },
+  ownerDashboardEmptyTitle: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+    marginBottom: 6,
+  },
+  ownerDashboardEmptyBody: {
+    fontSize: 14,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  ownerDashboardDetailsCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#E5EAF1",
+    backgroundColor: COLORS.white,
+    padding: 18,
+    ...ELEVATION.medium,
+  },
+  ownerDashboardDetailRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 14,
+    marginBottom: 18,
+  },
+  ownerDashboardDetailCopy: {
+    flex: 1,
+  },
+  ownerDashboardDetailLabel: {
+    fontSize: 14,
+    color: "#98A2B3",
+    fontFamily: FONT_TEXT,
+    marginBottom: 4,
+  },
+  ownerDashboardDetailValue: {
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerDashboardManageList: {
+    gap: 12,
+  },
+  ownerDashboardManageRow: {
+    minHeight: 94,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#E5EAF1",
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    ...ELEVATION.medium,
+  },
+  ownerDashboardManageRowIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: COLORS.mint,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ownerDashboardManageRowCopy: {
+    flex: 1,
+  },
+  ownerDashboardManageRowTitle: {
+    fontSize: 15,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+    marginBottom: 2,
+  },
+  ownerDashboardManageRowBody: {
+    fontSize: 13,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  ownerBillingHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 18,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E7EB",
+  },
+  ownerBillingBackButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ownerBillingHeaderCopy: {
+    flex: 1,
+  },
+  ownerBillingHeaderTitle: {
+    fontSize: 20,
+    color: "#111827",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerBillingHeaderSubtitle: {
+    marginTop: 2,
+    fontSize: 13,
+    color: "#667085",
+    fontFamily: FONT_TEXT,
+  },
+  ownerBillingSectionCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#E5EAF1",
+    backgroundColor: COLORS.white,
+    padding: 18,
+    marginBottom: 18,
+    shadowColor: "rgba(15, 23, 42, 0.12)",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
+    elevation: 5,
+  },
+  ownerBillingSectionTitle: {
+    fontSize: 18,
+    color: "#111827",
+    fontFamily: FONT_SEMIBOLD,
+    marginBottom: 16,
+  },
+  ownerBillingStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  ownerBillingStatusCopy: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+  },
+  ownerBillingStatusLabel: {
+    fontSize: 15,
+    color: "#111827",
+    fontFamily: FONT_MEDIUM,
+  },
+  ownerBillingStatusBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  ownerBillingStatusBadgePositive: {
+    backgroundColor: "#DCFCE7",
+  },
+  ownerBillingStatusBadgeMuted: {
+    backgroundColor: "#EEF2F6",
+  },
+  ownerBillingStatusBadgeText: {
+    fontSize: 14,
+    fontFamily: FONT_MEDIUM,
+  },
+  ownerBillingStatusBadgeTextPositive: {
+    color: "#067647",
+  },
+  ownerBillingStatusBadgeTextMuted: {
+    color: "#475467",
+  },
+  ownerBillingDivider: {
+    height: 1,
+    backgroundColor: "#E5E7EB",
+    marginVertical: 16,
+  },
+  ownerBillingRateRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  ownerBillingRateValue: {
+    fontSize: 16,
+    color: "#111827",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerBillingAmountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 16,
+    gap: 16,
+  },
+  ownerBillingAmountLabel: {
+    flex: 1,
+    fontSize: 15,
+    color: "#667085",
+    fontFamily: FONT_TEXT,
+  },
+  ownerBillingAmountValue: {
+    fontSize: 16,
+    color: "#111827",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerBillingAmountValueNegative: {
+    fontSize: 16,
+    color: "#E11D48",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerBillingNetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 16,
+  },
+  ownerBillingNetLabel: {
+    flex: 1,
+    fontSize: 16,
+    color: "#111827",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerBillingNetValue: {
+    fontSize: 18,
+    color: "#0B9B3E",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  ownerBillingPrimaryButton: {
+    minHeight: 58,
+    borderRadius: 22,
+    backgroundColor: "#101828",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  ownerBillingPrimaryButtonText: {
+    fontSize: 16,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  discoverActionPillsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 16,
+  },
+  discoverActionPill: {
+    minHeight: 38,
+    paddingHorizontal: 18,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  discoverActionPillActive: {
+    borderColor: "#111827",
+    backgroundColor: "#F8FAFC",
+  },
+  discoverActionPillText: {
+    fontSize: IS_COMPACT ? 14 : 15,
+    color: "#111827",
+    fontFamily: FONT_MEDIUM,
+  },
+  discoverActionPillTextActive: {
+    fontFamily: FONT_SEMIBOLD,
   },
   searchRowCompact: {
     flexDirection: "row",
@@ -36552,7 +39326,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 10,
+    marginBottom: 18,
   },
   sectionTitle: {
     fontSize: 17,
@@ -36563,6 +39337,17 @@ const styles = StyleSheet.create({
   sectionMeta: {
     fontSize: 15,
     color: "#2E6BFF",
+    fontFamily: FONT_MEDIUM,
+  },
+  discoverSectionTitle: {
+    fontSize: IS_COMPACT ? 24 : 26,
+    color: "#111827",
+    fontFamily: FONT_SEMIBOLD,
+    letterSpacing: -0.6,
+  },
+  discoverSectionMeta: {
+    fontSize: IS_COMPACT ? 15 : 16,
+    color: "#2563FF",
     fontFamily: FONT_MEDIUM,
   },
   tremendousDemoCard: {
@@ -37966,14 +40751,13 @@ const styles = StyleSheet.create({
   liveEditorialStackCard: {
     backgroundColor: COLORS.white,
     borderRadius: 24,
-    borderWidth: 1,
-    borderColor: "#E1E7EF",
+    borderWidth: 0,
     overflow: "hidden",
     shadowOpacity: 0,
     elevation: 0,
   },
   liveEditorialStackCardSelected: {
-    borderColor: COLORS.coral,
+    opacity: 0.98,
   },
   liveEditorialStackClosedOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -38083,6 +40867,20 @@ const styles = StyleSheet.create({
   liveEditorialStackOpenTextClosed: {
     color: COLORS.white,
   },
+  liveEditorialStackBusinessCashbackPill: {
+    alignSelf: "stretch",
+    marginTop: IS_SMALL_PHONE ? 7 : 8,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    paddingHorizontal: IS_SMALL_PHONE ? 10 : 12,
+    paddingVertical: IS_SMALL_PHONE ? 5 : 6,
+    alignItems: "center",
+  },
+  liveEditorialStackBusinessCashbackText: {
+    fontSize: IS_SMALL_PHONE ? 11 : 12,
+    color: "#059669",
+    fontFamily: FONT_SEMIBOLD,
+  },
   liveEditorialStackOfferTypePill: {
     borderRadius: 999,
     borderWidth: 1,
@@ -38115,12 +40913,6 @@ const styles = StyleSheet.create({
     fontFamily: FONT_SEMIBOLD,
     letterSpacing: -0.2,
   },
-  liveEditorialStackBusinessName: {
-    marginTop: 3,
-    fontSize: IS_SMALL_PHONE ? 11 : 12,
-    color: "rgba(255,255,255,0.88)",
-    fontFamily: FONT_MEDIUM,
-  },
   liveEditorialStackHeadlineMetaRow: {
     marginTop: IS_SMALL_PHONE ? 5 : 6,
     flexDirection: "row",
@@ -38137,6 +40929,46 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.82)",
     fontFamily: FONT_MEDIUM,
     marginHorizontal: 2,
+  },
+  liveEditorialStackInlineCashbackPill: {
+    marginTop: IS_SMALL_PHONE ? 10 : 12,
+    minHeight: IS_SMALL_PHONE ? 48 : 52,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(205, 236, 220, 0.55)",
+    backgroundColor: "rgba(255, 255, 255, 0.92)",
+    paddingHorizontal: IS_SMALL_PHONE ? 10 : 12,
+    paddingVertical: IS_SMALL_PHONE ? 8 : 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  liveEditorialStackInlineCashbackCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  liveEditorialStackInlineCashbackText: {
+    fontSize: IS_SMALL_PHONE ? 14 : 15,
+    color: "#059669",
+    fontFamily: FONT_SEMIBOLD,
+    letterSpacing: -0.2,
+  },
+  liveEditorialStackInlineCashbackCapText: {
+    marginTop: 2,
+    fontSize: IS_SMALL_PHONE ? 9 : 10,
+    color: "#64748B",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  liveEditorialStackInlineCashbackArrow: {
+    width: IS_SMALL_PHONE ? 32 : 36,
+    height: IS_SMALL_PHONE ? 32 : 36,
+    borderRadius: IS_SMALL_PHONE ? 16 : 18,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#CDECDC",
+    backgroundColor: "#E5F6EF",
   },
   liveEditorialStackOffer: {
     marginTop: 0,
@@ -40549,15 +43381,21 @@ const styles = StyleSheet.create({
   },
   receiptPreviewHeader: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 8,
     marginBottom: 12,
+  },
+  receiptPreviewHeaderInfo: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 4,
   },
   receiptPreviewHeaderActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
+    flexShrink: 0,
   },
   receiptPreviewReport: {
     width: 34,
@@ -40579,10 +43417,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.sand,
   },
+  receiptPreviewClose: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: COLORS.mint,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    flexShrink: 0,
+  },
   receiptPreviewTitle: {
     fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
+    flexShrink: 1,
   },
   receiptPreviewMeta: {
     fontSize: 12,

@@ -330,6 +330,7 @@ const sanitizeBusinessUpdates = (payload) => {
 
   const optionalStringFields = {
     name: 160,
+    image_url: 2048,
     address: 240,
     city: 120,
     state: 80,
@@ -1636,8 +1637,11 @@ const handleInvokeFunction = async (ctx, fnName, body) => {
   const canUseBearerAuth =
     /^eyJ[a-zA-Z0-9_-]+\./.test(key) &&
     !String(key).startsWith("sb_secret_");
-  const buildInvokeHeaders = (includeAuthorization = true) => ({
-    apikey: key,
+  const buildInvokeHeaders = ({
+    includeAuthorization = true,
+    includeApiKey = true,
+  } = {}) => ({
+    ...(includeApiKey ? { apikey: key } : {}),
     ...(includeAuthorization && canUseBearerAuth
       ? { authorization: `Bearer ${key}` }
       : {}),
@@ -1648,21 +1652,33 @@ const handleInvokeFunction = async (ctx, fnName, body) => {
 
   let response = await fetch(functionUrl, {
     method: "POST",
-    headers: buildInvokeHeaders(true),
+    headers: buildInvokeHeaders({ includeAuthorization: true, includeApiKey: true }),
     body: payload,
   });
 
   if (response.status === 401) {
     response = await fetch(functionUrl, {
       method: "POST",
-      headers: buildInvokeHeaders(false),
+      headers: buildInvokeHeaders({ includeAuthorization: false, includeApiKey: true }),
+      body: payload,
+    });
+  }
+
+  if (response.status === 401) {
+    response = await fetch(functionUrl, {
+      method: "POST",
+      headers: buildInvokeHeaders({ includeAuthorization: false, includeApiKey: false }),
       body: payload,
     });
   }
 
   const parsed = await parseResponseBody(response);
   if (!response.ok) {
-    return json({ ok: false, error: { code: "edge_function_failed", message: String(parsed?.message || parsed?.error || `Function ${fnName} failed.`), status: response.status } }, response.status);
+    const status = response.status === 401 ? 502 : response.status;
+    const code = response.status === 401
+      ? "edge_function_unauthorized"
+      : "edge_function_failed";
+    return json({ ok: false, error: { code, message: String(parsed?.message || parsed?.error || `Function ${fnName} failed.`), status: response.status } }, status);
   }
 
   return json({ ok: true, data: parsed ?? null }, 200);
@@ -1692,8 +1708,11 @@ const invokeEdgeFunctionData = async (ctx, fnName, body) => {
       "x-admin-actor-role": String(ctx.profile.role || ""),
     }
     : {};
-  const buildInvokeHeaders = (includeAuthorization = true) => ({
-    apikey: key,
+  const buildInvokeHeaders = ({
+    includeAuthorization = true,
+    includeApiKey = true,
+  } = {}) => ({
+    ...(includeApiKey ? { apikey: key } : {}),
     ...(includeAuthorization && canUseBearerAuth
       ? { authorization: `Bearer ${key}` }
       : {}),
@@ -1703,14 +1722,22 @@ const invokeEdgeFunctionData = async (ctx, fnName, body) => {
 
   let response = await fetch(`${supabaseUrl}/functions/v1/${encodeURIComponent(fnName)}`, {
     method: "POST",
-    headers: buildInvokeHeaders(true),
+    headers: buildInvokeHeaders({ includeAuthorization: true, includeApiKey: true }),
     body: JSON.stringify(body || {}),
   });
 
   if (response.status === 401) {
     response = await fetch(`${supabaseUrl}/functions/v1/${encodeURIComponent(fnName)}`, {
       method: "POST",
-      headers: buildInvokeHeaders(false),
+      headers: buildInvokeHeaders({ includeAuthorization: false, includeApiKey: true }),
+      body: JSON.stringify(body || {}),
+    });
+  }
+
+  if (response.status === 401) {
+    response = await fetch(`${supabaseUrl}/functions/v1/${encodeURIComponent(fnName)}`, {
+      method: "POST",
+      headers: buildInvokeHeaders({ includeAuthorization: false, includeApiKey: false }),
       body: JSON.stringify(body || {}),
     });
   }
@@ -1719,7 +1746,7 @@ const invokeEdgeFunctionData = async (ctx, fnName, body) => {
   if (!response.ok) {
     return {
       ok: false,
-      status: response.status,
+      status: response.status === 401 ? 502 : response.status,
       error: String(parsed?.message || parsed?.error || `Function ${fnName} failed.`),
     };
   }

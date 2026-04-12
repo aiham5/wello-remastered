@@ -68,6 +68,12 @@ serve(async (req) => {
     }
 
     const { businessId } = body ?? {};
+    const requestedReturnUrl =
+      typeof body?.returnUrl === "string"
+        ? body.returnUrl.trim()
+        : typeof body?.return_url === "string"
+          ? body.return_url.trim()
+          : "";
     if (!businessId) {
       return new Response(JSON.stringify({ error: "Missing businessId" }), {
         status: 400,
@@ -118,7 +124,8 @@ serve(async (req) => {
       businessId: business.id,
     });
 
-    const returnUrl = BILLING_PORTAL_RETURN_URL || CONNECT_RETURN_URL || "";
+    const returnUrl =
+      requestedReturnUrl || BILLING_PORTAL_RETURN_URL || CONNECT_RETURN_URL || "";
     const portalSession = await stripe.billingPortal.sessions.create({
       customer: customerId,
       ...(returnUrl ? { return_url: returnUrl } : {}),

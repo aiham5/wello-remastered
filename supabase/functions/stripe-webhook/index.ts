@@ -87,10 +87,16 @@ const getPaymentMethodSnapshot = async (
 
   const defaultPaymentMethod = customer.invoice_settings?.default_payment_method;
   if (!defaultPaymentMethod) {
+    const paymentMethods = await stripe.paymentMethods.list({
+      customer: customerId,
+      type: "card",
+      limit: 1,
+    });
+    const fallbackPaymentMethod = paymentMethods.data?.[0] ?? null;
     return {
-      paymentMethodId: null,
-      brand: null,
-      last4: null,
+      paymentMethodId: asNonEmptyString(fallbackPaymentMethod?.id),
+      brand: fallbackPaymentMethod?.card?.brand ?? null,
+      last4: fallbackPaymentMethod?.card?.last4 ?? null,
     };
   }
 
@@ -110,18 +116,182 @@ const getPaymentMethodSnapshot = async (
   };
 };
 
+type StripeBusinessRow = {
+  id: string;
+  stripe_account_id: string | null;
+  stripe_customer_id: string | null;
+  stripe_payment_method_id: string | null;
+  stripe_payment_method_brand?: string | null;
+  stripe_payment_method_last4?: string | null;
+  stripe_charges_enabled?: boolean | null;
+  stripe_payouts_enabled?: boolean | null;
+  stripe_onboarded?: boolean | null;
+  stripe_gated?: boolean | null;
+  stripe_onboarded_at?: string | null;
+};
+
+const logStripeFlagChange = (
+  businessId: string,
+  previous: {
+    stripeOnboarded: boolean;
+    stripeGated: boolean;
+    paymentMethodId: string | null;
+  },
+  next: {
+    stripeOnboarded: boolean;
+    stripeGated: boolean;
+    paymentMethodId: string | null;
+  },
+  reason: string,
+) => {
+  console.log("stripe-webhook business flag sync", {
+    businessId,
+    reason,
+    previous,
+    next,
+  });
+};
+
 const pauseActiveOffersForBusinesses = async (
   supabase: any,
   businessIds: string[],
 ) => {
   if (businessIds.length === 0) return;
-  const { error } = await supabase
-    .from("offers")
-    .update({ active: false })
-    .in("business_id", businessIds)
-    .eq("active", true);
+  for (const businessId of businessIds) {
+    await updateOffersStatusForBusiness(
+      supabase,
+      businessId,
+      "active",
+      "paused",
+      false,
+    );
+  }
+};
+
+const syncSingleStripeBusiness = async (
+  supabase: any,
+  row: StripeBusinessRow,
+  reason: string,
+) => {
+  const businessId = asNonEmptyString(row.id);
+  if (!businessId) return;
+
+  const stripeAccountId = asNonEmptyString(row.stripe_account_id);
+  const stripeCustomerId = asNonEmptyString(row.stripe_customer_id);
+
+  let stripeOnboarded = false;
+  let stripeChargesEnabled = Boolean(row.stripe_charges_enabled);
+  let stripePayoutsEnabled = Boolean(row.stripe_payouts_enabled);
+
+  if (stripeAccountId) {
+    try {
+      const account = await stripe.accounts.retrieve(stripeAccountId);
+      stripeChargesEnabled = Boolean(account.charges_enabled);
+      stripePayoutsEnabled = Boolean(account.payouts_enabled);
+      stripeOnboarded = Boolean(
+        account.details_submitted && account.charges_enabled,
+      );
+    } catch (error) {
+      console.warn("stripe-webhook account retrieve failed during business sync", {
+        businessId,
+        stripeAccountId,
+        reason,
+        message: (error as { message?: string } | null)?.message || String(error),
+      });
+    }
+  }
+
+  let paymentSnapshot = {
+    paymentMethodId: asNonEmptyString(row.stripe_payment_method_id),
+    brand: asNonEmptyString(row.stripe_payment_method_brand),
+    last4: asNonEmptyString(row.stripe_payment_method_last4),
+  };
+  if (stripeCustomerId) {
+    try {
+      paymentSnapshot = await getPaymentMethodSnapshot(stripeCustomerId);
+    } catch (error) {
+      console.warn("stripe-webhook customer payment method sync failed", {
+        businessId,
+        stripeCustomerId,
+        reason,
+        message: (error as { message?: string } | null)?.message || String(error),
+      });
+    }
+  }
+
+  const stripeGated = stripeOnboarded && Boolean(paymentSnapshot.paymentMethodId);
+  const previous = {
+    stripeOnboarded: Boolean(row.stripe_onboarded),
+    stripeGated: Boolean(row.stripe_gated),
+    paymentMethodId: asNonEmptyString(row.stripe_payment_method_id),
+  };
+  const next = {
+    stripeOnboarded,
+    stripeGated,
+    paymentMethodId: paymentSnapshot.paymentMethodId,
+  };
+
+  const updatePayload: Record<string, unknown> = {
+    stripe_charges_enabled: stripeChargesEnabled,
+    stripe_payouts_enabled: stripePayoutsEnabled,
+    stripe_payment_method_id: paymentSnapshot.paymentMethodId,
+    stripe_payment_method_brand: paymentSnapshot.brand,
+    stripe_payment_method_last4: paymentSnapshot.last4,
+    stripe_onboarded: stripeOnboarded,
+    stripe_gated: stripeGated,
+    stripe_onboarded_at: stripeOnboarded
+      ? asNonEmptyString(row.stripe_onboarded_at) || new Date().toISOString()
+      : null,
+  };
+
+  const { error: updateError } = await supabase
+    .from("businesses")
+    .update(updatePayload)
+    .eq("id", businessId);
+  if (updateError) {
+    throw new Error(updateError.message || "Failed to sync Stripe visibility flags.");
+  }
+
+  logStripeFlagChange(businessId, previous, next, reason);
+
+  if (!stripeGated) {
+    await updateOffersStatusForBusiness(
+      supabase,
+      businessId,
+      "active",
+      "paused",
+      false,
+    );
+  }
+};
+
+const syncStripeFlagsForBusinesses = async (
+  supabase: any,
+  businessIds: string[],
+  reason = "manual_sync",
+) => {
+  const uniqueBusinessIds = Array.from(
+    new Set(
+      businessIds
+        .map((value) => asNonEmptyString(value))
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+  if (uniqueBusinessIds.length === 0) return;
+
+  const { data, error } = await supabase
+    .from("businesses")
+    .select(
+      "id, stripe_account_id, stripe_customer_id, stripe_payment_method_id, stripe_payment_method_brand, stripe_payment_method_last4, stripe_charges_enabled, stripe_payouts_enabled, stripe_onboarded, stripe_gated, stripe_onboarded_at",
+    )
+    .in("id", uniqueBusinessIds);
   if (error) {
-    throw new Error(error.message || "Failed to pause offers after payment update.");
+    throw new Error(error.message || "Failed to load businesses for Stripe flag sync.");
+  }
+
+  const rows = Array.isArray(data) ? data : [];
+  for (const row of rows) {
+    await syncSingleStripeBusiness(supabase, row as StripeBusinessRow, reason);
   }
 };
 
@@ -143,14 +313,16 @@ const syncBusinessPaymentMethodFromCustomer = async (
     throw new Error(error.message || "Failed to sync business payment method.");
   }
 
-  if (!snapshot.paymentMethodId) {
-    const businessIds = Array.isArray(data)
-      ? data
-        .map((row) => asNonEmptyString((row as { id?: string | null }).id))
-        .filter((value): value is string => Boolean(value))
-      : [];
-    await pauseActiveOffersForBusinesses(supabase, businessIds);
-  }
+  const businessIds = Array.isArray(data)
+    ? data
+      .map((row) => asNonEmptyString((row as { id?: string | null }).id))
+      .filter((value): value is string => Boolean(value))
+    : [];
+  await syncStripeFlagsForBusinesses(
+    supabase,
+    businessIds,
+    "customer_payment_method_sync",
+  );
 };
 
 const clearBusinessPaymentMethodFromCustomer = async (
@@ -175,7 +347,11 @@ const clearBusinessPaymentMethodFromCustomer = async (
       .map((row) => asNonEmptyString((row as { id?: string | null }).id))
       .filter((value): value is string => Boolean(value))
     : [];
-  await pauseActiveOffersForBusinesses(supabase, businessIds);
+  await syncStripeFlagsForBusinesses(
+    supabase,
+    businessIds,
+    "customer_payment_method_clear",
+  );
 };
 
 const clearBusinessPaymentMethodByPaymentMethodId = async (
@@ -184,25 +360,106 @@ const clearBusinessPaymentMethodByPaymentMethodId = async (
 ) => {
   const { data, error } = await supabase
     .from("businesses")
-    .update({
-      stripe_payment_method_id: null,
-      stripe_payment_method_brand: null,
-      stripe_payment_method_last4: null,
-    })
     .eq("stripe_payment_method_id", paymentMethodId)
-    .select("id");
+    .select(
+      "id, stripe_account_id, stripe_customer_id, stripe_payment_method_id, stripe_payment_method_brand, stripe_payment_method_last4, stripe_charges_enabled, stripe_payouts_enabled, stripe_onboarded, stripe_gated, stripe_onboarded_at",
+    );
   if (error) {
     throw new Error(
       error.message || "Failed to clear business payment method by payment method id.",
     );
   }
 
-  const businessIds = Array.isArray(data)
-    ? data
-      .map((row) => asNonEmptyString((row as { id?: string | null }).id))
-      .filter((value): value is string => Boolean(value))
-    : [];
-  await pauseActiveOffersForBusinesses(supabase, businessIds);
+  const rows = Array.isArray(data) ? data : [];
+  if (rows.length === 0) {
+    console.warn("stripe-webhook payment_method.detached business not found", {
+      paymentMethodId,
+    });
+    return;
+  }
+  for (const row of rows) {
+    await syncSingleStripeBusiness(
+      supabase,
+      {
+        ...(row as StripeBusinessRow),
+        stripe_payment_method_id: null,
+        stripe_payment_method_brand: null,
+        stripe_payment_method_last4: null,
+      },
+      "payment_method_detached",
+    );
+  }
+};
+
+const loadBusinessesByStripeAccountId = async (
+  supabase: any,
+  stripeAccountId: string,
+) => {
+  const { data, error } = await supabase
+    .from("businesses")
+    .select(
+      "id, stripe_account_id, stripe_customer_id, stripe_payment_method_id, stripe_payment_method_brand, stripe_payment_method_last4, stripe_charges_enabled, stripe_payouts_enabled, stripe_onboarded, stripe_gated, stripe_onboarded_at",
+    )
+    .eq("stripe_account_id", stripeAccountId);
+  if (error) {
+    throw new Error(error.message || "Failed to load business by Stripe account id.");
+  }
+  return Array.isArray(data) ? (data as StripeBusinessRow[]) : [];
+};
+
+const loadBusinessesByCustomerId = async (
+  supabase: any,
+  customerId: string,
+) => {
+  const { data, error } = await supabase
+    .from("businesses")
+    .select(
+      "id, stripe_account_id, stripe_customer_id, stripe_payment_method_id, stripe_payment_method_brand, stripe_payment_method_last4, stripe_charges_enabled, stripe_payouts_enabled, stripe_onboarded, stripe_gated, stripe_onboarded_at",
+    )
+    .eq("stripe_customer_id", customerId);
+  if (error) {
+    throw new Error(error.message || "Failed to load business by Stripe customer id.");
+  }
+  return Array.isArray(data) ? (data as StripeBusinessRow[]) : [];
+};
+
+export const backfillStripeFlags = async (supabase: any) => {
+  const { data, error } = await supabase
+    .from("businesses")
+    .select(
+      "id, stripe_account_id, stripe_customer_id, stripe_payment_method_id, stripe_payment_method_brand, stripe_payment_method_last4, stripe_charges_enabled, stripe_payouts_enabled, stripe_onboarded, stripe_gated, stripe_onboarded_at",
+    )
+    .not("stripe_account_id", "is", null);
+  if (error) {
+    throw new Error(error.message || "Failed to load businesses for Stripe backfill.");
+  }
+
+  const rows = Array.isArray(data) ? (data as StripeBusinessRow[]) : [];
+  const summary = {
+    processed: 0,
+    synced: 0,
+    failed: 0,
+  };
+
+  for (const row of rows) {
+    summary.processed += 1;
+    try {
+      await syncSingleStripeBusiness(supabase, row, "backfillStripeFlags");
+      summary.synced += 1;
+    } catch (backfillError) {
+      summary.failed += 1;
+      console.warn("stripe-webhook backfillStripeFlags failed", {
+        businessId: row.id,
+        stripeAccountId: row.stripe_account_id,
+        message:
+          (backfillError as { message?: string } | null)?.message ||
+          String(backfillError),
+      });
+    }
+  }
+
+  console.log("stripe-webhook backfillStripeFlags complete", summary);
+  return summary;
 };
 
 type BusinessNotificationTarget = {
@@ -390,6 +647,33 @@ serve(async (req) => {
     return new Response("Missing server configuration.", { status: 500 });
   }
 
+  const authHeader = req.headers.get("authorization") || "";
+  const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
+  const apiKey = req.headers.get("apikey")?.trim() || "";
+  const isServiceRoleInvoke =
+    (bearerToken && bearerToken === SUPABASE_SERVICE_ROLE_KEY) ||
+    (apiKey && apiKey === SUPABASE_SERVICE_ROLE_KEY);
+
+  if (isServiceRoleInvoke) {
+    const text = await req.text();
+    let payload: Record<string, unknown> | null = null;
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      payload = {};
+    }
+    if (payload?.action === "backfillStripeFlags") {
+      const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+      const summary = await backfillStripeFlags(supabase);
+      return new Response(JSON.stringify({ ok: true, summary }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
   const signature =
     req.headers.get("Stripe-Signature") ??
     req.headers.get("stripe-signature");
@@ -444,6 +728,11 @@ serve(async (req) => {
   }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  console.log("stripe-webhook received event", {
+    type: event.type,
+    account: asNonEmptyString(String(event.account || "")),
+    id: asNonEmptyString(event.id),
+  });
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
@@ -530,7 +819,38 @@ serve(async (req) => {
       }
     }
     if (customerId) {
-      await syncBusinessPaymentMethodFromCustomer(supabase, customerId);
+      const matchedBusinesses = await loadBusinessesByCustomerId(
+        supabase,
+        customerId,
+      );
+      if (matchedBusinesses.length === 0) {
+        console.warn("stripe-webhook customer event business not found", {
+          customerId,
+          eventType: event.type,
+        });
+      } else {
+        await syncBusinessPaymentMethodFromCustomer(supabase, customerId);
+      }
+    } else {
+      const stripeAccountId = asNonEmptyString(String(event.account || ""));
+      if (stripeAccountId) {
+        const matchedBusinesses = await loadBusinessesByStripeAccountId(
+          supabase,
+          stripeAccountId,
+        );
+        if (matchedBusinesses.length === 0) {
+          console.warn("stripe-webhook payment method event account not found", {
+            stripeAccountId,
+            eventType: event.type,
+          });
+        } else {
+          await syncStripeFlagsForBusinesses(
+            supabase,
+            matchedBusinesses.map((business) => business.id),
+            event.type,
+          );
+        }
+      }
     }
   }
 
@@ -563,26 +883,129 @@ serve(async (req) => {
         .eq("id", cashoutUserId);
     } else {
       const nowIso = new Date().toISOString();
+      const stripeOnboarded = Boolean(
+        account.details_submitted && account.charges_enabled,
+      );
       const businessUpdate = {
+        stripe_account_id: account.id,
+        stripe_pending_account_id: null,
         stripe_charges_enabled: account.charges_enabled ?? false,
         stripe_payouts_enabled: account.payouts_enabled ?? false,
-        stripe_onboarded_at: account.charges_enabled
-          ? nowIso
-          : null,
-        ...(account.charges_enabled
-          ? {
-              stripe_account_id: account.id,
-              stripe_pending_account_id: null,
-            }
-          : {}),
+        stripe_onboarded_at: stripeOnboarded ? nowIso : null,
+        stripe_onboarded: stripeOnboarded,
+        ...(stripeOnboarded ? {} : { stripe_gated: false }),
       };
 
-      await supabase
+      const { data: syncedBusinesses, error: syncError } = await supabase
         .from("businesses")
         .update(businessUpdate)
+        .select(
+          "id, stripe_account_id, stripe_customer_id, stripe_payment_method_id, stripe_payment_method_brand, stripe_payment_method_last4, stripe_charges_enabled, stripe_payouts_enabled, stripe_onboarded, stripe_gated, stripe_onboarded_at",
+        )
         .or(
           `stripe_account_id.eq.${account.id},stripe_pending_account_id.eq.${account.id}`,
         );
+      if (syncError) {
+        throw new Error(syncError.message || "Failed to sync Stripe account status.");
+      }
+
+      const rows = Array.isArray(syncedBusinesses)
+        ? (syncedBusinesses as StripeBusinessRow[])
+        : [];
+      if (rows.length === 0) {
+        console.warn("stripe-webhook account.updated business not found", {
+          stripeAccountId: account.id,
+        });
+      }
+      for (const row of rows) {
+        if (!stripeOnboarded) {
+          await syncSingleStripeBusiness(
+            supabase,
+            {
+              ...row,
+              stripe_account_id: account.id,
+              stripe_charges_enabled: account.charges_enabled ?? false,
+              stripe_payouts_enabled: account.payouts_enabled ?? false,
+              stripe_onboarded: false,
+              stripe_gated: false,
+            },
+            "account.updated",
+          );
+        } else {
+          await syncSingleStripeBusiness(
+            supabase,
+            {
+              ...row,
+              stripe_account_id: account.id,
+              stripe_charges_enabled: account.charges_enabled ?? false,
+              stripe_payouts_enabled: account.payouts_enabled ?? false,
+              stripe_onboarded: true,
+            },
+            "account.updated",
+          );
+        }
+      }
+    }
+  }
+
+  if (event.type === "account.application.deauthorized") {
+    const deauthorized = event.data.object as { account?: string | null };
+    const stripeAccountId =
+      asNonEmptyString(String(event.account || "")) ||
+      asNonEmptyString(deauthorized?.account);
+    if (stripeAccountId) {
+      const matchedBusinesses = await loadBusinessesByStripeAccountId(
+        supabase,
+        stripeAccountId,
+      );
+      if (matchedBusinesses.length === 0) {
+        console.warn("stripe-webhook deauthorized business not found", {
+          stripeAccountId,
+        });
+      }
+      for (const business of matchedBusinesses) {
+        const { error: updateError } = await supabase
+          .from("businesses")
+          .update({
+            stripe_account_id: null,
+            stripe_pending_account_id: null,
+            stripe_charges_enabled: false,
+            stripe_payouts_enabled: false,
+            stripe_payment_method_id: null,
+            stripe_payment_method_brand: null,
+            stripe_payment_method_last4: null,
+            stripe_onboarded: false,
+            stripe_gated: false,
+            stripe_onboarded_at: null,
+          })
+          .eq("id", business.id);
+        if (updateError) {
+          throw new Error(
+            updateError.message || "Failed to clear business after Stripe deauthorization.",
+          );
+        }
+        logStripeFlagChange(
+          business.id,
+          {
+            stripeOnboarded: Boolean(business.stripe_onboarded),
+            stripeGated: Boolean(business.stripe_gated),
+            paymentMethodId: asNonEmptyString(business.stripe_payment_method_id),
+          },
+          {
+            stripeOnboarded: false,
+            stripeGated: false,
+            paymentMethodId: null,
+          },
+          "account.application.deauthorized",
+        );
+        await updateOffersStatusForBusiness(
+          supabase,
+          business.id,
+          "active",
+          "paused",
+          false,
+        );
+      }
     }
   }
 

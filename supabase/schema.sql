@@ -39,6 +39,7 @@ create table if not exists public.businesses (
   state text,
   postal_code text,
   phone text,
+  image_url text,
   category_key text not null,
   category_label text not null,
   offer_highlight text,
@@ -66,7 +67,8 @@ alter table public.businesses add column if not exists phone text;
 alter table public.businesses
   add column if not exists city text,
   add column if not exists state text,
-  add column if not exists postal_code text;
+  add column if not exists postal_code text,
+  add column if not exists image_url text;
 alter table public.businesses
   add column if not exists stripe_account_id text,
   add column if not exists stripe_customer_id text,

@@ -25,6 +25,7 @@ import { downloadCsv, type CsvColumn } from "../lib/csv";
 interface BusinessRow {
   id: string;
   name: string;
+  image_url?: string | null;
   category_label?: string | null;
   approval_status?: string | null;
   status?: string | null;
@@ -76,6 +77,7 @@ interface ManualChargeRow {
 
 interface BusinessEditForm {
   name: string;
+  imageUrl: string;
   address: string;
   city: string;
   state: string;
@@ -104,6 +106,145 @@ interface BusinessEditForm {
   commissionEnabled: boolean;
   offerHonorPolicyAccepted: boolean;
 }
+
+interface BusinessHoursScheduleEntry {
+  dayKey: string;
+  open: boolean;
+  start: string;
+  end: string;
+}
+
+const OPERATING_DAY_OPTIONS = [
+  { key: "mon", label: "Monday" },
+  { key: "tue", label: "Tuesday" },
+  { key: "wed", label: "Wednesday" },
+  { key: "thu", label: "Thursday" },
+  { key: "fri", label: "Friday" },
+  { key: "sat", label: "Saturday" },
+  { key: "sun", label: "Sunday" },
+];
+
+const DEFAULT_HOURS_START = "09:00";
+const DEFAULT_HOURS_END = "17:00";
+
+const createDefaultBusinessHoursSchedule = (): BusinessHoursScheduleEntry[] =>
+  OPERATING_DAY_OPTIONS.map((day) => ({
+    dayKey: day.key,
+    open: true,
+    start: DEFAULT_HOURS_START,
+    end: DEFAULT_HOURS_END,
+  }));
+
+const cloneBusinessHoursSchedule = (
+  schedule?: BusinessHoursScheduleEntry[] | null,
+): BusinessHoursScheduleEntry[] =>
+  OPERATING_DAY_OPTIONS.map((day) => {
+    const entry = Array.isArray(schedule)
+      ? schedule.find((item) => String(item?.dayKey || "") === day.key)
+      : null;
+    return {
+      dayKey: day.key,
+      open: entry?.open !== false,
+      start: String(entry?.start || DEFAULT_HOURS_START),
+      end: String(entry?.end || DEFAULT_HOURS_END),
+    };
+  });
+
+const parseTimeValueToMinutes = (value?: string | null) => {
+  const match = String(value || "")
+    .trim()
+    .match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return null;
+  }
+  return hours * 60 + minutes;
+};
+
+const formatClockLabelFromMinutes = (minutes?: number | null) => {
+  if (!Number.isFinite(minutes)) return "Closed";
+  const normalized = Math.max(0, Math.min(23 * 60 + 59, Math.round(Number(minutes))));
+  const hours24 = Math.floor(normalized / 60);
+  const mins = normalized % 60;
+  const suffix = hours24 >= 12 ? "PM" : "AM";
+  const hours12 = ((hours24 + 11) % 12) + 1;
+  return `${hours12}:${String(mins).padStart(2, "0")} ${suffix}`;
+};
+
+const formatBusinessHoursScheduleForStorage = (schedule?: BusinessHoursScheduleEntry[] | null) =>
+  cloneBusinessHoursSchedule(schedule)
+    .map((entry) => {
+      const dayLabel =
+        OPERATING_DAY_OPTIONS.find((day) => day.key === entry.dayKey)?.label || entry.dayKey;
+      if (!entry.open) return `${dayLabel}: Closed`;
+      const startMinutes = parseTimeValueToMinutes(entry.start);
+      const endMinutes = parseTimeValueToMinutes(entry.end);
+      if (!Number.isFinite(startMinutes) || !Number.isFinite(endMinutes)) {
+        return `${dayLabel}: Closed`;
+      }
+      return `${dayLabel}: ${formatClockLabelFromMinutes(startMinutes)} - ${formatClockLabelFromMinutes(endMinutes)}`;
+    })
+    .join("\n");
+
+const parseBusinessHoursSchedule = (value?: string | null): BusinessHoursScheduleEntry[] | null => {
+  const raw = String(value || "").replace(/\r/g, "").trim();
+  if (!raw) return null;
+  const lines = raw
+    .split(/\n|;/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
+  const parsed = createDefaultBusinessHoursSchedule().map((entry) => ({ ...entry }));
+  for (const line of lines) {
+    const parts = line.split(":");
+    if (parts.length < 2) continue;
+    const dayLabel = String(parts.shift() || "").trim().toLowerCase();
+    const rest = parts.join(":").trim();
+    const day = OPERATING_DAY_OPTIONS.find((item) => item.label.toLowerCase() === dayLabel);
+    if (!day) continue;
+    const target = parsed.find((item) => item.dayKey === day.key);
+    if (!target) continue;
+    if (/^closed$/i.test(rest)) {
+      target.open = false;
+      continue;
+    }
+    const match = rest.match(/^(.+?)\s*-\s*(.+)$/);
+    if (!match) continue;
+    const parseClockText = (text: string) => {
+      const normalized = String(text || "").trim().toUpperCase();
+      const clock = normalized.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
+      if (!clock) return null;
+      let hours = Number(clock[1]);
+      const minutes = Number(clock[2]);
+      const meridiem = clock[3];
+      if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+      if (hours < 1 || hours > 12 || minutes < 0 || minutes > 59) return null;
+      if (meridiem === "AM") {
+        if (hours === 12) hours = 0;
+      } else if (hours !== 12) {
+        hours += 12;
+      }
+      return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+    };
+    const start = parseClockText(match[1]);
+    const end = parseClockText(match[2]);
+    if (start && end) {
+      target.open = true;
+      target.start = start;
+      target.end = end;
+    }
+  }
+  return parsed;
+};
 
 const BUSINESS_RATE_PRESET_OPTIONS: Array<{
   key: RatePresetKey;
@@ -201,6 +342,7 @@ const createBusinessRateDraft = (
 
 const createEmptyBusinessEditForm = (): BusinessEditForm => ({
   name: "",
+  imageUrl: "",
   address: "",
   city: "",
   state: "",
@@ -249,6 +391,7 @@ const toInputDateTimeValue = (value: unknown) => {
 
 const businessToEditForm = (business: BusinessRow): BusinessEditForm => ({
   name: String(business.name || ""),
+  imageUrl: String(business.image_url || ""),
   address: String(business.address || ""),
   city: String(business.city || ""),
   state: String(business.state || ""),
@@ -337,6 +480,9 @@ export function Businesses() {
   const [selectedBusiness, setSelectedBusiness] = useState<BusinessRow | null>(null);
   const [editPayload, setEditPayload] = useState("");
   const [editForm, setEditForm] = useState<BusinessEditForm>(createEmptyBusinessEditForm());
+  const [editHoursSchedule, setEditHoursSchedule] = useState<BusinessHoursScheduleEntry[]>(
+    createDefaultBusinessHoursSchedule(),
+  );
   const [businessMetrics, setBusinessMetrics] = useState<BusinessMetricsSummary | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [manualCharges, setManualCharges] = useState<ManualChargeRow[]>([]);
@@ -667,6 +813,9 @@ export function Businesses() {
     setSelectedBusiness(business);
     setDrawerMode(mode);
     setEditForm(businessToEditForm(business));
+    setEditHoursSchedule(
+      parseBusinessHoursSchedule(String(business.hours || "")) || createDefaultBusinessHoursSchedule(),
+    );
     setEditPayload(buildBusinessEditPayload(business));
     resetManualChargeForm();
     setManualCharges([]);
@@ -700,6 +849,7 @@ export function Businesses() {
     const mergedPayload: Record<string, unknown> = {
       ...parsed,
       name: editForm.name.trim(),
+      image_url: toNullableText(editForm.imageUrl),
       address: toNullableText(editForm.address),
       city: toNullableText(editForm.city),
       state: toNullableText(editForm.state),
@@ -708,7 +858,7 @@ export function Businesses() {
       category_key: toNullableText(editForm.categoryKey),
       category_label: toNullableText(editForm.categoryLabel),
       offer_highlight: toNullableText(editForm.offerHighlight),
-      hours: toNullableText(editForm.hours),
+      hours: toNullableText(formatBusinessHoursScheduleForStorage(editHoursSchedule)),
       tags: toTextList(editForm.tagsText),
       merchant_descriptor_aliases: toTextList(editForm.merchantAliasesText),
       latitude: toNullableNumber(editForm.latitude),
@@ -755,6 +905,9 @@ export function Businesses() {
     );
     setSelectedBusiness((prev) => (prev ? { ...prev, ...res.data } : prev));
     setEditForm(businessToEditForm(res.data));
+    setEditHoursSchedule(
+      parseBusinessHoursSchedule(String(res.data.hours || "")) || createDefaultBusinessHoursSchedule(),
+    );
     setEditPayload(buildBusinessEditPayload(res.data));
     setRateDraft(
       createBusinessRateDraft(
@@ -1079,6 +1232,20 @@ export function Businesses() {
                         {selectedBusiness.category_label || "Uncategorized"}
                       </p>
                     </div>
+                    {selectedBusiness.image_url ? (
+                      <div className="space-y-2">
+                        <img
+                          src={selectedBusiness.image_url}
+                          alt={selectedBusiness.name}
+                          className="w-full max-h-56 object-cover rounded-xl border border-gray-200 bg-white"
+                        />
+                        <p className="text-xs text-gray-500 break-all">{selectedBusiness.image_url}</p>
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-dashed border-gray-300 p-4 text-sm text-gray-500">
+                        No business photo set.
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 gap-4 text-sm">
                       <div>
                         <p className="text-gray-500">Business ID</p>
@@ -1435,6 +1602,49 @@ export function Businesses() {
                       />
                     </label>
                     <label className="block col-span-2">
+                      <span className="text-sm font-medium text-gray-700">Business photo URL</span>
+                      <input
+                        value={editForm.imageUrl}
+                        onChange={(event) =>
+                          setEditForm((current) => ({ ...current, imageUrl: event.target.value }))
+                        }
+                        placeholder="https://..."
+                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </label>
+                    <div className="col-span-2 rounded-2xl border border-gray-200 p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Business photo preview</p>
+                          <p className="text-xs text-gray-500">
+                            This is the separate business cover image used on the admin site and app.
+                          </p>
+                        </div>
+                        {editForm.imageUrl.trim() ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditForm((current) => ({ ...current, imageUrl: "" }))
+                            }
+                            className="px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                          >
+                            Remove photo
+                          </button>
+                        ) : null}
+                      </div>
+                      {editForm.imageUrl.trim() ? (
+                        <img
+                          src={editForm.imageUrl.trim()}
+                          alt="Business preview"
+                          className="w-full max-h-64 object-cover rounded-xl border border-gray-200 bg-gray-50"
+                        />
+                      ) : (
+                        <div className="rounded-xl border border-dashed border-gray-300 p-4 text-sm text-gray-500">
+                          No business photo URL set yet.
+                        </div>
+                      )}
+                    </div>
+                    <label className="block col-span-2">
                       <span className="text-sm font-medium text-gray-700">Address</span>
                       <input
                         value={editForm.address}
@@ -1526,16 +1736,83 @@ export function Businesses() {
                         className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
                       />
                     </label>
-                    <label className="block col-span-2">
-                      <span className="text-sm font-medium text-gray-700">Hours</span>
-                      <input
-                        value={editForm.hours}
-                        onChange={(event) =>
-                          setEditForm((current) => ({ ...current, hours: event.target.value }))
-                        }
-                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
-                      />
-                    </label>
+                    <div className="col-span-2 rounded-2xl border border-gray-200 p-4 space-y-3">
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">Operating hours</p>
+                        <p className="text-xs text-gray-500">
+                          Set open or closed for each day and choose that day&apos;s hours.
+                        </p>
+                      </div>
+                      <div className="space-y-3">
+                        {editHoursSchedule.map((entry) => {
+                          const dayLabel =
+                            OPERATING_DAY_OPTIONS.find((day) => day.key === entry.dayKey)?.label ||
+                            entry.dayKey;
+                          return (
+                            <div
+                              key={entry.dayKey}
+                              className="grid grid-cols-[110px_88px_1fr] items-center gap-3"
+                            >
+                              <span className="text-sm font-medium text-gray-700">{dayLabel}</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditHoursSchedule((current) =>
+                                    cloneBusinessHoursSchedule(current).map((item) =>
+                                      item.dayKey === entry.dayKey
+                                        ? { ...item, open: !item.open }
+                                        : item,
+                                    ),
+                                  )
+                                }
+                                className={`px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                                  entry.open
+                                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                    : "border-gray-300 bg-gray-50 text-gray-600"
+                                }`}
+                              >
+                                {entry.open ? "Open" : "Closed"}
+                              </button>
+                              {entry.open ? (
+                                <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-center">
+                                  <input
+                                    type="time"
+                                    value={entry.start}
+                                    onChange={(event) =>
+                                      setEditHoursSchedule((current) =>
+                                        cloneBusinessHoursSchedule(current).map((item) =>
+                                          item.dayKey === entry.dayKey
+                                            ? { ...item, start: event.target.value || DEFAULT_HOURS_START }
+                                            : item,
+                                        ),
+                                      )
+                                    }
+                                    className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                  />
+                                  <span className="text-sm text-gray-500">to</span>
+                                  <input
+                                    type="time"
+                                    value={entry.end}
+                                    onChange={(event) =>
+                                      setEditHoursSchedule((current) =>
+                                        cloneBusinessHoursSchedule(current).map((item) =>
+                                          item.dayKey === entry.dayKey
+                                            ? { ...item, end: event.target.value || DEFAULT_HOURS_END }
+                                            : item,
+                                        ),
+                                      )
+                                    }
+                                    className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                  />
+                                </div>
+                              ) : (
+                                <div className="text-sm text-gray-500">Closed</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                     <label className="block col-span-2">
                       <span className="text-sm font-medium text-gray-700">Tags</span>
                       <input
