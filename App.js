@@ -1889,6 +1889,21 @@ const formatHistoryTimestamp = (value) => {
   return `${dateLabel} - ${timeLabel}`;
 };
 
+const formatReceiptUploadCountdown = (redeemedAt, now = Date.now()) => {
+  if (!redeemedAt) return null;
+  const remainingMs =
+    Number(redeemedAt) + RECEIPT_UPLOAD_WINDOW_MS - Number(now);
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    return "Upload window closed";
+  }
+  const totalMinutes = Math.max(1, Math.ceil(remainingMs / (1000 * 60)));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours <= 0) return `${minutes}m left`;
+  if (minutes === 0) return `${hours}h left`;
+  return `${hours}h ${minutes}m left`;
+};
+
 const hexToRgba = (hex, alpha) => {
   const raw = String(hex || "")
     .replace("#", "")
@@ -4012,9 +4027,6 @@ const getBusinessHoursStatus = (value, fallbackOpen = null, nowDate = new Date()
   const opensAtLabel = nextOpenDate && Number.isFinite(nextOpenMinutes)
     ? formatClockLabelFromMinutes(nextOpenMinutes, true)
     : "";
-  const closedOverlayText = opensAtLabel
-    ? `Closed, opens at ${opensAtLabel}`
-    : "Closed";
   return {
     sourceKnown: true,
     isOpen: false,
@@ -4023,7 +4035,7 @@ const getBusinessHoursStatus = (value, fallbackOpen = null, nowDate = new Date()
     closesAtLabel: "",
     statusText: opensAtLabel ? `Opens ${opensAtLabel}` : "Closed",
     statusVariant: "closed",
-    closedOverlayText,
+    closedOverlayText: "Closed",
   };
 };
 
@@ -5328,11 +5340,6 @@ function OfferCard({ item, onPress, selected }) {
   const cashbackLabel =
     formatPercentOnlyLabel(cashbackRateBps / 100) || null;
   const businessName = String(item?.name || item?.business?.name || "Business").trim();
-  const ratingNumeric = Number(item?.rating);
-  const ratingLabel =
-    Number.isFinite(ratingNumeric) && ratingNumeric > 0
-      ? ratingNumeric.toFixed(1)
-      : "--";
   const distanceLabelRaw = String(item?.distanceLabel || item?.distance || "")
     .trim()
     .replace(/\s+/g, " ");
@@ -5440,11 +5447,6 @@ function OfferCard({ item, onPress, selected }) {
               <Text style={styles.liveEditorialStackHeadlineMeta} numberOfLines={1}>
                 {distanceLabel}
               </Text>
-              <Text style={styles.liveEditorialStackHeadlineMetaDot}>·</Text>
-              <Ionicons name="star" size={12} color="#F8FAFC" />
-              <Text style={styles.liveEditorialStackHeadlineMeta} numberOfLines={1}>
-                {ratingLabel}
-              </Text>
             </View>
             {cashbackLabel ? (
               <View style={styles.liveEditorialStackBusinessCashbackPill}>
@@ -5514,9 +5516,11 @@ export default function App() {
   const [discoverSheetIndex, setDiscoverSheetIndex] = useState(0);
   const [discoverSheetExpanded, setDiscoverSheetExpanded] = useState(false);
   const [discoverSearchOpen, setDiscoverSearchOpen] = useState(false);
+  const [receiptCountdownNow, setReceiptCountdownNow] = useState(Date.now());
   const [ownerBusinessScreen, setOwnerBusinessScreen] = useState("dashboard");
   const [navRowWidth, setNavRowWidth] = useState(0);
   const activeTabRef = useRef("discover");
+  const discoverTabSheetIndexRef = useRef(0);
   const lastBackPressAtRef = useRef(0);
   const pendingTabSwitchSheetIndexRef = useRef(null);
   const drawerPanelWidth = Math.min(SCREEN_WIDTH * 0.82, 340);
@@ -5964,6 +5968,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const [redemptionHistory, setRedemptionHistory] = useState(
     SCREENSHOT_MOCK_MODE ? SCREENSHOT_MOCK_REDEMPTIONS : [],
   );
+  const recentlyUnredeemedRef = useRef(new Map());
   const [expandedHistoryGroups, setExpandedHistoryGroups] = useState({});
   const [historySummaryFilter, setHistorySummaryFilter] = useState("earned");
   const [reviewStatus, setReviewStatus] = useState({
@@ -7274,6 +7279,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     (index) => {
       const nextIndex = Number.isFinite(index) ? index : 0;
       sheetIndexRef.current = nextIndex;
+      if (activeTabRef.current === "discover") {
+        discoverTabSheetIndexRef.current = nextIndex;
+      }
       setDiscoverSheetIndex(nextIndex);
       setDiscoverSheetExpanded(nextIndex > 0);
       if (nextIndex === 0 && pendingMapCollapseClearRef.current) {
@@ -7412,11 +7420,27 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }, [discoverSheetMetrics.translateForIndex, sheetTranslateY]);
   useEffect(() => {
     const savedIndex = pendingTabSwitchSheetIndexRef.current;
-    if (savedIndex == null) return;
     pendingTabSwitchSheetIndexRef.current = null;
-    if (savedIndex <= 0) return;
+    if (activeTab === "discover") {
+      requestAnimationFrame(() => {
+        bottomSheetRef.current?.snapToIndex(
+          Math.max(
+            0,
+            Math.min(
+              2,
+              Number(
+                savedIndex == null
+                  ? discoverTabSheetIndexRef.current
+                  : savedIndex,
+              ) || 0,
+            ),
+          ),
+        );
+      });
+      return;
+    }
     requestAnimationFrame(() => {
-      bottomSheetRef.current?.snapToIndex(savedIndex);
+      bottomSheetRef.current?.snapToIndex(2);
     });
   }, [activeTab]);
   const expandSheetForSearch = useCallback(() => {
@@ -12303,6 +12327,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       ),
     [visibleTabs],
   );
+  const showTopTabBar =
+    activeTab === "discover" &&
+    !businessDetailOpen &&
+    !discoverSearchOpen &&
+    !fullScreenOverlayOpen;
+  const topTabBarOffset = modalTopInset + 8;
   const swipeableDrawerTabs = useMemo(
     () =>
       SWIPEABLE_DRAWER_TAB_ORDER.filter((key) =>
@@ -12353,8 +12383,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }, [navRowWidth, visibleTabs.length]);
   const navIndicatorWidth = useMemo(() => {
     if (navSlotWidth <= 0) return 0;
-    const maxWidth = IS_COMPACT ? 72 : 82;
-    return Math.max(40, Math.min(navSlotWidth * 0.56, maxWidth));
+    const maxWidth = IS_COMPACT ? 94 : 112;
+    return Math.max(54, Math.min(navSlotWidth * 0.84, maxWidth));
   }, [navSlotWidth]);
   const navIndicatorTranslateX = useMemo(() => {
     if (navSlotWidth <= 0) return 0;
@@ -12551,6 +12581,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     }
   }, [adminWorkspaceTab, adminWorkspaceTabs]);
   useEffect(() => {
+    const intervalId = setInterval(() => {
+      setReceiptCountdownNow(Date.now());
+    }, 60 * 1000);
+    return () => clearInterval(intervalId);
+  }, []);
+  useEffect(() => {
     if (activeTab === "admin" && adminWorkspaceTab === "management") return;
     setArmedManagementOfferDeletes({});
     setArmedManagementBusinessDeletes({});
@@ -12650,7 +12686,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
   const isReceiptWindowOpen = (entry) => {
     if (!entry?.createdAt) return false;
-    return Date.now() - entry.createdAt <= RECEIPT_UPLOAD_WINDOW_MS;
+    return receiptCountdownNow - entry.createdAt <= RECEIPT_UPLOAD_WINDOW_MS;
   };
 
   const historyGroups = useMemo(() => {
@@ -12705,7 +12741,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       }, 0);
     });
     return list.sort((a, b) => (b.lastRedeemed || 0) - (a.lastRedeemed || 0));
-  }, [redemptionHistory, reviewedBusinessIds, isReviewEligibleEntry]);
+  }, [
+    receiptCountdownNow,
+    redemptionHistory,
+    reviewedBusinessIds,
+    isReviewEligibleEntry,
+  ]);
 
   const receiptOfferGroups = useMemo(() => {
     const groupByOffer = (items, keyPrefix) => {
@@ -15463,6 +15504,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     setOfferError(null);
     setOfferBusy(false);
     setCashoutGiftCardRecipientEmail("");
+    recentlyUnredeemedRef.current.clear();
     setRedemptionHistory([]);
     setRedemptionStatus({ loading: false, error: null });
     setUserReviews([]);
@@ -16190,18 +16232,24 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const openSheet = (nextTab = "discover") => {
     setActiveTab(nextTab);
     requestAnimationFrame(() => {
-      bottomSheetRef.current?.snapToIndex(nextTab === "discover" ? 0 : 1);
+      bottomSheetRef.current?.snapToIndex(nextTab === "discover" ? 0 : 2);
     });
   };
   const applyDrawerTabChange = useCallback(
     (nextTab, options = {}) => {
       const { closeDrawer = false } = options;
       if (!nextTab) return;
-      const preservedSheetIndex = Math.max(
-        0,
-        Math.min(2, Number(sheetIndexRef.current) || 0),
-      );
-      pendingTabSwitchSheetIndexRef.current = preservedSheetIndex;
+      if (nextTab === "discover") {
+        pendingTabSwitchSheetIndexRef.current = Math.max(
+          0,
+          Math.min(2, Number(discoverTabSheetIndexRef.current) || 0),
+        );
+      } else if (activeTabRef.current === "discover") {
+        discoverTabSheetIndexRef.current = Math.max(
+          0,
+          Math.min(2, Number(sheetIndexRef.current) || 0),
+        );
+      }
       if (closeDrawer) {
         setDrawerOpen(false);
       }
@@ -16241,8 +16289,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     setMarkerFocusedBusinessId(business.id);
     setSelectedId(business.id);
     setSelectedOfferCardId(selectedCardKey || null);
-    openSheet("discover");
-    scrollToBusiness(business, selectedCardKey);
+    setActiveTab("discover");
+    requestAnimationFrame(() => {
+      bottomSheetRef.current?.snapToIndex(2);
+      requestAnimationFrame(() => {
+        scrollToBusiness(business, selectedCardKey);
+      });
+    });
   };
 
   const resolveBusinessFromCard = (card) =>
@@ -19881,6 +19934,85 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     });
   };
 
+  const handleUnredeemRedemption = useCallback(
+    (entry) => {
+      if (!entry?.id) return;
+      showAppDialog({
+        title: "Unredeem offer?",
+        message:
+          "This removes the redemption from your history. Use this only if you tapped redeem by accident before uploading a receipt.",
+        dismissOnBackdrop: false,
+        options: [
+          {
+            label: "Keep it",
+            variant: "ghost",
+          },
+          {
+            label: "Unredeem",
+            variant: "danger",
+            onPress: async () => {
+              recentlyUnredeemedRef.current.set(
+                String(entry.id),
+                Date.now(),
+              );
+              if (
+                SCREENSHOT_MOCK_MODE ||
+                String(entry?.businessId || "").startsWith("ss-")
+              ) {
+                setRedemptionHistory((prev) =>
+                  prev.filter((item) => item.id !== entry.id),
+                );
+                return;
+              }
+              if (!authUserId || !ensureSupabaseReady()) return;
+              const { error: verificationDeleteError } = await supabase
+                .from("purchase_verifications")
+                .delete()
+                .eq("redemption_id", entry.id);
+              if (verificationDeleteError) {
+                console.warn(
+                  "Wello purchase verification delete failed:",
+                  verificationDeleteError.message || verificationDeleteError,
+                );
+              }
+              const { error } = await supabase
+                .from("redemptions")
+                .delete()
+                .eq("id", entry.id)
+                .eq("scanned_by", authUserId);
+              if (error) {
+                recentlyUnredeemedRef.current.delete(String(entry.id));
+                showAppDialog({
+                  title: "Couldn't unredeem",
+                  message:
+                    error.message ||
+                    "Unable to remove this redemption right now.",
+                  options: [{ label: "OK", variant: "primary" }],
+                });
+                return;
+              }
+              setRedemptionHistory((prev) =>
+                prev.filter((item) => item.id !== entry.id),
+              );
+              setHistoryVerifyNotice(null);
+              if (highlightedHistoryEntryId === entry.id) {
+                setHighlightedHistoryEntryId(null);
+              }
+              loadRedemptions({ silent: true });
+            },
+          },
+        ],
+      });
+    },
+    [
+      authUserId,
+      ensureSupabaseReady,
+      highlightedHistoryEntryId,
+      loadRedemptions,
+      showAppDialog,
+    ],
+  );
+
   const closeVerificationPrompt = () => {
     setVerificationPrompt({
       visible: false,
@@ -21206,9 +21338,19 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         }
         return;
       }
-      const mappedRows = (data || []).map(mapSupabaseRedemption);
+      const now = Date.now();
+      for (const [id, removedAt] of recentlyUnredeemedRef.current.entries()) {
+        if (now - removedAt > 10 * 60 * 1000) {
+          recentlyUnredeemedRef.current.delete(id);
+        }
+      }
+      const mappedRows = (data || [])
+        .map(mapSupabaseRedemption)
+        .filter(
+          (row) =>
+            !recentlyUnredeemedRef.current.has(String(row?.id || "")),
+        );
       setRedemptionHistory((prev) => {
-        const now = Date.now();
         const optimisticRows = (Array.isArray(prev) ? prev : []).filter(
           (entry) =>
             entry?.optimistic === true &&
@@ -21941,6 +22083,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
   useEffect(() => {
     if (!isSignedIn || !showHistoryTab) {
+      recentlyUnredeemedRef.current.clear();
       setRedemptionHistory([]);
       setRedemptionStatus({ loading: false, error: null });
       setPurchaseVerifyStatus({
@@ -22680,7 +22823,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     >
                       {Platform.OS !== "android" && (
                         <View
-                          style={styles.markerWrap}
+                          style={[
+                            styles.markerWrap,
+                            isSelected && styles.markerWrapSelected,
+                          ]}
                           pointerEvents="none"
                           collapsable={false}
                         >
@@ -22721,17 +22867,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             !discoverSearchOpen &&
             !fullScreenOverlayOpen ? (
               <View
-                style={[styles.discoverTopShell, { top: topChromeOffset }]}
+                style={[styles.discoverTopActionsDock, { top: topTabBarOffset + 96 }]}
                 pointerEvents="box-none"
               >
-                <TouchableOpacity
-                  style={styles.discoverTopActionButton}
-                  onPress={() => setDrawerOpen(true)}
-                  activeOpacity={0.88}
-                  hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
-                >
-                  <Ionicons name="menu" size={24} color={COLORS.ink} />
-                </TouchableOpacity>
                 <View style={styles.discoverTopActionGroup}>
                   <TouchableOpacity
                     style={styles.discoverTopActionButton}
@@ -22757,33 +22895,124 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 </View>
               </View>
             ) : null}
-            {activeTab !== "discover" &&
-            !(activeTab === "business" && isOwner && ownerBusinessScreen === "dashboard") &&
-            !businessDetailOpen &&
-            !discoverSearchOpen &&
-            !fullScreenOverlayOpen ? (
-              <View
-                style={[styles.globalMenuShell, { top: topChromeOffset }]}
-                pointerEvents="box-none"
-              >
-                <TouchableOpacity
-                  style={styles.discoverTopActionButton}
-                  onPress={() => setDrawerOpen(true)}
-                  activeOpacity={0.88}
-                  hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
-                >
-                  <Ionicons name="menu" size={24} color={COLORS.ink} />
-                </TouchableOpacity>
-              </View>
-            ) : null}
             {activeTab === "discover" &&
             locationError &&
             !businessDetailOpen &&
             !discoverSearchOpen &&
             !fullScreenOverlayOpen ? (
-              <View style={[styles.discoverTopErrorWrap, { top: topChromeOffset + 66 }]}>
+              <View
+                style={[styles.discoverTopErrorWrap, { top: topTabBarOffset + 68 }]}
+              >
                 <View style={styles.locateError}>
                   <Text style={styles.locateErrorText}>{locationError}</Text>
+                </View>
+              </View>
+            ) : null}
+            {showTopTabBar ? (
+              <View
+                style={[styles.topNavHost, { top: topTabBarOffset }]}
+                pointerEvents="box-none"
+              >
+                <View
+                  style={[
+                    styles.navContainer,
+                    styles.navContainerTop,
+                    navNeedsTightFit && styles.navContainerTight,
+                    { width: navContainerWidth },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.navRow,
+                      navNeedsTightFit && styles.navRowTight,
+                    ]}
+                    onLayout={handleNavRowLayout}
+                  >
+                    {navIndicatorWidth > 0 ? (
+                      <Animated.View
+                        pointerEvents="none"
+                        style={[
+                          styles.navIndicator,
+                          {
+                            width: navIndicatorWidth,
+                            transform: [{ translateX: navIndicatorTranslateX }],
+                          },
+                        ]}
+                      />
+                    ) : null}
+                    {visibleTabs.map((tab, index) => {
+                      const selected = activeTab === tab.key;
+                      const focusAnim = getTabFocusAnim(tab.key);
+                      const historyBadgeCount =
+                        tab.key === "history" ? pendingHistoryCount : 0;
+                      return (
+                        <TouchableOpacity
+                          key={tab.key}
+                          style={[
+                            styles.navPill,
+                            index > 0 &&
+                              (navNeedsTightFit
+                                ? styles.navPillSpacedTight
+                                : styles.navPillSpaced),
+                            navNeedsTightFit && styles.navPillTight,
+                          ]}
+                          onPress={() => applyDrawerTabChange(tab.key)}
+                          activeOpacity={0.88}
+                        >
+                          <Animated.View
+                            style={[
+                              styles.navPillContent,
+                              {
+                                transform: [
+                                  {
+                                    scale: focusAnim.interpolate({
+                                      inputRange: [0, 1],
+                                      outputRange: [1, 1.04],
+                                    }),
+                                  },
+                                ],
+                              },
+                            ]}
+                          >
+                            <View
+                              style={[
+                                styles.navIconOrb,
+                                selected && styles.navIconOrbActive,
+                              ]}
+                            >
+                              <Ionicons
+                                name={selected ? tab.iconActive : tab.icon}
+                                size={18}
+                                style={[
+                                  styles.navPillIcon,
+                                  selected && styles.navPillIconActive,
+                                ]}
+                              />
+                            </View>
+                            <View style={styles.navPillLabel}>
+                              <Text
+                                style={[
+                                  styles.navPillText,
+                                  navNeedsTightFit && styles.navPillTextTight,
+                                  selected && styles.navPillTextActive,
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {tab.key === "business" ? "Dashboard" : tab.label}
+                              </Text>
+                            </View>
+                            {historyBadgeCount > 0 ? (
+                              <View style={styles.navPillBadge}>
+                                <Text style={styles.navPillBadgeText}>
+                                  {historyBadgeCount > 9 ? "9+" : historyBadgeCount}
+                                </Text>
+                              </View>
+                            ) : null}
+                          </Animated.View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 </View>
               </View>
             ) : null}
@@ -23973,7 +24202,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                             <TouchableOpacity
                               style={[
                                 styles.businessPageCashbackRedeemButton,
-                                !hoursStatus.isOpen &&
+                                redeemGateBusy &&
                                   styles.businessPageCashbackRedeemButtonDisabled,
                               ]}
                               onPress={() =>
@@ -23987,13 +24216,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                   tags: businessDetail?.tags || [],
                                 })
                               }
-                              disabled={redeemGateBusy || !hoursStatus.isOpen}
+                              disabled={redeemGateBusy}
                               activeOpacity={0.88}
                             >
                               <Text style={styles.businessPageCashbackRedeemButtonText}>
-                                {hoursStatus.isOpen
-                                  ? `Redeem ${businessCashbackLabel} cashback`
-                                  : "Closed now"}
+                                {`Redeem ${businessCashbackLabel} cashback`}
                               </Text>
                             </TouchableOpacity>
                           </View>
@@ -24042,7 +24269,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
                           <View style={styles.businessPageOffersSection}>
                             <Text style={styles.businessPageSectionTitle}>
-                              Special Offers
+                              Special Wello Offers
                             </Text>
 
                             {businessDetailOffersStatus.error ? (
@@ -24071,11 +24298,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 const expirationText = formatOfferExpiryLabel(
                                   offer?.expiresAt,
                                 );
-                                const canRedeem = hoursStatus.isOpen;
                                 return (
                                   <LinearGradient
                                     key={offer.id}
-                                    colors={["#FFF7EF", "#FFFBE2"]}
+                                    colors={["#ECFDF3", "#F0FDF4"]}
                                     start={{ x: 0, y: 0 }}
                                     end={{ x: 1, y: 1 }}
                                     style={styles.businessPageOfferCard}
@@ -24088,34 +24314,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                         ? `Valid until ${expirationText}`
                                         : "Available now"}
                                     </Text>
-                                    <TouchableOpacity
-                                      style={[
-                                        styles.businessPageRedeemButton,
-                                        !canRedeem &&
-                                          styles.businessPageRedeemButtonDisabled,
-                                      ]}
-                                      onPress={() =>
-                                        handleRedeemOffer({
-                                          id: offer.id,
-                                          businessId: businessDetail.id,
-                                          business: businessDetail,
-                                          offerTitle:
-                                            offer.title ||
-                                            offer.offer ||
-                                            businessDetail.offer,
-                                          offerType: "cashback",
-                                          tags: businessDetail?.tags || [],
-                                        })
-                                      }
-                                      disabled={redeemGateBusy || !canRedeem}
-                                      activeOpacity={0.88}
-                                    >
-                                      <Text
-                                        style={styles.businessPageRedeemButtonText}
-                                      >
-                                        {canRedeem ? "Redeem" : "Closed now"}
-                                      </Text>
-                                    </TouchableOpacity>
                                   </LinearGradient>
                                 );
                               })
@@ -27419,29 +27617,161 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   style={[
                     styles.reanimatedSheetContainer,
                     styles.sheetBackground,
-                    { height: discoverSheetMetrics.panelHeight },
+                    activeTab !== "discover" &&
+                      styles.reanimatedSheetContainerFullScreen,
+                    activeTab !== "discover" &&
+                      styles.sheetBackgroundFullScreen,
+                    {
+                      height:
+                        activeTab === "discover"
+                          ? discoverSheetMetrics.panelHeight
+                          : SCREEN_HEIGHT,
+                    },
                     sheetPanelAnimatedStyle,
                   ]}
                 >
               <PanGestureHandler
                 ref={sheetPanRef}
+                enabled={activeTab === "discover"}
                 activeOffsetY={[-5, 5]}
                 onGestureEvent={handleSheetGestureEvent}
                 onHandlerStateChange={handleSheetGestureStateChange}
               >
-                <View style={styles.sheetHeaderChrome}>
-                  {renderSheetHandle()}
-                  <SheetPeekRow
-                    label={activeSheetPeekLabel}
-                    meta={activeSheetPeekMeta}
-                    onPress={() => bottomSheetRef.current?.snapToIndex(1)}
-                    animatedStyle={discoverMiniAnimatedStyle}
-                    interactive={!discoverSheetExpanded}
-                  />
-                </View>
+                {activeTab === "discover" ? (
+                  <View style={styles.sheetHeaderChrome}>
+                    {renderSheetHandle()}
+                    <SheetPeekRow
+                      label={activeSheetPeekLabel}
+                      meta={activeSheetPeekMeta}
+                      onPress={() => bottomSheetRef.current?.snapToIndex(1)}
+                      animatedStyle={discoverMiniAnimatedStyle}
+                      interactive={!discoverSheetExpanded}
+                    />
+                  </View>
+                ) : (
+                  <View
+                    style={[
+                      styles.fullScreenTabHeader,
+                      { paddingTop: modalTopInset + 8 },
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.navContainer,
+                        styles.fullScreenTabNavContainer,
+                        navNeedsTightFit && styles.navContainerTight,
+                        { width: navContainerWidth },
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.navRow,
+                          navNeedsTightFit && styles.navRowTight,
+                        ]}
+                        onLayout={handleNavRowLayout}
+                      >
+                        {navIndicatorWidth > 0 ? (
+                          <Animated.View
+                            pointerEvents="none"
+                            style={[
+                              styles.navIndicator,
+                              {
+                                width: navIndicatorWidth,
+                                transform: [{ translateX: navIndicatorTranslateX }],
+                              },
+                            ]}
+                          />
+                        ) : null}
+                        {visibleTabs.map((tab, index) => {
+                          const selected = activeTab === tab.key;
+                          const focusAnim = getTabFocusAnim(tab.key);
+                          const historyBadgeCount =
+                            tab.key === "history" ? pendingHistoryCount : 0;
+                          return (
+                            <TouchableOpacity
+                              key={tab.key}
+                              style={[
+                                styles.navPill,
+                                index > 0 &&
+                                  (navNeedsTightFit
+                                    ? styles.navPillSpacedTight
+                                    : styles.navPillSpaced),
+                                navNeedsTightFit && styles.navPillTight,
+                              ]}
+                              onPress={() => applyDrawerTabChange(tab.key)}
+                              activeOpacity={0.88}
+                            >
+                              <Animated.View
+                                style={[
+                                  styles.navPillContent,
+                                  {
+                                    transform: [
+                                      {
+                                        scale: focusAnim.interpolate({
+                                          inputRange: [0, 1],
+                                          outputRange: [1, 1.04],
+                                        }),
+                                      },
+                                    ],
+                                  },
+                                ]}
+                              >
+                                <View
+                                  style={[
+                                    styles.navIconOrb,
+                                    selected && styles.navIconOrbActive,
+                                  ]}
+                                >
+                                  <Ionicons
+                                    name={selected ? tab.iconActive : tab.icon}
+                                    size={18}
+                                    style={[
+                                      styles.navPillIcon,
+                                      selected && styles.navPillIconActive,
+                                    ]}
+                                  />
+                                </View>
+                                <View style={styles.navPillLabel}>
+                                  <Text
+                                    style={[
+                                      styles.navPillText,
+                                      navNeedsTightFit &&
+                                        styles.navPillTextTight,
+                                      selected && styles.navPillTextActive,
+                                    ]}
+                                    numberOfLines={1}
+                                  >
+                                    {tab.key === "business"
+                                      ? "Dashboard"
+                                      : tab.label}
+                                  </Text>
+                                </View>
+                                {historyBadgeCount > 0 ? (
+                                  <View style={styles.navPillBadge}>
+                                    <Text style={styles.navPillBadgeText}>
+                                      {historyBadgeCount > 9
+                                        ? "9+"
+                                        : historyBadgeCount}
+                                    </Text>
+                                  </View>
+                                ) : null}
+                              </Animated.View>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  </View>
+                )}
               </PanGestureHandler>
               <Reanimated.View
-                pointerEvents={discoverSheetExpanded ? "auto" : "none"}
+                pointerEvents={
+                  activeTab === "discover"
+                    ? discoverSheetExpanded
+                      ? "auto"
+                      : "none"
+                    : "auto"
+                }
                 style={[styles.sheetMainContent, sheetMainContentAnimatedStyle]}
               >
                 <SwipeableTabView
@@ -27456,6 +27786,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     ref={sheetScrollRef}
                     simultaneousHandlers={sheetPanRef}
                     style={styles.sheetScroll}
+                    stickyHeaderIndices={[0]}
                     showsVerticalScrollIndicator={false}
                     persistentScrollbar={false}
                     overScrollMode="never"
@@ -28305,8 +28636,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       {
                         paddingBottom:
                           SAFE_BOTTOM +
-                          discoverSheetMetrics.closedVisibleHeight +
-                          64 +
+                          28 +
                           (activeTab === "profile" ? 0 : keyboardInset) +
                           (activeTab === "profile" && isProfilePhoneFocused
                             ? Platform.OS === "ios"
@@ -28316,15 +28646,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       },
                     ]}
                     contentInset={{
-                      bottom:
-                        SAFE_BOTTOM +
-                        discoverSheetMetrics.closedVisibleHeight +
-                        64,
+                      bottom: SAFE_BOTTOM + 28,
                     }}
                     scrollIndicatorInsets={{
-                      bottom:
-                        SAFE_BOTTOM +
-                        discoverSheetMetrics.closedVisibleHeight / 2,
+                      bottom: SAFE_BOTTOM + 12,
                     }}
                     keyboardShouldPersistTaps="handled"
                     keyboardDismissMode="interactive"
@@ -30622,18 +30947,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                         : "";
                                     const statusCopy = (() => {
                                       if (needsReceipt) {
-                                        if (verificationStatus === "pending") {
-                                          return {
-                                            icon: "time-outline",
-                                            text: "Checking purchase",
-                                            tone: "pending",
-                                          };
-                                        }
                                         if (canUploadReceipt) {
                                           return {
-                                            icon: "document-text-outline",
-                                            text: "Upload receipt",
-                                            tone: "info",
+                                            icon: "checkmark-circle-outline",
+                                            text: "Redeemed",
+                                            tone: "success",
                                           };
                                         }
                                         return {
@@ -30686,6 +31004,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                       isReceiptActionable &&
                                         styles.historyEntryActionable,
                                     ];
+                                    const canUnredeem =
+                                      !hasReceipt &&
+                                      !isUploadingReceipt &&
+                                      !isAutoVerifying;
+                                    const receiptCountdownLabel =
+                                      !hasReceipt && receiptWindowOpen
+                                        ? formatReceiptUploadCountdown(
+                                            entry.createdAt,
+                                            receiptCountdownNow,
+                                          )
+                                        : null;
                                     const handleHistoryEntryPress = () => {
                                       if (!isReceiptActionable) return;
                                       if (canRetryAutoVerify) {
@@ -30748,9 +31077,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                                 style={styles.historyEntryTime}
                                                 numberOfLines={1}
                                               >
-                                                {formatHistoryTimestamp(
-                                                  entry.createdAt,
-                                                )}
+                                                {receiptCountdownLabel ||
+                                                  formatHistoryTimestamp(
+                                                    entry.createdAt,
+                                                  )}
                                               </Text>
                                             </View>
                                           </View>
@@ -30818,6 +31148,30 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                               size={14}
                                               color={COLORS.pine}
                                             />
+                                          </View>
+                                        )}
+                                        {canUnredeem && (
+                                          <View style={styles.historyEntryUndoRow}>
+                                            <TouchableOpacity
+                                              style={styles.historyEntryUndoButton}
+                                              onPress={() =>
+                                                handleUnredeemRedemption(entry)
+                                              }
+                                              activeOpacity={0.88}
+                                            >
+                                              <Ionicons
+                                                name="arrow-undo-outline"
+                                                size={13}
+                                                color="#B42318"
+                                              />
+                                              <Text
+                                                style={
+                                                  styles.historyEntryUndoButtonText
+                                                }
+                                              >
+                                                Unredeem offer
+                                              </Text>
+                                            </TouchableOpacity>
                                           </View>
                                         )}
                                       </>
@@ -36666,8 +37020,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
+  discoverTopActionsDock: {
+    position: "absolute",
+    right: 16,
+    zIndex: 24,
+    alignItems: "flex-end",
+  },
   discoverTopActionGroup: {
-    flexDirection: "row",
     alignItems: "center",
     gap: 12,
   },
@@ -36991,8 +37350,11 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
   },
   topNavHost: {
+    position: "absolute",
+    left: 0,
+    right: 0,
     alignItems: "center",
-    zIndex: 30,
+    zIndex: 26,
     paddingTop: IS_COMPACT ? 8 : 10,
     paddingHorizontal: IS_COMPACT ? 12 : 16,
   },
@@ -37751,7 +38113,7 @@ const styles = StyleSheet.create({
   businessPageOfferCard: {
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: "#FFD1A9",
+    borderColor: "#A7F3D0",
     paddingHorizontal: 18,
     paddingVertical: 18,
     gap: 10,
@@ -38148,11 +38510,11 @@ const styles = StyleSheet.create({
   },
   navIndicator: {
     position: "absolute",
-    bottom: 0,
-    height: 0,
-    borderRadius: 999,
-    backgroundColor: "transparent",
-    opacity: 0,
+    top: 4,
+    bottom: 4,
+    borderRadius: 24,
+    backgroundColor: "rgba(47, 99, 241, 0.1)",
+    opacity: 1,
   },
   navPillBadge: {
     position: "absolute",
@@ -38441,10 +38803,31 @@ const styles = StyleSheet.create({
     zIndex: 30,
     overflow: "hidden",
   },
+  reanimatedSheetContainerFullScreen: {
+    top: 0,
+    bottom: 0,
+  },
   sheetHeaderChrome: {
     position: "relative",
     zIndex: 2,
     backgroundColor: COLORS.white,
+  },
+  sheetBackgroundFullScreen: {
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    borderTopWidth: 0,
+  },
+  fullScreenTabHeader: {
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    backgroundColor: COLORS.white,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E8EDF5",
+  },
+  fullScreenTabNavContainer: {
+    paddingBottom: IS_COMPACT ? 6 : 8,
+    shadowOffset: { width: 0, height: 4 },
   },
   sheetScroll: {
     flex: 1,
@@ -38573,9 +38956,12 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   discoverCategoriesRow: {
+    backgroundColor: COLORS.white,
+    paddingTop: 8,
     marginBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: "#E5E7EB",
+    zIndex: 3,
   },
   discoverCategoriesRail: {
     flexDirection: "row",
@@ -40757,7 +41143,14 @@ const styles = StyleSheet.create({
     elevation: 0,
   },
   liveEditorialStackCardSelected: {
-    opacity: 0.98,
+    opacity: 1,
+    borderWidth: 2,
+    borderColor: "#16A34A",
+    shadowColor: "rgba(22, 163, 74, 0.30)",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.28,
+    shadowRadius: 20,
+    elevation: 12,
   },
   liveEditorialStackClosedOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -45621,6 +46014,27 @@ const styles = StyleSheet.create({
     color: COLORS.pine,
     fontFamily: FONT_MEDIUM,
   },
+  historyEntryUndoRow: {
+    marginTop: 10,
+    paddingTop: 2,
+  },
+  historyEntryUndoButton: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "#FEF3F2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+  },
+  historyEntryUndoButtonText: {
+    fontSize: 12,
+    color: "#B42318",
+    fontFamily: FONT_MEDIUM,
+  },
   historyCashbackPill: {
     flexDirection: "row",
     alignItems: "center",
@@ -46765,6 +47179,9 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
     overflow: "visible",
   },
+  markerWrapSelected: {
+    transform: [{ scale: 1.14 }],
+  },
   markerIcon: {
     width: 36,
     height: 36,
@@ -46776,6 +47193,11 @@ const styles = StyleSheet.create({
   },
   markerIconSelected: {
     borderColor: COLORS.white,
+    shadowColor: "rgba(22, 163, 74, 0.38)",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 14,
   },
   markerPointerWrap: {
     width: 16,
