@@ -1245,6 +1245,32 @@ const createDemoCoordinate = (index = 0) => {
   };
 };
 
+const createPrivacySafeServiceCoordinate = (coordinate, seedValue = "") => {
+  const latitude = Number(coordinate?.latitude);
+  const longitude = Number(coordinate?.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  const seed = String(seedValue || "wello-service-area");
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  // Move the public pin roughly 180–320 meters from the private address.
+  const distanceMeters = 180 + (hash % 141);
+  const angle = (((hash >>> 8) % 360) * Math.PI) / 180;
+  const latitudeOffset = (Math.cos(angle) * distanceMeters) / 111320;
+  const longitudeScale = Math.max(
+    0.2,
+    Math.cos((latitude * Math.PI) / 180),
+  );
+  const longitudeOffset =
+    (Math.sin(angle) * distanceMeters) / (111320 * longitudeScale);
+  return {
+    latitude: Math.round((latitude + latitudeOffset) * 10000) / 10000,
+    longitude: Math.round((longitude + longitudeOffset) * 10000) / 10000,
+  };
+};
+
 const mapSupabaseBusiness = (row, index) => {
   const categoryKey = normalizeBusinessCategoryKey(
     row.category_key || row.category_label,
@@ -11786,7 +11812,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         })
         .catch((error) => {
           if (addressRequestRef.current !== requestId) return;
-          setAddressError(error?.message || "Unable to load suggestions.");
+          setAddressError(
+            "Address suggestions are unavailable. Enter the complete address manually.",
+          );
           setAddressResults([]);
           setAddressLoading(false);
         });
@@ -11831,7 +11859,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         .catch((error) => {
           if (businessAddressRequestRef.current !== requestId) return;
           setBusinessAddressError(
-            error?.message || "Unable to load suggestions.",
+            "Address suggestions are unavailable. Enter the complete address manually.",
           );
           setBusinessAddressResults([]);
           setBusinessAddressLoading(false);
@@ -12225,10 +12253,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const focusCarouselBusiness = useCallback(
     (item) => {
       const business = item?.business || item;
+      const businessId = String(business?.id || item?.businessId || "");
+      if (businessId) setSelectedId(businessId);
       const coordinate = resolveBusinessCoordinateForDistance(business);
       if (!coordinate) return;
-      const businessId = String(business?.id || item?.businessId || "");
-      setSelectedId(businessId);
       const nextRegion = {
         ...coordinate,
         latitudeDelta: MAP_REGION.latitudeDelta,
@@ -12272,6 +12300,42 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         }}
         onScrollBeginDrag={() => {
           carouselUserDraggingRef.current = true;
+        }}
+        scrollEventThrottle={80}
+        onScroll={(event) => {
+          if (!carouselUserDraggingRef.current) return;
+          const offsetX = Number(event?.nativeEvent?.contentOffset?.x) || 0;
+          const index = Math.max(
+            0,
+            Math.min(
+              offers.length - 1,
+              Math.round(offsetX / (DISCOVER_RAIL_CARD_WIDTH + CARD_GAP)),
+            ),
+          );
+          const nextItem = offers[index];
+          if (!nextItem) return;
+          const currentKey = getOfferCardSelectionKey(
+            carouselVisibleItemRef.current,
+          );
+          const nextKey = getOfferCardSelectionKey(nextItem);
+          if (currentKey === nextKey) return;
+          carouselVisibleItemRef.current = nextItem;
+          focusCarouselBusiness(nextItem);
+        }}
+        onScrollEndDrag={(event) => {
+          const offsetX = Number(event?.nativeEvent?.contentOffset?.x) || 0;
+          const index = Math.max(
+            0,
+            Math.min(
+              offers.length - 1,
+              Math.round(offsetX / (DISCOVER_RAIL_CARD_WIDTH + CARD_GAP)),
+            ),
+          );
+          const nextItem = offers[index];
+          if (nextItem) {
+            carouselVisibleItemRef.current = nextItem;
+            focusCarouselBusiness(nextItem);
+          }
         }}
         onMomentumScrollEnd={(event) => {
           if (!carouselUserDraggingRef.current) return;
@@ -13930,7 +13994,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         })
         .catch((error) => {
           if (createAddressRequestRef.current !== requestId) return;
-          setCreateAddressError(error?.message || "Unable to load suggestions.");
+          setCreateAddressError(
+            "Address suggestions are unavailable. Enter the complete address manually.",
+          );
           setCreateAddressResults([]);
           setCreateAddressLoading(false);
         });
@@ -16848,11 +16914,26 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   };
 
   const geocodeAddress = useCallback(async (address) => {
-    if (!ADDRESS_LOOKUP_ENABLED || !address) return null;
+    const normalizedAddress = String(address || "").trim();
+    if (!normalizedAddress) return null;
+    if (ADDRESS_LOOKUP_ENABLED) {
+      try {
+        const proxyResult = await fetchGeocodeResult(normalizedAddress);
+        if (proxyResult) return proxyResult;
+      } catch (error) {
+        console.warn("Wello proxy geocode failed:", error?.message || error);
+      }
+    }
     try {
-      return await fetchGeocodeResult(address);
+      const nativeResults = await Location.geocodeAsync(normalizedAddress);
+      const first = Array.isArray(nativeResults) ? nativeResults[0] : null;
+      const latitude = Number(first?.latitude);
+      const longitude = Number(first?.longitude);
+      return Number.isFinite(latitude) && Number.isFinite(longitude)
+        ? { latitude, longitude }
+        : null;
     } catch (error) {
-      console.warn("Wello geocode failed:", error?.message || error);
+      console.warn("Wello native geocode failed:", error?.message || error);
       return null;
     }
   }, []);
@@ -17354,24 +17435,68 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     }
     setFormMessage(null);
 
-    const tagList = normalizeTagsInput(formData.tags);
-    const merchantDescriptorAliases = normalizeMerchantDescriptorAliasesInput(
-      formData.merchantDescriptorAliases,
-    );
+    const businessSpecialty = String(formData.categoryCustomLabel || "").trim();
+    if (!businessSpecialty || businessSpecialty === "Other") {
+      setFormMessage({
+        type: "error",
+        text: "Select a specialty or describe what your business does.",
+      });
+      return;
+    }
+    const profileDescription = String(formData.description || "").trim();
+    if (!profileDescription) {
+      setFormMessage({
+        type: "error",
+        text: "Tell customers why they should hire your business.",
+      });
+      return;
+    }
+    const usesPrivateServiceAddress = formData.hasBusinessLocation === false;
+    const tagList = [
+      businessSpecialty.replace(/^Other:\s*/i, "").trim(),
+      ...(usesPrivateServiceAddress ? ["__wello_service_area__"] : []),
+    ].filter(Boolean);
+    const merchantDescriptorAliases =
+      ownerBusiness.merchantDescriptorAliases || [];
     const trimmedName = formData.name.trim();
     const trimmedAddress = formData.address.trim();
     const trimmedCity = formData.city.trim();
     const trimmedState = formData.state.trim();
     const trimmedPostal = formData.postalCode.trim();
+    let editAddressCoordinate = formData.addressCoords;
+    if (!editAddressCoordinate && trimmedAddress) {
+      editAddressCoordinate = await geocodeAddress(
+        [trimmedAddress, trimmedCity, trimmedState, trimmedPostal]
+          .filter(Boolean)
+          .join(", "),
+      );
+    }
+    const publicEditAddress = usesPrivateServiceAddress
+      ? [trimmedCity, trimmedState].filter(Boolean).join(", ") ||
+        "Service-area business"
+      : trimmedAddress;
+    const publicEditCoordinate = usesPrivateServiceAddress
+      ? createPrivacySafeServiceCoordinate(
+          editAddressCoordinate || ownerBusiness.coordinate,
+          `${authUserId}:${trimmedName}`,
+        )
+      : editAddressCoordinate;
+    if (!publicEditCoordinate) {
+      setFormMessage({
+        type: "error",
+        text: "Enter the complete address, city, state, and ZIP code so we can place your business on the map.",
+      });
+      return;
+    }
     const pendingEdits = {};
 
     if (trimmedName && trimmedName !== ownerBusiness.name) {
       pendingEdits.name = trimmedName;
     }
-    if (trimmedAddress && trimmedAddress !== (ownerBusiness.address || "")) {
-      pendingEdits.address = trimmedAddress;
-      if (formData.addressCoords) {
-        pendingEdits.coordinate = formData.addressCoords;
+    if (publicEditAddress && publicEditAddress !== (ownerBusiness.address || "")) {
+      pendingEdits.address = publicEditAddress;
+      if (publicEditCoordinate) {
+        pendingEdits.coordinate = publicEditCoordinate;
       }
     }
     if (trimmedCity !== (ownerBusiness.city || "")) {
@@ -17380,8 +17505,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     if (trimmedState !== (ownerBusiness.state || "")) {
       pendingEdits.state = trimmedState;
     }
-    if (trimmedPostal !== (ownerBusiness.postalCode || "")) {
-      pendingEdits.postalCode = trimmedPostal;
+    const publicEditPostal = usesPrivateServiceAddress ? "" : trimmedPostal;
+    if (publicEditPostal !== (ownerBusiness.postalCode || "")) {
+      pendingEdits.postalCode = publicEditPostal;
     }
     if (formData.categoryKey !== ownerBusiness.categoryKey) {
       pendingEdits.categoryKey = formData.categoryKey;
@@ -17396,10 +17522,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     const updatedBusiness = {
       ...ownerBusiness,
       name: hasPendingEdits ? ownerBusiness.name : trimmedName,
-      address: hasPendingEdits ? ownerBusiness.address : trimmedAddress,
+      address: hasPendingEdits ? ownerBusiness.address : publicEditAddress,
       city: hasPendingEdits ? ownerBusiness.city : trimmedCity,
       state: hasPendingEdits ? ownerBusiness.state : trimmedState,
-      postalCode: hasPendingEdits ? ownerBusiness.postalCode : trimmedPostal,
+      postalCode: hasPendingEdits ? ownerBusiness.postalCode : publicEditPostal,
       category: categoryDisplay,
       categoryKey: nextCategoryKey,
       offer: ownerBusiness.offer,
@@ -17410,7 +17536,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       hours: formData.hours.trim() || ownerBusiness.hours,
       coordinate: hasPendingEdits
         ? ownerBusiness.coordinate
-        : formData.addressCoords || ownerBusiness.coordinate,
+        : publicEditCoordinate || ownerBusiness.coordinate,
       pendingEdits: hasPendingEdits ? pendingEdits : null,
       pendingEditsAt: hasPendingEdits ? Date.now() : null,
     };
@@ -17499,17 +17625,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       };
       if (!hasPendingEdits) {
         updatePayload.name = trimmedName;
-        updatePayload.address = trimmedAddress;
+        updatePayload.address = publicEditAddress;
         updatePayload.city = trimmedCity || null;
         updatePayload.state = trimmedState || null;
-        updatePayload.postal_code = trimmedPostal || null;
+        updatePayload.postal_code = publicEditPostal || null;
         updatePayload.category_key = formData.categoryKey;
         updatePayload.category_label = getCategoryConfig(
           formData.categoryKey,
         ).display;
-        if (formData.addressCoords) {
-          updatePayload.latitude = formData.addressCoords.latitude;
-          updatePayload.longitude = formData.addressCoords.longitude;
+        if (publicEditCoordinate) {
+          updatePayload.latitude = publicEditCoordinate.latitude;
+          updatePayload.longitude = publicEditCoordinate.longitude;
         }
       }
 
@@ -23139,7 +23265,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       );
       let createCoords = createBusinessForm.addressCoords;
       if (!createCoords && createBusinessForm.address.trim()) {
-        createCoords = await geocodeAddress(createBusinessForm.address.trim());
+        createCoords = await geocodeAddress(
+          [
+            createBusinessForm.address.trim(),
+            createBusinessForm.city.trim(),
+            createBusinessForm.state.trim(),
+            createBusinessForm.postalCode.trim(),
+          ]
+            .filter(Boolean)
+            .join(", "),
+        );
       }
       if (!createCoords) {
         setCreateBusinessBusy(false);
@@ -23157,10 +23292,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         : createBusinessForm.address.trim();
       const publicMapCoords =
         usesPrivateServiceAddress && createCoords
-          ? {
-              latitude: Math.round(Number(createCoords.latitude) * 100) / 100,
-              longitude: Math.round(Number(createCoords.longitude) * 100) / 100,
-            }
+          ? createPrivacySafeServiceCoordinate(
+              createCoords,
+              `${authUserId}:${createBusinessForm.name.trim()}`,
+            )
           : createCoords;
       const { data, error } = await supabase
         .from("businesses")
@@ -25049,6 +25184,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 key={action.key}
                                 style={[
                                   styles.businessPageQuickAction,
+                                  isServiceAreaBusiness &&
+                                    styles.businessPageQuickActionFull,
                                   action.disabled && styles.businessPageQuickActionDisabled,
                                 ]}
                                 disabled={action.disabled}
@@ -39992,6 +40129,9 @@ const styles = StyleSheet.create({
   businessPageQuickAction: {
     width: "48%",
     alignItems: "center",
+  },
+  businessPageQuickActionFull: {
+    width: "100%",
   },
   businessPageQuickActionDisabled: {
     opacity: 0.4,
