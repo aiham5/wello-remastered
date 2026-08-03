@@ -1,9 +1,8 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
-  Linking,
   Platform,
   ScrollView,
   Text,
@@ -97,6 +96,55 @@ export default function AddBusinessScreen({
   closeCreateBusinessPage,
 }: AddBusinessScreenProps) {
   const insets = useSafeAreaInsets();
+  const [specialtyMenuOpen, setSpecialtyMenuOpen] = useState(false);
+  const [otherSpecialty, setOtherSpecialty] = useState("");
+  const industryOptions = [
+    { key: "trades", label: "Home" },
+    { key: "auto", label: "Auto" },
+  ];
+  const specialtyOptions: Record<string, string[]> = {
+    trades: [
+      "Electrician",
+      "Plumber",
+      "HVAC",
+      "Roofing",
+      "Handyman",
+      "Painter",
+      "Drywall",
+      "Remodeling",
+      "Carpentry",
+      "Garage Door",
+      "Repairs",
+      "Appliance Repair",
+      "Other",
+    ],
+    auto: [
+      "Mechanic",
+      "Mobile Mechanic",
+      "Oil Shop",
+      "Tire Shop",
+      "Body Shop",
+      "Towing Service",
+      "Auto Glass",
+      "Tint/Wraps",
+      "Detailing",
+      "Gas Station",
+      "Other",
+    ],
+  };
+  const selectedIndustry = ["auto", "trades"].includes(
+    createBusinessForm.categoryKey,
+  )
+    ? createBusinessForm.categoryKey
+    : "";
+  const selectedSpecialty = String(
+    createBusinessForm.categoryCustomLabel || "",
+  ).trim();
+  const isOtherSpecialty =
+    selectedSpecialty === "Other" || selectedSpecialty.startsWith("Other:");
+  const specialtyPickerLabel = isOtherSpecialty
+    ? "Other"
+    : selectedSpecialty || "Select specialty";
 
   return (
     <SafeAreaView
@@ -139,31 +187,15 @@ export default function AddBusinessScreen({
           <View style={styles.createBusinessSectionCard}>
             <Text style={styles.createBusinessSectionTitle}>Business Info</Text>
 
-            <Text style={styles.formLabel}>Business name</Text>
-            <AutoFocusInput
-              style={styles.formInput}
-              placeholder="Company name"
-              placeholderTextColor={colors.muted}
-              value={createBusinessForm.name}
-              onChangeText={(value: string) =>
-                setCreateBusinessForm((prev: any) => ({
-                  ...prev,
-                  name: value,
-                }))
-              }
-            />
-
-            <Text style={styles.formLabel}>Category</Text>
+            <Text style={styles.formLabel}>What do you do?</Text>
             <TouchableOpacity
               style={[styles.formInput, styles.selectInput]}
               onPress={() => setCreateBusinessCategoryMenuOpen((prev) => !prev)}
               activeOpacity={0.8}
             >
               <Text style={styles.selectInputText}>
-                {getCategoryPickerLabel(
-                  createBusinessForm.categoryKey,
-                  createBusinessForm.categoryCustomLabel,
-                )}
+                {industryOptions.find((option) => option.key === selectedIndustry)
+                  ?.label || "Select Home or Auto"}
               </Text>
               <Ionicons
                 name={createBusinessCategoryMenuOpen ? "chevron-up" : "chevron-down"}
@@ -173,8 +205,8 @@ export default function AddBusinessScreen({
             </TouchableOpacity>
             {createBusinessCategoryMenuOpen ? (
               <View style={styles.selectMenu}>
-                {categoryOptions.map((option) => {
-                  const isActive = createBusinessForm.categoryKey === option.key;
+                {industryOptions.map((option) => {
+                  const isActive = selectedIndustry === option.key;
                   return (
                     <TouchableOpacity
                       key={option.key}
@@ -186,12 +218,11 @@ export default function AddBusinessScreen({
                         setCreateBusinessForm((prev: any) => ({
                           ...prev,
                           categoryKey: option.key,
-                          categoryCustomLabel:
-                            option.key === categoryOtherKey
-                              ? prev.categoryCustomLabel
-                              : "",
+                          categoryCustomLabel: "",
                         }));
                         setCreateBusinessCategoryMenuOpen(false);
+                        setSpecialtyMenuOpen(false);
+                        setOtherSpecialty("");
                       }}
                     >
                       <Text
@@ -207,23 +238,92 @@ export default function AddBusinessScreen({
                 })}
               </View>
             ) : null}
-            {createBusinessForm.categoryKey === categoryOtherKey ? (
+
+            {selectedIndustry ? (
               <>
-                <Text style={styles.formLabel}>Custom category</Text>
-                <AutoFocusInput
-                  style={styles.formInput}
-                  placeholder="Enter custom category"
-                  placeholderTextColor={colors.muted}
-                  value={createBusinessForm.categoryCustomLabel}
-                  onChangeText={(value: string) =>
-                    setCreateBusinessForm((prev: any) => ({
-                      ...prev,
-                      categoryCustomLabel: value,
-                    }))
-                  }
-                />
+                <Text style={styles.formLabel}>Your specialty</Text>
+                <TouchableOpacity
+                  style={[styles.formInput, styles.selectInput]}
+                  onPress={() => setSpecialtyMenuOpen((prev) => !prev)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.selectInputText}>
+                    {specialtyPickerLabel}
+                  </Text>
+                  <Ionicons
+                    name={specialtyMenuOpen ? "chevron-up" : "chevron-down"}
+                    size={16}
+                    color={colors.muted}
+                  />
+                </TouchableOpacity>
+                {specialtyMenuOpen ? (
+                  <View style={styles.selectMenu}>
+                    {(specialtyOptions[selectedIndustry] || []).map((specialty) => {
+                      const isActive = selectedSpecialty === specialty;
+                      return (
+                        <TouchableOpacity
+                          key={specialty}
+                          style={[
+                            styles.selectMenuOption,
+                            isActive && styles.selectMenuOptionActive,
+                          ]}
+                          onPress={() => {
+                            setCreateBusinessForm((prev: any) => ({
+                              ...prev,
+                              categoryCustomLabel: specialty,
+                            }));
+                            if (specialty !== "Other") setOtherSpecialty("");
+                            setSpecialtyMenuOpen(false);
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.selectMenuOptionText,
+                              isActive && styles.selectMenuOptionTextActive,
+                            ]}
+                          >
+                            {specialty}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                ) : null}
+                {isOtherSpecialty ? (
+                  <AutoFocusInput
+                    style={styles.formInput}
+                    placeholder="Describe what your business does"
+                    placeholderTextColor={colors.muted}
+                    value={otherSpecialty}
+                    onChangeText={(value: string) => {
+                      setOtherSpecialty(value);
+                      setCreateBusinessForm((prev: any) => ({
+                        ...prev,
+                        categoryCustomLabel: value.trim()
+                          ? `Other: ${value}`
+                          : "Other",
+                      }));
+                    }}
+                  />
+                ) : null}
               </>
             ) : null}
+
+            <Text style={styles.formLabel}>
+              Business name (this will show as your profile name)
+            </Text>
+            <AutoFocusInput
+              style={styles.formInput}
+              placeholder="Company name"
+              placeholderTextColor={colors.muted}
+              value={createBusinessForm.name}
+              onChangeText={(value: string) =>
+                setCreateBusinessForm((prev: any) => ({
+                  ...prev,
+                  name: value,
+                }))
+              }
+            />
 
             <View style={styles.offerPhotoHeader}>
               <Text style={styles.formLabel}>Business photo</Text>
@@ -283,48 +383,51 @@ export default function AddBusinessScreen({
               separate from offer photos.
             </Text>
 
-            <Text style={styles.formLabel}>Descriptor aliases (optional)</Text>
+            <Text style={styles.formLabel}>Tell customers why they should hire you</Text>
             <AutoFocusInput
               style={[styles.formInput, styles.descriptorInput]}
-              placeholder="One per line (example: SQ * YOUR BUSINESS)"
+              placeholder="Describe your experience, specialties, and what sets your work apart."
               placeholderTextColor={colors.muted}
-              value={createBusinessForm.merchantDescriptorAliases}
+              value={createBusinessForm.description || ""}
               onChangeText={(value: string) =>
                 setCreateBusinessForm((prev: any) => ({
                   ...prev,
-                  merchantDescriptorAliases: value,
+                  description: value,
                 }))
               }
               multiline
               textAlignVertical="top"
             />
             <Text style={styles.formHint}>
-              Optional: helps improve automatic bank verification.
+              Describe your experience and specialties. A strong profile helps
+              customers trust your work and can help you get hired more often.
             </Text>
+          </View>
 
-            <Text style={styles.formLabel}>Tags</Text>
+          <View style={styles.createBusinessSectionCard}>
+            <Text style={styles.createBusinessSectionTitle}>Location</Text>
+            <Text style={styles.formLabel}>Do you have a business location?</Text>
             <View style={styles.tagOptionRow}>
-              {tagOptions.map((option) => {
-                const isActive = selectedCreateTags.has(option.value);
+              {[
+                { value: true, label: "Yes" },
+                { value: false, label: "No, I travel to customers" },
+              ].map((option) => {
+                const isActive =
+                  (createBusinessForm.hasBusinessLocation !== false) ===
+                  option.value;
                 return (
                   <TouchableOpacity
-                    key={option.value}
+                    key={option.label}
                     style={[
                       styles.tagOptionPill,
                       isActive && styles.tagOptionPillActive,
                     ]}
-                    onPress={() => {
-                      const next = new Set(selectedCreateTags);
-                      if (next.has(option.value)) {
-                        next.delete(option.value);
-                      } else {
-                        next.add(option.value);
-                      }
+                    onPress={() =>
                       setCreateBusinessForm((prev: any) => ({
                         ...prev,
-                        tags: Array.from(next).join(", "),
-                      }));
-                    }}
+                        hasBusinessLocation: option.value,
+                      }))
+                    }
                   >
                     <Text
                       style={[
@@ -338,11 +441,18 @@ export default function AddBusinessScreen({
                 );
               })}
             </View>
-          </View>
-
-          <View style={styles.createBusinessSectionCard}>
-            <Text style={styles.createBusinessSectionTitle}>Location</Text>
-            <Text style={styles.formLabel}>Business address</Text>
+            {createBusinessForm.hasBusinessLocation === false ? (
+              <Text style={styles.formHint}>
+                Enter your home or service-area base so we can place you nearby
+                on the map. Your exact address stays private and is never shown
+                to customers.
+              </Text>
+            ) : null}
+            <Text style={styles.formLabel}>
+              {createBusinessForm.hasBusinessLocation === false
+                ? "Home or service-area base"
+                : "Business address"}
+            </Text>
             <AutoFocusInput
               style={styles.formInput}
               placeholder="Street address"
@@ -461,67 +571,9 @@ export default function AddBusinessScreen({
             </Text>
           </View>
 
-          <View style={styles.createBusinessSectionCard}>
-            <Text style={styles.createBusinessSectionTitle}>Review</Text>
-            <View style={styles.legalChecklist}>
-              <TouchableOpacity
-                style={styles.legalCheckRow}
-                onPress={() => {
-                  setCreateBusinessAuthorizedChecked((prev) => !prev);
-                  if (createBusinessError) setCreateBusinessError(null);
-                }}
-                activeOpacity={0.85}
-              >
-                <Ionicons
-                  name={
-                    createBusinessAuthorizedChecked
-                      ? "checkmark-circle"
-                      : "ellipse-outline"
-                  }
-                  size={18}
-                  color={
-                    createBusinessAuthorizedChecked ? colors.pine : colors.muted
-                  }
-                />
-                <Text style={styles.legalCheckText}>
-                  I am authorized to act on behalf of this business.
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.legalCheckRow}
-                onPress={() => {
-                  setCreateBusinessHonorOffersChecked((prev) => !prev);
-                  if (createBusinessError) setCreateBusinessError(null);
-                }}
-                activeOpacity={0.85}
-              >
-                <Ionicons
-                  name={
-                    createBusinessHonorOffersChecked
-                      ? "checkmark-circle"
-                      : "ellipse-outline"
-                  }
-                  size={18}
-                  color={
-                    createBusinessHonorOffersChecked ? colors.pine : colors.muted
-                  }
-                />
-                <Text style={styles.legalCheckText}>
-                  I agree this business will honor every approved offer as
-                  published.
-                </Text>
-              </TouchableOpacity>
-            </View>
-            <TouchableOpacity
-              style={styles.legalLinkButton}
-              onPress={() => Linking.openURL(privacyPolicyUrl).catch(() => null)}
-            >
-              <Text style={styles.legalLinkText}>Review Privacy Policy</Text>
-            </TouchableOpacity>
-            {createBusinessError ? (
-              <Text style={styles.formError}>{createBusinessError}</Text>
-            ) : null}
-          </View>
+          {createBusinessError ? (
+            <Text style={styles.formError}>{createBusinessError}</Text>
+          ) : null}
         </ScrollView>
 
         <View

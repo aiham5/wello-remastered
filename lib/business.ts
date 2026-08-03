@@ -189,9 +189,7 @@ export async function getBusinessStripeStatus(
   const stripeOnboarded =
     Boolean(data?.stripe_onboarded) ||
     (Boolean(stripeAccountId) && Boolean(data?.stripe_charges_enabled));
-  const stripeGated =
-    Boolean(data?.stripe_gated) ||
-    (stripeOnboarded && hasPaymentMethod);
+  const stripeGated = Boolean(data?.stripe_gated) || hasPaymentMethod;
 
   return {
     stripeAccountId,

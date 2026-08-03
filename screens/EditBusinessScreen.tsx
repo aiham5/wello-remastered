@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -82,6 +82,30 @@ export default function EditBusinessScreen({
   closeEditBusinessPage,
 }: EditBusinessScreenProps) {
   const insets = useSafeAreaInsets();
+  const [specialtyMenuOpen, setSpecialtyMenuOpen] = useState(false);
+  const [otherSpecialty, setOtherSpecialty] = useState("");
+  const industryOptions = [
+    { key: "trades", label: "Home" },
+    { key: "auto", label: "Auto" },
+  ];
+  const specialtyOptions: Record<string, string[]> = {
+    trades: [
+      "Electrician", "Plumber", "HVAC", "Roofing", "Handyman", "Painter",
+      "Drywall", "Remodeling", "Carpentry", "Garage Door", "Repairs",
+      "Appliance Repair", "Other",
+    ],
+    auto: [
+      "Mechanic", "Mobile Mechanic", "Oil Shop", "Tire Shop", "Body Shop",
+      "Towing Service", "Auto Glass", "Tint/Wraps", "Detailing", "Gas Station",
+      "Other",
+    ],
+  };
+  const selectedIndustry = ["auto", "trades"].includes(formData.categoryKey)
+    ? formData.categoryKey
+    : "";
+  const selectedSpecialty = String(formData.categoryCustomLabel || "").trim();
+  const isOtherSpecialty =
+    selectedSpecialty === "Other" || selectedSpecialty.startsWith("Other:");
 
   return (
     <SafeAreaView style={styles.createBusinessPageOverlay} edges={["top", "bottom"]}>
@@ -114,7 +138,9 @@ export default function EditBusinessScreen({
             <View style={styles.createBusinessSectionCard}>
               <Text style={styles.createBusinessSectionTitle}>Business Info</Text>
 
-              <Text style={styles.formLabel}>Business name</Text>
+              <Text style={styles.formLabel}>
+                Business name (this will show as your profile name)
+              </Text>
               <AutoFocusInput
                 style={styles.formInput}
                 placeholder="Company name"
@@ -123,14 +149,15 @@ export default function EditBusinessScreen({
                 onChangeText={(value: string) => handleFormChange("name", value)}
               />
 
-              <Text style={styles.formLabel}>Category</Text>
+              <Text style={styles.formLabel}>What do you do?</Text>
               <TouchableOpacity
                 style={[styles.formInput, styles.selectInput]}
                 onPress={() => setEditBusinessCategoryMenuOpen((prev) => !prev)}
                 activeOpacity={0.8}
               >
                 <Text style={styles.selectInputText}>
-                  {getCategoryPickerLabel(formData.categoryKey)}
+                  {industryOptions.find((option) => option.key === selectedIndustry)
+                    ?.label || "Select Home or Auto"}
                 </Text>
                 <Ionicons
                   name={editBusinessCategoryMenuOpen ? "chevron-up" : "chevron-down"}
@@ -140,7 +167,7 @@ export default function EditBusinessScreen({
               </TouchableOpacity>
               {editBusinessCategoryMenuOpen ? (
                 <View style={styles.selectMenu}>
-                  {categoryOptions.map((option) => {
+                  {industryOptions.map((option) => {
                     const isActive = formData.categoryKey === option.key;
                     return (
                       <TouchableOpacity
@@ -151,7 +178,10 @@ export default function EditBusinessScreen({
                         ]}
                         onPress={() => {
                           handleFormChange("categoryKey", option.key);
+                          handleFormChange("categoryCustomLabel", "");
                           setEditBusinessCategoryMenuOpen(false);
+                          setSpecialtyMenuOpen(false);
+                          setOtherSpecialty("");
                         }}
                       >
                         <Text
@@ -166,6 +196,69 @@ export default function EditBusinessScreen({
                     );
                   })}
                 </View>
+              ) : null}
+
+              {selectedIndustry ? (
+                <>
+                  <Text style={styles.formLabel}>Your specialty</Text>
+                  <TouchableOpacity
+                    style={[styles.formInput, styles.selectInput]}
+                    onPress={() => setSpecialtyMenuOpen((prev) => !prev)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.selectInputText}>
+                      {isOtherSpecialty ? "Other" : selectedSpecialty || "Select specialty"}
+                    </Text>
+                    <Ionicons
+                      name={specialtyMenuOpen ? "chevron-up" : "chevron-down"}
+                      size={16}
+                      color={colors.muted}
+                    />
+                  </TouchableOpacity>
+                  {specialtyMenuOpen ? (
+                    <View style={styles.selectMenu}>
+                      {(specialtyOptions[selectedIndustry] || []).map((specialty) => (
+                        <TouchableOpacity
+                          key={specialty}
+                          style={[
+                            styles.selectMenuOption,
+                            selectedSpecialty === specialty && styles.selectMenuOptionActive,
+                          ]}
+                          onPress={() => {
+                            handleFormChange("categoryCustomLabel", specialty);
+                            if (specialty !== "Other") setOtherSpecialty("");
+                            setSpecialtyMenuOpen(false);
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.selectMenuOptionText,
+                              selectedSpecialty === specialty &&
+                                styles.selectMenuOptionTextActive,
+                            ]}
+                          >
+                            {specialty}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  ) : null}
+                  {isOtherSpecialty ? (
+                    <AutoFocusInput
+                      style={styles.formInput}
+                      placeholder="Describe what your business does"
+                      placeholderTextColor={colors.muted}
+                      value={otherSpecialty || selectedSpecialty.replace(/^Other:\s*/i, "")}
+                      onChangeText={(value: string) => {
+                        setOtherSpecialty(value);
+                        handleFormChange(
+                          "categoryCustomLabel",
+                          value.trim() ? `Other: ${value}` : "Other",
+                        );
+                      }}
+                    />
+                  ) : null}
+                </>
               ) : null}
 
               <View style={styles.offerPhotoHeader}>
@@ -219,64 +312,59 @@ export default function EditBusinessScreen({
                   </View>
                 ) : null}
               </TouchableOpacity>
-              <Text style={styles.formHint}>
-                This photo is used for the business card in Discover.
+              <Text style={styles.formLabel}>
+                Tell customers why they should hire you
               </Text>
-
-              <Text style={styles.formLabel}>Descriptor aliases (optional)</Text>
               <AutoFocusInput
                 style={[styles.formInput, styles.descriptorInput]}
-                placeholder="One per line (example: SQ * YOUR BUSINESS)"
+                placeholder="Describe your experience, specialties, and what sets your work apart."
                 placeholderTextColor={colors.muted}
-                value={formData.merchantDescriptorAliases}
+                value={formData.description || ""}
                 onChangeText={(value: string) =>
-                  handleFormChange("merchantDescriptorAliases", value)
+                  handleFormChange("description", value)
                 }
                 multiline
                 textAlignVertical="top"
               />
+              <Text style={styles.formHint}>
+                Describe your experience and specialties. A strong profile helps
+                customers trust your work and can help you get hired more often.
+              </Text>
+            </View>
 
-              <Text style={styles.formLabel}>Tags</Text>
+            <View style={styles.createBusinessSectionCard}>
+              <Text style={styles.createBusinessSectionTitle}>Location</Text>
+              <Text style={styles.formLabel}>Do you have a business location?</Text>
               <View style={styles.tagOptionRow}>
-                {tagOptions.map((option) => {
-                  const isActive = selectedEditTags.has(option.value);
+                {[
+                  { value: true, label: "Yes" },
+                  { value: false, label: "No, I travel to customers" },
+                ].map((option) => {
+                  const active = (formData.hasBusinessLocation !== false) === option.value;
                   return (
                     <TouchableOpacity
-                      key={option.value}
-                      style={[
-                        styles.tagOptionPill,
-                        isActive && styles.tagOptionPillActive,
-                      ]}
-                      onPress={() => {
-                        const next = new Set(selectedEditTags);
-                        if (next.has(option.value)) {
-                          next.delete(option.value);
-                        } else {
-                          next.add(option.value);
-                        }
-                        setFormData((prev: any) => ({
-                          ...prev,
-                          tags: Array.from(next).join(", "),
-                        }));
-                      }}
+                      key={option.label}
+                      style={[styles.tagOptionPill, active && styles.tagOptionPillActive]}
+                      onPress={() => handleFormChange("hasBusinessLocation", option.value)}
                     >
-                      <Text
-                        style={[
-                          styles.tagOptionText,
-                          isActive && styles.tagOptionTextActive,
-                        ]}
-                      >
+                      <Text style={[styles.tagOptionText, active && styles.tagOptionTextActive]}>
                         {option.label}
                       </Text>
                     </TouchableOpacity>
                   );
                 })}
               </View>
-            </View>
-
-            <View style={styles.createBusinessSectionCard}>
-              <Text style={styles.createBusinessSectionTitle}>Location</Text>
-              <Text style={styles.formLabel}>Business address</Text>
+              {formData.hasBusinessLocation === false ? (
+                <Text style={styles.formHint}>
+                  Enter your home or service-area base so we can place you nearby
+                  on the map. Your exact address is never shown to customers.
+                </Text>
+              ) : null}
+              <Text style={styles.formLabel}>
+                {formData.hasBusinessLocation === false
+                  ? "Home or service-area base"
+                  : "Business address"}
+              </Text>
               <AutoFocusInput
                 style={styles.formInput}
                 placeholder="Street address"

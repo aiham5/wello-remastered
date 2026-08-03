@@ -219,7 +219,9 @@ const syncSingleStripeBusiness = async (
     }
   }
 
-  const stripeGated = stripeOnboarded && Boolean(paymentSnapshot.paymentMethodId);
+  // Wello no longer requires Connect onboarding for listing visibility.
+  // An approved business becomes billing-ready after securely saving a card.
+  const stripeGated = Boolean(paymentSnapshot.paymentMethodId);
   const previous = {
     stripeOnboarded: Boolean(row.stripe_onboarded),
     stripeGated: Boolean(row.stripe_gated),

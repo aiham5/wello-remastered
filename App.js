@@ -107,7 +107,7 @@ import {
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 const DEVICE_FONT_SCALE = Math.max(Number(PixelRatio.getFontScale()) || 1, 1);
-const HISTORY_DISPLAY_RESET_AT = 1785722853000;
+const HISTORY_DISPLAY_RESET_AT = 1785783651295;
 const FONT_SCALING_LOCK_PROPS = {
   allowFontScaling: false,
   maxFontSizeMultiplier: 1,
@@ -303,7 +303,7 @@ const PLAID_FALLBACK_COPY = "Can't find a transaction yet? Upload a receipt.";
 const PLAID_PENDING_COPY =
   "Verification is in progress. Cashback may appear as pending.";
 const RECEIPT_UPLOAD_WINDOW_COPY =
-  "Upload receipts within 24 hours of redeeming offers.";
+  "Submit your receipt securely for purchase verification.";
 const REDEEM_MENTION_WELLO_COPY =
   "Show or mention Wello at checkout to receive this offer.";
 const PLAID_LINK_UNAVAILABLE_COPY =
@@ -1252,6 +1252,15 @@ const mapSupabaseBusiness = (row, index) => {
   const categoryConfig = getCategoryConfig(categoryKey);
   const offerHighlight =
     typeof row.offer_highlight === "string" ? row.offer_highlight.trim() : "";
+  const rawBusinessTags = Array.isArray(row.tags)
+    ? row.tags.map((tag) => String(tag || "").trim()).filter(Boolean)
+    : [];
+  const inferredServiceAreaBusiness =
+    rawBusinessTags.includes("__wello_service_area__") ||
+    String(row.address || "").trim().toLowerCase() === "service-area business" ||
+    (!String(row.postal_code || "").trim() &&
+      Boolean(String(row.city || "").trim()) &&
+      !/\d/.test(String(row.address || "")));
   const safeIndex = Number.isFinite(index) ? index : 0;
   const latitude = row.latitude !== null ? Number(row.latitude) : null;
   const longitude = row.longitude !== null ? Number(row.longitude) : null;
@@ -1274,9 +1283,11 @@ const mapSupabaseBusiness = (row, index) => {
     categoryLabel: categoryConfig.display,
     categoryKey,
     offer: offerHighlight,
+    profileDescription: offerHighlight,
     distance: "--",
     rating: Number.isFinite(Number(row.rating)) ? Number(row.rating) : null,
-    tags: Array.isArray(row.tags) && row.tags.length ? row.tags : [],
+    tags: sanitizeBusinessTags(rawBusinessTags),
+    isServiceAreaBusiness: inferredServiceAreaBusiness,
     isOpen: row.is_open ?? true,
     hours: row.hours || "Hours available upon request",
     phone: row.phone || "",
@@ -1315,11 +1326,7 @@ const mapSupabaseBusiness = (row, index) => {
       Boolean(row.stripe_account_id && row.stripe_charges_enabled),
     stripeGated:
       row.stripe_gated ??
-      Boolean(
-        (row.stripe_onboarded ??
-          Boolean(row.stripe_account_id && row.stripe_charges_enabled)) &&
-          row.stripe_payment_method_id,
-      ),
+      Boolean(row.stripe_payment_method_id),
     commissionRateCents: normalizeBusinessCommissionRateCents(
       row.commission_rate_cents,
     ),
@@ -2164,6 +2171,16 @@ const getBusinessHoursScheduleEntry = (schedule, dayKey) =>
     end: "17:00",
   };
 
+const isBusinessHoursSchedule24Seven = (schedule) => {
+  const entries = cloneBusinessHoursSchedule(schedule);
+  return entries.every(
+    (entry) =>
+      entry.open &&
+      Number.isFinite(parseTimeValueToMinutes(entry.start)) &&
+      parseTimeValueToMinutes(entry.start) === parseTimeValueToMinutes(entry.end),
+  );
+};
+
 const formatBusinessHoursScheduleForStorage = (schedule) =>
   cloneBusinessHoursSchedule(schedule)
     .map((entry) => {
@@ -2436,6 +2453,13 @@ const parseBusinessHours = (value) => {
 
 const summarizeBusinessHoursValue = (value) => {
   const parsed = parseBusinessHours(value);
+  const detailedSchedule = parseBusinessHoursSchedule(value);
+  if (
+    detailedSchedule &&
+    isBusinessHoursSchedule24Seven(detailedSchedule)
+  ) {
+    return "Open 24/7";
+  }
   if (parsed) {
     const timeRange = formatBusinessHours(
       parsed.startTime,
@@ -2942,7 +2966,8 @@ const sanitizeBusinessTags = (tags) =>
   (Array.isArray(tags) ? tags : [])
     .map((tag) => String(tag || "").trim())
     .filter(Boolean)
-    .filter((tag) => tag.toLowerCase() !== "local");
+    .filter((tag) => tag.toLowerCase() !== "local")
+    .filter((tag) => !tag.startsWith("__wello_"));
 
 const clampValue = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -5546,11 +5571,13 @@ export default function App() {
   const pendingMapRegionRef = useRef(null);
   const cardListRef = useRef(null);
   const carouselUserDraggingRef = useRef(false);
+  const carouselVisibleItemRef = useRef(null);
   const sheetScrollRef = useRef(null);
   const sheetPanRef = useRef(null);
   const bottomSheetRef = useRef(null);
   const sheetIndexRef = useRef(0);
   const businessDetailReturnSheetIndexRef = useRef(0);
+  const businessDetailOpenedFromOffersRef = useRef(false);
   const sheetDragStartYRef = useRef(0);
   const pendingMapCollapseClearRef = useRef(false);
   const discoverScrollDebugRef = useRef({
@@ -5588,6 +5615,11 @@ export default function App() {
   const [discoverSheetExpanded, setDiscoverSheetExpanded] = useState(false);
   const [discoverSearchOpen, setDiscoverSearchOpen] = useState(false);
   const [discoverBusinessListOpen, setDiscoverBusinessListOpen] = useState(false);
+  const [discoverOffersSheet, setDiscoverOffersSheet] = useState({
+    visible: false,
+    business: null,
+  });
+  const discoverOffersPullY = useRef(new Animated.Value(0)).current;
   const discoverBusinessPanelBaseY = useRef(new Animated.Value(0)).current;
   const discoverBusinessPanelGestureY = useRef(new Animated.Value(0)).current;
   const discoverBusinessPanelTranslateY = useMemo(
@@ -6196,6 +6228,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const [androidMarkerIcons, setAndroidMarkerIcons] = useState(null);
   const [formData, setFormData] = useState({
     name: "",
+    description: "",
+    hasBusinessLocation: true,
     address: "",
     addressPlaceId: null,
     addressCoords: null,
@@ -6203,6 +6237,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     state: "",
     postalCode: "",
     categoryKey: DEFAULT_BUSINESS_CATEGORY_KEY,
+    categoryCustomLabel: "",
     offer: "",
     hours: "",
     tags: "",
@@ -6212,6 +6247,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   });
   const [createBusinessForm, setCreateBusinessForm] = useState({
     name: "",
+    description: "",
+    hasBusinessLocation: true,
+    commissionRateCents: 150,
     address: "",
     addressCoords: null,
     city: "",
@@ -6380,6 +6418,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     error: null,
     success: null,
   });
+  const [stripeCardSetupUrl, setStripeCardSetupUrl] = useState(null);
+  const [stripeCardSetupLoading, setStripeCardSetupLoading] = useState(false);
   const [ownerOfferActionErrors, setOwnerOfferActionErrors] = useState({});
   const [cashoutStatus, setCashoutStatus] = useState({
     connected: false,
@@ -6675,6 +6715,21 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     error: null,
     targetId: null,
   });
+  useEffect(() => {
+    if (
+      checkoutVerification.visible &&
+      receiptUploadStatus.error
+    ) {
+      setCheckoutVerification((prev) =>
+        prev.error === receiptUploadStatus.error
+          ? prev
+          : { ...prev, step: "choice", error: receiptUploadStatus.error },
+      );
+    }
+  }, [
+    checkoutVerification.visible,
+    receiptUploadStatus.error,
+  ]);
   const [purchaseVerifyStatus, setPurchaseVerifyStatus] = useState({
     loading: false,
     targetId: null,
@@ -6777,7 +6832,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const shouldShowDiscoverPlaidPrompt = useMemo(() => {
     if (activeTab !== "discover") return false;
     if (!isSignedIn) return false;
-    if (accountRole !== "consumer") return false;
+    if (!["consumer", "business_owner"].includes(accountRole)) return false;
     if (!plaidLinkState.initialized) return false;
     if (hasLinkedPlaidBank && !plaidNeedsAttention) return false;
     if (discoverPlaidPromptDismissed && !plaidNeedsAttention) return false;
@@ -8024,7 +8079,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }, [authUserId, ensureSupabaseReady, globalCashbackRateInput, isAdmin]);
 
   const cashbackRatePercent = useMemo(() => {
-    if (accountRole !== "consumer") return globalCashbackRateBps / 100;
+    if (!["consumer", "business_owner"].includes(accountRole)) {
+      return globalCashbackRateBps / 100;
+    }
     const bps = Number(promoState.cashbackRateBps);
     if (!Number.isFinite(bps) || bps <= 0) return globalCashbackRateBps / 100;
     return Math.round((bps / 100) * 100) / 100;
@@ -8733,7 +8790,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }, [loadGlobalCashbackRate]);
 
   const loadPromoStatus = useCallback(async () => {
-    if (accountRole !== "consumer") {
+    if (!["consumer", "business_owner"].includes(accountRole)) {
       setPromoState((prev) => ({
         ...prev,
         loading: false,
@@ -8780,7 +8837,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
   const loadReferralStatus = useCallback(
     async ({ silent = false } = {}) => {
-      if (accountRole !== "consumer" || !isSignedIn) {
+      if (!["consumer", "business_owner"].includes(accountRole) || !isSignedIn) {
         setReferralState(createInitialReferralState());
         return;
       }
@@ -8841,7 +8898,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const claimReferralCode = useCallback(
     async (rawCode) => {
       const referralCode = normalizeReferralCode(rawCode);
-      if (!isSignedIn || accountRole !== "consumer" || !referralCode) {
+      if (
+        !isSignedIn ||
+        !["consumer", "business_owner"].includes(accountRole) ||
+        !referralCode
+      ) {
         return { ok: false, error: "Referral claim is unavailable." };
       }
       if (!/^[A-Z0-9]{6,32}$/.test(referralCode)) {
@@ -8946,7 +9007,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }, [referralState.code, referralState.link]);
 
   const handleApplyPromoCode = useCallback(async () => {
-    if (accountRole !== "consumer") {
+    if (!["consumer", "business_owner"].includes(accountRole)) {
       setPromoState((prev) => ({
         ...prev,
         loading: false,
@@ -9359,7 +9420,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   ]);
 
   useEffect(() => {
-    if (!pendingReferralCode || !isSignedIn || accountRole !== "consumer") {
+    if (
+      !pendingReferralCode ||
+      !isSignedIn ||
+      !["consumer", "business_owner"].includes(accountRole)
+    ) {
       return;
     }
     claimReferralCode(pendingReferralCode).catch(() => {});
@@ -9618,28 +9683,31 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         (fallbackOnboardingComplete && fallbackHasPaymentMethod),
     };
   }, [activeBusinessStripeStatus, resolvedOwnerBusiness]);
-  const activeBusinessNeedsStripeConnect = Boolean(
-    resolvedOwnerBusiness?.id && !activeBusinessStripeSummary.onboardingComplete,
+  const activeBusinessHasWelloPlan = [8, 12, 16].includes(
+    Number(ownerCommissionRatePercent),
   );
+  const activeBusinessNeedsStripeConnect = false;
   const activeBusinessNeedsPaymentMethod = Boolean(
     resolvedOwnerBusiness?.id &&
-      activeBusinessStripeSummary.onboardingComplete &&
       !activeBusinessStripeSummary.hasPaymentMethod,
   );
   const activeBusinessCanEnableOffers = Boolean(
-    resolvedOwnerBusiness?.id && activeBusinessStripeSummary.stripeGated,
+    resolvedOwnerBusiness?.id &&
+      activeBusinessHasWelloPlan &&
+      activeBusinessStripeSummary.hasPaymentMethod,
   );
   const activeBusinessOfferGateMessage = useMemo(() => {
     if (!resolvedOwnerBusiness?.id) {
       return "Create your business profile first.";
     }
-    if (activeBusinessNeedsStripeConnect || activeBusinessNeedsPaymentMethod) {
-      return "You must have a connected Stripe account and a payment method on file to enable offers.";
+    if (!activeBusinessHasWelloPlan || activeBusinessNeedsPaymentMethod) {
+      return "Choose a Wello Plan and add a payment method to enable offers.";
     }
     return null;
   }, [
     activeBusinessNeedsPaymentMethod,
     activeBusinessNeedsStripeConnect,
+    activeBusinessHasWelloPlan,
     resolvedOwnerBusiness?.id,
   ]);
 
@@ -9821,10 +9889,62 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     setStripeActionStatus({
       loading: false,
       error: null,
-      success: "Payment setup opened.",
+      success: null,
     });
-    Linking.openURL(data.url).catch(() => null);
+    setStripeCardSetupLoading(true);
+    setStripeCardSetupUrl(data.url);
   }, [resolveStripeBusiness]);
+
+  const handleSelectWelloPlan = useCallback(
+    async (planPercent) => {
+      const targetBusiness = resolvedOwnerBusiness;
+      const normalizedPlan = Number(planPercent);
+      if (!targetBusiness?.id || ![8, 12, 16].includes(normalizedPlan)) return;
+      const commissionRateCents = normalizedPlan * 10;
+      const defaultCashbackRateBps =
+        deriveDefaultCashbackRateBpsFromCommission(commissionRateCents);
+      setStripeActionStatus({ loading: true, error: null, success: null });
+      const applyLocally = () =>
+        setBusinesses((prev) =>
+          prev.map((business) =>
+            business.id === targetBusiness.id
+              ? { ...business, commissionRateCents, defaultCashbackRateBps }
+              : business,
+          ),
+        );
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY || targetBusiness.source !== "supabase") {
+        applyLocally();
+        setStripeActionStatus({
+          loading: false,
+          error: null,
+          success: `${normalizedPlan}% Wello Plan selected.`,
+        });
+        return;
+      }
+      const { error } = await supabase
+        .from("businesses")
+        .update({
+          commission_rate_cents: commissionRateCents,
+          default_cashback_rate_bps: defaultCashbackRateBps,
+        })
+        .eq("id", targetBusiness.id);
+      if (error) {
+        setStripeActionStatus({
+          loading: false,
+          error: error.message || "Unable to save your Wello Plan.",
+          success: null,
+        });
+        return;
+      }
+      applyLocally();
+      setStripeActionStatus({
+        loading: false,
+        error: null,
+        success: `${normalizedPlan}% Wello Plan selected.`,
+      });
+    },
+    [resolvedOwnerBusiness],
+  );
 
   const handleStripeManage = useCallback(async () => {
     const targetBusiness = await resolveStripeBusiness();
@@ -9903,7 +10023,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }, [handleAuthCallbackUrl, resolveStripeBusiness]);
 
   const ownerDashboardStripeWarning = useMemo(() => {
-    if (!resolvedOwnerBusiness?.id || activeBusinessStripeSummary.stripeGated) {
+    if (
+      !resolvedOwnerBusiness?.id ||
+      (activeBusinessHasWelloPlan && activeBusinessStripeSummary.hasPaymentMethod)
+    ) {
       return null;
     }
     if (activeBusinessNeedsStripeConnect) {
@@ -9915,12 +10038,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         ctaAction: handleStripeConnect,
       };
     }
-    if (activeBusinessNeedsPaymentMethod) {
+    if (!activeBusinessHasWelloPlan || activeBusinessNeedsPaymentMethod) {
       return {
-        title: "Payment method required",
+        title: "Complete your Wello setup",
         body:
-          "Your offers are currently hidden. Add a payment method to your Stripe account to reactivate them.",
-        ctaLabel: "Add Payment Method",
+          "Choose your 8%, 12%, or 16% Wello Plan, then securely add your payment method. Both steps are required before your offers can go live.",
+        ctaLabel: "Choose Plan & Add Card",
         ctaAction: () => setOwnerBusinessScreen("payments"),
       };
     }
@@ -9928,7 +10051,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }, [
     activeBusinessNeedsPaymentMethod,
     activeBusinessNeedsStripeConnect,
-    activeBusinessStripeSummary.stripeGated,
+    activeBusinessHasWelloPlan,
+    activeBusinessStripeSummary.hasPaymentMethod,
     handleStripeConnect,
     resolvedOwnerBusiness?.id,
   ]);
@@ -11730,9 +11854,15 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           offer.approvalStatus === "approved" &&
           String(offer.status || "active").toLowerCase() === "active" &&
           Boolean(
-            (offer.business ||
-              businesses.find((business) => business.id === offer.businessId))
-              ?.stripeGated,
+            (() => {
+              const business =
+                offer.business ||
+                businesses.find((item) => item.id === offer.businessId);
+              return (
+                business?.stripePaymentMethodId &&
+                [80, 120, 160].includes(Number(business?.commissionRateCents))
+              );
+            })(),
           ) &&
           (offer.expiresAt == null ||
             !Number.isFinite(Number(offer.expiresAt)) ||
@@ -11761,9 +11891,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       offersByBusiness.set(business.id, existing);
     });
 
-    return approvedBusinesses
-      .filter((business) => Boolean(business.stripeOnboarded))
-      .map((business) => {
+    return approvedBusinesses.map((business) => {
       const categoryKey = normalizeBusinessCategoryKey(
         business.categoryKey || business.category_key || business.category_label,
       );
@@ -12001,34 +12129,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     Number.isFinite(Number(nearbyOrigin?.longitude));
 
   const discoverSheetOfferCards = useMemo(() => {
-    const list = Array.isArray(filteredOfferCards)
-      ? [...filteredOfferCards]
-      : [];
-    const focusedBusinessId = String(markerFocusedBusinessId || "").trim();
-    if (!focusedBusinessId) return list;
-
-    const selectedKey = String(selectedOfferCardId || "").trim();
-    const selectedForFocused = list.find(
-      (item) =>
-        item.businessId === focusedBusinessId &&
-        getOfferCardSelectionKey(item) === selectedKey,
-    );
-    const focusedCards = list.filter(
-      (item) => item.businessId === focusedBusinessId,
-    );
-    const remainingCards = list.filter(
-      (item) => item.businessId !== focusedBusinessId,
-    );
-
-    if (!focusedCards.length) return list;
-    if (!selectedForFocused) return [...focusedCards, ...remainingCards];
-
-    const selectedCardKey = getOfferCardSelectionKey(selectedForFocused);
-    const focusedWithoutSelected = focusedCards.filter(
-      (item) => getOfferCardSelectionKey(item) !== selectedCardKey,
-    );
-    return [selectedForFocused, ...focusedWithoutSelected, ...remainingCards];
-  }, [filteredOfferCards, markerFocusedBusinessId, selectedOfferCardId]);
+    return Array.isArray(filteredOfferCards) ? [...filteredOfferCards] : [];
+  }, [filteredOfferCards]);
   const selectedBusinessDetailCard = useMemo(() => {
     if (!businessDetail?.id) return null;
     const selectedKey = String(selectedOfferCardId || "").trim();
@@ -12163,6 +12265,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         contentContainerStyle={styles.discoverMiniCardsRail}
         snapToInterval={DISCOVER_RAIL_CARD_WIDTH + CARD_GAP}
         decelerationRate="fast"
+        onLayout={() => {
+          if (!carouselVisibleItemRef.current && offers[0]) {
+            carouselVisibleItemRef.current = offers[0];
+          }
+        }}
         onScrollBeginDrag={() => {
           carouselUserDraggingRef.current = true;
         }}
@@ -12178,6 +12285,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             ),
           );
           if (offers[index]) focusCarouselBusiness(offers[index]);
+          if (offers[index]) carouselVisibleItemRef.current = offers[index];
         }}
         renderItem={({ item }) => {
           const business = item?.business || item;
@@ -12427,7 +12535,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const isSupervisor = accountRole === "supervisor";
   const isOwner = accountRole === "business_owner";
   const isStaff = isAdmin || isSupervisor;
-  const showHistoryTab = !isOwner && !isStaff;
+  const showHistoryTab = !isStaff;
   const showCashoutTab = showHistoryTab;
   const showLegacyStripeCashoutUi = false;
   const shouldResolveOwnerBusinessStatus =
@@ -12901,8 +13009,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }, [redemptionHistory, isReviewEligibleEntry]);
 
   const isReceiptWindowOpen = (entry) => {
-    if (!entry?.createdAt) return false;
-    return receiptCountdownNow - entry.createdAt <= RECEIPT_UPLOAD_WINDOW_MS;
+    return Boolean(entry?.id || entry?.createdAt);
   };
 
   const historyGroups = useMemo(() => {
@@ -13503,7 +13610,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   useEffect(() => {
     if (!isSignedIn || accountRole !== "business_owner") return;
     if (!memberBusinessesLoaded || memberBusinessesLoading) return;
-    if (pendingMerchantOnboardingUserIdRef.current !== authUserId) return;
 
     if (!memberBusinesses.length) {
       setActiveTab("business");
@@ -13646,10 +13752,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     if (activeTab === "business" && !isOwner) {
       setActiveTab("discover");
     }
-    if (activeTab === "history" && (isOwner || isStaff)) {
+    if (activeTab === "history" && isStaff) {
       setActiveTab("discover");
     }
-    if (activeTab === "cashout" && (isOwner || isStaff)) {
+    if (activeTab === "cashout" && isStaff) {
       setActiveTab("discover");
     }
     if (activeTab === "demo") {
@@ -13664,6 +13770,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
   const buildFormFromBusiness = (business) => ({
     name: business?.name || "",
+    description:
+      business?.profileDescription || business?.offer || "",
+    hasBusinessLocation: !business?.isServiceAreaBusiness,
     address: business?.address || "",
     addressPlaceId: null,
     addressCoords: business?.coordinate || null,
@@ -13671,6 +13780,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     state: business?.state || "",
     postalCode: business?.postalCode || "",
     categoryKey: business?.categoryKey || DEFAULT_BUSINESS_CATEGORY_KEY,
+    categoryCustomLabel:
+      sanitizeBusinessTags(business?.tags || [])[0] || "",
     offer: business?.offer || "",
     hours: business?.hours || "",
     tags: business?.tags?.join(", ") || "",
@@ -13931,7 +14042,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             setPendingReferralCode(referralCode);
             setActiveTab("profile");
             if (isSignedIn && authUserId) {
-              if (accountRole === "consumer") {
+              if (["consumer", "business_owner"].includes(accountRole)) {
                 claimReferralCode(referralCode).catch(() => {});
               } else {
                 setReferralState((prev) => ({
@@ -14203,8 +14314,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             title: "Receipt upload needed",
             body:
               pendingCount === 1
-                ? "Upload your receipt within 24 hours to keep this cashback on track."
-                : `Upload the receipts for ${pendingCount} redemptions within 24 hours to keep your cashback on track.`,
+                ? "Upload your receipt when ready so we can verify your purchase."
+                : `Upload the receipts for ${pendingCount} purchases when ready so we can verify them.`,
             data: {
               type: "receipt_upload_needed",
               pendingReceiptCount: pendingCount,
@@ -15396,7 +15507,49 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     disabled = false,
   }) => (
     <View style={styles.hoursScheduleWrap}>
-      {OPERATING_DAY_OPTIONS.map((day) => {
+      <TouchableOpacity
+        style={[
+          styles.hours247Option,
+          isBusinessHoursSchedule24Seven(schedule) && styles.hours247OptionActive,
+          disabled && styles.hoursScheduleToggleDisabled,
+        ]}
+        disabled={disabled}
+        onPress={() =>
+          setSchedule((prev) =>
+            isBusinessHoursSchedule24Seven(prev)
+              ? createDefaultBusinessHoursSchedule()
+              : OPERATING_DAY_OPTIONS.map((day) => ({
+                  dayKey: day.key,
+                  open: true,
+                  start: "00:00",
+                  end: "00:00",
+                })),
+          )
+        }
+      >
+        <Ionicons
+          name={
+            isBusinessHoursSchedule24Seven(schedule)
+              ? "checkmark-circle"
+              : "ellipse-outline"
+          }
+          size={22}
+          color={
+            isBusinessHoursSchedule24Seven(schedule) ? COLORS.white : COLORS.pine
+          }
+        />
+        <View style={styles.hours247Copy}>
+          <Text
+            style={[
+              styles.hours247Title,
+              isBusinessHoursSchedule24Seven(schedule) && styles.hours247TitleActive,
+            ]}
+          >
+            Open 24/7
+          </Text>
+        </View>
+      </TouchableOpacity>
+      {!isBusinessHoursSchedule24Seven(schedule) ? OPERATING_DAY_OPTIONS.map((day) => {
         const entry = getBusinessHoursScheduleEntry(schedule, day.key);
         return (
           <View key={`${scope}-${day.key}`} style={styles.hoursScheduleRow}>
@@ -15476,7 +15629,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             )}
           </View>
         );
-      })}
+      }) : null}
     </View>
   );
 
@@ -15673,6 +15826,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     setPendingReferralCode(null);
     setCreateBusinessForm({
       name: "",
+      description: "",
+      hasBusinessLocation: true,
+      commissionRateCents: 150,
       address: "",
       addressCoords: null,
       city: "",
@@ -15922,7 +16078,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       openSheet("profile");
       return;
     }
-    if (accountRole && accountRole !== "consumer") {
+    if (accountRole && !["consumer", "business_owner"].includes(accountRole)) {
       showAppDialog({
         title: "User account required",
         message: "Switch to a user account to redeem offers.",
@@ -16075,6 +16231,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   };
 
   const closeBusinessDetail = () => {
+    const shouldRestoreOffersSheet = businessDetailOpenedFromOffersRef.current;
+    businessDetailOpenedFromOffersRef.current = false;
+    if (shouldRestoreOffersSheet) {
+      setDiscoverOffersSheet({ visible: true, business: null });
+    }
     setBusinessCheckInState("idle");
     setBusinessDetailOpen(false);
     setBusinessDetail(null);
@@ -16153,7 +16314,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
   const redeemOfferInStore = async (business, offerCard) => {
     if (!business?.id || !authUserId) return false;
-    if (accountRole && accountRole !== "consumer") {
+    if (accountRole && !["consumer", "business_owner"].includes(accountRole)) {
       setScannerStatus("error");
       setScannerMessage("Switch to a user account to redeem offers.");
       redemptionLoggedRef.current = false;
@@ -16408,11 +16569,18 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       .select("id, business_id, offer_id, created_at")
       .single();
     if (error || !data) {
+      const checkoutErrorMessage =
+        error?.message || "Unable to start checkout verification.";
       setCheckoutVerification((prev) => ({
         ...prev,
         submitting: false,
-        error: error?.message || "Unable to start checkout verification.",
+        error: checkoutErrorMessage,
       }));
+      showAppDialog({
+        title: "Unable to check out",
+        message: checkoutErrorMessage,
+        options: [{ label: "OK", variant: "primary" }],
+      });
       return;
     }
     const entry = {
@@ -16735,7 +16903,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   );
   hydrateBusinessCoordinatesRef.current = hydrateBusinessCoordinates;
 
-  const handleCardPress = async (card) => {
+  const handleCardPress = async (card, options = {}) => {
     const offerCardKey = getOfferCardSelectionKey(card);
     if (DEBUG_DISCOVER_SCROLL && activeTab === "discover") {
       console.log("[DiscoverGestureDebug]", "cardPress", {
@@ -16747,6 +16915,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     }
     const business = resolveBusinessFromCard(card);
     if (!business) return;
+    businessDetailOpenedFromOffersRef.current = Boolean(options.fromOffersSheet);
     trackOfferView(business.id, card?.offerId || card?.id);
     setSelectedId(business.id);
     setSelectedOfferCardId(offerCardKey || null);
@@ -17050,10 +17219,29 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
   const handleSaveTags = async () => {
     if (!ownerBusiness || !tagsDirty) return;
-    const tagList = normalizeTagsInput(formData.tags);
-    const merchantDescriptorAliases = normalizeMerchantDescriptorAliasesInput(
-      formData.merchantDescriptorAliases,
-    );
+    const businessSpecialty = String(formData.categoryCustomLabel || "").trim();
+    if (!businessSpecialty || businessSpecialty === "Other") {
+      setFormMessage({
+        type: "error",
+        text: "Select a specialty or describe what your business does.",
+      });
+      return;
+    }
+    const profileDescription = String(formData.description || "").trim();
+    if (!profileDescription) {
+      setFormMessage({
+        type: "error",
+        text: "Tell customers why they should hire your business.",
+      });
+      return;
+    }
+    const usesPrivateServiceAddress = formData.hasBusinessLocation === false;
+    const tagList = [
+      businessSpecialty.replace(/^Other:\s*/i, "").trim(),
+      ...(usesPrivateServiceAddress ? ["__wello_service_area__"] : []),
+    ].filter(Boolean);
+    const merchantDescriptorAliases =
+      ownerBusiness.merchantDescriptorAliases || [];
     const nextTags = tagList.length ? tagList : [];
     setTagSaveStatus({ saving: true, error: null, success: null });
     const updatedBusiness = {
@@ -17215,6 +17403,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       category: categoryDisplay,
       categoryKey: nextCategoryKey,
       offer: ownerBusiness.offer,
+      profileDescription,
       tags: tagList.length ? tagList : [],
       merchantDescriptorAliases,
       isOpen: formData.isOpen,
@@ -17303,6 +17492,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       const updatePayload = {
         tags: tagList.length ? tagList : [],
         merchant_descriptor_aliases: merchantDescriptorAliases,
+        offer_highlight: profileDescription,
         hours: formData.hours.trim() || ownerBusiness.hours || null,
         is_open: formData.isOpen,
         image_url: nextImageUrl,
@@ -17398,12 +17588,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     }
   };
 
-  const handleApprove = async (id, commissionRateCentsInput) => {
+  const handleApprove = async (id) => {
     const target = businesses.find((business) => business.id === id);
     if (!target) return;
     const rateDraft = createBusinessRateDraft(
-      commissionRateCentsInput?.commissionRateCents ?? commissionRateCentsInput,
-      commissionRateCentsInput?.defaultCashbackRateBps ?? null,
+      target.commissionRateCents,
+      target.defaultCashbackRateBps,
     );
     const commissionRateCents = rateDraft.commissionRateCents;
     const defaultCashbackRateBps = rateDraft.defaultCashbackRateBps;
@@ -20065,6 +20255,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           });
           return;
         }
+        if (entry?.purchaseVerification?.source === "checkout") {
+          setCheckoutVerification((prev) => ({
+            ...prev,
+            visible: true,
+            step: "receipt_uploading",
+            error: null,
+          }));
+        }
         const normalized = await normalizeReceiptImage(asset);
         logReceiptUploadDebug("normalizeResult", {
           ok: Boolean(normalized?.image && !normalized?.error),
@@ -20210,12 +20408,19 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         triggerReceiptConfetti();
         showReceiptOverlay(
           "success",
-          "Receipt sent",
-          "We got it.",
+          "Receipt uploaded successfully",
+          "Your receipt was submitted securely and is now being reviewed.",
           { autoHideMs: 1600 },
         );
         if (entry?.purchaseVerification?.source === "checkout") {
+          setCheckoutVerification((prev) => ({
+            ...prev,
+            visible: false,
+            submitting: false,
+            error: null,
+          }));
           closeBusinessDetail();
+          setDiscoverOffersSheet({ visible: false, business: null });
           openSheet("history");
         }
         loadRedemptions({ silent: true });
@@ -22448,20 +22653,20 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   useEffect(() => {
     if (activeTab !== "discover") return;
     if (!isSignedIn) return;
-    if (accountRole !== "consumer") return;
+    if (!["consumer", "business_owner"].includes(accountRole)) return;
     loadPlaidLinkState({ silent: true });
   }, [activeTab, isSignedIn, accountRole, loadPlaidLinkState]);
 
   useEffect(() => {
     if (activeTab !== "cashout") return;
     if (!isSignedIn) return;
-    if (accountRole !== "consumer") return;
+    if (!["consumer", "business_owner"].includes(accountRole)) return;
     loadPlaidLinkState({ silent: true });
   }, [activeTab, isSignedIn, accountRole, loadPlaidLinkState]);
 
   useEffect(() => {
     if (!cashoutBankModalVisible) return;
-    if (!isSignedIn || accountRole !== "consumer") return;
+    if (!isSignedIn || !["consumer", "business_owner"].includes(accountRole)) return;
     loadPlaidLinkState({ silent: true });
     loadCashoutCatalog({ page: 0, append: false });
   }, [
@@ -22533,11 +22738,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       setReceiptNoticeOpen(false);
       return;
     }
-    if (activeTab !== "history") return;
-    if (pendingReceiptCount <= 0) return;
-    if (receiptNoticeShownRef.current) return;
-    receiptNoticeShownRef.current = true;
-    setReceiptNoticeOpen(true);
+    if (activeTab === "history") {
+      receiptNoticeShownRef.current = true;
+      setReceiptNoticeOpen(false);
+    }
   }, [activeTab, isSignedIn, showHistoryTab, pendingReceiptCount]);
 
   useEffect(() => {
@@ -22681,7 +22885,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   useEffect(() => {
     if (!businessDetailOpen || !businessDetail?.id) return;
     loadBusinessReviews(businessDetail.id);
-    if (businessDetail?.stripeGated === false) {
+    const businessCanOfferCashback = Boolean(
+      businessDetail?.stripePaymentMethodId &&
+        [80, 120, 160].includes(Number(businessDetail?.commissionRateCents)),
+    );
+    if (!businessCanOfferCashback) {
       setBusinessDetailOffers([]);
       setBusinessDetailOffersStatus({ loading: false, error: null });
       return;
@@ -22690,7 +22898,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }, [
     businessDetailOpen,
     businessDetail?.id,
-    businessDetail?.stripeGated,
+    businessDetail?.stripePaymentMethodId,
+    businessDetail?.commissionRateCents,
     loadBusinessReviews,
     loadBusinessOffers,
   ]);
@@ -22897,26 +23106,29 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       setCreateBusinessError("Operating hours are required.");
       return;
     }
-    if (!createBusinessAuthorizedChecked) {
-      setCreateBusinessError(
-        "Confirm you are authorized to act on behalf of this business.",
-      );
-      return;
-    }
-    if (!createBusinessHonorOffersChecked) {
-      setCreateBusinessError(
-        "Confirm your business will honor each approved offer as published.",
-      );
-      return;
-    }
     const categorySelection = resolveSelectedCategory(
       createBusinessForm.categoryKey,
-      createBusinessForm.categoryCustomLabel,
+      "",
     );
     if (!categorySelection.ok) {
       setCreateBusinessError(categorySelection.error);
       return;
     }
+    const businessSpecialty = String(
+      createBusinessForm.categoryCustomLabel || "",
+    ).trim();
+    if (!businessSpecialty || businessSpecialty === "Other") {
+      setCreateBusinessError("Select a specialty or describe what your business does.");
+      return;
+    }
+    const profileDescription = String(
+      createBusinessForm.description || "",
+    ).trim();
+    if (!profileDescription) {
+      setCreateBusinessError("Tell customers why they should hire your business.");
+      return;
+    }
+    const selectedCommissionRateCents = 150;
     if (!ensureSupabaseReady(setCreateBusinessError)) return;
     setCreateBusinessBusy(true);
     setCreateBusinessError(null);
@@ -22929,29 +23141,65 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       if (!createCoords && createBusinessForm.address.trim()) {
         createCoords = await geocodeAddress(createBusinessForm.address.trim());
       }
+      if (!createCoords) {
+        setCreateBusinessBusy(false);
+        setCreateBusinessError(
+          "Select a valid address so we can place your business on the map.",
+        );
+        return;
+      }
+      const usesPrivateServiceAddress =
+        createBusinessForm.hasBusinessLocation === false;
+      const publicAddress = usesPrivateServiceAddress
+        ? [createBusinessForm.city.trim(), createBusinessForm.state.trim()]
+            .filter(Boolean)
+            .join(", ") || "Service-area business"
+        : createBusinessForm.address.trim();
+      const publicMapCoords =
+        usesPrivateServiceAddress && createCoords
+          ? {
+              latitude: Math.round(Number(createCoords.latitude) * 100) / 100,
+              longitude: Math.round(Number(createCoords.longitude) * 100) / 100,
+            }
+          : createCoords;
       const { data, error } = await supabase
         .from("businesses")
         .insert({
           owner_id: authUserId,
           name: createBusinessForm.name.trim(),
-          address: createBusinessForm.address.trim(),
+          address: publicAddress,
           city: createBusinessForm.city.trim() || null,
           state: createBusinessForm.state.trim() || null,
-          postal_code: createBusinessForm.postalCode.trim() || null,
+          postal_code: usesPrivateServiceAddress
+            ? null
+            : createBusinessForm.postalCode.trim() || null,
           phone: createBusinessForm.phone.trim(),
           category_key: categorySelection.categoryKey,
           category_label: categorySelection.categoryLabel,
-          offer_highlight: null,
+          offer_highlight: profileDescription,
+          commission_rate_cents: selectedCommissionRateCents,
+          default_cashback_rate_bps:
+            deriveDefaultCashbackRateBpsFromCommission(
+              selectedCommissionRateCents,
+            ),
           hours: hoursValue,
-          tags: normalizeTagsInput(createBusinessForm.tags),
+          tags: Array.from(
+            new Set([
+              ...normalizeTagsInput(createBusinessForm.tags),
+              businessSpecialty.replace(/^Other:\s*/i, "").trim(),
+              ...(usesPrivateServiceAddress
+                ? ["__wello_service_area__"]
+                : []),
+            ].filter(Boolean)),
+          ),
           merchant_descriptor_aliases: normalizeMerchantDescriptorAliasesInput(
             createBusinessForm.merchantDescriptorAliases,
           ),
           approval_status: "pending",
           status: "active",
           is_open: true,
-          latitude: createCoords?.latitude ?? null,
-          longitude: createCoords?.longitude ?? null,
+          latitude: publicMapCoords?.latitude ?? null,
+          longitude: publicMapCoords?.longitude ?? null,
           offer_honor_policy_accepted: true,
           offer_honor_policy_version: OFFER_HONOR_POLICY_VERSION,
           offer_honor_policy_accepted_at: offerHonorAcceptedAt,
@@ -23009,6 +23257,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       activeBusinessControlsRef.current?.selectBusinessById?.(mapped.id);
       setCreateBusinessForm({
         name: "",
+        description: "",
+        hasBusinessLocation: true,
+        commissionRateCents: 150,
         address: "",
         addressCoords: null,
         city: "",
@@ -23175,6 +23426,15 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
               )}
               {filteredBusinesses.map((business) => {
                 const category = getCategoryConfig(business.categoryKey);
+                const markerCategoryKey = normalizeBusinessCategoryKey(
+                  business.categoryKey || business.category_key || business.category,
+                );
+                const markerCategoryIcon =
+                  markerCategoryKey === "auto"
+                    ? "car-sport"
+                    : markerCategoryKey === "trades"
+                      ? "home"
+                      : null;
                 const isSelected = selectedId === business.id;
                 const markerKey = CATEGORY_CONFIG[business.categoryKey]
                   ? business.categoryKey
@@ -23203,13 +23463,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                           anchor={{ x: 0.5, y: 0.5 }}
                           image={androidHalo}
                           zIndex={1}
-                          onPress={() => handleMarkerPress(business)}
+                          tappable={false}
                         />
                       )}
                     <Marker
                       coordinate={markerCoordinate}
                       anchor={markerAnchor}
-                      onPress={() => handleMarkerPress(business)}
+                      onPress={(event) => {
+                        event?.stopPropagation?.();
+                        handleMarkerPress(business);
+                      }}
                       image={useAndroidImages ? androidIcon : undefined}
                       pinColor={
                         Platform.OS === "android" && !useAndroidImages
@@ -23233,12 +23496,19 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               isSelected && styles.cashbackMarkerSelected,
                             ]}
                           >
+                            {markerCategoryIcon ? (
+                              <Ionicons
+                                name={markerCategoryIcon}
+                                size={14}
+                                color="#FFFFFF"
+                              />
+                            ) : null}
                             <Text style={styles.cashbackMarkerText}>
                               {formatPercentOnlyLabel(
-                                resolveDisplayedBusinessDefaultCashbackRateBps(
+                                (resolveDisplayedBusinessDefaultCashbackRateBps(
                                   business,
-                                ) / 100,
-                              ) || "Deal"}
+                                ) || DEFAULT_CASHBACK_RATE_BPS) / 100,
+                              ) || formatPercentOnlyLabel(DEFAULT_CASHBACK_RATE_BPS / 100)}
                             </Text>
                           </View>
                           <View style={styles.markerPointerWrap}>
@@ -23268,10 +23538,21 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             !discoverSearchOpen &&
             !fullScreenOverlayOpen &&
             discoverSheetOfferCards.length > 0 ? (
-              <View
+              <Animated.View
                 style={[
                   styles.discoverBottomBusinessCarousel,
-                  { bottom: SAFE_BOTTOM + 12 },
+                  { bottom: 0 },
+                  {
+                    transform: [
+                      {
+                        translateY: discoverOffersPullY.interpolate({
+                          inputRange: [-220, 0],
+                          outputRange: [-220, 0],
+                          extrapolate: "clamp",
+                        }),
+                      },
+                    ],
+                  },
                 ]}
               >
                 {SheetPeekRow({
@@ -23279,7 +23560,48 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   onCardPress: handleCardPress,
                   interactive: true,
                 })}
-              </View>
+                <PanGestureHandler
+                  activeOffsetY={[-8, 8]}
+                  failOffsetX={[-18, 18]}
+                  onGestureEvent={Animated.event(
+                    [{ nativeEvent: { translationY: discoverOffersPullY } }],
+                    { useNativeDriver: true },
+                  )}
+                  onHandlerStateChange={(event) => {
+                    if (event.nativeEvent.state === GestureState.END) {
+                      if (event.nativeEvent.translationY < -28) {
+                        discoverOffersPullY.setValue(0);
+                        setDiscoverOffersSheet({ visible: true, business: null });
+                      } else {
+                        Animated.spring(discoverOffersPullY, {
+                          toValue: 0,
+                          useNativeDriver: true,
+                          speed: 22,
+                          bounciness: 0,
+                        }).start();
+                      }
+                    }
+                    if (
+                      event.nativeEvent.state === GestureState.CANCELLED ||
+                      event.nativeEvent.state === GestureState.FAILED
+                    ) {
+                      Animated.spring(discoverOffersPullY, {
+                        toValue: 0,
+                        useNativeDriver: true,
+                        speed: 22,
+                        bounciness: 0,
+                      }).start();
+                    }
+                  }}
+                >
+                  <View style={styles.discoverAllOffersPullTab}>
+                    <View style={styles.discoverAllOffersDragHandle} />
+                    <Text style={styles.discoverAllOffersPullTabText}>
+                      Swipe up to see all offers
+                    </Text>
+                  </View>
+                </PanGestureHandler>
+              </Animated.View>
             ) : null}
 
             {activeTab === "discover" &&
@@ -24495,6 +24817,18 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
             {businessDetailOpen && businessDetail ? (
               <View style={styles.businessPageOverlay}>
+                <PanGestureHandler
+                  activeOffsetX={[-12, 12]}
+                  failOffsetY={[-24, 24]}
+                  onHandlerStateChange={(event) => {
+                    if (
+                      event.nativeEvent.state === GestureState.END &&
+                      event.nativeEvent.translationX > 70
+                    ) {
+                      closeBusinessDetail();
+                    }
+                  }}
+                >
                 <View style={styles.businessPageSurface}>
                   {(() => {
                     const businessPhone = String(
@@ -24517,6 +24851,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     const hoursStatus = getBusinessHoursStatus(
                       businessDetail?.hours || businessDetail?.business?.hours || "",
                       businessDetail?.isOpen ?? true,
+                    );
+                    const businessProfileHoursText = hoursStatus.isOpen
+                      ? hoursStatus.closesAtLabel
+                        ? `Open now · until ${hoursStatus.closesAtLabel}`
+                        : "Open now"
+                      : hoursStatus.statusText;
+                    const businessStoreHours = summarizeBusinessHoursValue(
+                      businessDetail?.hours || businessDetail?.business?.hours || "",
                     );
                     const heroImageUrl = String(
                       businessDetail?.imageUrl ||
@@ -24570,6 +24912,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     );
                     const businessWebsite = String(
                       businessDetail?.website || businessDetail?.websiteUrl || "",
+                    ).trim();
+                    const isServiceAreaBusiness = Boolean(
+                      businessDetail?.isServiceAreaBusiness ||
+                        businessDetail?.business?.isServiceAreaBusiness,
+                    );
+                    const businessProfileDescription = String(
+                      businessDetail?.profileDescription ||
+                        businessDetail?.offer ||
+                        businessDetail?.business?.profileDescription ||
+                        businessDetail?.business?.offer ||
+                        "",
                     ).trim();
                     const checkInPrompt =
                       businessDetail?.categoryKey === "trades"
@@ -24657,7 +25010,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 !hoursStatus.isOpen && styles.businessPageClosedText,
                               ]}
                             >
-                              {hoursStatus.statusText}
+                              {businessProfileHoursText}
                             </Text>
                           </View>
 
@@ -24685,7 +25038,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 icon: "navigate-outline",
                                 onPress: () => openMapsForBusiness(businessDetail),
                               },
-                            ].map((action) => (
+                            ]
+                              .filter(
+                                (action) =>
+                                  action.key !== "directions" ||
+                                  !isServiceAreaBusiness,
+                              )
+                              .map((action) => (
                               <TouchableOpacity
                                 key={action.key}
                                 style={[
@@ -24704,6 +25063,29 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               </TouchableOpacity>
                             ))}
                           </View>
+
+                          <View style={styles.businessPageStoreHoursSection}>
+                            <View style={styles.businessPageStoreHoursTitleRow}>
+                              <Ionicons name="time-outline" size={19} color="#0F172A" />
+                              <Text style={styles.businessPageStoreHoursTitle}>
+                                Store hours
+                              </Text>
+                            </View>
+                            <Text style={styles.businessPageStoreHoursText}>
+                              {businessStoreHours}
+                            </Text>
+                          </View>
+
+                          {businessProfileDescription ? (
+                            <View style={styles.businessPageProfileDescriptionSection}>
+                              <Text style={styles.businessPageStoreHoursTitle}>
+                                Why customers hire us
+                              </Text>
+                              <Text style={styles.businessPageProfileDescriptionText}>
+                                {businessProfileDescription}
+                              </Text>
+                            </View>
+                          ) : null}
 
                           <View style={styles.businessPageCheckInSection}>
                             <Text style={styles.businessPageCheckInPrompt}>
@@ -24906,6 +25288,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     );
                   })()}
                 </View>
+                </PanGestureHandler>
               </View>
             ) : null}
 
@@ -26581,7 +26964,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             >
               <View style={styles.noticeOverlay}>
                 <View style={styles.noticeCard}>
-                  <Text style={styles.noticeTitle}>Receipt uploads</Text>
+                  <Text style={styles.noticeTitle}>Receipt verification</Text>
                   <Text style={styles.noticeBody}>
                     {RECEIPT_UPLOAD_WINDOW_COPY}
                   </Text>
@@ -26704,6 +27087,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 </View>
                 </PanGestureHandler>
                 <ScrollView
+                  style={styles.discoverOffersScroll}
                   showsVerticalScrollIndicator={false}
                   contentContainerStyle={styles.discoverBusinessListContent}
                 >
@@ -26758,6 +27142,183 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             </View>
             ) : null}
 
+            {discoverOffersSheet.visible ? (
+            <View style={styles.discoverOffersLayer}>
+              <View style={styles.discoverOffersBackdrop}>
+              <Pressable
+                style={StyleSheet.absoluteFillObject}
+                onPress={() =>
+                  setDiscoverOffersSheet({ visible: false, business: null })
+                }
+              />
+              </View>
+              <View style={styles.discoverOffersPanel}>
+                <PanGestureHandler
+                  activeOffsetY={[-10, 10]}
+                  failOffsetX={[-24, 24]}
+                  onHandlerStateChange={(event) => {
+                    if (
+                      event.nativeEvent.state === GestureState.END &&
+                      event.nativeEvent.translationY > 55
+                    ) {
+                      setDiscoverOffersSheet({ visible: false, business: null });
+                    }
+                  }}
+                >
+                <View>
+                <View style={styles.discoverOffersHandle} />
+                <View style={styles.discoverOffersHeader}>
+                  <Text style={styles.discoverOffersTitle}>Nearby</Text>
+                  <Text style={styles.discoverOffersNearbyCount}>
+                    {filteredOfferCards.length} nearby
+                  </Text>
+                </View>
+                <View style={styles.discoverOffersCategoryRow}>
+                  {DISCOVER_SHEET_CATEGORY_TABS.map((tab) => {
+                    const selected = discoverCategoryTab === tab.key;
+                    const tabColor =
+                      tab.key === "auto"
+                        ? "#1E3A8A"
+                        : tab.key === "trades"
+                          ? "#7C3AED"
+                          : "#111827";
+                    return (
+                      <TouchableOpacity
+                        key={`offers-${tab.key}`}
+                        style={[
+                          styles.discoverOffersCategoryButton,
+                          selected && { borderColor: tabColor, borderWidth: 2 },
+                        ]}
+                        onPress={() => setDiscoverCategoryTab(tab.key)}
+                      >
+                        <Ionicons
+                          name={
+                            tab.key === "auto"
+                              ? "car-sport"
+                              : tab.key === "trades"
+                                ? "home"
+                                : "grid"
+                          }
+                          size={20}
+                          color={tabColor}
+                        />
+                        <Text style={styles.discoverOffersCategoryText}>
+                          {tab.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                </View>
+                </PanGestureHandler>
+                <ScrollView
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.discoverOffersContent}
+                >
+                  {filteredOfferCards
+                    .filter((offer) =>
+                      discoverOffersSheet.business?.id
+                        ? String(offer.businessId || "") ===
+                          String(discoverOffersSheet.business.id)
+                        : true,
+                    )
+                    .map((offer, index) => {
+                      const business =
+                        businesses.find(
+                          (item) => String(item.id) === String(offer.businessId),
+                        ) || offer.business || discoverOffersSheet.business || offer;
+                      const rating = Number(offer.rating ?? business?.rating);
+                      const reviewCount = Number(
+                        business?.reviewCount ??
+                          business?.review_count ??
+                          business?.reviewsCount ??
+                          business?.reviews_count ??
+                          0,
+                      );
+                      const cashbackRateBps =
+                        resolveDisplayedBusinessDefaultCashbackRateBps(business) ||
+                        DEFAULT_CASHBACK_RATE_BPS;
+                      const hoursStatus = getBusinessHoursStatus(
+                        offer.hours || business?.hours || "",
+                        typeof offer.isOpen === "boolean"
+                          ? offer.isOpen
+                          : business?.isOpen,
+                      );
+                      const statusText = hoursStatus.isOpen
+                        ? "Open now"
+                        : hoursStatus.statusText;
+                      const distanceText = String(
+                        offer.distanceLabel || offer.distance || business?.distance || "Nearby",
+                      ).replace(/\bmi\b/i, "miles");
+                      const imageUrl = String(
+                        business?.imageUrl || offer.imageUrl || "",
+                      ).trim();
+                      const categoryLabel = getCategoryConfig(
+                        business?.categoryKey || business?.category_key || offer.categoryKey,
+                      ).display;
+                      return (
+                        <TouchableOpacity
+                          key={getOfferCardSelectionKey(offer) || `offer-${index}`}
+                          style={styles.discoverOfferRow}
+                          activeOpacity={0.88}
+                          onPress={() => {
+                            void handleCardPress(offer, { fromOffersSheet: true });
+                          }}
+                        >
+                          {imageUrl ? (
+                            <Image
+                              source={{ uri: imageUrl }}
+                              style={styles.discoverOfferBackgroundImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <View style={styles.discoverOfferBackgroundFallback}>
+                              <Ionicons name="business-outline" size={42} color="#15803D" />
+                            </View>
+                          )}
+                          <LinearGradient
+                            colors={["rgba(15,23,42,0.10)", "rgba(15,23,42,0.82)"]}
+                            start={{ x: 0.5, y: 0 }}
+                            end={{ x: 0.5, y: 1 }}
+                            style={StyleSheet.absoluteFillObject}
+                          />
+                          <View style={styles.discoverOfferTopRow}>
+                            <View
+                              style={[
+                                styles.discoverOfferBadgeDark,
+                                hoursStatus.isOpen && styles.discoverOfferBadgeOpen,
+                              ]}
+                            >
+                              <Text style={styles.discoverOfferBadgeText}>{statusText}</Text>
+                            </View>
+                            <View style={styles.discoverOfferBadgeLight}>
+                              <Text style={styles.discoverOfferBadgeText}>{categoryLabel}</Text>
+                            </View>
+                          </View>
+                          <View style={styles.discoverOfferBottomContent}>
+                            <Text style={styles.discoverOfferBusinessName} numberOfLines={1}>
+                              {business?.name || offer.name || "Business"}
+                            </Text>
+                            <View style={styles.discoverOfferBottomMetaRow}>
+                              <Ionicons name="star" size={14} color="#FBBF24" />
+                              <Text style={styles.discoverOfferBottomMetaText}>
+                                {Number.isFinite(rating) ? rating.toFixed(1) : "New"}
+                                {` (${Number.isFinite(reviewCount) ? Math.round(reviewCount) : 0})`}
+                                {` · ${distanceText}`}
+                              </Text>
+                            </View>
+                            <Text style={styles.discoverOfferCashback}>
+                              {formatPercentOnlyLabel(cashbackRateBps / 100)} Cashback
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                </ScrollView>
+              </View>
+            </View>
+            ) : null}
+
             <Modal
               transparent
               visible={checkoutVerification.visible}
@@ -26781,9 +27342,26 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   style={styles.checkoutVerifyCard}
                   onPress={(event) => event.stopPropagation()}
                 >
+                  <TouchableOpacity
+                    style={styles.checkoutVerifyClose}
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setCheckoutVerification((prev) => ({
+                        ...prev,
+                        visible: false,
+                        submitting: false,
+                        error: null,
+                      }));
+                    }}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Close checkout"
+                  >
+                    <Ionicons name="close" size={22} color="#334155" />
+                  </TouchableOpacity>
                   <View style={styles.checkoutVerifyIcon}>
                     <Ionicons
-                      name={checkoutVerification.step === "choice" ? "receipt-outline" : "card-outline"}
+                      name={checkoutVerification.step === "manual" ? "card-outline" : "receipt-outline"}
                       size={25}
                       color={COLORS.pine}
                     />
@@ -26791,22 +27369,31 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   <Text style={styles.checkoutVerifyTitle}>
                     {checkoutVerification.step === "choice"
                       ? "Do you have a receipt?"
+                      : checkoutVerification.step === "receipt_uploading"
+                        ? "Submitting receipt"
                       : "Purchase details"}
                   </Text>
                   <Text style={styles.checkoutVerifyBody}>
                     {checkoutVerification.step === "choice"
                       ? "A receipt helps us verify your cashback faster."
+                      : checkoutVerification.step === "receipt_uploading"
+                        ? "Please wait while your receipt is uploaded securely."
                       : "Enter the amount paid and how you paid."}
                   </Text>
 
                   {checkoutVerification.step === "choice" ? (
                     <View style={styles.checkoutVerifyActions}>
+                      {checkoutVerification.error ? (
+                        <Text style={styles.checkoutVerifyError}>
+                          {checkoutVerification.error}
+                        </Text>
+                      ) : null}
                       <TouchableOpacity
                         style={styles.checkoutVerifyPrimary}
                         onPress={() => {
                           const entry = checkoutVerification.entry;
-                          setCheckoutVerification((prev) => ({ ...prev, visible: false }));
-                          setTimeout(() => handleUploadReceipt(entry, "camera"), 450);
+                          setCheckoutVerification((prev) => ({ ...prev, error: null }));
+                          void handleUploadReceipt(entry, "camera");
                         }}
                       >
                         <Text style={styles.checkoutVerifyPrimaryText}>Yes, Take Receipt Photo</Text>
@@ -26823,6 +27410,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       >
                         <Text style={styles.checkoutVerifySecondaryText}>No Receipt</Text>
                       </TouchableOpacity>
+                    </View>
+                  ) : checkoutVerification.step === "receipt_uploading" ? (
+                    <View style={styles.checkoutVerifyReceiptProgress}>
+                      <ActivityIndicator size="large" color={COLORS.pine} />
+                      <Text style={styles.checkoutVerifyReceiptProgressText}>
+                        Uploading and submitting for review…
+                      </Text>
                     </View>
                   ) : (
                     <View style={styles.checkoutVerifyForm}>
@@ -27322,6 +27916,123 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     </TouchableOpacity>
                   ) : null}
                 </ScrollView>
+              </SafeAreaView>
+            </Modal>
+
+            <Modal
+              visible={Boolean(stripeCardSetupUrl)}
+              animationType="slide"
+              presentationStyle="fullScreen"
+              statusBarTranslucent={Platform.OS === "android"}
+              onRequestClose={() => {
+                setStripeCardSetupUrl(null);
+                setStripeCardSetupLoading(false);
+              }}
+            >
+              <SafeAreaView style={styles.stripeCardSetupScreen}>
+                <View style={styles.stripeCardSetupHeader}>
+                  <Text style={styles.stripeCardSetupTitle}>Card information</Text>
+                  <TouchableOpacity
+                    style={styles.stripeCardSetupCloseButton}
+                    onPress={() => {
+                      setStripeCardSetupUrl(null);
+                      setStripeCardSetupLoading(false);
+                    }}
+                  >
+                    <Ionicons name="close" size={22} color={COLORS.ink} />
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.stripeCardSetupWebViewWrap}>
+                  {stripeCardSetupUrl ? (
+                    <WebView
+                      source={{ uri: stripeCardSetupUrl }}
+                      originWhitelist={["https://*"]}
+                      allowsLinkPreview={false}
+                      javaScriptCanOpenWindowsAutomatically={false}
+                      setSupportMultipleWindows={false}
+                      injectedJavaScriptBeforeContentLoaded={`
+                        (function () {
+                          var style = document.createElement('style');
+                          style.innerHTML = 'a, img { -webkit-touch-callout: none !important; }';
+                          document.head.appendChild(style);
+                          document.addEventListener('contextmenu', function (event) {
+                            event.preventDefault();
+                          }, true);
+                        })();
+                        true;
+                      `}
+                      startInLoadingState
+                      onLoadStart={() => setStripeCardSetupLoading(true)}
+                      onLoadEnd={() => setStripeCardSetupLoading(false)}
+                      onError={() => {
+                        setStripeCardSetupLoading(false);
+                        setStripeActionStatus({
+                          loading: false,
+                          error: "Unable to load secure card setup. Please try again.",
+                          success: null,
+                        });
+                      }}
+                      onShouldStartLoadWithRequest={(request) => {
+                        const targetUrl = String(request?.url || "");
+                        if (targetUrl.startsWith(STRIPE_CHECKOUT_SUCCESS_URL)) {
+                          setStripeCardSetupUrl(null);
+                          setStripeCardSetupLoading(false);
+                          setStripeActionStatus({
+                            loading: false,
+                            error: null,
+                            success: "Card information saved successfully.",
+                          });
+                          const businessId = resolvedOwnerBusiness?.id;
+                          if (businessId) {
+                            void getBusinessStripeStatus(businessId)
+                              .then((status) =>
+                                setActiveBusinessStripeStatus({
+                                  businessId,
+                                  loading: false,
+                                  stripeAccountId: status.stripeAccountId,
+                                  onboardingComplete: status.onboardingComplete,
+                                  hasPaymentMethod: status.hasPaymentMethod,
+                                  stripeOnboarded: status.stripeOnboarded,
+                                  stripeGated: status.stripeGated,
+                                }),
+                              )
+                              .catch(() => null);
+                            [700, 1800, 3500].forEach((delay) => {
+                              setTimeout(() => {
+                                void getBusinessStripeStatus(businessId)
+                                  .then((status) =>
+                                    setActiveBusinessStripeStatus({
+                                      businessId,
+                                      loading: false,
+                                      stripeAccountId: status.stripeAccountId,
+                                      onboardingComplete: status.onboardingComplete,
+                                      hasPaymentMethod: status.hasPaymentMethod,
+                                      stripeOnboarded: status.stripeOnboarded,
+                                      stripeGated: status.stripeGated,
+                                    }),
+                                  )
+                                  .catch(() => null);
+                                void loadRemoteBusinesses({ silent: true });
+                              }, delay);
+                            });
+                          }
+                          return false;
+                        }
+                        if (targetUrl.startsWith(STRIPE_CHECKOUT_CANCEL_URL)) {
+                          setStripeCardSetupUrl(null);
+                          setStripeCardSetupLoading(false);
+                          return false;
+                        }
+                        return /^https:\/\//i.test(targetUrl);
+                      }}
+                    />
+                  ) : null}
+                  {stripeCardSetupLoading ? (
+                    <View pointerEvents="none" style={styles.stripeCardSetupLoading}>
+                      <ActivityIndicator size="large" color={COLORS.pine} />
+                    </View>
+                  ) : null}
+                </View>
               </SafeAreaView>
             </Modal>
 
@@ -29411,11 +30122,93 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 </Text>
                               </View>
                             </View>
-                            <BusinessSwitcher
-                              onAddBusiness={openCreateBusinessPage}
-                            />
+                            <View style={styles.welloPlanCard}>
+                              <Text style={styles.welloPlanTitle}>Choose your Wello Plan</Text>
+                              <Text style={styles.welloPlanBody}>
+                                Select the Wello Plan you’d like to offer your customers.
+                                Your selected percentage includes customer cashback and
+                                Wello’s service fee. There are no monthly fees, setup
+                                costs, or fees to remain listed on Wello. You only pay
+                                when Wello brings you a completed, paying customer. After
+                                the job is finished, we’ll complete a brief verification
+                                call to confirm the work and payment before processing the
+                                fee. For larger jobs, your fee may be capped,
+                                limiting the maximum amount you pay.
+                              </Text>
+                              <View style={styles.welloPlanOptionsRow}>
+                                {[8, 12, 16].map((planPercent) => {
+                                  const selected =
+                                    Number(ownerCommissionRatePercent) === planPercent;
+                                  return (
+                                    <TouchableOpacity
+                                      key={planPercent}
+                                      style={[
+                                        styles.welloPlanOption,
+                                        selected && styles.welloPlanOptionSelected,
+                                      ]}
+                                      disabled={stripeActionStatus.loading}
+                                      onPress={() => handleSelectWelloPlan(planPercent)}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.welloPlanOptionText,
+                                          selected && styles.welloPlanOptionTextSelected,
+                                        ]}
+                                      >
+                                        {planPercent}%
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+                              <Text style={styles.welloPlanGrowthNote}>
+                                Higher-percentage plans give customers more cashback,
+                                which can make your business more appealing and help you
+                                attract more completed jobs.
+                              </Text>
+                            </View>
 
-                            <View style={styles.ownerBillingSectionCard}>
+                            <View style={styles.welloPlanCard}>
+                              <Text style={styles.welloPlanTitle}>Card information</Text>
+                              <Text style={styles.welloPlanCardHelp}>
+                                Your card details are entered securely and are never stored
+                                directly by Wello.
+                              </Text>
+                              {activeBusinessStripeSummary.hasPaymentMethod ? (
+                                <Text style={styles.welloPlanSavedCardText}>
+                                  {resolvedOwnerBusiness?.stripePaymentMethodBrand
+                                    ? `${resolvedOwnerBusiness.stripePaymentMethodBrand} •••• ${resolvedOwnerBusiness.stripePaymentMethodLast4 || ""}`
+                                    : "Payment method on file"}
+                                </Text>
+                              ) : null}
+                              <TouchableOpacity
+                                style={[
+                                  styles.ownerBillingPrimaryButton,
+                                  (![8, 12, 16].includes(
+                                    Number(ownerCommissionRatePercent),
+                                  ) || stripeActionStatus.loading) &&
+                                    styles.primaryButtonDisabled,
+                                ]}
+                                disabled={
+                                  ![8, 12, 16].includes(
+                                    Number(ownerCommissionRatePercent),
+                                  ) || stripeActionStatus.loading
+                                }
+                                onPress={
+                                  activeBusinessStripeSummary.hasPaymentMethod
+                                    ? handleStripeManage
+                                    : handleStripePaymentSetup
+                                }
+                              >
+                                <Text style={styles.ownerBillingPrimaryButtonText}>
+                                  {activeBusinessStripeSummary.hasPaymentMethod
+                                    ? "Update card information"
+                                    : "Add card information"}
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+
+                            <View style={[styles.ownerBillingSectionCard, { display: "none" }]}>
                               <Text style={styles.ownerBillingSectionTitle}>
                                 Account Status
                               </Text>
@@ -29513,52 +30306,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               </View>
                             </View>
 
-                            <View style={styles.ownerBillingSectionCard}>
-                              <Text style={styles.ownerBillingSectionTitle}>
-                                Financial Details
-                              </Text>
-                              <View style={styles.ownerBillingAmountRow}>
-                                <Text style={styles.ownerBillingAmountLabel}>
-                                  Gross Income
-                                </Text>
-                                <Text style={styles.ownerBillingAmountValue}>
-                                  {formatCurrencyFromCents(
-                                    billingMetrics.periodVerifiedGrossCents,
-                                  )}
-                                </Text>
-                              </View>
-                              <View style={styles.ownerBillingAmountRow}>
-                                <Text style={styles.ownerBillingAmountLabel}>
-                                  Platform Fees ({formatPercentLabel(ownerCommissionRatePercent)}%)
-                                </Text>
-                                <Text style={styles.ownerBillingAmountValueNegative}>
-                                  -{formatCurrencyFromCents(
-                                    Math.max(
-                                      0,
-                                      (Number(billingMetrics.periodTotalCents) || 0) -
-                                        (Number(billingMetrics.periodPaidCents) || 0) +
-                                        (Number(billingMetrics.manualPendingCents) || 0),
-                                    ),
-                                  )}
-                                </Text>
-                              </View>
-                              <View style={styles.ownerBillingDivider} />
-                              <View style={styles.ownerBillingNetRow}>
-                                <Text style={styles.ownerBillingNetLabel}>
-                                  Net After Fees
-                                </Text>
-                                <Text style={styles.ownerBillingNetValue}>
-                                  {formatCurrencyFromCents(
-                                    Math.max(
-                                      0,
-                                      (Number(billingMetrics.periodVerifiedGrossCents) || 0) -
-                                        (Number(billingMetrics.periodTotalCents) || 0),
-                                    ),
-                                  )}
-                                </Text>
-                              </View>
-                            </View>
-
                             {billingStatus.loading ? (
                               <Text style={styles.formHint}>Updating charges...</Text>
                             ) : null}
@@ -29579,49 +30326,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               <Text style={styles.formHint}>Refreshing Stripe status...</Text>
                             ) : null}
 
-                            {!activeBusinessStripeSummary.stripeAccountId ? (
-                              <TouchableOpacity
-                                style={[
-                                  styles.ownerBillingPrimaryButton,
-                                  stripeActionStatus.loading &&
-                                    styles.primaryButtonDisabled,
-                                ]}
-                                onPress={handleStripeConnect}
-                                disabled={stripeActionStatus.loading}
-                              >
-                                <Text style={styles.ownerBillingPrimaryButtonText}>
-                                  Connect Stripe
-                                </Text>
-                              </TouchableOpacity>
-                            ) : !activeBusinessStripeSummary.hasPaymentMethod ? (
-                              <TouchableOpacity
-                                style={[
-                                  styles.ownerBillingPrimaryButton,
-                                  stripeActionStatus.loading &&
-                                    styles.primaryButtonDisabled,
-                                ]}
-                                onPress={handleStripePaymentSetup}
-                                disabled={stripeActionStatus.loading}
-                              >
-                                <Text style={styles.ownerBillingPrimaryButtonText}>
-                                  Add Payment Method
-                                </Text>
-                              </TouchableOpacity>
-                            ) : (
-                              <TouchableOpacity
-                                style={[
-                                  styles.ownerBillingPrimaryButton,
-                                  stripeActionStatus.loading &&
-                                    styles.primaryButtonDisabled,
-                                ]}
-                                onPress={handleStripeManage}
-                                disabled={stripeActionStatus.loading}
-                              >
-                                <Text style={styles.ownerBillingPrimaryButtonText}>
-                                  Open Billing Portal
-                                </Text>
-                              </TouchableOpacity>
-                            )}
                           </>
                         ) : (
                           <>
@@ -29688,82 +30392,33 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               </View>
                             ) : null}
                             <View style={styles.analyticsGrid}>
-                              <TouchableOpacity
-                                style={[
-                                  styles.analyticsCard,
-                                  styles.analyticsCardInteractive,
-                                ]}
-                                onPress={() => {
-                                  setViewsModalOpen(true);
-                                  loadOfferViewsBreakdown(
-                                    ownerBusiness?.id || ownerBusinessId,
-                                  );
-                                }}
-                                activeOpacity={0.85}
-                              >
+                              <View style={styles.analyticsCard}>
                                 <Text style={styles.analyticsValue}>
-                                  {formatMetricValue(ownerMetrics.views)}
+                                  {formatCurrencyFromCents(
+                                    billingMetrics.periodVerifiedGrossCents,
+                                  )}
                                 </Text>
-                                <View style={styles.analyticsLabelRow}>
-                                  <Text style={styles.analyticsLabel}>
-                                    Views
-                                  </Text>
-                                  <Ionicons
-                                    name="chevron-forward"
-                                    size={14}
-                                    color={COLORS.muted}
-                                  />
-                                </View>
-                              </TouchableOpacity>
-                              <TouchableOpacity
-                                style={[
-                                  styles.analyticsCard,
-                                  styles.analyticsCardInteractive,
-                                ]}
-                                onPress={() => setReceiptsModalOpen(true)}
-                                activeOpacity={0.85}
-                              >
+                                <Text style={styles.analyticsLabel}>
+                                  Revenue from Wello
+                                </Text>
+                              </View>
+                              <View style={styles.analyticsCard}>
+                                <Text style={styles.analyticsValue}>
+                                  {formatCurrencyFromCents(
+                                    billingMetrics.periodPaidCents,
+                                  )}
+                                </Text>
+                                <Text style={styles.analyticsLabel}>
+                                  Commission Paid
+                                </Text>
+                              </View>
+                              <View style={styles.analyticsCard}>
                                 <Text style={styles.analyticsValue}>
                                   {formatMetricValue(ownerMetrics.redemptions)}
                                 </Text>
-                                <View style={styles.analyticsLabelRow}>
-                                  <Text style={styles.analyticsLabel}>
-                                    Redemptions
-                                  </Text>
-                                  <Ionicons
-                                    name="chevron-forward"
-                                    size={14}
-                                    color={COLORS.muted}
-                                  />
-                                </View>
-                              </TouchableOpacity>
-                              <View style={styles.analyticsCard}>
-                                <Text style={styles.analyticsValue}>
-                                  {formatMetricValue(ownerMetrics.reach)}
+                                <Text style={styles.analyticsLabel}>
+                                  Total Customers
                                 </Text>
-                                <View style={styles.analyticsLabelRow}>
-                                  <Text style={styles.analyticsLabel}>
-                                    Reach
-                                  </Text>
-                                  <TouchableOpacity
-                                    style={styles.analyticsInfoButton}
-                                    onPress={triggerReachTooltip}
-                                  >
-                                    <Ionicons
-                                      name="information-circle-outline"
-                                      size={14}
-                                      color={COLORS.muted}
-                                    />
-                                  </TouchableOpacity>
-                                </View>
-                                {showReachTooltip && (
-                                  <View style={styles.analyticsTooltip}>
-                                    <Text style={styles.analyticsTooltipText}>
-                                      Reach is the estimated number of unique
-                                      people who saw your listing.
-                                    </Text>
-                                  </View>
-                                )}
                               </View>
                             </View>
                             {ownerAnalyticsStatus.error && (
@@ -29804,9 +30459,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                             ) : null}
 
                             <View style={styles.ownerDashboardSection}>
-                              <Text style={styles.ownerDashboardSectionTitle}>
-                                Billing & Payments
-                              </Text>
                               <TouchableOpacity
                                 style={styles.dashboardPaymentsEntryCard}
                                 onPress={() => setOwnerBusinessScreen("payments")}
@@ -29835,7 +30487,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               </TouchableOpacity>
                             </View>
 
-                            <View style={styles.ownerDashboardSection}>
+                            {false && <View style={styles.ownerDashboardSection}>
                               <View style={styles.ownerDashboardSectionHeader}>
                                 <Text style={styles.ownerDashboardSectionTitle}>
                                   Manage Offers
@@ -29968,7 +30620,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                   </Text>
                                 </View>
                               )}
-                            </View>
+                            </View>}
 
                             {ownerBusiness ? (
                               <View style={styles.ownerDashboardSection}>
@@ -30065,42 +30717,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 Manage Business
                               </Text>
                               <View style={styles.ownerDashboardManageList}>
-                                <TouchableOpacity
-                                  style={styles.ownerDashboardManageRow}
-                                  onPress={() => {
-                                    if (!canRequestEdits) return;
-                                    openEditBusinessPage();
-                                  }}
-                                  activeOpacity={0.88}
-                                  disabled={!canRequestEdits}
-                                >
-                                  <View style={styles.ownerDashboardManageRowIcon}>
-                                    <Ionicons
-                                      name="create-outline"
-                                      size={22}
-                                      color={COLORS.muted}
-                                    />
-                                  </View>
-                                  <View style={styles.ownerDashboardManageRowCopy}>
-                                    <Text style={styles.ownerDashboardManageRowTitle}>
-                                      Edit Business Info
-                                    </Text>
-                                    <Text style={styles.ownerDashboardManageRowBody}>
-                                      {canRequestEdits
-                                        ? "Update name, address, hours"
-                                        : "Changes are currently under review"}
-                                    </Text>
-                                  </View>
-                                  <Ionicons
-                                    name="chevron-forward"
-                                    size={20}
-                                    color={COLORS.muted}
-                                  />
-                                </TouchableOpacity>
-                                <BusinessSwitcher
-                                  variant="row"
-                                  onAddBusiness={openCreateBusinessPage}
-                                />
                                 <TouchableOpacity
                                   style={styles.ownerDashboardManageRow}
                                   onPress={openReviewsPage}
@@ -30701,7 +31317,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               </View>
                             ) : null
                             ) : (
-                              <View style={styles.formCard}>
+                              <>
+                              <EmptyBusinessState
+                                styles={styles}
+                                colors={{
+                                  ink: COLORS.ink,
+                                  muted: COLORS.muted,
+                                  white: COLORS.white,
+                                }}
+                                onCreateBusiness={openCreateBusinessPage}
+                              />
+                              {false && <View style={styles.formCard}>
                                 <Text style={styles.formHeaderTitle}>
                                   Create your business profile
                                 </Text>
@@ -31194,7 +31820,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                     </Text>
                                   </TouchableOpacity>
                                 </View>
-                              </View>
+                              </View>}
+                              </>
                             )}
 
                             {formMessage && (
@@ -32848,7 +33475,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 style={[styles.authCard, styles.authSignInCard]}
                               >
                                 <Text style={styles.authWelcomeTitle}>
-                                  Welcome back!
+                                  Welcome!
                                 </Text>
                                 <Text style={styles.authWelcomeSubtitle}>
                                   Sign in to access your Wello account.
@@ -35964,6 +36591,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                             {tagLine || "--"}
                                           </Text>
                                         </View>
+                                        {false && (
                                         <View style={styles.adminDetailRow}>
                                           <Text style={styles.adminDetailLabel}>
                                             Commission rate
@@ -36150,6 +36778,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                             {`Business pays ${formatPercentLabel(selectedCommissionRate / 10)}%, users get ${formatPercentLabel(selectedCashbackRateBps / 100)}%, Wello keeps ${formatPercentLabel(selectedPlatformRatePercent)}%.`}
                                           </Text>
                                         </View>
+                                        )}
                                         {hasDirectionsTarget && (
                                           <View style={styles.adminDetailRow}>
                                             <TouchableOpacity
@@ -36201,12 +36830,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                             id: business.id,
                                             action: "approve",
                                             title: "Approve business listing?",
-                                            message: `This will approve the listing with a ${formatPercentLabel(selectedCommissionRate / 10)}% commission and ${formatPercentLabel(selectedCashbackRateBps / 100)}% user cashback.`,
+                                            message: `This will approve the listing using the business-selected ${formatPercentLabel(selectedCommissionRate / 10)}% commission rate.`,
                                             onConfirm: () =>
-                                              handleApprove(
-                                                business.id,
-                                                selectedRateDraft,
-                                              ),
+                                              handleApprove(business.id),
                                           })
                                         }
                                       >
@@ -37022,16 +37648,16 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   authTitle: {
-    fontSize: 23,
+    fontSize: 25,
     color: COLORS.ink,
     fontFamily: FONT_DISPLAY,
     marginBottom: 6,
   },
   authSubtitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    lineHeight: 22,
+    lineHeight: 24,
     marginBottom: 16,
   },
   authWelcomeTitle: {
@@ -37064,7 +37690,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 13,
     fontFamily: FONT_TEXT,
-    fontSize: 16,
+    fontSize: 17,
     color: COLORS.ink,
     borderWidth: 1,
     borderColor: COLORS.sand,
@@ -37215,7 +37841,7 @@ const styles = StyleSheet.create({
   },
   authButtonText: {
     color: COLORS.white,
-    fontSize: 16,
+    fontSize: 17,
     fontFamily: FONT_MEDIUM,
   },
   authBack: {
@@ -37225,7 +37851,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   authBackText: {
-    fontSize: 14,
+    fontSize: 15,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
   },
@@ -37256,15 +37882,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     flexWrap: "wrap",
-    marginTop: 2,
+    marginTop: 5,
   },
   authSignupCopy: {
-    fontSize: 14,
+    fontSize: 16,
+    lineHeight: 22,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
   authSignupLink: {
-    fontSize: 14,
+    fontSize: 16,
+    lineHeight: 22,
     color: COLORS.pine,
     fontFamily: FONT_SEMIBOLD,
   },
@@ -37273,10 +37901,10 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   authLegalCopy: {
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
-    lineHeight: 18,
+    lineHeight: 20,
   },
   authLegalLinksRow: {
     flexDirection: "row",
@@ -37285,7 +37913,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   authLegalLinkText: {
-    fontSize: 13,
+    fontSize: 14,
     color: "#27476B",
     fontFamily: FONT_MEDIUM,
     textDecorationLine: "underline",
@@ -37303,6 +37931,42 @@ const styles = StyleSheet.create({
   hoursScheduleWrap: {
     gap: 10,
     marginBottom: 8,
+  },
+  hours247Option: {
+    minHeight: 68,
+    borderWidth: 1.5,
+    borderColor: COLORS.pine,
+    borderRadius: 16,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+  },
+  hours247OptionActive: {
+    backgroundColor: COLORS.pine,
+    borderColor: COLORS.pine,
+  },
+  hours247Copy: {
+    flex: 1,
+  },
+  hours247Title: {
+    fontSize: 16,
+    color: COLORS.pine,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  hours247TitleActive: {
+    color: COLORS.white,
+  },
+  hours247Subtitle: {
+    marginTop: 2,
+    fontSize: 13,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  hours247SubtitleActive: {
+    color: "rgba(255,255,255,0.82)",
   },
   hoursScheduleRow: {
     borderWidth: 1,
@@ -37798,6 +38462,28 @@ const styles = StyleSheet.create({
     zIndex: 26,
     overflow: "visible",
   },
+  discoverAllOffersPullTab: {
+    width: "100%",
+    height: SAFE_BOTTOM + 78,
+    paddingBottom: SAFE_BOTTOM,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderTopWidth: 1,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#FFFFFF",
+  },
+  discoverAllOffersDragHandle: {
+    width: 44,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "#94A3B8",
+  },
+  discoverAllOffersPullTabText: {
+    color: "#334155",
+    fontSize: 11,
+    fontFamily: FONT_SEMIBOLD,
+  },
   discoverBusinessListCue: {
     position: "absolute",
     top: -27,
@@ -37913,6 +38599,232 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: FONT_BOLD,
   },
+  discoverOffersBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.34)",
+  },
+  discoverOffersLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 35,
+    elevation: 35,
+  },
+  discoverOffersPanel: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: SCREEN_HEIGHT * 0.32,
+    bottom: 0,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    backgroundColor: "#FFFFFF",
+    overflow: "hidden",
+  },
+  discoverOffersScroll: {
+    flex: 1,
+  },
+  discoverOffersHandle: {
+    width: 42,
+    height: 5,
+    borderRadius: 999,
+    alignSelf: "center",
+    marginTop: 9,
+    backgroundColor: "#CBD5E1",
+  },
+  discoverOffersHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  discoverOffersHeaderCopy: { flex: 1, minWidth: 0, paddingRight: 12 },
+  discoverOffersTitle: {
+    color: "#0F172A",
+    fontSize: 20,
+    fontFamily: FONT_BOLD,
+  },
+  discoverOffersNearbyCount: {
+    color: "#2563EB",
+    fontSize: 14,
+    fontFamily: FONT_BOLD,
+  },
+  discoverOffersCategoryRow: {
+    flexDirection: "row",
+    gap: 9,
+    paddingHorizontal: 18,
+    paddingBottom: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+  },
+  discoverOffersCategoryButton: {
+    minWidth: 78,
+    height: 42,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+  },
+  discoverOffersCategoryText: {
+    color: "#111827",
+    fontSize: 12,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  discoverOffersSubtitle: {
+    marginTop: 3,
+    color: "#64748B",
+    fontSize: 12,
+    fontFamily: FONT_TEXT,
+  },
+  discoverOffersContent: {
+    paddingHorizontal: 22,
+    paddingTop: 16,
+    paddingBottom: 28,
+    gap: 14,
+  },
+  discoverOfferRow: {
+    height: 228,
+    borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "#F1F5F9",
+  },
+  discoverOfferIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#DCFCE7",
+  },
+  discoverOfferImage: {
+    width: 112,
+    height: 112,
+    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
+  },
+  discoverOfferImageFallback: {
+    width: 112,
+    height: 112,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#DCFCE7",
+  },
+  discoverOfferCopy: { flex: 1, minWidth: 0, paddingHorizontal: 11 },
+  discoverOfferBusinessName: {
+    color: "#FFFFFF",
+    fontSize: 21,
+    fontFamily: FONT_BOLD,
+  },
+  discoverOfferRatingRow: {
+    marginTop: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  discoverOfferMetaText: {
+    marginTop: 3,
+    color: "#64748B",
+    fontSize: 11,
+    fontFamily: FONT_TEXT,
+  },
+  discoverOfferName: {
+    marginTop: 3,
+    color: "#64748B",
+    fontSize: 11,
+    fontFamily: FONT_MEDIUM,
+  },
+  discoverOfferCashback: {
+    marginTop: 9,
+    color: "#15803D",
+    fontSize: 22,
+    fontFamily: FONT_BOLD,
+  },
+  discoverOfferArrow: {
+    width: 36,
+    height: 36,
+    borderRadius: 11,
+    alignSelf: "flex-end",
+    marginBottom: 4,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#166534",
+  },
+  discoverOfferBackgroundImage: {
+    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#FFFFFF",
+  },
+  discoverOfferBackgroundFallback: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#DCFCE7",
+  },
+  discoverOfferTopRow: {
+    position: "absolute",
+    left: 14,
+    right: 14,
+    top: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  discoverOfferBadgeDark: {
+    minHeight: 32,
+    borderRadius: 999,
+    justifyContent: "center",
+    paddingHorizontal: 13,
+    backgroundColor: "rgba(15, 23, 42, 0.66)",
+  },
+  discoverOfferBadgeOpen: {
+    backgroundColor: "#10B981",
+  },
+  discoverOfferBadgeLight: {
+    minHeight: 32,
+    borderRadius: 999,
+    justifyContent: "center",
+    paddingHorizontal: 13,
+    backgroundColor: "rgba(255, 255, 255, 0.32)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.55)",
+  },
+  discoverOfferBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  discoverOfferBottomContent: {
+    position: "absolute",
+    left: 14,
+    right: 14,
+    bottom: 14,
+  },
+  discoverOfferBottomMetaRow: {
+    marginTop: 5,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  discoverOfferBottomMetaText: {
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 12,
+    fontFamily: FONT_MEDIUM,
+  },
+  discoverOfferCashbackBar: {
+    minHeight: 42,
+    marginTop: 11,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.94)",
+  },
   discoverMiniSheetOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "flex-start",
@@ -37929,6 +38841,8 @@ const styles = StyleSheet.create({
     flexDirection: "column",
     alignItems: "stretch",
     overflow: "hidden",
+    zIndex: 2,
+    marginBottom: 10,
   },
   discoverMiniPullCue: {
     height: 20,
@@ -38002,6 +38916,12 @@ const styles = StyleSheet.create({
     fontSize: IS_SMALL_PHONE ? 18 : 20,
     color: "#166534",
     fontFamily: FONT_BOLD,
+  },
+  discoverMiniBusinessSwipeCue: {
+    marginTop: 3,
+    color: "#64748B",
+    fontSize: 10,
+    fontFamily: FONT_MEDIUM,
   },
   discoverMiniBusinessArrow: {
     width: 40,
@@ -38188,13 +39108,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   createBusinessPageTitle: {
-    fontSize: 22,
+    fontSize: 24,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
   createBusinessPageSubtitle: {
     marginTop: 4,
-    fontSize: 14,
+    fontSize: 16,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
   },
@@ -38212,7 +39132,7 @@ const styles = StyleSheet.create({
     ...ELEVATION.soft,
   },
   createBusinessSectionTitle: {
-    fontSize: 18,
+    fontSize: 20,
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
     marginBottom: 12,
@@ -39022,6 +39942,42 @@ const styles = StyleSheet.create({
   businessPageCashbackSubtext: {
     marginTop: 3,
     fontSize: 15,
+    color: "#475569",
+    fontFamily: FONT_TEXT,
+  },
+  businessPageStoreHoursSection: {
+    paddingTop: 14,
+    paddingBottom: 14,
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+  },
+  businessPageStoreHoursTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  businessPageStoreHoursTitle: {
+    fontSize: 15,
+    color: "#0F172A",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  businessPageStoreHoursText: {
+    marginTop: 6,
+    marginLeft: 26,
+    fontSize: 14,
+    lineHeight: 20,
+    color: "#475569",
+    fontFamily: FONT_TEXT,
+  },
+  businessPageProfileDescriptionSection: {
+    paddingVertical: 16,
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+  },
+  businessPageProfileDescriptionText: {
+    marginTop: 8,
+    fontSize: 15,
+    lineHeight: 22,
     color: "#475569",
     fontFamily: FONT_TEXT,
   },
@@ -40521,6 +41477,74 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     elevation: 5,
   },
+  welloPlanCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: COLORS.white,
+    padding: 18,
+    marginBottom: 16,
+  },
+  welloPlanTitle: {
+    fontSize: 22,
+    lineHeight: 28,
+    color: COLORS.ink,
+    fontFamily: FONT_BOLD,
+  },
+  welloPlanBody: {
+    marginTop: 10,
+    fontSize: 18,
+    lineHeight: 27,
+    color: "#475569",
+    fontFamily: FONT_TEXT,
+  },
+  welloPlanOptionsRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 18,
+  },
+  welloPlanGrowthNote: {
+    marginTop: 16,
+    fontSize: 16,
+    lineHeight: 23,
+    color: "#334155",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  welloPlanOption: {
+    flex: 1,
+    minHeight: 56,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: COLORS.pine,
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  welloPlanOptionSelected: {
+    backgroundColor: COLORS.pine,
+  },
+  welloPlanOptionText: {
+    fontSize: 19,
+    color: COLORS.pine,
+    fontFamily: FONT_BOLD,
+  },
+  welloPlanOptionTextSelected: {
+    color: COLORS.white,
+  },
+  welloPlanCardHelp: {
+    marginTop: 8,
+    marginBottom: 14,
+    fontSize: 16,
+    lineHeight: 23,
+    color: "#475569",
+    fontFamily: FONT_TEXT,
+  },
+  welloPlanSavedCardText: {
+    marginBottom: 12,
+    fontSize: 16,
+    color: COLORS.ink,
+    fontFamily: FONT_SEMIBOLD,
+  },
   ownerBillingSectionTitle: {
     fontSize: 18,
     color: "#111827",
@@ -41100,6 +42124,43 @@ const styles = StyleSheet.create({
   tremendousClaimModalScreen: {
     flex: 1,
     backgroundColor: "#F3F6FC",
+  },
+  stripeCardSetupScreen: {
+    flex: 1,
+    backgroundColor: "#F3F6FC",
+  },
+  stripeCardSetupHeader: {
+    minHeight: 62,
+    paddingHorizontal: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: COLORS.white,
+  },
+  stripeCardSetupTitle: {
+    fontSize: 20,
+    color: COLORS.ink,
+    fontFamily: FONT_BOLD,
+  },
+  stripeCardSetupCloseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.mint,
+  },
+  stripeCardSetupWebViewWrap: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+  },
+  stripeCardSetupLoading: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.72)",
   },
   tremendousClaimModalHeader: {
     minHeight: 56,
@@ -43037,7 +44098,7 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   operatingDayChipText: {
-    fontSize: 12,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -43045,7 +44106,7 @@ const styles = StyleSheet.create({
     color: COLORS.white,
   },
   tagOptionText: {
-    fontSize: 13,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -43675,7 +44736,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   formLabel: {
-    fontSize: 14,
+    fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
     marginBottom: 6,
@@ -43686,7 +44747,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 12,
     fontFamily: FONT_TEXT,
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.ink,
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.14)",
@@ -43734,7 +44795,8 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   formHint: {
-    fontSize: 12,
+    fontSize: 14,
+    lineHeight: 20,
     color: COLORS.muted,
     fontFamily: FONT_TEXT,
     marginBottom: 12,
@@ -43915,10 +44977,10 @@ const styles = StyleSheet.create({
   },
   legalCheckText: {
     flex: 1,
-    fontSize: 12,
+    fontSize: 14,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
-    lineHeight: 16,
+    lineHeight: 20,
   },
   legalLinkButton: {
     alignSelf: "flex-start",
@@ -45418,6 +46480,19 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 10 },
     elevation: 10,
   },
+  checkoutVerifyClose: {
+    position: "absolute",
+    top: 14,
+    right: 14,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F1F5F9",
+    zIndex: 2,
+    elevation: 2,
+  },
   checkoutVerifyIcon: {
     width: 48,
     height: 48,
@@ -45442,6 +46517,18 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     textAlign: "center",
     fontFamily: FONT_TEXT,
+  },
+  checkoutVerifyReceiptProgress: {
+    minHeight: 132,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 14,
+  },
+  checkoutVerifyReceiptProgressText: {
+    color: "#475569",
+    fontSize: 14,
+    textAlign: "center",
+    fontFamily: FONT_MEDIUM,
   },
   checkoutVerifyActions: { marginTop: 22, gap: 10 },
   checkoutVerifyForm: { marginTop: 20 },
@@ -47653,7 +48740,7 @@ const styles = StyleSheet.create({
   },
   selectInputText: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 16,
     color: COLORS.ink,
     fontFamily: FONT_TEXT,
     paddingRight: 8,
@@ -47678,7 +48765,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.mint,
   },
   selectMenuOptionText: {
-    fontSize: 13,
+    fontSize: 15,
     color: COLORS.ink,
     fontFamily: FONT_MEDIUM,
   },
@@ -48522,12 +49609,14 @@ const styles = StyleSheet.create({
     elevation: 14,
   },
   cashbackMarker: {
-    minWidth: 48,
+    minWidth: 54,
     height: 48,
     paddingHorizontal: 8,
     borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
+    gap: 3,
     backgroundColor: "#15803D",
     borderWidth: 3,
     borderColor: "rgba(255,255,255,0.96)",
