@@ -107,6 +107,7 @@ import {
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 const DEVICE_FONT_SCALE = Math.max(Number(PixelRatio.getFontScale()) || 1, 1);
+const HISTORY_DISPLAY_RESET_AT = 1785722853000;
 const FONT_SCALING_LOCK_PROPS = {
   allowFontScaling: false,
   maxFontSizeMultiplier: 1,
@@ -280,6 +281,8 @@ const SHOULD_SHOW_APPLE_SIGN_IN = false;
 const SHOULD_SHOW_GOOGLE_SIGN_IN = Platform.OS !== "ios";
 const CARD_WIDTH = Math.min(280, Math.max(210, Math.round(SCREEN_WIDTH * 0.7)));
 const CARD_GAP = Math.round(Math.max(10, SCREEN_WIDTH * 0.03));
+const DISCOVER_RAIL_CARD_WIDTH = SCREEN_WIDTH - 58;
+const DISCOVER_RAIL_CARD_HEIGHT = 132;
 const OFFER_IMAGE_ASPECT = 1.91 / 1;
 const OFFER_UPLOAD_WIDTH = 1200;
 const OFFER_UPLOAD_HEIGHT = Math.round(OFFER_UPLOAD_WIDTH / OFFER_IMAGE_ASPECT);
@@ -734,7 +737,7 @@ const PLAID_ANDROID_PACKAGE_NAME =
 const ANDROID_MARKER_SIZE = 34;
 const ANDROID_MARKER_SELECTED_SIZE = 44;
 const MARKER_ICON_SIZE = 20;
-const FORCE_VECTOR_MARKERS = false;
+const FORCE_VECTOR_MARKERS = true;
 const CONFETTI_PIECES = 20;
 const NOTIFICATION_DEFAULTS = {
   new_offer: true,
@@ -1399,6 +1402,20 @@ const mapSupabaseOffer = (row) => ({
   business: row.business ? mapSupabaseBusiness(row.business, 0) : null,
 });
 
+const getManualPurchaseFromRedemption = (row) => {
+  const submission = Array.isArray(row?.manual_purchase_submissions)
+    ? row.manual_purchase_submissions[0]
+    : row?.manual_purchase_submissions;
+  if (submission) return submission;
+  const payload = String(row?.qr_payload || "");
+  if (!payload.startsWith("wello_manual_purchase:")) return null;
+  try {
+    return JSON.parse(payload.slice("wello_manual_purchase:".length));
+  } catch {
+    return null;
+  }
+};
+
 const mapSupabaseRedemption = (row) => ({
   id: String(row.id),
   createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
@@ -1406,11 +1423,57 @@ const mapSupabaseRedemption = (row) => ({
   offerId: row.offer_id || null,
   offer: row.offer || null,
   business: row.business || null,
+  manualPurchase: (() => {
+    const submission = getManualPurchaseFromRedemption(row);
+    if (!submission) return null;
+    return {
+      id: String(submission.id),
+      amountCents: Number(submission.amount_cents) || 0,
+      paymentType: submission.payment_type || "other",
+      status: submission.status || "processing",
+      createdAt: submission.created_at
+        ? new Date(submission.created_at).getTime()
+        : null,
+      reviewedAt: submission.reviewed_at
+        ? new Date(submission.reviewed_at).getTime()
+        : null,
+      reviewNotes: String(submission.review_notes || "").trim() || null,
+    };
+  })(),
   purchaseVerification: (() => {
     const verification = Array.isArray(row.purchase_verifications)
       ? row.purchase_verifications[0]
       : row.purchase_verifications;
-    if (!verification) return null;
+    if (!verification) {
+      const submission = getManualPurchaseFromRedemption(row);
+      if (!submission) return null;
+      const approved = ["approved", "paid"].includes(submission.status);
+      const rejected = submission.status === "rejected";
+      return {
+        id: `manual-${submission.id}`,
+        source: "manual",
+        status: approved ? "confirmed" : rejected ? "rejected" : "pending",
+        reasonCode: approved
+          ? "manual_purchase_approved"
+          : rejected
+            ? "manual_purchase_rejected"
+            : "manual_purchase_processing",
+        reasonDetail: approved
+          ? "Purchase approved."
+          : rejected
+            ? submission.review_notes || "Purchase was not approved."
+            : "Processing until approved by Wello.",
+        lastCheckedAt: submission.reviewed_at
+          ? new Date(submission.reviewed_at).getTime()
+          : new Date(submission.created_at).getTime(),
+        confirmedAt: approved && submission.reviewed_at
+          ? new Date(submission.reviewed_at).getTime()
+          : null,
+        rejectedAt: rejected && submission.reviewed_at
+          ? new Date(submission.reviewed_at).getTime()
+          : null,
+      };
+    }
     return {
       id: String(verification.id),
       source: verification.source || null,
@@ -4133,6 +4196,11 @@ const DISCOVER_HOME_TABS = [
   { key: "gas", label: "Gas" },
   { key: "beauty", label: "Beauty" },
 ];
+const DISCOVER_SHEET_CATEGORY_TABS = [
+  { key: "all", label: "All" },
+  { key: "auto", label: "Auto" },
+  { key: "trades", label: "Home" },
+];
 
 const CATEGORY_OPTIONS = DISCOVER_HOME_TABS.filter((tab) => tab.key !== "all").map(
   ({ key, label }) => ({ key, label }),
@@ -5477,6 +5545,7 @@ export default function App() {
   const mapReadyRef = useRef(false);
   const pendingMapRegionRef = useRef(null);
   const cardListRef = useRef(null);
+  const carouselUserDraggingRef = useRef(false);
   const sheetScrollRef = useRef(null);
   const sheetPanRef = useRef(null);
   const bottomSheetRef = useRef(null);
@@ -5502,6 +5571,8 @@ export default function App() {
     touchSeq: 0,
     activeTouchSeq: null,
     touchStartedAt: 0,
+    collapseTouchStartY: null,
+    collapseGestureReady: false,
     dragStartedAt: 0,
     blockProbeTimer: null,
   });
@@ -5516,6 +5587,29 @@ export default function App() {
   const [discoverSheetIndex, setDiscoverSheetIndex] = useState(0);
   const [discoverSheetExpanded, setDiscoverSheetExpanded] = useState(false);
   const [discoverSearchOpen, setDiscoverSearchOpen] = useState(false);
+  const [discoverBusinessListOpen, setDiscoverBusinessListOpen] = useState(false);
+  const discoverBusinessPanelBaseY = useRef(new Animated.Value(0)).current;
+  const discoverBusinessPanelGestureY = useRef(new Animated.Value(0)).current;
+  const discoverBusinessPanelTranslateY = useMemo(
+    () =>
+      Animated.add(
+        discoverBusinessPanelBaseY,
+        discoverBusinessPanelGestureY,
+      ).interpolate({
+        inputRange: [0, 500],
+        outputRange: [0, 500],
+        extrapolate: "clamp",
+      }),
+    [discoverBusinessPanelBaseY, discoverBusinessPanelGestureY],
+  );
+  const handleDiscoverBusinessPanelGesture = useMemo(
+    () =>
+      Animated.event(
+        [{ nativeEvent: { translationY: discoverBusinessPanelGestureY } }],
+        { useNativeDriver: true },
+      ),
+    [discoverBusinessPanelGestureY],
+  );
   const [receiptCountdownNow, setReceiptCountdownNow] = useState(Date.now());
   const [ownerBusinessScreen, setOwnerBusinessScreen] = useState("dashboard");
   const [navRowWidth, setNavRowWidth] = useState(0);
@@ -5527,10 +5621,7 @@ export default function App() {
   const drawerTranslateX = useSharedValue(-drawerPanelWidth);
   const drawerOverlayOpacity = useSharedValue(0);
   const discoverSheetMetrics = useMemo(() => {
-    const closedVisibleHeight = Math.max(
-      Math.round(SCREEN_HEIGHT * (IS_SHORT ? 0.21 : 0.19)),
-      132,
-    );
+    const closedVisibleHeight = 178;
     const midVisibleHeight = Math.max(
       Math.round(SCREEN_HEIGHT * (IS_SHORT ? 0.72 : 0.68)),
       closedVisibleHeight + 180,
@@ -6055,6 +6146,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const [reviewBusy, setReviewBusy] = useState(false);
   const [businessDetailOpen, setBusinessDetailOpen] = useState(false);
   const [businessDetail, setBusinessDetail] = useState(null);
+  const [businessCheckInState, setBusinessCheckInState] = useState("idle");
+  const [checkoutVerification, setCheckoutVerification] = useState({
+    visible: false,
+    step: "choice",
+    entry: null,
+    amount: "",
+    paymentType: "card",
+    submitting: false,
+    error: null,
+  });
   const [businessDetailStatus, setBusinessDetailStatus] = useState({
     loading: false,
     error: null,
@@ -7113,6 +7214,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       debugState.touchSeq = (debugState.touchSeq || 0) + 1;
       debugState.activeTouchSeq = debugState.touchSeq;
       debugState.touchStartedAt = now;
+      debugState.collapseTouchStartY = Number(
+        event?.nativeEvent?.pageY ?? event?.nativeEvent?.locationY,
+      );
+      debugState.collapseGestureReady = false;
       if (debugState.blockProbeTimer) {
         clearTimeout(debugState.blockProbeTimer);
         debugState.blockProbeTimer = null;
@@ -7146,9 +7251,22 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   );
   const handleDiscoverTouchMove = useCallback(
     (event) => {
+      const debugState = discoverScrollDebugRef.current;
+      const currentTouchY = Number(
+        event?.nativeEvent?.pageY ?? event?.nativeEvent?.locationY,
+      );
+      const touchStartY = Number(debugState.collapseTouchStartY);
+      if (
+        sheetIndexRef.current > 0 &&
+        (Number(debugState.lastY) || 0) <= 1 &&
+        Number.isFinite(currentTouchY) &&
+        Number.isFinite(touchStartY) &&
+        currentTouchY - touchStartY > 44
+      ) {
+        debugState.collapseGestureReady = true;
+      }
       if (!DEBUG_DISCOVER_SCROLL_VERBOSE) return;
       const now = Date.now();
-      const debugState = discoverScrollDebugRef.current;
       if (now - debugState.lastTouchMoveLogAt < 180) return;
       debugState.lastTouchMoveLogAt = now;
       logDiscoverGestureDebug("touchMove", {
@@ -7169,6 +7287,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       const touchDurationMs = debugState.touchStartedAt
         ? now - debugState.touchStartedAt
         : null;
+      const shouldCollapseSheet = debugState.collapseGestureReady;
       logDiscoverGestureDebug("touchEnd", {
         touchId: debugState.activeTouchSeq ?? null,
         touchDurationMs,
@@ -7176,6 +7295,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       });
       debugState.activeTouchSeq = null;
       debugState.touchStartedAt = 0;
+      debugState.collapseTouchStartY = null;
+      debugState.collapseGestureReady = false;
+      if (shouldCollapseSheet) {
+        bottomSheetRef.current?.snapToIndex(0);
+      }
     },
     [logDiscoverGestureDebug],
   );
@@ -7192,6 +7316,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       });
       debugState.activeTouchSeq = null;
       debugState.touchStartedAt = 0;
+      debugState.collapseTouchStartY = null;
+      debugState.collapseGestureReady = false;
     },
     [logDiscoverGestureDebug],
   );
@@ -11994,31 +12120,26 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       return acc;
     }, []);
   }, [businesses, filteredOfferCards, query]);
-  const activeSheetPeekLabel = useMemo(() => {
-    switch (activeTab) {
-      case "history":
-        return "History";
-      case "cashout":
-        return "Cash out";
-      case "profile":
-        return "Profile";
-      case "business":
-        return ownerBusinessScreen === "billing"
-          ? "Billing & Payments"
-          : "Dashboard";
-      case "admin":
-        return "Admin";
-      case "discover":
-      default:
-        return "Explore";
-    }
-  }, [activeTab, ownerBusinessScreen]);
-  const activeSheetPeekMeta =
-    activeTab === "discover" ? `${discoverSheetOfferCards.length} nearby` : "";
+  const focusCarouselBusiness = useCallback(
+    (item) => {
+      const business = item?.business || item;
+      const coordinate = resolveBusinessCoordinateForDistance(business);
+      if (!coordinate) return;
+      const businessId = String(business?.id || item?.businessId || "");
+      setSelectedId(businessId);
+      const nextRegion = {
+        ...coordinate,
+        latitudeDelta: MAP_REGION.latitudeDelta,
+        longitudeDelta: MAP_REGION.longitudeDelta,
+      };
+      setMapRegion(nextRegion);
+      animateMapToRegion(nextRegion, 450);
+    },
+    [animateMapToRegion],
+  );
   const SheetPeekRow = ({
-    label,
-    meta,
-    onPress,
+    offers,
+    onCardPress,
     animatedStyle,
     interactive,
   }) => (
@@ -12030,12 +12151,107 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         animatedStyle,
       ]}
     >
-      <Pressable style={styles.discoverMiniSheetPressable} onPress={onPress}>
-        <View>
-          <Text style={styles.discoverMiniTitle}>{label}</Text>
-        </View>
-        {meta ? <Text style={styles.discoverMiniMeta}>{meta}</Text> : null}
-      </Pressable>
+      <FlatList
+        ref={cardListRef}
+        style={styles.discoverMiniCardsList}
+        horizontal
+        data={offers}
+        keyExtractor={(item, index) =>
+          getOfferCardSelectionKey(item) || `nearby-${index}`
+        }
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.discoverMiniCardsRail}
+        snapToInterval={DISCOVER_RAIL_CARD_WIDTH + CARD_GAP}
+        decelerationRate="fast"
+        onScrollBeginDrag={() => {
+          carouselUserDraggingRef.current = true;
+        }}
+        onMomentumScrollEnd={(event) => {
+          if (!carouselUserDraggingRef.current) return;
+          carouselUserDraggingRef.current = false;
+          const offsetX = Number(event?.nativeEvent?.contentOffset?.x) || 0;
+          const index = Math.max(
+            0,
+            Math.min(
+              offers.length - 1,
+              Math.round(offsetX / (DISCOVER_RAIL_CARD_WIDTH + CARD_GAP)),
+            ),
+          );
+          if (offers[index]) focusCarouselBusiness(offers[index]);
+        }}
+        renderItem={({ item }) => {
+          const business = item?.business || item;
+          const cashbackRateBps = resolveDisplayedBusinessDefaultCashbackRateBps(
+            business,
+          );
+          const cashbackLabel =
+            formatPercentOnlyLabel(cashbackRateBps / 100) || "Offer";
+          const businessName = String(
+            item?.name || business?.name || "Nearby business",
+          ).trim();
+          const rating = Number(item?.rating ?? business?.rating);
+          const reviewCount = Number(
+            business?.reviewCount ??
+              business?.review_count ??
+              business?.reviewsCount ??
+              business?.reviews_count ??
+              business?.ratingCount ??
+              business?.rating_count ??
+              0,
+          );
+          const hoursStatus = getBusinessHoursStatus(
+            item?.hours || business?.hours || "",
+            typeof item?.isOpen === "boolean" ? item.isOpen : business?.isOpen,
+          );
+          const statusText =
+            hoursStatus.isOpen && hoursStatus.closesAtLabel
+              ? `Open until ${hoursStatus.closesAtLabel}`
+              : hoursStatus.statusText;
+          const distanceText = String(
+            item?.distanceLabel || item?.distance || "Nearby",
+          ).replace(/\bmi\b/i, "miles");
+          return (
+            <TouchableOpacity
+              style={styles.discoverMiniBusinessCard}
+              onPress={() => onCardPress?.(item)}
+              activeOpacity={0.88}
+            >
+              {business?.imageUrl || item?.imageUrl ? (
+                <Image
+                  source={{ uri: business?.imageUrl || item?.imageUrl }}
+                  style={styles.discoverMiniBusinessImage}
+                  resizeMode="contain"
+                />
+              ) : (
+                <View style={styles.discoverMiniBusinessImageFallback}>
+                  <Ionicons name="business-outline" size={22} color="#166534" />
+                </View>
+              )}
+              <View style={styles.discoverMiniBusinessCopy}>
+                <Text style={styles.discoverMiniBusinessName} numberOfLines={1}>
+                  {businessName}
+                </Text>
+                <View style={styles.discoverMiniBusinessRatingRow}>
+                  <Ionicons name="star" size={15} color="#FBBF24" />
+                  <Text style={styles.discoverMiniBusinessRatingText}>
+                    {Number.isFinite(rating) ? rating.toFixed(1) : "New"}
+                    {` (${Number.isFinite(reviewCount) ? Math.round(reviewCount) : 0})`}
+                  </Text>
+                </View>
+                <Text style={styles.discoverMiniBusinessMeta} numberOfLines={1}>
+                  {distanceText} {"\u2022"} {statusText}
+                </Text>
+                <Text style={styles.discoverMiniBusinessCashback} numberOfLines={1}>
+                  {cashbackLabel} cashback
+                </Text>
+              </View>
+              <View style={styles.discoverMiniBusinessArrow}>
+                <Ionicons name="arrow-forward" size={21} color={COLORS.white} />
+              </View>
+            </TouchableOpacity>
+          );
+        }}
+      />
     </Reanimated.View>
   );
   const demoOfferCards = useMemo(() => {
@@ -12332,7 +12548,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     !businessDetailOpen &&
     !discoverSearchOpen &&
     !fullScreenOverlayOpen;
-  const topTabBarOffset = modalTopInset + 8;
+  const topTabBarOffset = modalTopInset + 4;
   const swipeableDrawerTabs = useMemo(
     () =>
       SWIPEABLE_DRAWER_TAB_ORDER.filter((key) =>
@@ -12733,7 +12949,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           entry?.receipt?.retryAllowed === true;
         const canUploadReceipt =
           canResubmitRejectedReceipt ||
-          (!hasReceipt && isReceiptWindowOpen(entry));
+          (!hasReceipt && !entry.manualPurchase && isReceiptWindowOpen(entry));
         if (canUploadReceipt) {
           return total + 1;
         }
@@ -12963,7 +13179,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     () =>
       redemptionHistory.reduce((total, entry) => {
         const hasReceipt = Boolean(entry.receipt?.id);
-        if (!hasReceipt && isReceiptWindowOpen(entry)) {
+        if (!hasReceipt && !entry.manualPurchase && isReceiptWindowOpen(entry)) {
           return total + 1;
         }
         return total;
@@ -12972,7 +13188,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   );
   const pendingReceiptReminderFingerprint = useMemo(() => {
     return redemptionHistory
-      .filter((entry) => !entry.receipt?.id && isReceiptWindowOpen(entry))
+      .filter(
+        (entry) =>
+          !entry.receipt?.id &&
+          !entry.manualPurchase &&
+          isReceiptWindowOpen(entry),
+      )
       .map((entry) => {
         const entryId = String(entry?.id || "").trim();
         const createdAt = Number(entry?.createdAt) || 0;
@@ -13000,7 +13221,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     () =>
       [
         ...(Array.isArray(cashoutPayoutHistory) ? cashoutPayoutHistory : []),
-      ].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
+      ]
+        .filter(
+          (entry) =>
+            (Number(entry?.createdAt) || 0) >= HISTORY_DISPLAY_RESET_AT,
+        )
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
     [cashoutPayoutHistory],
   );
   const cashoutWithdrawnTotalCents = useMemo(
@@ -15843,11 +16069,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
   const openBusinessDetail = (business) => {
     if (!business) return;
+    setBusinessCheckInState("idle");
     setBusinessDetail(business);
     setBusinessDetailOpen(true);
   };
 
   const closeBusinessDetail = () => {
+    setBusinessCheckInState("idle");
     setBusinessDetailOpen(false);
     setBusinessDetail(null);
     setBusinessDetailStatus({ loading: false, error: null });
@@ -16157,6 +16385,140 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     }
   };
 
+  const beginPostCheckoutVerification = async () => {
+    if (!isSignedIn || !authUserId) {
+      setSignInError("Sign in to check in and submit purchase verification.");
+      setAuthView("signin");
+      closeBusinessDetail();
+      openSheet("profile");
+      return;
+    }
+    if (!ensureSupabaseReady()) return;
+    const business = businessDetail;
+    if (!business?.id) return;
+    setCheckoutVerification((prev) => ({ ...prev, submitting: true, error: null }));
+    const { data, error } = await supabase
+      .from("redemptions")
+      .insert({
+        business_id: business.id,
+        offer_id: selectedBusinessDetailCard?.offerId || null,
+        qr_payload: "checkout",
+        scanned_by: authUserId,
+      })
+      .select("id, business_id, offer_id, created_at")
+      .single();
+    if (error || !data) {
+      setCheckoutVerification((prev) => ({
+        ...prev,
+        submitting: false,
+        error: error?.message || "Unable to start checkout verification.",
+      }));
+      return;
+    }
+    const entry = {
+      id: String(data.id),
+      createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
+      businessId: data.business_id,
+      offerId: data.offer_id,
+      business,
+      offer: selectedBusinessDetailCard?.offer || null,
+      receipt: null,
+      purchaseVerification: {
+        id: `checkout-${data.id}`,
+        source: "checkout",
+        status: "pending",
+        reasonCode: "awaiting_checkout_evidence",
+        reasonDetail: "Processing purchase verification.",
+        lastCheckedAt: Date.now(),
+      },
+    };
+    setRedemptionHistory((prev) => [entry, ...prev]);
+    setBusinessCheckInState("idle");
+    setCheckoutVerification({
+      visible: true,
+      step: "choice",
+      entry,
+      amount: "",
+      paymentType: "card",
+      submitting: false,
+      error: null,
+    });
+  };
+
+  const submitNoReceiptPurchase = async () => {
+    const entry = checkoutVerification.entry;
+    const amount = Number.parseFloat(checkoutVerification.amount);
+    if (!entry?.id || !Number.isFinite(amount) || amount <= 0) {
+      setCheckoutVerification((prev) => ({
+        ...prev,
+        error: "Enter the amount paid.",
+      }));
+      return;
+    }
+    setCheckoutVerification((prev) => ({ ...prev, submitting: true, error: null }));
+    const manualPayload = {
+      id: `manual-${entry.id}`,
+      amount_cents: Math.round(amount * 100),
+      payment_type: checkoutVerification.paymentType,
+      status: "processing",
+      created_at: new Date().toISOString(),
+    };
+    let { error } = await supabase.from("manual_purchase_submissions").insert({
+      redemption_id: entry.id,
+      business_id: entry.businessId,
+      user_id: authUserId,
+      amount_cents: manualPayload.amount_cents,
+      payment_type: checkoutVerification.paymentType,
+      status: "processing",
+    });
+    const tableMissing =
+      error &&
+      (String(error.code || "") === "PGRST205" ||
+        String(error.message || "").toLowerCase().includes("could not find the table"));
+    if (tableMissing) {
+      const fallback = await supabase
+        .from("redemptions")
+        .update({
+          qr_payload: `wello_manual_purchase:${JSON.stringify(manualPayload)}`,
+        })
+        .eq("id", entry.id)
+        .eq("scanned_by", authUserId);
+      error = fallback.error;
+    }
+    if (error) {
+      setCheckoutVerification((prev) => ({
+        ...prev,
+        submitting: false,
+        error: error.message || "Unable to submit purchase details.",
+      }));
+      return;
+    }
+    setRedemptionHistory((prev) =>
+      prev.map((item) =>
+        item.id === entry.id
+          ? {
+              ...item,
+              manualPurchase: {
+                amountCents: Math.round(amount * 100),
+                paymentType: checkoutVerification.paymentType,
+                status: "processing",
+                createdAt: Date.now(),
+              },
+              purchaseVerification: {
+                ...item.purchaseVerification,
+                status: "pending",
+                reasonCode: "manual_purchase_processing",
+                reasonDetail: "Processing until approved by Wello.",
+              },
+            }
+          : item,
+      ),
+    );
+    setCheckoutVerification((prev) => ({ ...prev, visible: false, submitting: false }));
+    closeBusinessDetail();
+    openSheet("history");
+  };
+
   const handleLocateMe = async () => {
     try {
       setLocating(true);
@@ -16290,8 +16652,18 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     setSelectedId(business.id);
     setSelectedOfferCardId(selectedCardKey || null);
     setActiveTab("discover");
+    const coordinate = getBusinessCoordinate(business);
+    if (coordinate) {
+      const nextRegion = {
+        ...coordinate,
+        latitudeDelta: MAP_REGION.latitudeDelta,
+        longitudeDelta: MAP_REGION.longitudeDelta,
+      };
+      setMapRegion(nextRegion);
+      animateMapToRegion(nextRegion, 450);
+    }
     requestAnimationFrame(() => {
-      bottomSheetRef.current?.snapToIndex(2);
+      bottomSheetRef.current?.snapToIndex(0);
       requestAnimationFrame(() => {
         scrollToBusiness(business, selectedCardKey);
       });
@@ -19821,9 +20193,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     source: "receipt",
                     status: "pending",
                     reasonCode: "receipt_under_review",
-                    reasonDetail: isTradesRedemptionEntry(entry)
-                      ? `Receipt sent. Trades review can take up to 7 business days.`
-                      : "Receipt sent for review.",
+                    reasonDetail: "Receipt sent for review.",
                     lastCheckedAt: Date.now(),
                     confirmedAt: null,
                     rejectedAt: null,
@@ -19841,11 +20211,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         showReceiptOverlay(
           "success",
           "Receipt sent",
-          isTradesRedemptionEntry(entry)
-            ? "Trades review can take up to 7 business days."
-            : "We got it.",
+          "We got it.",
           { autoHideMs: 1600 },
         );
+        if (entry?.purchaseVerification?.source === "checkout") {
+          closeBusinessDetail();
+          openSheet("history");
+        }
         loadRedemptions({ silent: true });
       } finally {
         if (pickerPendingTimer) {
@@ -21267,19 +21639,22 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         "id",
         "business_id",
         "offer_id",
+        "qr_payload",
         "created_at",
         "offer:offers (id, title, description, offer_type, image_url)",
-        "business:businesses (id, name, category_key, category_label)",
+        "business:businesses (id, name, category_key, category_label, default_cashback_rate_bps)",
         "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference, cashback_events (amount_cents, status))",
         "purchase_verifications (id, source, status, reason_code, reason_detail, last_checked_at, confirmed_at, rejected_at)",
+        "manual_purchase_submissions (id, amount_cents, payment_type, status, created_at, reviewed_at, review_notes)",
       ].join(",");
       const selectBasic = [
         "id",
         "business_id",
         "offer_id",
+        "qr_payload",
         "created_at",
         "offer:offers (id, title, description, offer_type, image_url)",
-        "business:businesses (id, name, category_key, category_label)",
+        "business:businesses (id, name, category_key, category_label, default_cashback_rate_bps)",
         "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference)",
         "purchase_verifications (id, source, status, reason_code, reason_detail, last_checked_at, confirmed_at, rejected_at)",
       ].join(",");
@@ -21287,9 +21662,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         "id",
         "business_id",
         "offer_id",
+        "qr_payload",
         "created_at",
         "offer:offers (id, title, description, offer_type, image_url)",
-        "business:businesses (id, name, category_key, category_label)",
+        "business:businesses (id, name, category_key, category_label, default_cashback_rate_bps)",
         "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference)",
       ].join(",");
 
@@ -21306,7 +21682,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           message.includes("could not find") ||
           message.includes("embedded") ||
           message.includes("cashback_events") ||
-          message.includes("purchase_verifications")
+          message.includes("purchase_verifications") ||
+          message.includes("manual_purchase_submissions")
         ) {
           ({ data, error } = await supabase
             .from("redemptions")
@@ -21348,7 +21725,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         .map(mapSupabaseRedemption)
         .filter(
           (row) =>
-            !recentlyUnredeemedRef.current.has(String(row?.id || "")),
+            !recentlyUnredeemedRef.current.has(String(row?.id || "")) &&
+            (Number(row?.createdAt) || 0) >= HISTORY_DISPLAY_RESET_AT,
         );
       setRedemptionHistory((prev) => {
         const optimisticRows = (Array.isArray(prev) ? prev : []).filter(
@@ -21999,20 +22377,42 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       if (!silent) {
         setBusinessRedemptionStatus({ loading: true, error: null });
       }
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from("redemptions")
         .select(
           [
             "id",
             "business_id",
             "offer_id",
+            "qr_payload",
             "created_at",
             "offer:offers (id, title, description, offer_type, image_url)",
             "receipt_uploads (id, uploaded_at, storage_path)",
+            "manual_purchase_submissions (id, amount_cents, payment_type, status, created_at, reviewed_at, review_notes)",
           ].join(","),
         )
         .eq("business_id", businessId)
         .order("created_at", { ascending: false });
+      if (
+        error &&
+        String(error.message || "").toLowerCase().includes("manual_purchase_submissions")
+      ) {
+        ({ data, error } = await supabase
+          .from("redemptions")
+          .select(
+            [
+              "id",
+              "business_id",
+              "offer_id",
+              "qr_payload",
+              "created_at",
+              "offer:offers (id, title, description, offer_type, image_url)",
+              "receipt_uploads (id, uploaded_at, storage_path)",
+            ].join(","),
+          )
+          .eq("business_id", businessId)
+          .order("created_at", { ascending: false }));
+      }
       if (error) {
         if (!silent) {
           setBusinessRedemptionStatus({
@@ -22785,10 +23185,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   Platform.OS === "android" &&
                   androidIcon &&
                   !FORCE_VECTOR_MARKERS;
-                const markerAnchor =
-                  Platform.OS === "android" && useAndroidImages
-                    ? { x: 0.5, y: 0.5 }
-                    : { x: 0.5, y: 1 };
+                const markerAnchor = { x: 0.5, y: 1 };
                 const markerCoordinate =
                   business.coordinate ||
                   (business.source === "supabase"
@@ -22821,7 +23218,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       }
                       zIndex={Platform.OS === "android" && isSelected ? 2 : 0}
                     >
-                      {Platform.OS !== "android" && (
+                      {(
                         <View
                           style={[
                             styles.markerWrap,
@@ -22832,25 +23229,32 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                         >
                           <View
                             style={[
-                              styles.markerIcon,
-                              { backgroundColor: category.color },
-                              isSelected && styles.markerIconSelected,
+                              styles.cashbackMarker,
+                              isSelected && styles.cashbackMarkerSelected,
                             ]}
                           >
-                            <Ionicons
-                              name={category.icon}
-                              size={MARKER_ICON_SIZE}
-                              color={COLORS.white}
-                            />
+                            <Text style={styles.cashbackMarkerText}>
+                              {formatPercentOnlyLabel(
+                                resolveDisplayedBusinessDefaultCashbackRateBps(
+                                  business,
+                                ) / 100,
+                              ) || "Deal"}
+                            </Text>
                           </View>
                           <View style={styles.markerPointerWrap}>
                             <View
                               style={[
                                 styles.markerPointer,
-                                { backgroundColor: category.color },
+                                { backgroundColor: "#15803D" },
                               ]}
                             />
                           </View>
+                          <Text
+                            style={styles.cashbackMarkerBusinessName}
+                            numberOfLines={1}
+                          >
+                            {business.name || "Business"}
+                          </Text>
                         </View>
                       )}
                     </Marker>
@@ -22858,6 +23262,79 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 );
               })}
             </MapView>
+
+            {activeTab === "discover" &&
+            !businessDetailOpen &&
+            !discoverSearchOpen &&
+            !fullScreenOverlayOpen &&
+            discoverSheetOfferCards.length > 0 ? (
+              <View
+                style={[
+                  styles.discoverBottomBusinessCarousel,
+                  { bottom: SAFE_BOTTOM + 12 },
+                ]}
+              >
+                {SheetPeekRow({
+                  offers: discoverSheetOfferCards,
+                  onCardPress: handleCardPress,
+                  interactive: true,
+                })}
+              </View>
+            ) : null}
+
+            {activeTab === "discover" &&
+            !businessDetailOpen &&
+            !discoverSearchOpen &&
+            !fullScreenOverlayOpen ? (
+              <View
+                style={[styles.discoverCategoryDock, { top: topTabBarOffset + 100 }]}
+                pointerEvents="box-none"
+              >
+                {DISCOVER_SHEET_CATEGORY_TABS.map((tab) => {
+                  const selected = discoverCategoryTab === tab.key;
+                  const isAuto = tab.key === "auto";
+                  const isAll = tab.key === "all";
+                  const categoryColor = isAll
+                    ? "#111827"
+                    : isAuto
+                      ? "#1E3A8A"
+                      : "#7C3AED";
+                  return (
+                    <TouchableOpacity
+                      key={tab.key}
+                      style={[
+                        styles.discoverCategoryCard,
+                        selected && {
+                          borderColor: categoryColor,
+                          borderWidth: 2,
+                        },
+                      ]}
+                      onPress={() => setDiscoverCategoryTab(tab.key)}
+                      activeOpacity={0.88}
+                    >
+                      <View
+                        style={[
+                          styles.discoverCategoryIconOrb,
+                        ]}
+                      >
+                        <Ionicons
+                          name={isAll ? "grid" : isAuto ? "car-sport" : "home"}
+                          size={isAuto ? 33 : 31}
+                          color={categoryColor}
+                        />
+                      </View>
+                      <Text
+                        style={[
+                          styles.discoverCategoryCardText,
+                        ]}
+                      >
+                        {tab.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ) : null}
 
             {(activeTab === "discover" ||
               (activeTab === "business" &&
@@ -24049,8 +24526,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                         )?.imageUrl ||
                         "",
                     ).trim();
-                    const categoryLabel =
-                      businessDetail?.category || "Local business";
                     const businessCashbackRateBps =
                       resolveDisplayedBusinessDefaultCashbackRateBps(
                         businessDetail,
@@ -24089,6 +24564,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                           );
                       return formatDistanceMilesLabel(miles);
                     })();
+                    const displayDistanceLabel = String(distanceLabel || "Nearby").replace(
+                      /\bmi\b/i,
+                      "miles",
+                    );
+                    const businessWebsite = String(
+                      businessDetail?.website || businessDetail?.websiteUrl || "",
+                    ).trim();
+                    const checkInPrompt =
+                      businessDetail?.categoryKey === "trades"
+                        ? "Pro arrived?"
+                        : "Arrived at the pro?";
                     return (
                       <ScrollView
                         style={styles.businessPageScroll}
@@ -24096,34 +24582,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                         showsVerticalScrollIndicator={false}
                         keyboardShouldPersistTaps="handled"
                       >
-                        <View
-                          style={[
-                            styles.businessPageHeader,
-                            modalTopInset > 0 && {
-                              paddingTop: modalTopInset + 8,
-                            },
-                          ]}
-                        >
-                          <TouchableOpacity
-                            style={styles.businessPageBackButton}
-                            onPress={closeBusinessDetail}
-                            activeOpacity={0.85}
-                            hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-                          >
-                            <Ionicons
-                              name="arrow-back"
-                              size={24}
-                              color={COLORS.ink}
-                            />
-                          </TouchableOpacity>
-                          <Text
-                            style={styles.businessPageHeaderTitle}
-                            numberOfLines={1}
-                          >
-                            {businessDetail?.name || "Business"}
-                          </Text>
-                        </View>
-
                         <View style={styles.businessPageHeroWrap}>
                           {heroImageUrl ? (
                             <Image
@@ -24140,133 +24598,181 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               />
                             </View>
                           )}
+                          <View
+                            style={[
+                              styles.businessPageHeroActions,
+                              { top: modalTopInset + 12 },
+                            ]}
+                          >
+                            <TouchableOpacity
+                              style={styles.businessPageHeroButton}
+                              onPress={closeBusinessDetail}
+                            >
+                              <Ionicons name="arrow-back" size={24} color="#0F172A" />
+                            </TouchableOpacity>
+                            <View style={styles.businessPageHeroActionsRight}>
+                              <TouchableOpacity
+                                style={styles.businessPageHeroButton}
+                                onPress={() =>
+                                  Share.share({
+                                    message: `${businessDetail?.name || "Business"}${
+                                      businessWebsite ? ` — ${businessWebsite}` : ""
+                                    }`,
+                                  })
+                                }
+                              >
+                                <Ionicons name="share-outline" size={22} color="#0F172A" />
+                              </TouchableOpacity>
+                              <View style={styles.businessPageHeroButton}>
+                                <Ionicons name="heart-outline" size={23} color="#0F172A" />
+                              </View>
+                            </View>
+                          </View>
+                          <View style={styles.businessPageFeaturedBadge}>
+                            <Ionicons name="star" size={14} color="#F59E0B" />
+                            <Text style={styles.businessPageFeaturedText}>Featured</Text>
+                          </View>
                         </View>
 
                         <View style={styles.businessPageBody}>
-                          <View style={styles.businessPageTitleRow}>
-                            <Text style={styles.businessPageTitle}>
-                              {businessDetail?.name || "Business"}
+                          <Text style={styles.businessPageTitle}>
+                            {businessDetail?.name || "Business"}
+                          </Text>
+
+                          <View style={styles.businessPageRatingRow}>
+                            <Ionicons name="star" size={18} color="#FBBF24" />
+                            <Text style={styles.businessPageRatingText}>
+                              {reviewAverage ? reviewAverage.toFixed(1) : "New"} ({reviewCount} reviews)
                             </Text>
-                            <View
-                              style={[
-                                styles.businessPageStatusPill,
-                                !hoursStatus.isOpen &&
-                                  styles.businessPageStatusPillClosed,
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  styles.businessPageStatusText,
-                                  !hoursStatus.isOpen &&
-                                    styles.businessPageStatusTextClosed,
-                                ]}
-                              >
-                                {hoursStatus.statusText}
-                              </Text>
-                            </View>
                           </View>
 
-                          <View style={styles.businessPageMetaRow}>
-                            <Ionicons
-                              name="location-outline"
-                              size={18}
-                              color={COLORS.muted}
-                            />
-                            <Text style={styles.businessPageMetaText}>
-                              {distanceLabel}
+                          <View style={styles.businessPageDistanceStatusRow}>
+                            <Text style={styles.businessPageDistanceText}>
+                              {displayDistanceLabel} away
                             </Text>
                             <Text style={styles.businessPageMetaDot}>•</Text>
-                            <Ionicons
-                              name="star"
-                              size={18}
-                              color={COLORS.sun}
-                            />
-                            <Text style={styles.businessPageMetaText}>
-                              {reviewAverage ? reviewAverage.toFixed(1) : "--"}
-                            </Text>
-                            <Text style={styles.businessPageMetaText}>
-                              ({reviewCount} reviews)
-                            </Text>
-                          </View>
-
-                          <View style={styles.businessPageCategoryChip}>
-                            <Text style={styles.businessPageCategoryChipText}>
-                              {categoryLabel}
-                            </Text>
-                          </View>
-
-                          <View style={styles.businessPageFallbackRedeemCard}>
-                            <Text style={styles.businessPageOfferTitle}>
-                              {businessCashbackLabel} cashback
-                            </Text>
-                            <TouchableOpacity
+                            <Text
                               style={[
-                                styles.businessPageCashbackRedeemButton,
-                                redeemGateBusy &&
-                                  styles.businessPageCashbackRedeemButtonDisabled,
+                                styles.businessPageOpenText,
+                                !hoursStatus.isOpen && styles.businessPageClosedText,
                               ]}
-                              onPress={() =>
-                                handleRedeemOffer({
-                                  businessId: businessDetail.id,
-                                  business: businessDetail,
-                                  offerTitle: `${businessCashbackLabel} Cashback`,
-                                  offerType: "cashback",
-                                  description: `Earn ${businessCashbackLabel} cashback on your purchase.`,
-                                  imageUrl: heroImageUrl,
-                                  tags: businessDetail?.tags || [],
-                                })
-                              }
-                              disabled={redeemGateBusy}
-                              activeOpacity={0.88}
                             >
-                              <Text style={styles.businessPageCashbackRedeemButtonText}>
-                                {`Redeem ${businessCashbackLabel} cashback`}
-                              </Text>
-                            </TouchableOpacity>
+                              {hoursStatus.statusText}
+                            </Text>
                           </View>
 
-                          <View style={styles.businessPageActionRow}>
-                            <TouchableOpacity
-                              style={styles.businessPageDirectionsButton}
-                              onPress={() => openMapsForBusiness(businessDetail)}
-                              activeOpacity={0.88}
-                            >
-                              <Ionicons
-                                name="navigate-outline"
-                                size={20}
-                                color={COLORS.white}
-                              />
-                              <Text
-                                style={styles.businessPageDirectionsButtonText}
+                          <View style={styles.businessPageCashbackBlock}>
+                            <Text style={styles.businessPageCashbackHeroText}>
+                              {businessCashbackLabel} Cashback
+                            </Text>
+                            <Text style={styles.businessPageCashbackSubtext}>
+                              on all services
+                            </Text>
+                          </View>
+
+                          <View style={styles.businessPageQuickActions}>
+                            {[
+                              {
+                                key: "call",
+                                label: "Call",
+                                icon: "call-outline",
+                                disabled: !hasBusinessPhone,
+                                onPress: () => openPhoneForBusiness(businessDetail),
+                              },
+                              {
+                                key: "directions",
+                                label: "Directions",
+                                icon: "navigate-outline",
+                                onPress: () => openMapsForBusiness(businessDetail),
+                              },
+                            ].map((action) => (
+                              <TouchableOpacity
+                                key={action.key}
+                                style={[
+                                  styles.businessPageQuickAction,
+                                  action.disabled && styles.businessPageQuickActionDisabled,
+                                ]}
+                                disabled={action.disabled}
+                                onPress={action.onPress}
                               >
-                                Get Directions
-                              </Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={[
-                                styles.businessPageCallButton,
-                                !hasBusinessPhone &&
-                                  styles.businessPageCallButtonDisabled,
-                              ]}
-                              onPress={() =>
-                                hasBusinessPhone
-                                  ? openPhoneForBusiness(businessDetail)
-                                  : null
-                              }
-                              disabled={!hasBusinessPhone}
-                              activeOpacity={0.88}
-                            >
-                              <Ionicons
-                                name="call-outline"
-                                size={20}
-                                color={COLORS.ink}
-                              />
-                              <Text style={styles.businessPageCallButtonText}>
-                                Call
-                              </Text>
-                            </TouchableOpacity>
+                                <View style={styles.businessPageQuickActionIcon}>
+                                  <Ionicons name={action.icon} size={23} color="#0F172A" />
+                                </View>
+                                <Text style={styles.businessPageQuickActionText}>
+                                  {action.label}
+                                </Text>
+                              </TouchableOpacity>
+                            ))}
                           </View>
 
+                          <View style={styles.businessPageCheckInSection}>
+                            <Text style={styles.businessPageCheckInPrompt}>
+                              {businessCheckInState === "confirm"
+                                ? "Confirm check in?"
+                                : businessCheckInState === "checkout_confirm"
+                                  ? "Job done?"
+                                : businessCheckInState === "checked_in"
+                                  ? "Ready to check out?"
+                                  : checkInPrompt}
+                            </Text>
+                            {businessCheckInState === "confirm" ||
+                            businessCheckInState === "checkout_confirm" ? (
+                              <View style={styles.businessPageCheckInConfirmRow}>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.businessPageCheckInButton,
+                                    styles.businessPageCheckInButtonCompact,
+                                  ]}
+                                  onPress={() => {
+                                    if (businessCheckInState === "checkout_confirm") {
+                                      void beginPostCheckoutVerification();
+                                      return;
+                                    }
+                                    setBusinessCheckInState("checked_in");
+                                  }}
+                                >
+                                  <Text style={styles.businessPageCheckInButtonText}>
+                                    {businessCheckInState === "checkout_confirm"
+                                      ? "Yes, Check Out"
+                                      : "Confirm Check In"}
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.businessPageCheckInCancelButton}
+                                  onPress={() =>
+                                    setBusinessCheckInState(
+                                      businessCheckInState === "checkout_confirm"
+                                        ? "checked_in"
+                                        : "idle",
+                                    )
+                                  }
+                                >
+                                  <Text style={styles.businessPageCheckInCancelText}>
+                                    No, Not Yet
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            ) : (
+                              <TouchableOpacity
+                                style={styles.businessPageCheckInButton}
+                                onPress={() => {
+                                  if (businessCheckInState === "checked_in") {
+                                    setBusinessCheckInState("checkout_confirm");
+                                    return;
+                                  }
+                                  setBusinessCheckInState("confirm");
+                                }}
+                              >
+                                <Text style={styles.businessPageCheckInButtonText}>
+                                  {businessCheckInState === "checked_in"
+                                    ? "Check Out"
+                                    : "Check In"}
+                                </Text>
+                              </TouchableOpacity>
+                            )}
+                          </View>
+
+                          {false ? <>
                           <View style={styles.businessPageOffersSection}>
                             <Text style={styles.businessPageSectionTitle}>
                               Special Wello Offers
@@ -24394,6 +24900,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               })
                             )}
                           </View>
+                          </> : null}
                         </View>
                       </ScrollView>
                     );
@@ -24899,9 +25406,19 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                                   styles.redeemTileBadgeText
                                                 }
                                               >
-                                                No receipt
+                                                {entry.manualPurchase
+                                                  ? "Processing"
+                                                  : "No receipt"}
                                               </Text>
                                             </View>
+                                            {entry.manualPurchase ? (
+                                              <Text style={styles.receiptTileDate}>
+                                                {formatCurrencyFromCents(
+                                                  entry.manualPurchase.amountCents,
+                                                )}{" "}
+                                                · {String(entry.manualPurchase.paymentType || "other")}
+                                              </Text>
+                                            ) : null}
                                             <Text
                                               style={styles.receiptTileDate}
                                             >
@@ -26127,6 +26644,272 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   </View>
                 </View>
               </View>
+            </Modal>
+
+            {discoverBusinessListOpen ? (
+            <View style={styles.discoverBusinessListLayer}>
+              <Pressable
+                style={styles.discoverBusinessListBackdrop}
+                onPress={() => setDiscoverBusinessListOpen(false)}
+              />
+              <Animated.View
+                style={[
+                  styles.discoverBusinessListPanel,
+                  { transform: [{ translateY: discoverBusinessPanelTranslateY }] },
+                ]}
+              >
+                <PanGestureHandler
+                  activeOffsetY={[-8, 8]}
+                  failOffsetX={[-22, 22]}
+                  onGestureEvent={handleDiscoverBusinessPanelGesture}
+                  onHandlerStateChange={(event) => {
+                    const { state, translationY } = event.nativeEvent;
+                    if (state === GestureState.BEGAN) {
+                      discoverBusinessPanelBaseY.setValue(0);
+                      discoverBusinessPanelGestureY.setValue(0);
+                    } else if (state === GestureState.END) {
+                      const currentY = Math.max(0, Number(translationY || 0));
+                      discoverBusinessPanelGestureY.setValue(0);
+                      discoverBusinessPanelBaseY.setValue(currentY);
+                      if (translationY > 70) {
+                        Animated.timing(discoverBusinessPanelBaseY, {
+                          toValue: 420,
+                          duration: 220,
+                          useNativeDriver: true,
+                        }).start(() => setDiscoverBusinessListOpen(false));
+                      } else {
+                        Animated.spring(discoverBusinessPanelBaseY, {
+                          toValue: 0,
+                          useNativeDriver: true,
+                          damping: 22,
+                          stiffness: 220,
+                        }).start();
+                      }
+                    }
+                  }}
+                >
+                <View style={styles.discoverBusinessListHeader}>
+                  <View>
+                    <Text style={styles.discoverBusinessListTitle}>Businesses near you</Text>
+                    <Text style={styles.discoverBusinessListSubtitle}>
+                      Scroll to explore your options
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.discoverBusinessListClose}
+                    onPress={() => setDiscoverBusinessListOpen(false)}
+                  >
+                    <Ionicons name="chevron-down" size={21} color="#334155" />
+                  </TouchableOpacity>
+                </View>
+                </PanGestureHandler>
+                <ScrollView
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.discoverBusinessListContent}
+                >
+                  {discoverSearchResults.map((business) => {
+                    const card = business.card || business;
+                    const cashbackRateBps =
+                      resolveDisplayedBusinessDefaultCashbackRateBps(business);
+                    const cashbackLabel =
+                      formatPercentOnlyLabel(cashbackRateBps / 100) || "Cashback";
+                    const rating = Number(card?.rating ?? business?.rating);
+                    const distance = String(
+                      business?.distanceLabel || card?.distanceLabel || "Nearby",
+                    ).replace(/\bmi\b/i, "miles");
+                    return (
+                      <TouchableOpacity
+                        key={business.id}
+                        style={styles.discoverBusinessListRow}
+                        activeOpacity={0.88}
+                        onPress={() => {
+                          setDiscoverBusinessListOpen(false);
+                          void handleCardPress(card);
+                        }}
+                      >
+                        {business.previewImageUrl ? (
+                          <Image
+                            source={{ uri: business.previewImageUrl }}
+                            style={styles.discoverBusinessListImage}
+                            resizeMode="contain"
+                          />
+                        ) : (
+                          <View style={styles.discoverBusinessListImageFallback}>
+                            <Ionicons name="business-outline" size={22} color="#166534" />
+                          </View>
+                        )}
+                        <View style={styles.discoverBusinessListCopy}>
+                          <Text style={styles.discoverBusinessListName} numberOfLines={1}>
+                            {business.name || "Business"}
+                          </Text>
+                          <Text style={styles.discoverBusinessListMeta} numberOfLines={1}>
+                            ★ {Number.isFinite(rating) ? rating.toFixed(1) : "New"} · {distance}
+                          </Text>
+                          <Text style={styles.discoverBusinessListCashback}>
+                            {cashbackLabel} Cashback
+                          </Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={19} color="#94A3B8" />
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </Animated.View>
+            </View>
+            ) : null}
+
+            <Modal
+              transparent
+              visible={checkoutVerification.visible}
+              animationType="fade"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={() =>
+                setCheckoutVerification((prev) => ({ ...prev, visible: false }))
+              }
+            >
+              <KeyboardAvoidingView
+                style={styles.checkoutVerifyKeyboardView}
+                behavior={Platform.OS === "ios" ? "padding" : "height"}
+                keyboardVerticalOffset={Platform.OS === "ios" ? 18 : 0}
+              >
+                <Pressable
+                  style={styles.checkoutVerifyOverlay}
+                  onPress={Keyboard.dismiss}
+                >
+                <Pressable
+                  style={styles.checkoutVerifyCard}
+                  onPress={(event) => event.stopPropagation()}
+                >
+                  <View style={styles.checkoutVerifyIcon}>
+                    <Ionicons
+                      name={checkoutVerification.step === "choice" ? "receipt-outline" : "card-outline"}
+                      size={25}
+                      color={COLORS.pine}
+                    />
+                  </View>
+                  <Text style={styles.checkoutVerifyTitle}>
+                    {checkoutVerification.step === "choice"
+                      ? "Do you have a receipt?"
+                      : "Purchase details"}
+                  </Text>
+                  <Text style={styles.checkoutVerifyBody}>
+                    {checkoutVerification.step === "choice"
+                      ? "A receipt helps us verify your cashback faster."
+                      : "Enter the amount paid and how you paid."}
+                  </Text>
+
+                  {checkoutVerification.step === "choice" ? (
+                    <View style={styles.checkoutVerifyActions}>
+                      <TouchableOpacity
+                        style={styles.checkoutVerifyPrimary}
+                        onPress={() => {
+                          const entry = checkoutVerification.entry;
+                          setCheckoutVerification((prev) => ({ ...prev, visible: false }));
+                          setTimeout(() => handleUploadReceipt(entry, "camera"), 450);
+                        }}
+                      >
+                        <Text style={styles.checkoutVerifyPrimaryText}>Yes, Take Receipt Photo</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.checkoutVerifySecondary}
+                        onPress={() =>
+                          setCheckoutVerification((prev) => ({
+                            ...prev,
+                            step: "manual",
+                            error: null,
+                          }))
+                        }
+                      >
+                        <Text style={styles.checkoutVerifySecondaryText}>No Receipt</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <View style={styles.checkoutVerifyForm}>
+                      <Text style={styles.checkoutVerifyLabel}>Amount paid</Text>
+                      <View style={styles.checkoutVerifyAmountRow}>
+                        <Text style={styles.checkoutVerifyCurrency}>$</Text>
+                        <TextInput
+                          style={styles.checkoutVerifyAmountInput}
+                          value={checkoutVerification.amount}
+                          onChangeText={(amount) =>
+                            setCheckoutVerification((prev) => ({ ...prev, amount, error: null }))
+                          }
+                          placeholder="0.00"
+                          placeholderTextColor="#94A3B8"
+                          keyboardType="decimal-pad"
+                        />
+                      </View>
+                      <Text style={styles.checkoutVerifyLabel}>Payment type</Text>
+                      <View style={styles.checkoutVerifyPaymentRow}>
+                        {[
+                          ["card", "Card"],
+                          ["cash", "Cash"],
+                          ["bank", "Bank"],
+                          ["other", "Other"],
+                        ].map(([value, label]) => {
+                          const selected = checkoutVerification.paymentType === value;
+                          return (
+                            <TouchableOpacity
+                              key={value}
+                              style={[
+                                styles.checkoutVerifyPaymentChip,
+                                selected && styles.checkoutVerifyPaymentChipSelected,
+                              ]}
+                              onPress={() =>
+                                setCheckoutVerification((prev) => ({
+                                  ...prev,
+                                  paymentType: value,
+                                  error: null,
+                                }))
+                              }
+                            >
+                              <Text
+                                style={[
+                                  styles.checkoutVerifyPaymentText,
+                                  selected && styles.checkoutVerifyPaymentTextSelected,
+                                ]}
+                              >
+                                {label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                      {checkoutVerification.error ? (
+                        <Text style={styles.checkoutVerifyError}>{checkoutVerification.error}</Text>
+                      ) : null}
+                      <TouchableOpacity
+                        style={[
+                          styles.checkoutVerifyPrimary,
+                          checkoutVerification.submitting && styles.businessPageQuickActionDisabled,
+                        ]}
+                        disabled={checkoutVerification.submitting}
+                        onPress={() => {
+                          Keyboard.dismiss();
+                          void submitNoReceiptPurchase();
+                        }}
+                      >
+                        {checkoutVerification.submitting ? (
+                          <ActivityIndicator color="#FFFFFF" />
+                        ) : (
+                          <Text style={styles.checkoutVerifyPrimaryText}>Submit for Approval</Text>
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.checkoutVerifyBack}
+                        disabled={checkoutVerification.submitting}
+                        onPress={() =>
+                          setCheckoutVerification((prev) => ({ ...prev, step: "choice", error: null }))
+                        }
+                      >
+                        <Text style={styles.checkoutVerifyBackText}>Back</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </Pressable>
+                </Pressable>
+              </KeyboardAvoidingView>
             </Modal>
 
             <Modal
@@ -27606,17 +28389,15 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             {!fullScreenOverlayOpen ? (
               <>
                 <Reanimated.View
-                  pointerEvents={
-                    activeTab === "discover" && discoverSheetIndex === 2
-                      ? "auto"
-                      : "none"
-                  }
+                  pointerEvents="none"
                   style={[styles.sheetBackdropLayer, sheetBackdropAnimatedStyle]}
                 />
                 <Reanimated.View
                   style={[
                     styles.reanimatedSheetContainer,
                     styles.sheetBackground,
+                    activeTab === "discover" && styles.sheetBackgroundDiscover,
+                    activeTab === "discover" && styles.discoverSheetHidden,
                     activeTab !== "discover" &&
                       styles.reanimatedSheetContainerFullScreen,
                     activeTab !== "discover" &&
@@ -27632,22 +28413,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 >
               <PanGestureHandler
                 ref={sheetPanRef}
-                enabled={activeTab === "discover"}
+                enabled={false}
                 activeOffsetY={[-5, 5]}
                 onGestureEvent={handleSheetGestureEvent}
                 onHandlerStateChange={handleSheetGestureStateChange}
               >
                 {activeTab === "discover" ? (
-                  <View style={styles.sheetHeaderChrome}>
-                    {renderSheetHandle()}
-                    <SheetPeekRow
-                      label={activeSheetPeekLabel}
-                      meta={activeSheetPeekMeta}
-                      onPress={() => bottomSheetRef.current?.snapToIndex(1)}
-                      animatedStyle={discoverMiniAnimatedStyle}
-                      interactive={!discoverSheetExpanded}
-                    />
-                  </View>
+                  <View />
                 ) : (
                   <View
                     style={[
@@ -27765,13 +28537,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 )}
               </PanGestureHandler>
               <Reanimated.View
-                pointerEvents={
-                  activeTab === "discover"
-                    ? discoverSheetExpanded
-                      ? "auto"
-                      : "none"
-                    : "auto"
-                }
+                pointerEvents={activeTab === "discover" ? "none" : "auto"}
                 style={[styles.sheetMainContent, sheetMainContentAnimatedStyle]}
               >
                 <SwipeableTabView
@@ -27786,7 +28552,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     ref={sheetScrollRef}
                     simultaneousHandlers={sheetPanRef}
                     style={styles.sheetScroll}
-                    stickyHeaderIndices={[0]}
                     showsVerticalScrollIndicator={false}
                     persistentScrollbar={false}
                     overScrollMode="never"
@@ -27825,34 +28590,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     onMomentumScrollEnd={handleDiscoverMomentumScrollEnd}
                     scrollEventThrottle={16}
                   >
-                    <View style={styles.discoverCategoriesRow}>
-                      <View style={styles.discoverCategoriesRail}>
-                        {DISCOVER_HOME_TABS.map((tab) => {
-                          const selected = discoverCategoryTab === tab.key;
-                          return (
-                            <TouchableOpacity
-                              key={tab.key}
-                              style={[
-                                styles.discoverCategoryTab,
-                                selected && styles.discoverCategoryTabActive,
-                              ]}
-                              onPress={() => setDiscoverCategoryTab(tab.key)}
-                              activeOpacity={0.85}
-                            >
-                              <Text
-                                style={[
-                                  styles.discoverCategoryTabText,
-                                  selected && styles.discoverCategoryTabTextActive,
-                                ]}
-                              >
-                                {tab.label}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    </View>
-
                     {(remoteStatus.loading ||
                       remoteStatus.error ||
                       offerStatus.loading ||
@@ -27867,13 +28604,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                         </Text>
                       </View>
                     )}
-
-                    <View style={styles.cardHeaderRow}>
-                      <Text style={styles.discoverSectionTitle}>Nearby</Text>
-                      <Text style={styles.discoverSectionMeta}>
-                        {discoverSheetOfferCards.length} nearby
-                      </Text>
-                    </View>
 
                     {discoverSheetOfferCards.length === 0 ? (
                       <View style={styles.emptyState}>
@@ -30534,24 +31264,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               </Text>
                             )}
                             <View style={styles.historySummaryCardsRow}>
-                              <TouchableOpacity
-                                style={[
-                                  styles.historySummaryCard,
-                                  historySummaryFilter === "earned" &&
-                                    styles.historySummaryCardActive,
-                                ]}
-                                activeOpacity={0.9}
-                                onPress={() => setHistorySummaryFilter("earned")}
-                              >
+                              <View style={styles.historySummaryCard}>
                                 <View style={styles.historySummaryCardHeader}>
                                   <Ionicons
                                     name="arrow-down-outline"
                                     size={16}
-                                    color={
-                                      historySummaryFilter === "earned"
-                                        ? "#047857"
-                                        : "#64748B"
-                                    }
+                                    color="#64748B"
                                   />
                                   <Text style={styles.historySummaryCardLabel}>
                                     Earned
@@ -30566,18 +31284,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                     ? ""
                                     : "s"}
                                 </Text>
-                              </TouchableOpacity>
-                              <TouchableOpacity
-                                style={[
-                                  styles.historySummaryCard,
-                                  historySummaryFilter === "cashed_out" &&
-                                    styles.historySummaryCardActiveMuted,
-                                ]}
-                                activeOpacity={0.9}
-                                onPress={() =>
-                                  setHistorySummaryFilter("cashed_out")
-                                }
-                              >
+                              </View>
+                              <View style={styles.historySummaryCard}>
                                 <View style={styles.historySummaryCardHeader}>
                                   <Ionicons
                                     name="arrow-up-outline"
@@ -30597,21 +31305,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                     ? ""
                                     : "s"}
                                 </Text>
-                              </TouchableOpacity>
-                            </View>
-                            <View style={styles.historySummaryFilterRow}>
-                              <View style={styles.historySummaryFilterPill}>
-                                <Text style={styles.historySummaryFilterPillText}>
-                                  Showing: {historySummaryModeLabel}
-                                </Text>
                               </View>
-                              <TouchableOpacity
-                                onPress={() => setHistorySummaryFilter("earned")}
-                              >
-                                <Text style={styles.historySummaryClearText}>
-                                  Clear filter
-                                </Text>
-                              </TouchableOpacity>
                             </View>
                             {historyVerifyNotice && (
                               <View
@@ -30846,10 +31540,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                             ) : redemptionHistory.length === 0 ? (
                               <View style={styles.emptyState}>
                                 <Text style={styles.emptyTitle}>
-                                  No redemptions yet.
+                                  No purchase history yet.
                                 </Text>
                                 <Text style={styles.emptyCopy}>
-                                  Redeem an offer to see it here.
+                                  Completed checkouts will appear here.
                                 </Text>
                               </View>
                             ) : (
@@ -30882,8 +31576,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                     ...entriesWithReceipt,
                                   ];
                                   const renderHistoryEntry = (entry) => {
-                                    const offerTitle =
-                                      entry.offer?.title || "Redeemed offer";
+                                    const cashbackRateBps =
+                                      resolveDisplayedBusinessDefaultCashbackRateBps(
+                                        entry.business,
+                                      ) || DEFAULT_CASHBACK_RATE_BPS;
+                                    const cashbackTitle = `${
+                                      formatPercentOnlyLabel(cashbackRateBps / 100) || "Cashback"
+                                    } Cashback`;
                                     const hasReceipt = Boolean(
                                       entry.receipt?.id,
                                     );
@@ -30907,8 +31606,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                       hasReceipt &&
                                       receiptReviewStatus === "rejected" &&
                                       entry?.receipt?.retryAllowed === true;
+                                    const hasManualPurchase = Boolean(
+                                      entry.manualPurchase?.id || entry.manualPurchase?.status,
+                                    );
+                                    const submittedAt =
+                                      entry.receipt?.uploadedAt ||
+                                      entry.manualPurchase?.createdAt ||
+                                      entry.createdAt;
                                     const needsReceipt =
-                                      !hasReceipt || canResubmitRejectedReceipt;
+                                      (!hasReceipt && !hasManualPurchase) ||
+                                      canResubmitRejectedReceipt;
                                     const canUploadReceipt =
                                       canResubmitRejectedReceipt ||
                                       (needsReceipt && receiptWindowOpen);
@@ -30940,17 +31647,36 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                               "",
                                           ).trim()
                                         : "";
-                                    const tradeReceiptReviewNote =
-                                      receiptReviewStatus === "pending" &&
-                                      isTradesRedemptionEntry(entry)
-                                        ? `Trades cashback is 6% back, capped at ${TRADES_RECEIPT_CAP_COPY} total cashback, and can take up to 7 business days.`
-                                        : "";
                                     const statusCopy = (() => {
+                                      if (hasManualPurchase) {
+                                        const manualStatus = String(
+                                          entry.manualPurchase?.status || "processing",
+                                        ).toLowerCase();
+                                        if (manualStatus === "rejected") {
+                                          return {
+                                            icon: "close-circle-outline",
+                                            text: "Not approved",
+                                            tone: "danger",
+                                          };
+                                        }
+                                        if (["approved", "paid"].includes(manualStatus)) {
+                                          return {
+                                            icon: "checkmark-circle-outline",
+                                            text: manualStatus === "paid" ? "Cashback sent" : "Approved",
+                                            tone: "success",
+                                          };
+                                        }
+                                        return {
+                                          icon: "time-outline",
+                                          text: "Processing",
+                                          tone: "warning",
+                                        };
+                                      }
                                       if (needsReceipt) {
                                         if (canUploadReceipt) {
                                           return {
                                             icon: "checkmark-circle-outline",
-                                            text: "Redeemed",
+                                            text: "Receipt needed",
                                             tone: "success",
                                           };
                                         }
@@ -31004,17 +31730,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                       isReceiptActionable &&
                                         styles.historyEntryActionable,
                                     ];
-                                    const canUnredeem =
-                                      !hasReceipt &&
-                                      !isUploadingReceipt &&
-                                      !isAutoVerifying;
-                                    const receiptCountdownLabel =
-                                      !hasReceipt && receiptWindowOpen
-                                        ? formatReceiptUploadCountdown(
-                                            entry.createdAt,
-                                            receiptCountdownNow,
-                                          )
-                                        : null;
                                     const handleHistoryEntryPress = () => {
                                       if (!isReceiptActionable) return;
                                       if (canRetryAutoVerify) {
@@ -31038,10 +31753,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                         <View style={styles.historyEntryRow}>
                                           <View style={styles.historyEntryMain}>
                                             <Text
-                                              style={styles.historyEntryTitle}
+                                              style={styles.historyEntryCashbackTitle}
                                               numberOfLines={1}
                                             >
-                                              {offerTitle}
+                                              {cashbackTitle}
                                             </Text>
                                             {canUploadReceipt ? (
                                               <View
@@ -31063,6 +31778,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                                 </Text>
                                               </View>
                                             ) : null}
+                                            {hasManualPurchase ? (
+                                              <Text style={styles.historyEntryMissingUploadText}>
+                                                {formatCurrencyFromCents(
+                                                  entry.manualPurchase.amountCents,
+                                                )}{" "}
+                                                · {String(entry.manualPurchase.paymentType || "other")}
+                                              </Text>
+                                            ) : null}
                                           </View>
                                           <View style={styles.historyEntryMeta}>
                                             <View
@@ -31077,10 +31800,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                                 style={styles.historyEntryTime}
                                                 numberOfLines={1}
                                               >
-                                                {receiptCountdownLabel ||
-                                                  formatHistoryTimestamp(
-                                                    entry.createdAt,
-                                                  )}
+                                                {formatHistoryTimestamp(submittedAt)}
                                               </Text>
                                             </View>
                                           </View>
@@ -31120,16 +31840,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                             {receiptRejectionReason}
                                           </Text>
                                         ) : null}
-                                        {!hideStatusForUploadAction &&
-                                        tradeReceiptReviewNote ? (
-                                          <Text
-                                            style={
-                                              styles.historyStatusReasonText
-                                            }
-                                          >
-                                            {tradeReceiptReviewNote}
-                                          </Text>
-                                        ) : null}
                                         {isReceiptActionable && (
                                           <View
                                             style={styles.historyEntryTapHint}
@@ -31148,30 +31858,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                               size={14}
                                               color={COLORS.pine}
                                             />
-                                          </View>
-                                        )}
-                                        {canUnredeem && (
-                                          <View style={styles.historyEntryUndoRow}>
-                                            <TouchableOpacity
-                                              style={styles.historyEntryUndoButton}
-                                              onPress={() =>
-                                                handleUnredeemRedemption(entry)
-                                              }
-                                              activeOpacity={0.88}
-                                            >
-                                              <Ionicons
-                                                name="arrow-undo-outline"
-                                                size={13}
-                                                color="#B42318"
-                                              />
-                                              <Text
-                                                style={
-                                                  styles.historyEntryUndoButtonText
-                                                }
-                                              >
-                                                Unredeem offer
-                                              </Text>
-                                            </TouchableOpacity>
                                           </View>
                                         )}
                                       </>
@@ -31195,7 +31881,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                             canRetryAutoVerify
                                               ? "Verify purchase"
                                               : "Upload receipt"
-                                          } for ${offerTitle}`}
+                                          } for ${cashbackTitle}`}
                                           accessibilityHint={
                                             canRetryAutoVerify
                                               ? "Opens verification options."
@@ -33166,7 +33852,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 </View>
                               </View>
                             </View>
-                            <View style={styles.profileMetaRow}>
+                            {false ? <View style={styles.profileMetaRow}>
                               <View style={styles.profileMetaCard}>
                                 <Text style={styles.profileMetaValue}>
                                   {formatCurrencyFromCents(cashoutEarnedTotalCents)}
@@ -33183,7 +33869,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                   Offers Used
                                 </Text>
                               </View>
-                            </View>
+                            </View> : null}
                                 <View style={styles.profileQuickListCard}>
                               <TouchableOpacity
                                 style={styles.profileQuickListRow}
@@ -33279,7 +33965,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               </TouchableOpacity>
                                 </View>
 
-                            {!isOwner && !isAdmin && !isSupervisor ? (
+                            {false && !isOwner && !isAdmin && !isSupervisor ? (
                               <>
                                 <View style={styles.notificationPanel}>
                                   <View style={styles.promoHeader}>
@@ -37026,6 +37712,54 @@ const styles = StyleSheet.create({
     zIndex: 24,
     alignItems: "flex-end",
   },
+  discoverCategoryDock: {
+    position: "absolute",
+    left: 16,
+    zIndex: 24,
+    flexDirection: "row",
+    gap: 10,
+  },
+  discoverCategoryCard: {
+    width: IS_SMALL_PHONE ? 68 : 76,
+    minHeight: 66,
+    paddingHorizontal: 6,
+    paddingVertical: 7,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    backgroundColor: "rgba(255,255,255,0.96)",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "rgba(15, 23, 42, 0.16)",
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.14,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  discoverCategoryCardActive: {
+    backgroundColor: "#FFFFFF",
+  },
+  discoverCategoryIconOrb: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 5,
+    backgroundColor: "#FFFFFF",
+  },
+  discoverCategoryIconOrbActive: {
+    backgroundColor: "#15803D",
+  },
+  discoverCategoryCardText: {
+    fontSize: IS_SMALL_PHONE ? 11 : 12,
+    color: "#111827",
+    fontFamily: FONT_SEMIBOLD,
+    textAlign: "center",
+  },
+  discoverCategoryCardTextActive: {
+    color: "#111827",
+  },
   discoverTopActionGroup: {
     alignItems: "center",
     gap: 12,
@@ -37057,41 +37791,227 @@ const styles = StyleSheet.create({
   discoverSheetStage: {
     flex: 1,
   },
+  discoverBottomBusinessCarousel: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    zIndex: 26,
+    overflow: "visible",
+  },
+  discoverBusinessListCue: {
+    position: "absolute",
+    top: -27,
+    left: "50%",
+    marginLeft: -22,
+    width: 44,
+    height: 30,
+    borderTopLeftRadius: 15,
+    borderTopRightRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    borderColor: "#E2E8F0",
+  },
+  discoverBusinessListBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.32)",
+  },
+  discoverBusinessListLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 200,
+    elevation: 200,
+  },
+  discoverBusinessListPanel: {
+    position: "absolute",
+    left: 10,
+    right: 10,
+    bottom: 10,
+    maxHeight: "68%",
+    borderRadius: 26,
+    backgroundColor: "#FFFFFF",
+    overflow: "hidden",
+  },
+  discoverBusinessListHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+  },
+  discoverBusinessListTitle: {
+    color: "#0F172A",
+    fontSize: 20,
+    fontFamily: FONT_BOLD,
+  },
+  discoverBusinessListSubtitle: {
+    marginTop: 3,
+    color: "#64748B",
+    fontSize: 12,
+    fontFamily: FONT_TEXT,
+  },
+  discoverBusinessListClose: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F1F5F9",
+  },
+  discoverBusinessListContent: {
+    padding: 14,
+    paddingBottom: 28,
+    gap: 10,
+  },
+  discoverBusinessListRow: {
+    minHeight: 92,
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 9,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#FFFFFF",
+  },
+  discoverBusinessListImage: {
+    width: 74,
+    height: 74,
+    borderRadius: 9,
+    backgroundColor: "#FFFFFF",
+  },
+  discoverBusinessListImageFallback: {
+    width: 74,
+    height: 74,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#DCFCE7",
+  },
+  discoverBusinessListCopy: {
+    flex: 1,
+    minWidth: 0,
+    paddingHorizontal: 11,
+  },
+  discoverBusinessListName: {
+    color: "#0F172A",
+    fontSize: 16,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  discoverBusinessListMeta: {
+    marginTop: 5,
+    color: "#64748B",
+    fontSize: 12,
+    fontFamily: FONT_TEXT,
+  },
+  discoverBusinessListCashback: {
+    marginTop: 7,
+    color: "#15803D",
+    fontSize: 16,
+    fontFamily: FONT_BOLD,
+  },
   discoverMiniSheetOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "flex-start",
   },
   discoverMiniSheet: {
-    minHeight: 112,
-    paddingHorizontal: 24,
-    paddingBottom: 18,
-    paddingTop: 10,
-    backgroundColor: COLORS.white,
-    borderTopLeftRadius: 34,
-    borderTopRightRadius: 34,
+    minHeight: 140,
+    paddingLeft: 12,
+    paddingRight: 0,
+    paddingBottom: 8,
+    paddingTop: 0,
+    backgroundColor: "transparent",
   },
   discoverMiniSheetMounted: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
+    flexDirection: "column",
+    alignItems: "stretch",
     overflow: "hidden",
   },
-  discoverMiniSheetPressable: {
-    minHeight: 60,
-    width: "100%",
+  discoverMiniPullCue: {
+    height: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  discoverMiniCardsList: {
+    height: DISCOVER_RAIL_CARD_HEIGHT,
+    flexGrow: 0,
+  },
+  discoverMiniCardsRail: {
+    gap: CARD_GAP,
+    paddingRight: 12,
+  },
+  discoverMiniBusinessCard: {
+    width: DISCOVER_RAIL_CARD_WIDTH,
+    height: DISCOVER_RAIL_CARD_HEIGHT,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    padding: 10,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: COLORS.white,
+    shadowOpacity: 0,
+    elevation: 0,
   },
-  discoverMiniTitle: {
-    fontSize: 18,
-    color: "#111827",
+  discoverMiniBusinessImage: {
+    width: 108,
+    height: 108,
+    borderRadius: 8,
+    backgroundColor: "#FFFFFF",
+  },
+  discoverMiniBusinessImageFallback: {
+    width: 108,
+    height: 108,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#DCFCE7",
+  },
+  discoverMiniBusinessCopy: {
+    flex: 1,
+    minWidth: 0,
+    paddingHorizontal: 9,
+  },
+  discoverMiniBusinessName: {
+    fontSize: IS_SMALL_PHONE ? 16 : 18,
+    color: "#0F172A",
     fontFamily: FONT_SEMIBOLD,
   },
-  discoverMiniMeta: {
-    fontSize: 14,
-    color: "#4D74F6",
+  discoverMiniBusinessRatingRow: {
+    marginTop: 5,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  discoverMiniBusinessRatingText: {
+    fontSize: 13,
+    color: "#475569",
+    fontFamily: FONT_MEDIUM,
+  },
+  discoverMiniBusinessMeta: {
+    marginTop: 5,
+    fontSize: 12,
+    color: "#64748B",
     fontFamily: FONT_TEXT,
+  },
+  discoverMiniBusinessCashback: {
+    marginTop: 8,
+    fontSize: IS_SMALL_PHONE ? 18 : 20,
+    color: "#166534",
+    fontFamily: FONT_BOLD,
+  },
+  discoverMiniBusinessArrow: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "flex-end",
+    marginBottom: 3,
+    backgroundColor: "#166534",
   },
   drawerOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -37943,7 +38863,7 @@ const styles = StyleSheet.create({
   },
   businessPageSurface: {
     flex: 1,
-    backgroundColor: COLORS.white,
+    backgroundColor: "#0F172A",
   },
   businessPageScroll: {
     flex: 1,
@@ -37976,8 +38896,9 @@ const styles = StyleSheet.create({
   },
   businessPageHeroWrap: {
     width: "100%",
-    height: Math.min(250, SCREEN_WIDTH * 0.44),
+    height: Math.min(300, SCREEN_WIDTH * 0.62),
     backgroundColor: "#EEF2F7",
+    position: "relative",
   },
   businessPageHeroImage: {
     width: "100%",
@@ -37989,10 +38910,63 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#EEF2F7",
   },
+  businessPageHeroActions: {
+    position: "absolute",
+    left: 18,
+    right: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  businessPageHeroActionsRight: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  businessPageHeroButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.96)",
+    shadowColor: "rgba(15,23,42,0.28)",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  businessPageFeaturedBadge: {
+    position: "absolute",
+    left: 20,
+    bottom: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.94)",
+  },
+  businessPageFeaturedText: {
+    fontSize: 12,
+    color: "#334155",
+    fontFamily: FONT_SEMIBOLD,
+  },
   businessPageBody: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    gap: 14,
+    marginTop: -42,
+    minHeight: Math.max(
+      520,
+      SCREEN_HEIGHT - Math.min(300, SCREEN_WIDTH * 0.62) + 42,
+    ),
+    paddingHorizontal: 20,
+    paddingTop: 22,
+    paddingBottom: 132,
+    gap: 12,
+    position: "relative",
+    justifyContent: "flex-start",
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    backgroundColor: COLORS.white,
   },
   businessPageTitleRow: {
     flexDirection: "row",
@@ -38001,10 +38975,194 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   businessPageTitle: {
-    flex: 1,
-    fontSize: 18,
-    lineHeight: 24,
+    fontSize: IS_SMALL_PHONE ? 25 : 29,
+    lineHeight: IS_SMALL_PHONE ? 31 : 35,
     color: "#070A12",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  businessPageRatingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  businessPageRatingText: {
+    fontSize: 14,
+    color: "#475569",
+    fontFamily: FONT_MEDIUM,
+  },
+  businessPageDistanceStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 5,
+  },
+  businessPageDistanceText: {
+    fontSize: 14,
+    color: "#64748B",
+    fontFamily: FONT_TEXT,
+  },
+  businessPageOpenText: {
+    fontSize: 14,
+    color: "#16A34A",
+    fontFamily: FONT_MEDIUM,
+  },
+  businessPageClosedText: {
+    color: "#64748B",
+  },
+  businessPageCashbackBlock: {
+    marginTop: 12,
+    marginBottom: 6,
+  },
+  businessPageCashbackHeroText: {
+    fontSize: IS_SMALL_PHONE ? 29 : 34,
+    lineHeight: IS_SMALL_PHONE ? 35 : 40,
+    color: "#166534",
+    fontFamily: FONT_BOLD,
+  },
+  businessPageCashbackSubtext: {
+    marginTop: 3,
+    fontSize: 15,
+    color: "#475569",
+    fontFamily: FONT_TEXT,
+  },
+  businessPageQuickActions: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    paddingBottom: 18,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+  },
+  businessPageQuickAction: {
+    width: "48%",
+    alignItems: "center",
+  },
+  businessPageQuickActionDisabled: {
+    opacity: 0.4,
+  },
+  businessPageQuickActionIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#EEF2F7",
+  },
+  businessPageQuickActionText: {
+    marginTop: 6,
+    fontSize: 11,
+    color: "#334155",
+    fontFamily: FONT_MEDIUM,
+    textAlign: "center",
+  },
+  businessPageInfoSection: {
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+  },
+  businessPageServiceRow: {
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  businessPageServiceText: {
+    fontSize: 14,
+    color: "#1E293B",
+    fontFamily: FONT_TEXT,
+  },
+  businessPageAboutText: {
+    marginTop: 8,
+    fontSize: 14,
+    lineHeight: 20,
+    color: "#64748B",
+    fontFamily: FONT_TEXT,
+  },
+  businessPageBottomActions: {
+    marginTop: 10,
+    flexDirection: "row",
+    gap: 10,
+  },
+  businessPageBottomPrimary: {
+    flex: 1,
+    minHeight: 54,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#166534",
+  },
+  businessPageBottomPrimaryText: {
+    fontSize: 14,
+    color: COLORS.white,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  businessPageBottomSecondary: {
+    flex: 1,
+    minHeight: 54,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#E8F5E9",
+  },
+  businessPageBottomSecondaryText: {
+    fontSize: 14,
+    color: "#166534",
+    fontFamily: FONT_SEMIBOLD,
+  },
+  businessPageCheckInSection: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    bottom: 22,
+    paddingTop: 14,
+    alignItems: "center",
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+  },
+  businessPageCheckInPrompt: {
+    marginBottom: 12,
+    fontSize: 17,
+    color: "#334155",
+    fontFamily: FONT_SEMIBOLD,
+    textAlign: "center",
+  },
+  businessPageCheckInButton: {
+    width: "100%",
+    minHeight: 56,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#166534",
+  },
+  businessPageCheckInButtonCompact: {
+    width: "auto",
+    flex: 1,
+  },
+  businessPageCheckInButtonText: {
+    fontSize: 16,
+    color: COLORS.white,
+    fontFamily: FONT_BOLD,
+  },
+  businessPageCheckInConfirmRow: {
+    width: "100%",
+    flexDirection: "row",
+    gap: 10,
+  },
+  businessPageCheckInCancelButton: {
+    flex: 1,
+    minHeight: 56,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#F8FAFC",
+  },
+  businessPageCheckInCancelText: {
+    fontSize: 15,
+    color: "#475569",
     fontFamily: FONT_SEMIBOLD,
   },
   businessPageStatusPill: {
@@ -38443,16 +39601,16 @@ const styles = StyleSheet.create({
   navPillContent: {
     alignItems: "center",
     justifyContent: "center",
-    minHeight: IS_COMPACT ? 50 : 54,
+    minHeight: IS_COMPACT ? 44 : 48,
   },
   navIconOrb: {
     width: IS_COMPACT ? 32 : 36,
-    height: IS_COMPACT ? 32 : 36,
+    height: IS_COMPACT ? 25 : 28,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "transparent",
-    marginBottom: 3,
+    marginBottom: 0,
   },
   navIconOrbActive: {
     backgroundColor: "transparent",
@@ -38487,7 +39645,7 @@ const styles = StyleSheet.create({
     }),
   },
   navPillLabel: {
-    marginTop: 2,
+    marginTop: 0,
   },
   navPillTextTight: {
     ...Platform.select({
@@ -38790,6 +39948,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0,
     elevation: 0,
   },
+  sheetBackgroundDiscover: {
+    backgroundColor: "transparent",
+    borderTopWidth: 0,
+  },
   sheetBackdropLayer: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(15, 23, 42, 0.16)",
@@ -38803,6 +39965,9 @@ const styles = StyleSheet.create({
     zIndex: 30,
     overflow: "hidden",
   },
+  discoverSheetHidden: {
+    display: "none",
+  },
   reanimatedSheetContainerFullScreen: {
     top: 0,
     bottom: 0,
@@ -38810,7 +39975,7 @@ const styles = StyleSheet.create({
   sheetHeaderChrome: {
     position: "relative",
     zIndex: 2,
-    backgroundColor: COLORS.white,
+    backgroundColor: "transparent",
   },
   sheetBackgroundFullScreen: {
     borderTopLeftRadius: 0,
@@ -38835,6 +40000,10 @@ const styles = StyleSheet.create({
   sheetMainContent: {
     flex: 1,
     minHeight: 0,
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    overflow: "hidden",
   },
   sheetContentInsets: {
     paddingHorizontal: IS_COMPACT ? 14 : 22,
@@ -44228,6 +45397,152 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 20,
   },
+  checkoutVerifyKeyboardView: {
+    flex: 1,
+  },
+  checkoutVerifyOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 22,
+    paddingBottom: 42,
+    backgroundColor: "rgba(15, 23, 42, 0.48)",
+  },
+  checkoutVerifyCard: {
+    borderRadius: 28,
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 22,
+    paddingVertical: 24,
+    shadowColor: "#000000",
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+  },
+  checkoutVerifyIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "center",
+    backgroundColor: "#EAF5EC",
+    marginBottom: 14,
+  },
+  checkoutVerifyTitle: {
+    color: "#0F172A",
+    fontSize: 24,
+    lineHeight: 30,
+    textAlign: "center",
+    fontFamily: FONT_DISPLAY,
+  },
+  checkoutVerifyBody: {
+    marginTop: 7,
+    color: "#64748B",
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: "center",
+    fontFamily: FONT_TEXT,
+  },
+  checkoutVerifyActions: { marginTop: 22, gap: 10 },
+  checkoutVerifyForm: { marginTop: 20 },
+  checkoutVerifyPrimary: {
+    minHeight: 52,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.pine,
+    paddingHorizontal: 16,
+  },
+  checkoutVerifyPrimaryText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontFamily: FONT_DISPLAY,
+  },
+  checkoutVerifySecondary: {
+    minHeight: 52,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F1F5F9",
+    paddingHorizontal: 16,
+  },
+  checkoutVerifySecondaryText: {
+    color: "#0F172A",
+    fontSize: 15,
+    fontFamily: FONT_DISPLAY,
+  },
+  checkoutVerifyLabel: {
+    marginBottom: 7,
+    color: "#334155",
+    fontSize: 13,
+    fontFamily: FONT_DISPLAY,
+  },
+  checkoutVerifyAmountRow: {
+    height: 54,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 15,
+    marginBottom: 18,
+  },
+  checkoutVerifyCurrency: {
+    color: "#334155",
+    fontSize: 20,
+    fontFamily: FONT_DISPLAY,
+    marginRight: 7,
+  },
+  checkoutVerifyAmountInput: {
+    flex: 1,
+    color: "#0F172A",
+    fontSize: 19,
+    fontFamily: FONT_TEXT,
+  },
+  checkoutVerifyPaymentRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 20,
+  },
+  checkoutVerifyPaymentChip: {
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 999,
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    backgroundColor: "#FFFFFF",
+  },
+  checkoutVerifyPaymentChipSelected: {
+    borderColor: COLORS.pine,
+    backgroundColor: "#EAF5EC",
+  },
+  checkoutVerifyPaymentText: {
+    color: "#475569",
+    fontSize: 13,
+    fontFamily: FONT_TEXT,
+  },
+  checkoutVerifyPaymentTextSelected: {
+    color: COLORS.pine,
+    fontFamily: FONT_DISPLAY,
+  },
+  checkoutVerifyError: {
+    color: "#B42318",
+    fontSize: 13,
+    fontFamily: FONT_TEXT,
+    marginTop: -8,
+    marginBottom: 12,
+  },
+  checkoutVerifyBack: {
+    alignSelf: "center",
+    paddingHorizontal: 18,
+    paddingVertical: 13,
+  },
+  checkoutVerifyBackText: {
+    color: "#64748B",
+    fontSize: 14,
+    fontFamily: FONT_DISPLAY,
+  },
   appDialogOverlay: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.62)",
@@ -45943,6 +47258,13 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     fontFamily: FONT_SEMIBOLD,
   },
+  historyEntryCashbackTitle: {
+    flex: 1,
+    fontSize: 20,
+    lineHeight: 25,
+    color: "#15803D",
+    fontFamily: FONT_BOLD,
+  },
   historyEntryMissingUploadRow: {
     marginTop: 5,
     flexDirection: "row",
@@ -47173,14 +48495,14 @@ const styles = StyleSheet.create({
     fontFamily: FONT_MEDIUM,
   },
   markerWrap: {
-    width: 52,
-    height: 62,
+    width: 124,
+    height: 82,
     alignItems: "center",
     justifyContent: "flex-start",
     overflow: "visible",
   },
   markerWrapSelected: {
-    transform: [{ scale: 1.14 }],
+    zIndex: 2,
   },
   markerIcon: {
     width: 36,
@@ -47198,6 +48520,44 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowRadius: 16,
     elevation: 14,
+  },
+  cashbackMarker: {
+    minWidth: 48,
+    height: 48,
+    paddingHorizontal: 8,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#15803D",
+    borderWidth: 3,
+    borderColor: "rgba(255,255,255,0.96)",
+    shadowColor: "rgba(21, 128, 61, 0.42)",
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    elevation: 9,
+  },
+  cashbackMarkerSelected: {
+    backgroundColor: "#166534",
+    borderColor: "#BBF7D0",
+  },
+  cashbackMarkerText: {
+    fontSize: 13,
+    color: COLORS.white,
+    fontFamily: FONT_BOLD,
+  },
+  cashbackMarkerBusinessName: {
+    maxWidth: 116,
+    marginTop: -1,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 6,
+    overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.92)",
+    color: "#0F172A",
+    fontSize: 10,
+    fontFamily: FONT_SEMIBOLD,
+    textAlign: "center",
   },
   markerPointerWrap: {
     width: 16,
