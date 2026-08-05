@@ -56,7 +56,7 @@ create policy "Business members view manual purchases"
   using (
     exists (
       select 1
-      from public.business_memberships bm
+      from public.business_members bm
       where bm.business_id = manual_purchase_submissions.business_id
         and bm.user_id = auth.uid()
     )
@@ -93,4 +93,3 @@ drop trigger if exists set_manual_purchase_updated_at
 create trigger set_manual_purchase_updated_at
 before update on public.manual_purchase_submissions
 for each row execute function public.set_manual_purchase_updated_at();
-

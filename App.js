@@ -41,6 +41,7 @@ import {
   PinchGestureHandler,
   State as GestureState,
 } from "react-native-gesture-handler";
+import BottomSheet, { BottomSheetFlatList } from "@gorhom/bottom-sheet";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Reanimated, {
   configureReanimatedLogger,
@@ -49,6 +50,7 @@ import Reanimated, {
   interpolate,
   ReanimatedLogLevel,
   runOnJS,
+  useAnimatedReaction,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
@@ -270,13 +272,6 @@ const logReceiptUploadDebug = (event, payload) => {
 };
 const SHEET_MIN = IS_SHORT ? 140 : 160;
 const SHEET_MAX = Math.min(SCREEN_HEIGHT * 0.72, IS_SHORT ? 560 : 620);
-const SAFE_TOP =
-  Platform.OS === "android"
-    ? (StatusBar.currentHeight || 0) + (IS_COMPACT ? 8 : 12)
-    : IS_COMPACT
-      ? 8
-      : 12;
-const SAFE_BOTTOM = Platform.OS === "ios" ? 22 : 10;
 const SHOULD_SHOW_APPLE_SIGN_IN = false;
 const SHOULD_SHOW_GOOGLE_SIGN_IN = Platform.OS !== "ios";
 const CARD_WIDTH = Math.min(280, Math.max(210, Math.round(SCREEN_WIDTH * 0.7)));
@@ -446,6 +441,8 @@ const parsePercentInputToScaledInt = (value, scale) => {
 };
 const DEFAULT_CASHBACK_RATE_BPS = 1000;
 const CASHBACK_SETTING_KEY = "consumer_cashback_rate_bps";
+const METERS_PER_MILE = 1609.344;
+const EARTH_RADIUS_METERS = 6371008.8;
 const MIN_CASHOUT_CENTS = 1000;
 const CASHOUT_CATALOG_PAGE_SIZE = 24;
 const CONSUMER_CASHOUT_ENABLED = true;
@@ -465,6 +462,15 @@ const PLACES_PROXY_ENABLED = Boolean(PLACES_PROXY_URL && SUPABASE_ANON_KEY);
 const ADDRESS_LOOKUP_ENABLED = PLACES_PROXY_ENABLED;
 const ADDRESS_LOOKUP_UNAVAILABLE_COPY =
   "Address autocomplete is temporarily unavailable.";
+const SERVICE_AREA_MARKER_OFFSET_MILES = Math.min(
+  0.3,
+  Math.max(
+    0.1,
+    Number(getEnv("EXPO_PUBLIC_SERVICE_AREA_MARKER_OFFSET_MILES")) || 0.2,
+  ),
+);
+const SERVICE_AREA_MARKER_OFFSET_BEARING_DEGREES =
+  Number(getEnv("EXPO_PUBLIC_SERVICE_AREA_MARKER_OFFSET_BEARING_DEGREES")) || 52;
 const APP_SCHEME_RAW = Constants.expoConfig?.scheme;
 const APP_SCHEME = Array.isArray(APP_SCHEME_RAW)
   ? String(APP_SCHEME_RAW[0] || "wello").trim() || "wello"
@@ -737,7 +743,6 @@ const PLAID_ANDROID_PACKAGE_NAME =
 const ANDROID_MARKER_SIZE = 34;
 const ANDROID_MARKER_SELECTED_SIZE = 44;
 const MARKER_ICON_SIZE = 20;
-const FORCE_VECTOR_MARKERS = true;
 const CONFETTI_PIECES = 20;
 const NOTIFICATION_DEFAULTS = {
   new_offer: true,
@@ -1249,11 +1254,68 @@ const createPrivacySafeServiceCoordinate = (coordinate) => {
   const latitude = Number(coordinate?.latitude);
   const longitude = Number(coordinate?.longitude);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  // Round the center to roughly a neighborhood block. The map renders a
-  // broad service circle rather than an exact pin at this coordinate.
   return {
     latitude: Math.round(latitude * 1000) / 1000,
     longitude: Math.round(longitude * 1000) / 1000,
+  };
+};
+const DISTANCE_OUTLIER_DELTA_MILES = 5;
+const DISTANCE_SANITY_CHECK_PAIRS = [
+  {
+    label: "NYC Times Square to Empire State Building",
+    from: { latitude: 40.758, longitude: -73.9855 },
+    to: { latitude: 40.7484, longitude: -73.9857 },
+  },
+  {
+    label: "Chicago Millennium Park to Willis Tower",
+    from: { latitude: 41.8826, longitude: -87.6226 },
+    to: { latitude: 41.8789, longitude: -87.6359 },
+  },
+  {
+    label: "LA Santa Monica Pier to Venice Beach",
+    from: { latitude: 34.0094, longitude: -118.4973 },
+    to: { latitude: 33.985, longitude: -118.4695 },
+  },
+  {
+    label: "Naperville Riverwalk to Downtown Aurora",
+    from: { latitude: 41.7716, longitude: -88.1525 },
+    to: { latitude: 41.7606, longitude: -88.3201 },
+  },
+];
+
+const projectCoordinateByMiles = (
+  coordinate,
+  miles,
+  bearingDegrees = SERVICE_AREA_MARKER_OFFSET_BEARING_DEGREES,
+) => {
+  const latitude = Number(coordinate?.latitude);
+  const longitude = Number(coordinate?.longitude);
+  const distanceMiles = Number(miles);
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    !Number.isFinite(distanceMiles) ||
+    distanceMiles <= 0
+  ) {
+    return null;
+  }
+  const angularDistance = (distanceMiles * METERS_PER_MILE) / EARTH_RADIUS_METERS;
+  const bearing = (Number(bearingDegrees) * Math.PI) / 180;
+  const lat1 = (latitude * Math.PI) / 180;
+  const lon1 = (longitude * Math.PI) / 180;
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angularDistance) +
+      Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing),
+  );
+  const lon2 =
+    lon1 +
+    Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
+      Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2),
+    );
+  return {
+    latitude: (lat2 * 180) / Math.PI,
+    longitude: ((((lon2 * 180) / Math.PI + 540) % 360) - 180),
   };
 };
 
@@ -1279,12 +1341,30 @@ const mapSupabaseBusiness = (row, index) => {
   const safeIndex = Number.isFinite(index) ? index : 0;
   const latitude = row.latitude !== null ? Number(row.latitude) : null;
   const longitude = row.longitude !== null ? Number(row.longitude) : null;
+  const publicMarkerLatitude =
+    row.public_marker_latitude !== null &&
+    row.public_marker_latitude !== undefined
+      ? Number(row.public_marker_latitude)
+      : null;
+  const publicMarkerLongitude =
+    row.public_marker_longitude !== null &&
+    row.public_marker_longitude !== undefined
+      ? Number(row.public_marker_longitude)
+      : null;
+  const publicLatitude =
+    inferredServiceAreaBusiness && Number.isFinite(publicMarkerLatitude)
+      ? publicMarkerLatitude
+      : latitude;
+  const publicLongitude =
+    inferredServiceAreaBusiness && Number.isFinite(publicMarkerLongitude)
+      ? publicMarkerLongitude
+      : longitude;
   const demoCoordinate = USE_FAKE_LOCATION
     ? createDemoCoordinate(safeIndex)
     : null;
   const hasCoordinates = USE_FAKE_LOCATION
     ? true
-    : Number.isFinite(latitude) && Number.isFinite(longitude);
+    : Number.isFinite(publicLatitude) && Number.isFinite(publicLongitude);
   const fallbackCoordinate = {
     latitude: MAP_REGION.latitude + safeIndex * 0.002,
     longitude: MAP_REGION.longitude - safeIndex * 0.002,
@@ -1319,8 +1399,18 @@ const mapSupabaseBusiness = (row, index) => {
     coordinate: USE_FAKE_LOCATION
       ? demoCoordinate
       : hasCoordinates
-        ? { latitude, longitude }
+        ? { latitude: publicLatitude, longitude: publicLongitude }
         : null,
+    publicMarkerCoordinate:
+      Number.isFinite(publicMarkerLatitude) && Number.isFinite(publicMarkerLongitude)
+        ? { latitude: publicMarkerLatitude, longitude: publicMarkerLongitude }
+        : null,
+    publicMarkerSource: row.public_marker_source || null,
+    publicMarkerOffsetMiles: Number.isFinite(
+      Number(row.public_marker_offset_miles),
+    )
+      ? Number(row.public_marker_offset_miles)
+      : null,
     fallbackCoordinate,
     hasCoordinates,
     approved: row.approval_status === "approved",
@@ -1439,6 +1529,27 @@ const getManualPurchaseFromRedemption = (row) => {
   }
 };
 
+const getRedemptionRequesterContext = (row) => {
+  const requesterBusinessName = String(
+    row?.requester_business_name_snapshot ||
+      row?.requester_business?.name ||
+      "",
+  ).trim();
+  const requesterBusinessId = row?.requester_business_id
+    ? String(row.requester_business_id)
+    : null;
+  const requesterRole = String(
+    row?.requester_role || (requesterBusinessId ? "business_owner" : "consumer"),
+  )
+    .trim()
+    .toLowerCase();
+  return {
+    requesterRole: requesterRole || "consumer",
+    requesterBusinessId,
+    requesterBusinessName: requesterBusinessName || null,
+  };
+};
+
 const mapSupabaseRedemption = (row) => ({
   id: String(row.id),
   createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
@@ -1446,14 +1557,24 @@ const mapSupabaseRedemption = (row) => ({
   offerId: row.offer_id || null,
   offer: row.offer || null,
   business: row.business || null,
+  ...getRedemptionRequesterContext(row),
   manualPurchase: (() => {
     const submission = getManualPurchaseFromRedemption(row);
     if (!submission) return null;
+    const requesterContext = getRedemptionRequesterContext({
+      requester_role: submission.requester_role || row?.requester_role,
+      requester_business_id:
+        submission.requester_business_id || row?.requester_business_id,
+      requester_business_name_snapshot:
+        submission.requester_business_name_snapshot ||
+        row?.requester_business_name_snapshot,
+    });
     return {
       id: String(submission.id),
       amountCents: Number(submission.amount_cents) || 0,
       paymentType: submission.payment_type || "other",
       status: submission.status || "processing",
+      ...requesterContext,
       createdAt: submission.created_at
         ? new Date(submission.created_at).getTime()
         : null,
@@ -3977,7 +4098,7 @@ const fetchNearestRoadCoordinate = async (coordinate) => {
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
   if (!PLACES_PROXY_ENABLED || !PLACES_PROXY_URL) return null;
   const payload = await callPlacesProxy({
-    action: "nearestRoad",
+    action: "nearestroad",
     latitude,
     longitude,
   });
@@ -3991,6 +4112,18 @@ const fetchNearestRoadCoordinate = async (coordinate) => {
     latitude: snappedLatitude,
     longitude: snappedLongitude,
   };
+};
+
+const resolveServiceAreaPublicMarkerCoordinate = async (privateCoordinate) => {
+  const offsetTarget = projectCoordinateByMiles(
+    privateCoordinate,
+    SERVICE_AREA_MARKER_OFFSET_MILES,
+  );
+  if (offsetTarget) {
+    const snapped = await fetchNearestRoadCoordinate(offsetTarget);
+    if (snapped) return snapped;
+  }
+  return null;
 };
 
 const isBusinessOpenNow = (value) => {
@@ -5371,8 +5504,13 @@ function parseDistanceLabelMiles(value) {
   if (!Number.isFinite(numeric)) return null;
   if (raw.includes("mi")) return numeric;
   if (raw.includes("km")) return numeric * 0.621371;
-  if (raw.endsWith("m") || raw.includes(" m")) return numeric / 1609.34;
+  if (raw.endsWith("m") || raw.includes(" m")) return numeric / METERS_PER_MILE;
   return null;
+}
+
+function normalizeDistanceMiles(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
 }
 
 function formatDistanceMilesLabel(miles) {
@@ -5395,12 +5533,12 @@ function distanceBetweenCoordsMeters(from, to) {
       Math.sin(deltaLng / 2) *
       Math.sin(deltaLng / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return 6371000 * c;
+  return EARTH_RADIUS_METERS * c;
 }
 
 function formatDistanceMetersLabel(meters) {
   if (!Number.isFinite(meters)) return "--";
-  const miles = meters / 1609.34;
+  const miles = meters / METERS_PER_MILE;
   return formatDistanceMilesLabel(miles);
 }
 
@@ -5599,17 +5737,208 @@ function OfferCard({ item, onPress, selected }) {
   );
 }
 
-export default function App() {
-  const uiTopInset =
-    Platform.OS === "ios"
-      ? Math.max(Constants.statusBarHeight || 0, 44) + (IS_COMPACT ? 6 : 10)
-      : SAFE_TOP;
-  const topChromeOffset =
-    Platform.OS === "ios" ? uiTopInset + 14 : uiTopInset + 6;
-  const modalTopInset =
-    Platform.OS === "ios"
-      ? Math.max(Constants.statusBarHeight || 0, 44)
-      : 0;
+const DiscoverCarouselCard = React.memo(function DiscoverCarouselCard({
+  item,
+  onPress,
+}) {
+  const business = item?.business || item;
+  const imageUrl = String(business?.imageUrl || item?.imageUrl || "").trim();
+  const cashbackRateBps =
+    resolveDisplayedBusinessDefaultCashbackRateBps(business);
+  const cashbackLabel =
+    formatPercentOnlyLabel(cashbackRateBps / 100) || "Offer";
+  const businessName = String(
+    item?.name || business?.name || "Nearby business",
+  ).trim();
+  const rating = Number(item?.rating ?? business?.rating);
+  const reviewCount = Number(
+    business?.reviewCount ??
+      business?.review_count ??
+      business?.reviewsCount ??
+      business?.reviews_count ??
+      business?.ratingCount ??
+      business?.rating_count ??
+      0,
+  );
+  const hoursStatus = getBusinessHoursStatus(
+    item?.hours || business?.hours || "",
+    typeof item?.isOpen === "boolean" ? item.isOpen : business?.isOpen,
+  );
+  const statusText =
+    hoursStatus.isOpen && hoursStatus.closesAtLabel
+      ? `Open until ${hoursStatus.closesAtLabel}`
+      : hoursStatus.statusText;
+  const distanceText = String(
+    item?.distanceLabel || item?.distance || "Nearby",
+  ).replace(/\bmi\b/i, "miles");
+  return (
+    <TouchableOpacity
+      style={styles.discoverMiniBusinessCard}
+      onPress={() => onPress?.(item)}
+      activeOpacity={0.88}
+    >
+      <View style={styles.discoverMiniBusinessImageWrap}>
+        {imageUrl ? (
+          <Image
+            source={{ uri: imageUrl }}
+            style={styles.discoverMiniBusinessImage}
+            resizeMode="cover"
+            resizeMethod="resize"
+            onError={(event) => {
+              if (DEBUG_DISCOVER_SCROLL) {
+                console.log("[WelloCarouselImageError]", {
+                  imageUrl,
+                  error: event?.nativeEvent?.error || null,
+                });
+              }
+            }}
+          />
+        ) : (
+          <View style={styles.discoverMiniBusinessImageFallback}>
+            <Ionicons name="business-outline" size={22} color="#166534" />
+          </View>
+        )}
+      </View>
+      <View style={styles.discoverMiniBusinessCopy}>
+        <Text style={styles.discoverMiniBusinessName} numberOfLines={1}>
+          {businessName}
+        </Text>
+        <View style={styles.discoverMiniBusinessRatingRow}>
+          <Ionicons name="star" size={15} color="#FBBF24" />
+          <Text style={styles.discoverMiniBusinessRatingText}>
+            {Number.isFinite(rating) ? rating.toFixed(1) : "New"}
+            {` (${Number.isFinite(reviewCount) ? Math.round(reviewCount) : 0})`}
+          </Text>
+        </View>
+        <Text style={styles.discoverMiniBusinessMeta} numberOfLines={1}>
+          {business?.isServiceAreaBusiness
+            ? statusText
+            : `${distanceText} \u2022 ${statusText}`}
+        </Text>
+        <Text style={styles.discoverMiniBusinessCashback} numberOfLines={1}>
+          {cashbackLabel} cashback
+        </Text>
+      </View>
+      <View style={styles.discoverMiniBusinessArrow}>
+        <Ionicons name="arrow-forward" size={21} color={COLORS.white} />
+      </View>
+    </TouchableOpacity>
+  );
+});
+
+const SheetPeekRow = React.memo(function SheetPeekRow({
+  offers,
+  onCardPress,
+  animatedStyle,
+  interactive,
+  cardListRef,
+  carouselUserDraggingRef,
+  carouselVisibleItemRef,
+  focusCarouselBusiness,
+}) {
+  const getIndexFromOffset = (offsetX) =>
+    Math.max(
+      0,
+      Math.min(
+        offers.length - 1,
+        Math.round(offsetX / (DISCOVER_RAIL_CARD_WIDTH + CARD_GAP)),
+      ),
+    );
+
+  return (
+    <Reanimated.View
+      pointerEvents={interactive ? "auto" : "none"}
+      style={[
+        styles.discoverMiniSheet,
+        styles.discoverMiniSheetMounted,
+        animatedStyle,
+      ]}
+    >
+      <FlatList
+        ref={cardListRef}
+        style={styles.discoverMiniCardsList}
+        horizontal
+        data={offers}
+        keyExtractor={(item, index) =>
+          getOfferCardSelectionKey(item) || `nearby-${index}`
+        }
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.discoverMiniCardsRail}
+        snapToInterval={DISCOVER_RAIL_CARD_WIDTH + CARD_GAP}
+        decelerationRate="normal"
+        disableIntervalMomentum
+        directionalLockEnabled
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        onLayout={() => {
+          if (!carouselVisibleItemRef.current && offers[0]) {
+            carouselVisibleItemRef.current = offers[0];
+          }
+        }}
+        onScrollBeginDrag={(event) => {
+          carouselUserDraggingRef.current = true;
+          if (DEBUG_DISCOVER_SCROLL) {
+            console.log("[WelloCarouselScrollBegin]", {
+              offsetX: Number(event?.nativeEvent?.contentOffset?.x) || 0,
+              offers: offers.length,
+            });
+          }
+        }}
+        scrollEventThrottle={16}
+        onScroll={(event) => {
+          if (!carouselUserDraggingRef.current) return;
+          const offsetX = Number(event?.nativeEvent?.contentOffset?.x) || 0;
+          const nextItem = offers[getIndexFromOffset(offsetX)];
+          if (nextItem) carouselVisibleItemRef.current = nextItem;
+          if (DEBUG_DISCOVER_SCROLL_VERBOSE) {
+            console.log("[WelloCarouselScroll]", { offsetX });
+          }
+        }}
+        onScrollEndDrag={(event) => {
+          const offsetX = Number(event?.nativeEvent?.contentOffset?.x) || 0;
+          const nextItem = offers[getIndexFromOffset(offsetX)];
+          if (!nextItem) return;
+          carouselVisibleItemRef.current = nextItem;
+          if (DEBUG_DISCOVER_SCROLL) {
+            console.log("[WelloCarouselScrollEndDrag]", {
+              offsetX,
+              key: getOfferCardSelectionKey(nextItem),
+              velocityX: Number(event?.nativeEvent?.velocity?.x) || 0,
+            });
+          }
+          if (!event?.nativeEvent?.velocity?.x) {
+            carouselUserDraggingRef.current = false;
+            focusCarouselBusiness(nextItem);
+          }
+        }}
+        onMomentumScrollEnd={(event) => {
+          if (!carouselUserDraggingRef.current) return;
+          carouselUserDraggingRef.current = false;
+          const offsetX = Number(event?.nativeEvent?.contentOffset?.x) || 0;
+          const nextItem = offers[getIndexFromOffset(offsetX)];
+          if (!nextItem) return;
+          carouselVisibleItemRef.current = nextItem;
+          if (DEBUG_DISCOVER_SCROLL) {
+            console.log("[WelloCarouselMomentumEnd]", {
+              offsetX,
+              key: getOfferCardSelectionKey(nextItem),
+            });
+          }
+          focusCarouselBusiness(nextItem);
+        }}
+        renderItem={({ item }) => (
+          <DiscoverCarouselCard item={item} onPress={onCardPress} />
+        )}
+      />
+    </Reanimated.View>
+  );
+});
+
+function AppContent() {
+  const insets = useSafeAreaInsets();
+  const uiTopInset = insets.top + (IS_COMPACT ? 6 : 10);
+  const topChromeOffset = uiTopInset + (Platform.OS === "ios" ? 14 : 6);
+  const modalTopInset = insets.top;
   const mapRef = useRef(null);
   const mapReadyRef = useRef(false);
   const pendingMapRegionRef = useRef(null);
@@ -5617,12 +5946,11 @@ export default function App() {
   const carouselUserDraggingRef = useRef(false);
   const carouselVisibleItemRef = useRef(null);
   const sheetScrollRef = useRef(null);
-  const sheetPanRef = useRef(null);
+  const discoverSheetListRef = useRef(null);
   const bottomSheetRef = useRef(null);
+  const discoverBottomSheetRef = useRef(null);
   const sheetIndexRef = useRef(0);
   const businessDetailReturnSheetIndexRef = useRef(0);
-  const businessDetailOpenedFromOffersRef = useRef(false);
-  const sheetDragStartYRef = useRef(0);
   const pendingMapCollapseClearRef = useRef(false);
   const discoverScrollDebugRef = useRef({
     sessionId: `${Date.now().toString(36)}-${Math.random()
@@ -5657,13 +5985,10 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [discoverSheetIndex, setDiscoverSheetIndex] = useState(0);
   const [discoverSheetExpanded, setDiscoverSheetExpanded] = useState(false);
+  const [discoverCarouselInteractive, setDiscoverCarouselInteractive] =
+    useState(true);
   const [discoverSearchOpen, setDiscoverSearchOpen] = useState(false);
   const [discoverBusinessListOpen, setDiscoverBusinessListOpen] = useState(false);
-  const [discoverOffersSheet, setDiscoverOffersSheet] = useState({
-    visible: false,
-    business: null,
-  });
-  const discoverOffersPullY = useRef(new Animated.Value(0)).current;
   const discoverBusinessPanelBaseY = useRef(new Animated.Value(0)).current;
   const discoverBusinessPanelGestureY = useRef(new Animated.Value(0)).current;
   const discoverBusinessPanelTranslateY = useMemo(
@@ -5688,7 +6013,6 @@ export default function App() {
   );
   const [receiptCountdownNow, setReceiptCountdownNow] = useState(Date.now());
   const [ownerBusinessScreen, setOwnerBusinessScreen] = useState("dashboard");
-  const [navRowWidth, setNavRowWidth] = useState(0);
   const activeTabRef = useRef("discover");
   const discoverTabSheetIndexRef = useRef(0);
   const lastBackPressAtRef = useRef(0);
@@ -5696,6 +6020,22 @@ export default function App() {
   const drawerPanelWidth = Math.min(SCREEN_WIDTH * 0.82, 340);
   const drawerTranslateX = useSharedValue(-drawerPanelWidth);
   const drawerOverlayOpacity = useSharedValue(0);
+  const sheetSnapPoints = useMemo(() => {
+    const min = IS_SHORT ? "24%" : "22%";
+    const mid = IS_SHORT ? "52%" : "48%";
+    const max = "78%";
+    return [min, mid, max];
+  }, []);
+  const parseSheetSnapVisibleHeight = useCallback((snapPoint) => {
+    if (typeof snapPoint === "string" && snapPoint.trim().endsWith("%")) {
+      const percentage = Number.parseFloat(snapPoint);
+      if (Number.isFinite(percentage)) {
+        return (SCREEN_HEIGHT * percentage) / 100;
+      }
+    }
+    const numeric = Number(snapPoint);
+    return Number.isFinite(numeric) ? numeric : 0;
+  }, []);
   const discoverSheetMetrics = useMemo(() => {
     const closedVisibleHeight = 178;
     const midVisibleHeight = Math.max(
@@ -5723,10 +6063,103 @@ export default function App() {
       translateForIndex,
       closedTranslateY: translateForIndex[0],
     };
-  }, []);
+  }, [uiTopInset]);
+  const discoverCollapsedSheetVisibleHeight = useMemo(
+    () =>
+      parseSheetSnapVisibleHeight(sheetSnapPoints[0]) ||
+      discoverSheetMetrics.closedVisibleHeight,
+    [
+      discoverSheetMetrics.closedVisibleHeight,
+      parseSheetSnapVisibleHeight,
+      sheetSnapPoints,
+    ],
+  );
+  const discoverMidSheetVisibleHeight = useMemo(
+    () =>
+      parseSheetSnapVisibleHeight(sheetSnapPoints[1]) ||
+      discoverSheetMetrics.midVisibleHeight,
+    [
+      discoverSheetMetrics.midVisibleHeight,
+      parseSheetSnapVisibleHeight,
+      sheetSnapPoints,
+    ],
+  );
+  const discoverCollapsedSheetTop = useMemo(
+    () => SCREEN_HEIGHT - discoverCollapsedSheetVisibleHeight,
+    [discoverCollapsedSheetVisibleHeight],
+  );
+  const discoverMidSheetTop = useMemo(
+    () => SCREEN_HEIGHT - discoverMidSheetVisibleHeight,
+    [discoverMidSheetVisibleHeight],
+  );
   const sheetTranslateY = useSharedValue(
     discoverSheetMetrics.translateForIndex[0],
   );
+  const discoverBottomSheetAnimatedPosition = useSharedValue(
+    discoverCollapsedSheetTop,
+  );
+  const logDiscoverCarouselPositionDebug = useCallback((payload) => {
+    if (!__DEV__) return;
+    console.log("[WelloCarouselSheetPosition]", payload);
+  }, []);
+  useEffect(() => {
+    discoverBottomSheetAnimatedPosition.value = discoverCollapsedSheetTop;
+  }, [discoverBottomSheetAnimatedPosition, discoverCollapsedSheetTop]);
+  useAnimatedReaction(
+    () => discoverBottomSheetAnimatedPosition.value >= discoverCollapsedSheetTop - 2,
+    (isCollapsed, wasCollapsed) => {
+      if (isCollapsed !== wasCollapsed) {
+        runOnJS(setDiscoverCarouselInteractive)(isCollapsed);
+      }
+    },
+    [discoverCollapsedSheetTop],
+  );
+  useAnimatedReaction(
+    () => {
+      const position = discoverBottomSheetAnimatedPosition.value;
+      const progress = interpolate(
+        position,
+        [
+          discoverMidSheetTop,
+          discoverCollapsedSheetTop - 24,
+          discoverCollapsedSheetTop,
+        ],
+        [0, 0, 1],
+        Extrapolation.CLAMP,
+      );
+      return {
+        bucket: Math.round(position / 24),
+        position,
+        carouselOpacity: progress,
+        carouselHeight:
+          progress > 0 ? progress * (DISCOVER_RAIL_CARD_HEIGHT + 12) : 0,
+      };
+    },
+    (next, previous) => {
+      if (!__DEV__) return;
+      if (next.bucket !== previous?.bucket) {
+        runOnJS(logDiscoverCarouselPositionDebug)({
+          position: Math.round(next.position),
+          collapsedTop: Math.round(discoverCollapsedSheetTop),
+          midTop: Math.round(discoverMidSheetTop),
+          carouselOpacity: Math.round(next.carouselOpacity * 100) / 100,
+          carouselHeight: Math.round(next.carouselHeight),
+        });
+      }
+    },
+    [
+      discoverBottomSheetAnimatedPosition,
+      discoverCollapsedSheetTop,
+      discoverMidSheetTop,
+      logDiscoverCarouselPositionDebug,
+    ],
+  );
+  useEffect(() => {
+    if (!__DEV__) return;
+    console.log("[WelloCarouselPointerEvents]", {
+      pointerEvents: discoverCarouselInteractive ? "auto" : "none",
+    });
+  }, [discoverCarouselInteractive]);
   const drawerPanelAnimatedStyle = useAnimatedStyle(
     () => ({
       transform: [{ translateX: drawerTranslateX.value }],
@@ -5769,29 +6202,53 @@ export default function App() {
     () => {
       return {
         height: interpolate(
-          sheetTranslateY.value,
+          discoverBottomSheetAnimatedPosition.value,
           [
-            discoverSheetMetrics.translateForIndex[2],
-            discoverSheetMetrics.translateForIndex[1],
-            discoverSheetMetrics.translateForIndex[0],
+            discoverMidSheetTop,
+            discoverCollapsedSheetTop - 24,
+            discoverCollapsedSheetTop,
           ],
-          [0, 0, 112],
+          [0, 0, DISCOVER_RAIL_CARD_HEIGHT + 12],
           Extrapolation.CLAMP,
         ),
         minHeight: 0,
         opacity: interpolate(
-          sheetTranslateY.value,
+          discoverBottomSheetAnimatedPosition.value,
           [
-            discoverSheetMetrics.translateForIndex[2],
-            discoverSheetMetrics.translateForIndex[1],
-            discoverSheetMetrics.translateForIndex[0],
+            discoverMidSheetTop,
+            discoverCollapsedSheetTop - 24,
+            discoverCollapsedSheetTop,
           ],
           [0, 0, 1],
           Extrapolation.CLAMP,
         ),
       };
     },
-    [discoverSheetMetrics.translateForIndex, sheetTranslateY],
+    [
+      discoverBottomSheetAnimatedPosition,
+      discoverCollapsedSheetTop,
+      discoverMidSheetTop,
+    ],
+  );
+  const discoverSheetOverlayAnimatedStyle = useAnimatedStyle(
+    () => {
+      const opacity = interpolate(
+        discoverBottomSheetAnimatedPosition.value,
+        [
+          discoverMidSheetTop,
+          discoverCollapsedSheetTop - 24,
+          discoverCollapsedSheetTop,
+        ],
+        [0, 0, 1],
+        Extrapolation.CLAMP,
+      );
+      return { opacity };
+    },
+    [
+      discoverBottomSheetAnimatedPosition,
+      discoverCollapsedSheetTop,
+      discoverMidSheetTop,
+    ],
   );
   const sheetMainContentAnimatedStyle = useAnimatedStyle(
     () => {
@@ -5810,7 +6267,6 @@ export default function App() {
     },
     [discoverSheetMetrics.translateForIndex, sheetTranslateY],
   );
-  const tabIndicatorIndex = useRef(new Animated.Value(0)).current;
   const launchOverlayOpacity = useRef(new Animated.Value(1)).current;
   const authHydrationUserIdRef = useRef(null);
   const roleLaunchTabAppliedRef = useRef(null);
@@ -5819,6 +6275,10 @@ export default function App() {
     useState("editorial_split");
   const [activeFilters, setActiveFilters] = useState([]);
   const [discoverCategoryTab, setDiscoverCategoryTab] = useState("all");
+  const [discoverOffersSheet, setDiscoverOffersSheet] = useState({
+    visible: false,
+    business: null,
+  });
   const [discoverSortMode, setDiscoverSortMode] = useState("distance");
   const [discoverRadiusKey, setDiscoverRadiusKey] = useState("20mi");
   const [showFilters, setShowFilters] = useState(false);
@@ -6085,6 +6545,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const [expoPushToken, setExpoPushToken] = useState(null);
   const [tokenError, setTokenError] = useState(null);
   const geocodeCacheRef = useRef(new Map());
+  const distanceOutlierPreviousRef = useRef(new Map());
+  const distanceSanityLoggedRef = useRef(false);
   const hydrateBusinessCoordinatesRef = useRef(null);
   const lastLocationHashRef = useRef("");
   const lastRefreshRef = useRef(0);
@@ -6270,6 +6732,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const pendingMerchantOnboardingUserIdRef = useRef(null);
   const addBusinessReturnBusinessIdRef = useRef(null);
   const [androidMarkerIcons, setAndroidMarkerIcons] = useState(null);
+  const [androidMarkerImagesLoaded, setAndroidMarkerImagesLoaded] = useState(
+    Platform.OS !== "android",
+  );
   const [formData, setFormData] = useState({
     name: "",
     description: "",
@@ -7219,14 +7684,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const addressSelectionRef = useRef(false);
   const reachTooltipTimerRef = useRef(null);
   const viewedOfferIdsRef = useRef(new Set());
-  // Use percentage snap points to keep behavior consistent across iOS/Android
-  // and avoid device-specific pixel rounding jitter.
-  const sheetSnapPoints = useMemo(() => {
-    const min = IS_SHORT ? "16%" : "14%";
-    const mid = IS_SHORT ? "52%" : "48%";
-    const max = "78%";
-    return [min, mid, max];
-  }, []);
   const logDiscoverGestureDebug = useCallback(
     (eventName, payload = {}) => {
       if (!DEBUG_DISCOVER_SCROLL) return;
@@ -7586,53 +8043,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       sheetTranslateY,
     ],
   );
-  const handleSheetGestureEvent = useCallback(
-    (event) => {
-      const translationY = Number(event?.nativeEvent?.translationY) || 0;
-      const nextValue = Math.max(
-        0,
-        Math.min(
-          discoverSheetMetrics.closedTranslateY,
-          sheetDragStartYRef.current + translationY,
-        ),
-      );
-      sheetTranslateY.value = nextValue;
-    },
-    [discoverSheetMetrics.closedTranslateY, sheetTranslateY],
-  );
-  const handleSheetGestureStateChange = useCallback(
-    (event) => {
-      const nativeEvent = event?.nativeEvent;
-      if (!nativeEvent) return;
-      if (nativeEvent.oldState === GestureState.ACTIVE) {
-        const offsets = discoverSheetMetrics.translateForIndex;
-        const current = sheetTranslateY.value;
-        let nextIndex = 0;
-        let smallestDistance = Number.POSITIVE_INFINITY;
-        offsets.forEach((offset, index) => {
-          const distance = Math.abs(current - offset);
-          if (distance < smallestDistance) {
-            smallestDistance = distance;
-            nextIndex = index;
-          }
-        });
-        if ((nativeEvent.velocityY || 0) < -500 && nextIndex < 2) {
-          nextIndex += 1;
-        } else if ((nativeEvent.velocityY || 0) > 500 && nextIndex > 0) {
-          nextIndex -= 1;
-        }
-        animateSheetToIndex(nextIndex, { gestureDriven: true });
-        return;
-      }
-      if (nativeEvent.state === GestureState.BEGAN) {
-        sheetDragStartYRef.current = sheetTranslateY.value;
-      }
-    },
-    [animateSheetToIndex, discoverSheetMetrics.translateForIndex, sheetTranslateY],
-  );
   useEffect(() => {
     bottomSheetRef.current = {
       snapToIndex: (nextIndex) => {
+        if (activeTabRef.current === "discover") {
+          discoverBottomSheetRef.current?.snapToIndex(nextIndex);
+          return;
+        }
         animateSheetToIndex(nextIndex);
       },
     };
@@ -7650,7 +8067,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     pendingTabSwitchSheetIndexRef.current = null;
     if (activeTab === "discover") {
       requestAnimationFrame(() => {
-        bottomSheetRef.current?.snapToIndex(
+        discoverBottomSheetRef.current?.snapToIndex(
           Math.max(
             0,
             Math.min(
@@ -7667,9 +8084,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       return;
     }
     requestAnimationFrame(() => {
-      bottomSheetRef.current?.snapToIndex(2);
+      animateSheetToIndex(2);
     });
-  }, [activeTab]);
+  }, [activeTab, animateSheetToIndex]);
   const expandSheetForSearch = useCallback(() => {
     setActiveTab("discover");
     setDiscoverSearchOpen(true);
@@ -9680,6 +10097,60 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     businesses,
     preferredManagedBusinessId,
   ]);
+  const resolveRequestingBusinessForTarget = useCallback(
+    (targetBusiness) => {
+      if (accountRole !== "business_owner") return null;
+      const targetBusinessId = String(targetBusiness?.id || "").trim();
+      const candidates = [
+        activeMemberBusiness,
+        resolvedOwnerBusiness,
+        ownerBusiness,
+        ...(Array.isArray(memberBusinesses) ? memberBusinesses : []),
+      ];
+      const seen = new Set();
+      for (const business of candidates) {
+        const businessId = String(business?.id || "").trim();
+        if (!businessId || seen.has(businessId)) continue;
+        seen.add(businessId);
+        if (targetBusinessId && businessId === targetBusinessId) continue;
+        return business;
+      }
+      return null;
+    },
+    [
+      accountRole,
+      activeMemberBusiness,
+      memberBusinesses,
+      ownerBusiness,
+      resolvedOwnerBusiness,
+    ],
+  );
+  const buildRequesterInsertContext = useCallback(
+    (targetBusiness) => {
+      if (accountRole !== "business_owner") {
+        return {
+          requesterRole: "consumer",
+          requesterBusiness: null,
+          insertPayload: {
+            requester_role: "consumer",
+            requester_business_id: null,
+            requester_business_name_snapshot: null,
+          },
+        };
+      }
+      const requesterBusiness = resolveRequestingBusinessForTarget(targetBusiness);
+      return {
+        requesterRole: "business_owner",
+        requesterBusiness,
+        insertPayload: {
+          requester_role: "business_owner",
+          requester_business_id: requesterBusiness?.id || null,
+          requester_business_name_snapshot: requesterBusiness?.name || null,
+        },
+      };
+    },
+    [accountRole, resolveRequestingBusinessForTarget],
+  );
   const ownerCommissionRatePercent = useMemo(
     () =>
       commissionRateCentsToPercent(resolvedOwnerBusiness?.commissionRateCents),
@@ -11297,6 +11768,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
               "merchant_descriptor_aliases",
               "latitude",
               "longitude",
+              "public_marker_latitude",
+              "public_marker_longitude",
+              "public_marker_source",
+              "public_marker_offset_miles",
               "qr_code",
               "is_open",
               "approval_status",
@@ -11753,7 +12228,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   );
 
   useEffect(() => {
-    if (Platform.OS !== "android" || FORCE_VECTOR_MARKERS) return;
+    if (Platform.OS !== "android") return;
     let isMounted = true;
     const loadAndroidMarkerIcons = async () => {
       try {
@@ -11781,10 +12256,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         );
         if (isMounted) {
           setAndroidMarkerIcons({ normal, halo });
+          setAndroidMarkerImagesLoaded(true);
         }
       } catch (error) {
         if (isMounted) {
           setAndroidMarkerIcons(null);
+          setAndroidMarkerImagesLoaded(false);
         }
       }
     };
@@ -11967,7 +12444,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           ? distanceBetweenCoordsMeters(nearbyCoordinate, businessCoordinate)
           : null;
       const distanceMiles = Number.isFinite(distanceMeters)
-        ? distanceMeters / 1609.34
+        ? distanceMeters / METERS_PER_MILE
         : null;
       return {
         id: business.id,
@@ -11998,6 +12475,52 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       };
     });
   }, [approvedBusinesses, publicOffers, nearbyOrigin]);
+
+  useEffect(() => {
+    if (!__DEV__) return;
+    const previousDistances = distanceOutlierPreviousRef.current;
+    const nextDistances = new Map();
+    offerCards.forEach((card) => {
+      const key = String(card?.businessId || card?.business?.id || "").trim();
+      const miles = normalizeDistanceMiles(card?.distanceMiles);
+      if (!key || miles === null) return;
+      const previous = previousDistances.get(key);
+      if (
+        previous &&
+        Math.abs(miles - previous.miles) > DISTANCE_OUTLIER_DELTA_MILES
+      ) {
+        console.warn("[WelloDistanceOutlier]", {
+          businessId: key,
+          previousMiles: previous.miles,
+          nextMiles: miles,
+          deltaMiles: Math.round(Math.abs(miles - previous.miles) * 10) / 10,
+          previousOrigin: previous.origin,
+          nextOrigin: nearbyOrigin || null,
+          markerCoordinate: resolveBusinessCoordinateForDistance(card.business),
+        });
+      }
+      nextDistances.set(key, {
+        miles,
+        origin: nearbyOrigin || null,
+      });
+    });
+    distanceOutlierPreviousRef.current = nextDistances;
+  }, [offerCards, nearbyOrigin]);
+
+  useEffect(() => {
+    if (!__DEV__ || distanceSanityLoggedRef.current) return;
+    distanceSanityLoggedRef.current = true;
+    DISTANCE_SANITY_CHECK_PAIRS.forEach((pair) => {
+      const meters = distanceBetweenCoordsMeters(pair.from, pair.to);
+      console.log("[WelloDistanceSanity]", {
+        label: pair.label,
+        miles: Number.isFinite(meters)
+          ? Math.round((meters / METERS_PER_MILE) * 10) / 10
+          : null,
+      });
+    });
+  }, []);
+
   const discoverTagFilters = useMemo(() => {
     const tagStats = new Map();
     offerCards.forEach((card) => {
@@ -12085,8 +12608,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       return categoryKey === discoverCategoryTab;
     };
     const getDistanceMiles = (card) => {
-      const numeric = Number(card?.distanceMiles);
-      if (Number.isFinite(numeric)) return numeric;
+      const numeric = normalizeDistanceMiles(card?.distanceMiles);
+      if (numeric !== null) return numeric;
       return parseDistanceLabelMiles(card?.distance);
     };
     const compareByDistanceAsc = (a, b) => {
@@ -12179,6 +12702,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const discoverSheetOfferCards = useMemo(() => {
     return Array.isArray(filteredOfferCards) ? [...filteredOfferCards] : [];
   }, [filteredOfferCards]);
+  const discoverCarouselBottomOffset = useMemo(
+    () => insets.bottom + discoverCollapsedSheetVisibleHeight + 6,
+    [discoverCollapsedSheetVisibleHeight, insets.bottom],
+  );
   const selectedBusinessDetailCard = useMemo(() => {
     if (!businessDetail?.id) return null;
     const selectedKey = String(selectedOfferCardId || "").trim();
@@ -12254,11 +12781,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         id: businessId,
         businessId,
         distanceMiles:
-          Number(card?.distanceMiles) ||
+          normalizeDistanceMiles(card?.distanceMiles) ??
           parseDistanceLabelMiles(card?.distance || business?.distance),
         distanceLabel:
           formatDistanceMilesLabel(
-            Number(card?.distanceMiles) ||
+            normalizeDistanceMiles(card?.distanceMiles) ??
               parseDistanceLabelMiles(card?.distance || business?.distance),
           ) || String(card?.distance || "").trim(),
         previewImageUrl: String(
@@ -12286,167 +12813,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       animateMapToRegion(nextRegion, 450);
     },
     [animateMapToRegion],
-  );
-  const SheetPeekRow = ({
-    offers,
-    onCardPress,
-    animatedStyle,
-    interactive,
-  }) => (
-    <Reanimated.View
-      pointerEvents={interactive ? "auto" : "none"}
-      style={[
-        styles.discoverMiniSheet,
-        styles.discoverMiniSheetMounted,
-        animatedStyle,
-      ]}
-    >
-      <FlatList
-        ref={cardListRef}
-        style={styles.discoverMiniCardsList}
-        horizontal
-        data={offers}
-        keyExtractor={(item, index) =>
-          getOfferCardSelectionKey(item) || `nearby-${index}`
-        }
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.discoverMiniCardsRail}
-        snapToInterval={DISCOVER_RAIL_CARD_WIDTH + CARD_GAP}
-        decelerationRate="fast"
-        onLayout={() => {
-          if (!carouselVisibleItemRef.current && offers[0]) {
-            carouselVisibleItemRef.current = offers[0];
-          }
-        }}
-        onScrollBeginDrag={() => {
-          carouselUserDraggingRef.current = true;
-        }}
-        scrollEventThrottle={80}
-        onScroll={(event) => {
-          if (!carouselUserDraggingRef.current) return;
-          const offsetX = Number(event?.nativeEvent?.contentOffset?.x) || 0;
-          const index = Math.max(
-            0,
-            Math.min(
-              offers.length - 1,
-              Math.round(offsetX / (DISCOVER_RAIL_CARD_WIDTH + CARD_GAP)),
-            ),
-          );
-          const nextItem = offers[index];
-          if (!nextItem) return;
-          const currentKey = getOfferCardSelectionKey(
-            carouselVisibleItemRef.current,
-          );
-          const nextKey = getOfferCardSelectionKey(nextItem);
-          if (currentKey === nextKey) return;
-          carouselVisibleItemRef.current = nextItem;
-          focusCarouselBusiness(nextItem);
-        }}
-        onScrollEndDrag={(event) => {
-          const offsetX = Number(event?.nativeEvent?.contentOffset?.x) || 0;
-          const index = Math.max(
-            0,
-            Math.min(
-              offers.length - 1,
-              Math.round(offsetX / (DISCOVER_RAIL_CARD_WIDTH + CARD_GAP)),
-            ),
-          );
-          const nextItem = offers[index];
-          if (nextItem) {
-            carouselVisibleItemRef.current = nextItem;
-            focusCarouselBusiness(nextItem);
-          }
-        }}
-        onMomentumScrollEnd={(event) => {
-          if (!carouselUserDraggingRef.current) return;
-          carouselUserDraggingRef.current = false;
-          const offsetX = Number(event?.nativeEvent?.contentOffset?.x) || 0;
-          const index = Math.max(
-            0,
-            Math.min(
-              offers.length - 1,
-              Math.round(offsetX / (DISCOVER_RAIL_CARD_WIDTH + CARD_GAP)),
-            ),
-          );
-          if (offers[index]) focusCarouselBusiness(offers[index]);
-          if (offers[index]) carouselVisibleItemRef.current = offers[index];
-        }}
-        renderItem={({ item }) => {
-          const business = item?.business || item;
-          const cashbackRateBps = resolveDisplayedBusinessDefaultCashbackRateBps(
-            business,
-          );
-          const cashbackLabel =
-            formatPercentOnlyLabel(cashbackRateBps / 100) || "Offer";
-          const businessName = String(
-            item?.name || business?.name || "Nearby business",
-          ).trim();
-          const rating = Number(item?.rating ?? business?.rating);
-          const reviewCount = Number(
-            business?.reviewCount ??
-              business?.review_count ??
-              business?.reviewsCount ??
-              business?.reviews_count ??
-              business?.ratingCount ??
-              business?.rating_count ??
-              0,
-          );
-          const hoursStatus = getBusinessHoursStatus(
-            item?.hours || business?.hours || "",
-            typeof item?.isOpen === "boolean" ? item.isOpen : business?.isOpen,
-          );
-          const statusText =
-            hoursStatus.isOpen && hoursStatus.closesAtLabel
-              ? `Open until ${hoursStatus.closesAtLabel}`
-              : hoursStatus.statusText;
-          const distanceText = String(
-            item?.distanceLabel || item?.distance || "Nearby",
-          ).replace(/\bmi\b/i, "miles");
-          return (
-            <TouchableOpacity
-              style={styles.discoverMiniBusinessCard}
-              onPress={() => onCardPress?.(item)}
-              activeOpacity={0.88}
-            >
-              {business?.imageUrl || item?.imageUrl ? (
-                <Image
-                  source={{ uri: business?.imageUrl || item?.imageUrl }}
-                  style={styles.discoverMiniBusinessImage}
-                  resizeMode="contain"
-                />
-              ) : (
-                <View style={styles.discoverMiniBusinessImageFallback}>
-                  <Ionicons name="business-outline" size={22} color="#166534" />
-                </View>
-              )}
-              <View style={styles.discoverMiniBusinessCopy}>
-                <Text style={styles.discoverMiniBusinessName} numberOfLines={1}>
-                  {businessName}
-                </Text>
-                <View style={styles.discoverMiniBusinessRatingRow}>
-                  <Ionicons name="star" size={15} color="#FBBF24" />
-                  <Text style={styles.discoverMiniBusinessRatingText}>
-                    {Number.isFinite(rating) ? rating.toFixed(1) : "New"}
-                    {` (${Number.isFinite(reviewCount) ? Math.round(reviewCount) : 0})`}
-                  </Text>
-                </View>
-                <Text style={styles.discoverMiniBusinessMeta} numberOfLines={1}>
-                  {business?.isServiceAreaBusiness
-                    ? statusText
-                    : `${distanceText} \u2022 ${statusText}`}
-                </Text>
-                <Text style={styles.discoverMiniBusinessCashback} numberOfLines={1}>
-                  {cashbackLabel} cashback
-                </Text>
-              </View>
-              <View style={styles.discoverMiniBusinessArrow}>
-                <Ionicons name="arrow-forward" size={21} color={COLORS.white} />
-              </View>
-            </TouchableOpacity>
-          );
-        }}
-      />
-    </Reanimated.View>
   );
   const demoOfferCards = useMemo(() => {
     return (Array.isArray(offerCards) ? offerCards : []).slice(0, 12);
@@ -12783,37 +13149,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     },
     [activeTabRef],
   );
-  const handleNavRowLayout = useCallback((event) => {
-    const width = Number(event?.nativeEvent?.layout?.width || 0);
-    setNavRowWidth((prev) => (Math.abs(prev - width) < 0.5 ? prev : width));
-  }, []);
-  const navSlotWidth = useMemo(() => {
-    const count = visibleTabs.length || 1;
-    return navRowWidth > 0 ? navRowWidth / count : 0;
-  }, [navRowWidth, visibleTabs.length]);
-  const navIndicatorWidth = useMemo(() => {
-    if (navSlotWidth <= 0) return 0;
-    const maxWidth = IS_COMPACT ? 94 : 112;
-    return Math.max(54, Math.min(navSlotWidth * 0.84, maxWidth));
-  }, [navSlotWidth]);
-  const navIndicatorTranslateX = useMemo(() => {
-    if (navSlotWidth <= 0) return 0;
-    const centeredOffset = (navSlotWidth - navIndicatorWidth) / 2;
-    return Animated.add(
-      Animated.multiply(tabIndicatorIndex, navSlotWidth),
-      centeredOffset,
-    );
-  }, [navIndicatorWidth, navSlotWidth, tabIndicatorIndex]);
-  useEffect(() => {
-    if (!visibleTabs.length) return;
-    const nextIndex = visibleTabs.findIndex((tab) => tab.key === activeTab);
-    if (nextIndex < 0) return;
-    Animated.timing(tabIndicatorIndex, {
-      toValue: nextIndex,
-      duration: 180,
-      useNativeDriver: true,
-    }).start();
-  }, [activeTab, tabIndicatorIndex, visibleTabs]);
   useEffect(() => {
     if (!swipeableDrawerTabs.length) {
       setSwipeActiveIndex(0);
@@ -16175,7 +16510,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     if (accountRole && !["consumer", "business_owner"].includes(accountRole)) {
       showAppDialog({
         title: "User account required",
-        message: "Switch to a user account to redeem offers.",
+        message: "Switch to a consumer or business account to redeem offers.",
+        options: [{ label: "Got it", variant: "primary" }],
+      });
+      return;
+    }
+    const requesterContext = buildRequesterInsertContext(business);
+    if (accountRole === "business_owner" && !requesterContext.requesterBusiness) {
+      showAppDialog({
+        title: "Business request unavailable",
+        message:
+          "Choose a different provider or switch to a business profile before requesting service.",
         options: [{ label: "Got it", variant: "primary" }],
       });
       return;
@@ -16193,11 +16538,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     )
       .trim()
       .replace(/\s+/g, " ");
-    const distanceMilesRaw = Number(card?.distanceMiles ?? business?.distanceMiles);
+    const distanceMilesRaw = normalizeDistanceMiles(
+      card?.distanceMiles ?? business?.distanceMiles,
+    );
     const distanceMilesFromLabel = parseDistanceLabelMiles(distanceRaw);
-    const resolvedDistanceMiles = Number.isFinite(distanceMilesRaw)
-      ? distanceMilesRaw
-      : distanceMilesFromLabel;
+    const resolvedDistanceMiles = distanceMilesRaw ?? distanceMilesFromLabel;
     const distanceLabel = Number.isFinite(resolvedDistanceMiles)
       ? formatDistanceMilesLabel(resolvedDistanceMiles)
       : "--";
@@ -16237,6 +16582,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           business?.defaultCashbackRateBps ??
           business?.default_cashback_rate_bps ??
           null,
+        requesterRole: requesterContext.requesterRole,
+        requesterBusinessId: requesterContext.requesterBusiness?.id || null,
+        requesterBusinessName: requesterContext.requesterBusiness?.name || null,
       },
     });
     setPostRedeemBankPromptOpen(false);
@@ -16325,11 +16673,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   };
 
   const closeBusinessDetail = () => {
-    const shouldRestoreOffersSheet = businessDetailOpenedFromOffersRef.current;
-    businessDetailOpenedFromOffersRef.current = false;
-    if (shouldRestoreOffersSheet) {
-      setDiscoverOffersSheet({ visible: true, business: null });
-    }
     setBusinessCheckInState("idle");
     setBusinessDetailOpen(false);
     setBusinessDetail(null);
@@ -16410,7 +16753,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     if (!business?.id || !authUserId) return false;
     if (accountRole && !["consumer", "business_owner"].includes(accountRole)) {
       setScannerStatus("error");
-      setScannerMessage("Switch to a user account to redeem offers.");
+      setScannerMessage("Switch to a consumer or business account to redeem offers.");
+      redemptionLoggedRef.current = false;
+      return false;
+    }
+    const requesterContext = buildRequesterInsertContext(business);
+    if (accountRole === "business_owner" && !requesterContext.requesterBusiness) {
+      setScannerStatus("error");
+      setScannerMessage("Business accounts cannot request their own listing.");
       redemptionLoggedRef.current = false;
       return false;
     }
@@ -16539,8 +16889,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           offer_id: offerId,
           qr_payload: null,
           scanned_by: authUserId,
+          ...requesterContext.insertPayload,
         })
-        .select("id, business_id, offer_id, created_at")
+        .select(
+          "id, business_id, offer_id, created_at, requester_role, requester_business_id, requester_business_name_snapshot",
+        )
         .single();
       if (error || !insertedRedemption) {
         redemptionLoggedRef.current = false;
@@ -16606,6 +16959,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             category_key: businessCategoryKey,
             category_label: businessCategoryLabel,
           },
+          requesterRole:
+            insertedRedemption.requester_role || requesterContext.requesterRole,
+          requesterBusinessId:
+            insertedRedemption.requester_business_id ||
+            requesterContext.requesterBusiness?.id ||
+            null,
+          requesterBusinessName:
+            insertedRedemption.requester_business_name_snapshot ||
+            requesterContext.requesterBusiness?.name ||
+            null,
           purchaseVerification: {
             id: `pending-${insertedRedemption.id}`,
             source: hasLinkedPlaidBank ? "plaid" : "receipt",
@@ -16651,6 +17014,15 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     if (!ensureSupabaseReady()) return;
     const business = businessDetail;
     if (!business?.id) return;
+    const requesterContext = buildRequesterInsertContext(business);
+    if (accountRole === "business_owner" && !requesterContext.requesterBusiness) {
+      showAppDialog({
+        title: "Business request unavailable",
+        message: "Business accounts cannot request their own listing.",
+        options: [{ label: "OK", variant: "primary" }],
+      });
+      return;
+    }
     setCheckoutVerification((prev) => ({ ...prev, submitting: true, error: null }));
     const { data, error } = await supabase
       .from("redemptions")
@@ -16659,8 +17031,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         offer_id: selectedBusinessDetailCard?.offerId || null,
         qr_payload: "checkout",
         scanned_by: authUserId,
+        ...requesterContext.insertPayload,
       })
-      .select("id, business_id, offer_id, created_at")
+      .select(
+        "id, business_id, offer_id, created_at, requester_role, requester_business_id, requester_business_name_snapshot",
+      )
       .single();
     if (error || !data) {
       const checkoutErrorMessage =
@@ -16684,6 +17059,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       offerId: data.offer_id,
       business,
       offer: selectedBusinessDetailCard?.offer || null,
+      requesterRole: data.requester_role || requesterContext.requesterRole,
+      requesterBusinessId:
+        data.requester_business_id || requesterContext.requesterBusiness?.id || null,
+      requesterBusinessName:
+        data.requester_business_name_snapshot ||
+        requesterContext.requesterBusiness?.name ||
+        null,
       receipt: null,
       purchaseVerification: {
         id: `checkout-${data.id}`,
@@ -16724,6 +17106,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       payment_type: checkoutVerification.paymentType,
       status: "processing",
       created_at: new Date().toISOString(),
+      requester_role: entry.requesterRole || "consumer",
+      requester_business_id: entry.requesterBusinessId || null,
+      requester_business_name_snapshot: entry.requesterBusinessName || null,
     };
     let { error } = await supabase.from("manual_purchase_submissions").insert({
       redemption_id: entry.id,
@@ -16732,6 +17117,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       amount_cents: manualPayload.amount_cents,
       payment_type: checkoutVerification.paymentType,
       status: "processing",
+      requester_role: entry.requesterRole || "consumer",
+      requester_business_id: entry.requesterBusinessId || null,
+      requester_business_name_snapshot: entry.requesterBusinessName || null,
     });
     const tableMissing =
       error &&
@@ -16764,6 +17152,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 amountCents: Math.round(amount * 100),
                 paymentType: checkoutVerification.paymentType,
                 status: "processing",
+                requesterRole: entry.requesterRole || "consumer",
+                requesterBusinessId: entry.requesterBusinessId || null,
+                requesterBusinessName: entry.requesterBusinessName || null,
                 createdAt: Date.now(),
               },
               purchaseVerification: {
@@ -16903,6 +17294,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       );
     }
     if (index >= 0 && cardListRef.current) {
+      if (DEBUG_DISCOVER_SCROLL && activeTabRef.current === "discover") {
+        console.log("[WelloCarouselProgrammaticScroll]", {
+          reason: "scrollToBusiness",
+          index,
+          businessId: business?.id || null,
+          preferredOfferCardKey,
+        });
+      }
       cardListRef.current.scrollToIndex({ index, animated: true });
     }
   };
@@ -17012,7 +17411,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   );
   hydrateBusinessCoordinatesRef.current = hydrateBusinessCoordinates;
 
-  const handleCardPress = async (card, options = {}) => {
+  const handleCardPress = async (card) => {
     const offerCardKey = getOfferCardSelectionKey(card);
     if (DEBUG_DISCOVER_SCROLL && activeTab === "discover") {
       console.log("[DiscoverGestureDebug]", "cardPress", {
@@ -17024,7 +17423,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     }
     const business = resolveBusinessFromCard(card);
     if (!business) return;
-    businessDetailOpenedFromOffersRef.current = Boolean(options.fromOffersSheet);
     trackOfferView(business.id, card?.offerId || card?.id);
     setSelectedId(business.id);
     setSelectedOfferCardId(offerCardKey || null);
@@ -17510,15 +17908,23 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     let nearestEditRoadCoordinate = null;
     if (usesPrivateServiceAddress && editAddressCoordinate) {
       try {
-        nearestEditRoadCoordinate = await fetchNearestRoadCoordinate(editAddressCoordinate);
+        nearestEditRoadCoordinate =
+          await resolveServiceAreaPublicMarkerCoordinate(editAddressCoordinate);
       } catch (error) {
-        console.warn("Wello nearest-road lookup failed:", error?.message || error);
+        console.warn("Wello service marker lookup failed:", error?.message || error);
       }
     }
     const publicEditCoordinate = usesPrivateServiceAddress
       ? nearestEditRoadCoordinate ||
         createPrivacySafeServiceCoordinate(editAddressCoordinate || ownerBusiness.coordinate)
       : editAddressCoordinate;
+    if (usesPrivateServiceAddress && !nearestEditRoadCoordinate) {
+      setFormMessage({
+        type: "error",
+        text: "We could not place a privacy-safe public marker on a nearby road. Try a more complete address.",
+      });
+      return;
+    }
     if (!publicEditCoordinate) {
       setFormMessage({
         type: "error",
@@ -17667,6 +18073,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         updatePayload.city = trimmedCity || null;
         updatePayload.state = trimmedState || null;
         updatePayload.postal_code = publicEditPostal || null;
+        updatePayload.private_address = usesPrivateServiceAddress
+          ? trimmedAddress
+          : null;
+        updatePayload.private_latitude =
+          usesPrivateServiceAddress && editAddressCoordinate
+            ? editAddressCoordinate.latitude
+            : null;
+        updatePayload.private_longitude =
+          usesPrivateServiceAddress && editAddressCoordinate
+            ? editAddressCoordinate.longitude
+            : null;
         updatePayload.category_key = formData.categoryKey;
         updatePayload.category_label = getCategoryConfig(
           formData.categoryKey,
@@ -17674,6 +18091,20 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         if (publicEditCoordinate) {
           updatePayload.latitude = publicEditCoordinate.latitude;
           updatePayload.longitude = publicEditCoordinate.longitude;
+          updatePayload.public_marker_latitude = usesPrivateServiceAddress
+            ? publicEditCoordinate.latitude
+            : null;
+          updatePayload.public_marker_longitude = usesPrivateServiceAddress
+            ? publicEditCoordinate.longitude
+            : null;
+          updatePayload.public_marker_source = usesPrivateServiceAddress
+            ? nearestEditRoadCoordinate
+              ? "nearest_road_offset"
+              : "rounded_fallback"
+            : null;
+          updatePayload.public_marker_offset_miles = usesPrivateServiceAddress
+            ? SERVICE_AREA_MARKER_OFFSET_MILES
+            : null;
         }
       }
 
@@ -17698,8 +18129,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             "hours",
             "tags",
             "merchant_descriptor_aliases",
-            "latitude",
-            "longitude",
+              "latitude",
+              "longitude",
+              "public_marker_latitude",
+              "public_marker_longitude",
+              "public_marker_source",
+              "public_marker_offset_miles",
             "qr_code",
             "is_open",
             "approval_status",
@@ -18083,7 +18518,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
   const handleScrollToIndexFailed = (info) => {
     const target = Math.max(0, info.highestMeasuredFrameIndex);
-    cardListRef.current?.scrollToIndex({ index: target, animated: true });
+    if (DEBUG_DISCOVER_SCROLL && activeTabRef.current === "discover") {
+      console.log("[WelloDiscoverSheetScrollToIndexFailed]", {
+        target,
+        highestMeasuredFrameIndex: info.highestMeasuredFrameIndex,
+      });
+    }
+    discoverSheetListRef.current?.scrollToIndex({ index: target, animated: true });
   };
 
   const applyPendingEditsFromRequests = useCallback((requests) => {
@@ -22010,11 +22451,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         "offer_id",
         "qr_payload",
         "created_at",
+        "requester_role",
+        "requester_business_id",
+        "requester_business_name_snapshot",
         "offer:offers (id, title, description, offer_type, image_url)",
         "business:businesses (id, name, category_key, category_label, default_cashback_rate_bps)",
         "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference, cashback_events (amount_cents, status))",
         "purchase_verifications (id, source, status, reason_code, reason_detail, last_checked_at, confirmed_at, rejected_at)",
-        "manual_purchase_submissions (id, amount_cents, payment_type, status, created_at, reviewed_at, review_notes)",
+        "manual_purchase_submissions (id, amount_cents, payment_type, status, created_at, reviewed_at, review_notes, requester_role, requester_business_id, requester_business_name_snapshot)",
       ].join(",");
       const selectBasic = [
         "id",
@@ -22022,6 +22466,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         "offer_id",
         "qr_payload",
         "created_at",
+        "requester_role",
+        "requester_business_id",
+        "requester_business_name_snapshot",
         "offer:offers (id, title, description, offer_type, image_url)",
         "business:businesses (id, name, category_key, category_label, default_cashback_rate_bps)",
         "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference)",
@@ -22052,7 +22499,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           message.includes("embedded") ||
           message.includes("cashback_events") ||
           message.includes("purchase_verifications") ||
-          message.includes("manual_purchase_submissions")
+          message.includes("manual_purchase_submissions") ||
+          message.includes("requester_")
         ) {
           ({ data, error } = await supabase
             .from("redemptions")
@@ -22064,7 +22512,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             if (
               nestedMessage.includes("purchase_verifications") ||
               nestedMessage.includes("relationship") ||
-              nestedMessage.includes("could not find")
+              nestedMessage.includes("could not find") ||
+              nestedMessage.includes("requester_")
             ) {
               ({ data, error } = await supabase
                 .from("redemptions")
@@ -22603,7 +23052,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             "verification_reference",
             "receipt_total_cents",
             "trade_receipt_owner_responses (id, response, dispute_reason, owner_id, created_at, updated_at)",
-            "redemption:redemptions (id, created_at, offer:offers (id, title))",
+            "redemption:redemptions (id, created_at, requester_role, requester_business_id, requester_business_name_snapshot, offer:offers (id, title))",
           ].join(","),
         )
         .eq("business_id", businessId)
@@ -22639,6 +23088,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             ? new Date(row.redemption.created_at).getTime()
             : null,
           offerTitle: row.redemption?.offer?.title || "",
+          requesterRole: row.redemption?.requester_role || "consumer",
+          requesterBusinessId: row.redemption?.requester_business_id || null,
+          requesterBusinessName:
+            String(row.redemption?.requester_business_name_snapshot || "").trim() ||
+            null,
           storagePath: row.storage_path || "",
           imageUrl: "",
           reviewStatus: row.review_status || null,
@@ -22755,16 +23209,22 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             "offer_id",
             "qr_payload",
             "created_at",
+            "requester_role",
+            "requester_business_id",
+            "requester_business_name_snapshot",
             "offer:offers (id, title, description, offer_type, image_url)",
             "receipt_uploads (id, uploaded_at, storage_path)",
-            "manual_purchase_submissions (id, amount_cents, payment_type, status, created_at, reviewed_at, review_notes)",
+            "manual_purchase_submissions (id, amount_cents, payment_type, status, created_at, reviewed_at, review_notes, requester_role, requester_business_id, requester_business_name_snapshot)",
           ].join(","),
         )
         .eq("business_id", businessId)
         .order("created_at", { ascending: false });
       if (
         error &&
-        String(error.message || "").toLowerCase().includes("manual_purchase_submissions")
+        (String(error.message || "")
+          .toLowerCase()
+          .includes("manual_purchase_submissions") ||
+          String(error.message || "").toLowerCase().includes("requester_"))
       ) {
         ({ data, error } = await supabase
           .from("redemptions")
@@ -23333,21 +23793,38 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       let nearestCreateRoadCoordinate = null;
       if (usesPrivateServiceAddress) {
         try {
-          nearestCreateRoadCoordinate = await fetchNearestRoadCoordinate(createCoords);
+          nearestCreateRoadCoordinate =
+            await resolveServiceAreaPublicMarkerCoordinate(createCoords);
         } catch (error) {
-          console.warn("Wello nearest-road lookup failed:", error?.message || error);
+          console.warn("Wello service marker lookup failed:", error?.message || error);
         }
       }
       const publicMapCoords =
         usesPrivateServiceAddress && createCoords
-          ? nearestCreateRoadCoordinate || createPrivacySafeServiceCoordinate(createCoords)
+          ? nearestCreateRoadCoordinate
           : createCoords;
+      if (usesPrivateServiceAddress && !nearestCreateRoadCoordinate) {
+        setCreateBusinessBusy(false);
+        setCreateBusinessError(
+          "We could not place a privacy-safe public marker on a nearby road. Try a more complete address.",
+        );
+        return;
+      }
       const { data, error } = await supabase
         .from("businesses")
         .insert({
           owner_id: authUserId,
           name: createBusinessForm.name.trim(),
           address: publicAddress,
+          private_address: usesPrivateServiceAddress
+            ? createBusinessForm.address.trim()
+            : null,
+          private_latitude: usesPrivateServiceAddress
+            ? createCoords.latitude
+            : null,
+          private_longitude: usesPrivateServiceAddress
+            ? createCoords.longitude
+            : null,
           city: createBusinessForm.city.trim() || null,
           state: createBusinessForm.state.trim() || null,
           postal_code: usesPrivateServiceAddress
@@ -23383,6 +23860,20 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           is_open: true,
           latitude: publicMapCoords?.latitude ?? null,
           longitude: publicMapCoords?.longitude ?? null,
+          public_marker_latitude: usesPrivateServiceAddress
+            ? publicMapCoords?.latitude ?? null
+            : null,
+          public_marker_longitude: usesPrivateServiceAddress
+            ? publicMapCoords?.longitude ?? null
+            : null,
+          public_marker_source: usesPrivateServiceAddress
+            ? nearestCreateRoadCoordinate
+              ? "nearest_road_offset"
+              : "rounded_fallback"
+            : null,
+          public_marker_offset_miles: usesPrivateServiceAddress
+            ? SERVICE_AREA_MARKER_OFFSET_MILES
+            : null,
           offer_honor_policy_accepted: true,
           offer_honor_policy_version: OFFER_HONOR_POLICY_VERSION,
           offer_honor_policy_accepted_at: offerHonorAcceptedAt,
@@ -23545,6 +24036,110 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     });
   };
 
+  const renderDiscoverOfferItem = ({ item }) => (
+    <View style={styles.discoverSheetListItem}>
+      <OfferCard
+        item={item}
+        onPress={() => void handleCardPress(item)}
+        selected={selectedOfferCardId === getOfferCardSelectionKey(item)}
+      />
+    </View>
+  );
+
+  const discoverSheetListHeader = (
+    <View style={styles.discoverSheetListHeader}>
+      <View style={styles.discoverOffersHeader}>
+        <Text style={styles.discoverOffersTitle}>Nearby</Text>
+        <Text style={styles.discoverOffersNearbyCount}>
+          {discoverSheetOfferCards.length} nearby
+        </Text>
+      </View>
+      <View style={styles.discoverOffersCategoryRow}>
+        {DISCOVER_SHEET_CATEGORY_TABS.map((tab) => {
+          const selected = discoverCategoryTab === tab.key;
+          const tabColor =
+            tab.key === "auto"
+              ? "#1E3A8A"
+              : tab.key === "trades"
+                ? "#7C3AED"
+                : "#111827";
+          return (
+            <TouchableOpacity
+              key={`sheet-${tab.key}`}
+              style={[
+                styles.discoverOffersCategoryButton,
+                selected && { borderColor: tabColor, borderWidth: 2 },
+              ]}
+              onPress={() => setDiscoverCategoryTab(tab.key)}
+            >
+              <Ionicons
+                name={
+                  tab.key === "auto"
+                    ? "car-sport"
+                    : tab.key === "trades"
+                      ? "home"
+                      : "grid"
+                }
+                size={20}
+                color={tabColor}
+              />
+              <Text style={styles.discoverOffersCategoryText}>{tab.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+      {remoteStatus.loading ||
+      remoteStatus.error ||
+      offerStatus.loading ||
+      offerStatus.error ? (
+        <View style={styles.discoverSheetNoticeWrap}>
+          <View style={styles.remoteNotice}>
+            <Text style={styles.remoteNoticeText}>
+              {remoteStatus.loading
+                ? "Loading businesses from Wello..."
+                : offerStatus.loading
+                  ? "Loading offers from Wello..."
+                  : remoteStatus.error || offerStatus.error}
+            </Text>
+          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+
+  const discoverSheetEmptyState = (
+    <View style={styles.discoverSheetEmptyWrap}>
+      <View style={styles.emptyState}>
+        {!nearbyOriginAvailable ? (
+          <>
+            <Text style={styles.emptyTitle}>Location is needed</Text>
+            <Text style={styles.emptyCopy}>
+              Enable location to see offers within your selected radius.
+            </Text>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={handleLocateMe}
+              disabled={locating || nearbyOriginLoading}
+            >
+              <Text style={styles.secondaryButtonText}>
+                {locating || nearbyOriginLoading
+                  ? "Checking location..."
+                  : "Use my location"}
+              </Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <Text style={styles.emptyTitle}>No listings match.</Text>
+            <Text style={styles.emptyCopy}>
+              Try a different search or expand your radius.
+            </Text>
+          </>
+        )}
+      </View>
+    </View>
+  );
+
   if (!sessionReady && showLaunchOverlay) {
     return (
       <View style={styles.loadingScreen}>
@@ -23563,8 +24158,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
         <ActiveBusinessProvider
           userId={authUserId}
           enabled={isSignedIn}
@@ -23627,8 +24220,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 const androidHalo = androidMarkerIcons?.halo?.[markerKey];
                 const useAndroidImages =
                   Platform.OS === "android" &&
-                  androidIcon &&
-                  !FORCE_VECTOR_MARKERS;
+                  androidMarkerImagesLoaded &&
+                  androidIcon;
                 const markerAnchor = { x: 0.5, y: 1 };
                 const markerCoordinate =
                   business.coordinate ||
@@ -23688,6 +24281,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                           coordinate={markerCoordinate}
                           anchor={{ x: 0.5, y: 0.5 }}
                           image={androidHalo}
+                          tracksViewChanges={false}
                           zIndex={1}
                           tappable={false}
                         />
@@ -23700,6 +24294,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                         handleMarkerPress(business);
                       }}
                       image={useAndroidImages ? androidIcon : undefined}
+                      tracksViewChanges={
+                        Platform.OS === "android"
+                          ? !androidMarkerImagesLoaded
+                          : undefined
+                      }
                       pinColor={
                         Platform.OS === "android" && !useAndroidImages
                           ? category.color
@@ -23707,7 +24306,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       }
                       zIndex={Platform.OS === "android" && isSelected ? 2 : 0}
                     >
-                      {(
+                      {Platform.OS === "ios" ? (
                         <View
                           style={[
                             styles.markerWrap,
@@ -23752,7 +24351,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                             {business.name || "Business"}
                           </Text>
                         </View>
-                      )}
+                      ) : null}
                     </Marker>
                   </React.Fragment>
                 );
@@ -23762,81 +24361,84 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             {activeTab === "discover" &&
             !businessDetailOpen &&
             !discoverSearchOpen &&
-            !fullScreenOverlayOpen &&
-            discoverSheetOfferCards.length > 0 ? (
-              <Animated.View
-                style={[
+            !fullScreenOverlayOpen ? (
+              <SheetPeekRow
+                offers={discoverSheetOfferCards}
+                onCardPress={(item) => void handleCardPress(item)}
+                interactive={discoverCarouselInteractive}
+                cardListRef={cardListRef}
+                carouselUserDraggingRef={carouselUserDraggingRef}
+                carouselVisibleItemRef={carouselVisibleItemRef}
+                focusCarouselBusiness={focusCarouselBusiness}
+                animatedStyle={[
                   styles.discoverBottomBusinessCarousel,
-                  { bottom: 0 },
-                  {
-                    transform: [
-                      {
-                        translateY: discoverOffersPullY.interpolate({
-                          inputRange: [-220, 0],
-                          outputRange: [-220, 0],
-                          extrapolate: "clamp",
-                        }),
-                      },
-                    ],
-                  },
+                  discoverMiniAnimatedStyle,
+                  { bottom: discoverCarouselBottomOffset },
                 ]}
-              >
-                {SheetPeekRow({
-                  offers: discoverSheetOfferCards,
-                  onCardPress: handleCardPress,
-                  interactive: true,
-                })}
-                <PanGestureHandler
-                  activeOffsetY={[-8, 8]}
-                  failOffsetX={[-18, 18]}
-                  onGestureEvent={Animated.event(
-                    [{ nativeEvent: { translationY: discoverOffersPullY } }],
-                    { useNativeDriver: true },
-                  )}
-                  onHandlerStateChange={(event) => {
-                    if (event.nativeEvent.state === GestureState.END) {
-                      if (event.nativeEvent.translationY < -28) {
-                        discoverOffersPullY.setValue(0);
-                        setDiscoverOffersSheet({ visible: true, business: null });
-                      } else {
-                        Animated.spring(discoverOffersPullY, {
-                          toValue: 0,
-                          useNativeDriver: true,
-                          speed: 22,
-                          bounciness: 0,
-                        }).start();
-                      }
-                    }
-                    if (
-                      event.nativeEvent.state === GestureState.CANCELLED ||
-                      event.nativeEvent.state === GestureState.FAILED
-                    ) {
-                      Animated.spring(discoverOffersPullY, {
-                        toValue: 0,
-                        useNativeDriver: true,
-                        speed: 22,
-                        bounciness: 0,
-                      }).start();
-                    }
-                  }}
-                >
-                  <View style={styles.discoverAllOffersPullTab}>
-                    <View style={styles.discoverAllOffersDragHandle} />
-                    <Text style={styles.discoverAllOffersPullTabText}>
-                      Swipe up to see all offers
-                    </Text>
-                  </View>
-                </PanGestureHandler>
-              </Animated.View>
+              />
             ) : null}
 
             {activeTab === "discover" &&
             !businessDetailOpen &&
             !discoverSearchOpen &&
             !fullScreenOverlayOpen ? (
-              <View
-                style={[styles.discoverCategoryDock, { top: topTabBarOffset + 100 }]}
-                pointerEvents="box-none"
+              <BottomSheet
+                ref={discoverBottomSheetRef}
+                index={0}
+                snapPoints={sheetSnapPoints}
+                topInset={insets.top}
+                onChange={handleSheetChange}
+                onAnimate={handleSheetAnimate}
+                animatedPosition={discoverBottomSheetAnimatedPosition}
+                handleComponent={renderSheetHandle}
+                enablePanDownToClose={false}
+                enableOverDrag={false}
+                enableDynamicSizing={false}
+                enableHandlePanningGesture
+                enableContentPanningGesture
+                backgroundStyle={styles.sheetBackground}
+                keyboardBehavior="extend"
+                keyboardBlurBehavior="restore"
+                android_keyboardInputMode="adjustResize"
+              >
+                <BottomSheetFlatList
+                  ref={discoverSheetListRef}
+                  data={discoverSheetOfferCards}
+                  keyExtractor={(item, index) =>
+                    getOfferCardSelectionKey(item) || `discover-${index}`
+                  }
+                  renderItem={renderDiscoverOfferItem}
+                  ListHeaderComponent={discoverSheetListHeader}
+                  ListEmptyComponent={discoverSheetEmptyState}
+                  ItemSeparatorComponent={() => (
+                    <View style={styles.discoverSheetListSeparator} />
+                  )}
+                  contentContainerStyle={{
+                    paddingBottom: insets.bottom + 28,
+                  }}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  keyboardDismissMode="on-drag"
+                  initialNumToRender={4}
+                  maxToRenderPerBatch={4}
+                  windowSize={5}
+                  removeClippedSubviews={Platform.OS === "android"}
+                  onScrollToIndexFailed={handleScrollToIndexFailed}
+                />
+              </BottomSheet>
+            ) : null}
+
+            {activeTab === "discover" &&
+            !businessDetailOpen &&
+            !discoverSearchOpen &&
+            !fullScreenOverlayOpen ? (
+              <Reanimated.View
+                style={[
+                  styles.discoverCategoryDock,
+                  discoverSheetOverlayAnimatedStyle,
+                  { top: topTabBarOffset + 100 },
+                ]}
+                pointerEvents={discoverCarouselInteractive ? "box-none" : "none"}
               >
                 {DISCOVER_SHEET_CATEGORY_TABS.map((tab) => {
                   const selected = discoverCategoryTab === tab.key;
@@ -23887,7 +24489,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     </TouchableOpacity>
                   );
                 })}
-              </View>
+              </Reanimated.View>
             ) : null}
 
             {(activeTab === "discover" ||
@@ -23957,20 +24559,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       styles.navRow,
                       navNeedsTightFit && styles.navRowTight,
                     ]}
-                    onLayout={handleNavRowLayout}
                   >
-                    {navIndicatorWidth > 0 ? (
-                      <Animated.View
-                        pointerEvents="none"
-                        style={[
-                          styles.navIndicator,
-                          {
-                            width: navIndicatorWidth,
-                            transform: [{ translateX: navIndicatorTranslateX }],
-                          },
-                        ]}
-                      />
-                    ) : null}
                     {visibleTabs.map((tab, index) => {
                       const selected = activeTab === tab.key;
                       const focusAnim = getTabFocusAnim(tab.key);
@@ -23993,12 +24582,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                           <Animated.View
                             style={[
                               styles.navPillContent,
+                              selected && styles.navPillContentActive,
+                              navNeedsTightFit && styles.navPillContentTight,
                               {
                                 transform: [
                                   {
                                     scale: focusAnim.interpolate({
                                       inputRange: [0, 1],
-                                      outputRange: [1, 1.04],
+                                      outputRange: [1, 1],
                                     }),
                                   },
                                 ],
@@ -24073,7 +24664,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
               >
                   <LinearGradient
                     colors={[LOADING_BRAND_YELLOW, "#FFE44A"]}
-                    style={styles.drawerHeader}
+                    style={[
+                      styles.drawerHeader,
+                      { paddingTop: insets.top + 24 },
+                    ]}
                   >
                     <View style={styles.drawerAvatar}>
                       <Ionicons name="person-outline" size={34} color={COLORS.ink} />
@@ -24081,7 +24675,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     <TouchableOpacity
                       style={[
                         styles.drawerCloseButton,
-                        modalTopInset > 0 && { top: modalTopInset + 8 },
+                        { top: insets.top + 14 },
                       ]}
                       onPress={() => setDrawerOpen(false)}
                       hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
@@ -24642,7 +25236,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
               onRequestClose={closeRedeemActivationModal}
             >
               <Pressable
-                style={styles.offerActivationOverlay}
+                style={[
+                  styles.offerActivationOverlay,
+                  { paddingBottom: insets.bottom + 8 },
+                ]}
                 onPress={() => {
                   if (redeemActivationModal.status === "loading") return;
                   closeRedeemActivationModal();
@@ -24733,6 +25330,22 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       </Text>
                     </View>
                   </View>
+                  {redeemActivationModal.card?.requesterBusinessName ? (
+                    <View style={styles.offerActivationRequesterRow}>
+                      <Ionicons
+                        name="briefcase-outline"
+                        size={15}
+                        color="#0F766E"
+                      />
+                      <Text
+                        style={styles.offerActivationRequesterText}
+                        numberOfLines={1}
+                      >
+                        Requesting as{" "}
+                        {redeemActivationModal.card.requesterBusinessName}
+                      </Text>
+                    </View>
+                  ) : null}
                   <View
                     style={[
                       styles.offerActivationNotice,
@@ -25109,7 +25722,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       "Cashback";
                     const distanceLabel = (() => {
                       const fallbackDistance = String(businessDetail?.distance || "").trim();
-                      const selectedCardMiles = Number(
+                      const selectedCardMiles = normalizeDistanceMiles(
                         selectedBusinessDetailCard?.distanceMiles,
                       );
                       const coordinate = resolveBusinessCoordinateForDistance(
@@ -25128,14 +25741,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               coordinate,
                             )
                           : null;
-                      const miles = Number.isFinite(selectedCardMiles)
+                      const miles = selectedCardMiles !== null
                         ? selectedCardMiles
                         : Number.isFinite(Number(computedMeters))
-                        ? Number(computedMeters) / 1609.34
-                        : Number(
-                            businessDetail?.distanceMiles ??
-                              parseDistanceLabelMiles(fallbackDistance),
-                          );
+                        ? Number(computedMeters) / METERS_PER_MILE
+                        : normalizeDistanceMiles(businessDetail?.distanceMiles) ??
+                          parseDistanceLabelMiles(fallbackDistance);
                       return formatDistanceMilesLabel(miles);
                     })();
                     const displayDistanceLabel = String(distanceLabel || "Nearby").replace(
@@ -25692,282 +26303,186 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                         </View>
                       ) : (
                         <View style={styles.receiptList}>
-                          {receiptOfferGroups.plaid.length > 0 && (
-                            <>
-                              <Text style={styles.receiptSectionTitle}>
-                                Auto verified by Plaid
-                              </Text>
-                              {receiptOfferGroups.plaid.map((group) => {
-                                const expandKey = `verified:${group.key}`;
-                                const isExpanded = Boolean(
-                                  expandedReceiptOffers[expandKey],
-                                );
-                                return (
-                                  <View
-                                    key={`verified-${group.key}`}
-                                    style={styles.receiptOfferCard}
-                                  >
-                                    <TouchableOpacity
-                                      style={styles.receiptOfferHeader}
-                                      onPress={() =>
-                                        setExpandedReceiptOffers((prev) => ({
-                                          ...prev,
-                                          [expandKey]: !prev[expandKey],
-                                        }))
-                                      }
+                          {[
+                            {
+                              keyPrefix: "plaid",
+                              title: "Auto verified by Plaid",
+                              groups: receiptOfferGroups.plaid,
+                              interactive: false,
+                            },
+                            {
+                              keyPrefix: "uploaded",
+                              title: "Verified redemptions",
+                              groups: receiptOfferGroups.uploaded,
+                              interactive: true,
+                            },
+                          ].map((section) =>
+                            section.groups.length > 0 ? (
+                              <React.Fragment key={section.keyPrefix}>
+                                <Text style={styles.receiptSectionTitle}>
+                                  {section.title}
+                                </Text>
+                                {section.groups.map((group) => {
+                                  const expandKey = `${section.keyPrefix}:${group.key}`;
+                                  const isExpanded = Boolean(
+                                    expandedReceiptOffers[expandKey],
+                                  );
+                                  return (
+                                    <View
+                                      key={`${section.keyPrefix}-${group.key}`}
+                                      style={styles.receiptOfferCard}
                                     >
-                                      <View style={styles.receiptOfferMeta}>
-                                        <Text
-                                          style={styles.receiptOfferTitle}
-                                          numberOfLines={1}
-                                        >
-                                          {group.offerTitle}
-                                        </Text>
-                                        <Text style={styles.receiptOfferSub}>
-                                          {group.receipts.length} receipts{" "}
-                                          {"\u00b7"} Last{" "}
-                                          {formatHistoryTimestamp(
-                                            group.lastUploadedAt,
-                                          )}
-                                        </Text>
-                                      </View>
-                                      <Ionicons
-                                        name={
-                                          isExpanded
-                                            ? "chevron-up"
-                                            : "chevron-down"
+                                      <TouchableOpacity
+                                        style={styles.receiptOfferHeader}
+                                        onPress={() =>
+                                          setExpandedReceiptOffers((prev) => ({
+                                            ...prev,
+                                            [expandKey]: !prev[expandKey],
+                                          }))
                                         }
-                                        size={18}
-                                        color={COLORS.muted}
-                                      />
-                                    </TouchableOpacity>
-                                    {isExpanded && (
-                                      <View style={styles.receiptTileGrid}>
-                                        {group.receipts.map((receipt) => (
-                                          <View
-                                            key={receipt.id}
-                                            style={[
-                                              styles.receiptTile,
-                                              styles.redeemTile,
-                                            ]}
+                                      >
+                                        <View style={styles.receiptOfferMeta}>
+                                          <Text
+                                            style={styles.receiptOfferTitle}
+                                            numberOfLines={1}
                                           >
-                                            <View
-                                              style={styles.receiptAmountWrap}
-                                            >
-                                              <Text
-                                                style={
-                                                  styles.receiptAmountValue
+                                            {group.offerTitle}
+                                          </Text>
+                                          <Text style={styles.receiptOfferSub}>
+                                            {group.receipts.length} receipts{" "}
+                                            {"\u00b7"} Last{" "}
+                                            {formatHistoryTimestamp(
+                                              group.lastUploadedAt,
+                                            )}
+                                          </Text>
+                                        </View>
+                                        <Ionicons
+                                          name={
+                                            isExpanded
+                                              ? "chevron-up"
+                                              : "chevron-down"
+                                          }
+                                          size={18}
+                                          color={COLORS.muted}
+                                        />
+                                      </TouchableOpacity>
+                                      {isExpanded && (
+                                        <View style={styles.receiptTileGrid}>
+                                          {group.receipts.map((receipt) => {
+                                            const TileComponent = section.interactive
+                                              ? TouchableOpacity
+                                              : View;
+                                            const tileProps = section.interactive
+                                              ? {
+                                                  onPress: () =>
+                                                    handleOpenReceiptPreview(
+                                                      receipt,
+                                                      group.offerTitle,
+                                                    ),
                                                 }
+                                              : {};
+                                            return (
+                                              <TileComponent
+                                                key={receipt.id}
+                                                style={[
+                                                  styles.receiptTile,
+                                                  styles.redeemTile,
+                                                ]}
+                                                {...tileProps}
                                               >
-                                                {formatCurrencyFromCents(
-                                                  receipt.receiptTotalCents,
-                                                )}
-                                              </Text>
-                                              <Text
-                                                style={styles.receiptAmountHint}
-                                              >
-                                                Receipt total
-                                              </Text>
-                                            </View>
-                                            <TouchableOpacity
-                                              style={
-                                                styles.receiptTileReportAction
-                                              }
-                                              onPress={(event) => {
-                                                event?.stopPropagation?.();
-                                                promptReportReceipt(receipt);
-                                              }}
-                                              accessibilityRole="button"
-                                              accessibilityLabel="Report receipt"
-                                              accessibilityHint="Flags this receipt for admin review."
-                                              hitSlop={{
-                                                top: 8,
-                                                bottom: 8,
-                                                left: 8,
-                                                right: 8,
-                                              }}
-                                            >
-                                              <Ionicons
-                                                name="flag-outline"
-                                                size={13}
-                                                color={COLORS.warning}
-                                              />
-                                              <Text
-                                                style={
-                                                  styles.receiptTileReportActionText
-                                                }
-                                              >
-                                                Report
-                                              </Text>
-                                            </TouchableOpacity>
-                                            <Text
-                                              style={styles.receiptTileDate}
-                                            >
-                                              {formatOfferDate(
-                                                receipt.uploadedAt,
-                                              )}
-                                            </Text>
-                                            <Text
-                                              style={styles.receiptTileTime}
-                                            >
-                                              {formatReceiptTime(
-                                                receipt.uploadedAt,
-                                              )}
-                                            </Text>
-                                          </View>
-                                        ))}
-                                      </View>
-                                    )}
-                                  </View>
-                                );
-                              })}
-                            </>
-                          )}
-                          {receiptOfferGroups.uploaded.length > 0 && (
-                            <>
-                              <Text style={styles.receiptSectionTitle}>
-                                Verified redemptions
-                              </Text>
-                              {receiptOfferGroups.uploaded.map((group) => {
-                                const expandKey = `verified:${group.key}`;
-                                const isExpanded = Boolean(
-                                  expandedReceiptOffers[expandKey],
-                                );
-                                return (
-                                  <View
-                                    key={`verified-${group.key}`}
-                                    style={styles.receiptOfferCard}
-                                  >
-                                    <TouchableOpacity
-                                      style={styles.receiptOfferHeader}
-                                      onPress={() =>
-                                        setExpandedReceiptOffers((prev) => ({
-                                          ...prev,
-                                          [expandKey]: !prev[expandKey],
-                                        }))
-                                      }
-                                    >
-                                      <View style={styles.receiptOfferMeta}>
-                                        <Text
-                                          style={styles.receiptOfferTitle}
-                                          numberOfLines={1}
-                                        >
-                                          {group.offerTitle}
-                                        </Text>
-                                        <Text style={styles.receiptOfferSub}>
-                                          {group.receipts.length} receipts{" "}
-                                          {"\u00b7"} Last{" "}
-                                          {formatHistoryTimestamp(
-                                            group.lastUploadedAt,
-                                          )}
-                                        </Text>
-                                      </View>
-                                      <Ionicons
-                                        name={
-                                          isExpanded
-                                            ? "chevron-up"
-                                            : "chevron-down"
-                                        }
-                                        size={18}
-                                        color={COLORS.muted}
-                                      />
-                                    </TouchableOpacity>
-                                    {isExpanded && (
-                                      <View style={styles.receiptTileGrid}>
-                                        {group.receipts.map((receipt) => (
-                                          <TouchableOpacity
-                                            key={receipt.id}
-                                            style={[
-                                              styles.receiptTile,
-                                              styles.redeemTile,
-                                            ]}
-                                            onPress={() =>
-                                              handleOpenReceiptPreview(
-                                                receipt,
-                                                group.offerTitle,
-                                              )
-                                            }
-                                          >
-                                            <View
-                                              style={styles.receiptAmountWrap}
-                                            >
-                                              <Text
-                                                style={
-                                                  styles.receiptAmountValue
-                                                }
-                                              >
-                                                {formatCurrencyFromCents(
-                                                  receipt.receiptTotalCents,
-                                                )}
-                                              </Text>
-                                              <Text
-                                                style={styles.receiptAmountHint}
-                                              >
-                                                Receipt total
-                                              </Text>
-                                            </View>
-                                            <TouchableOpacity
-                                              style={
-                                                styles.receiptTileReportAction
-                                              }
-                                              onPress={(event) => {
-                                                event?.stopPropagation?.();
-                                                promptReportReceipt(receipt);
-                                              }}
-                                              accessibilityRole="button"
-                                              accessibilityLabel="Report receipt"
-                                              accessibilityHint="Flags this receipt for admin review."
-                                              hitSlop={{
-                                                top: 8,
-                                                bottom: 8,
-                                                left: 8,
-                                                right: 8,
-                                              }}
-                                            >
-                                              <Ionicons
-                                                name="flag-outline"
-                                                size={13}
-                                                color={COLORS.warning}
-                                              />
-                                              <Text
-                                                style={
-                                                  styles.receiptTileReportActionText
-                                                }
-                                              >
-                                                Report
-                                              </Text>
-                                            </TouchableOpacity>
-                                            <View
-                                              style={styles.receiptTileOpenHint}
-                                            >
-                                              <Ionicons
-                                                name="chevron-forward"
-                                                size={12}
-                                                color={COLORS.muted}
-                                              />
-                                            </View>
-                                            <Text
-                                              style={styles.receiptTileDate}
-                                            >
-                                              {formatOfferDate(
-                                                receipt.uploadedAt,
-                                              )}
-                                            </Text>
-                                            <Text
-                                              style={styles.receiptTileTime}
-                                            >
-                                              {formatReceiptTime(
-                                                receipt.uploadedAt,
-                                              )}
-                                            </Text>
-                                          </TouchableOpacity>
-                                        ))}
-                                      </View>
-                                    )}
-                                  </View>
-                                );
-                              })}
-                            </>
+                                                <View
+                                                  style={styles.receiptAmountWrap}
+                                                >
+                                                  <Text
+                                                    style={
+                                                      styles.receiptAmountValue
+                                                    }
+                                                  >
+                                                    {formatCurrencyFromCents(
+                                                      receipt.receiptTotalCents,
+                                                    )}
+                                                  </Text>
+                                                  <Text
+                                                    style={styles.receiptAmountHint}
+                                                  >
+                                                    Receipt total
+                                                  </Text>
+                                                </View>
+                                                <TouchableOpacity
+                                                  style={
+                                                    styles.receiptTileReportAction
+                                                  }
+                                                  onPress={(event) => {
+                                                    event?.stopPropagation?.();
+                                                    promptReportReceipt(receipt);
+                                                  }}
+                                                  accessibilityRole="button"
+                                                  accessibilityLabel="Report receipt"
+                                                  accessibilityHint="Flags this receipt for admin review."
+                                                  hitSlop={{
+                                                    top: 8,
+                                                    bottom: 8,
+                                                    left: 8,
+                                                    right: 8,
+                                                  }}
+                                                >
+                                                  <Ionicons
+                                                    name="flag-outline"
+                                                    size={13}
+                                                    color={COLORS.warning}
+                                                  />
+                                                  <Text
+                                                    style={
+                                                      styles.receiptTileReportActionText
+                                                    }
+                                                  >
+                                                    Report
+                                                  </Text>
+                                                </TouchableOpacity>
+                                                {section.interactive ? (
+                                                  <View
+                                                    style={styles.receiptTileOpenHint}
+                                                  >
+                                                    <Ionicons
+                                                      name="chevron-forward"
+                                                      size={12}
+                                                      color={COLORS.muted}
+                                                    />
+                                                  </View>
+                                                ) : null}
+                                                {receipt.requesterBusinessName ? (
+                                                  <Text
+                                                    style={styles.receiptTileDate}
+                                                    numberOfLines={1}
+                                                  >
+                                                    Requested by{" "}
+                                                    {receipt.requesterBusinessName}
+                                                  </Text>
+                                                ) : null}
+                                                <Text
+                                                  style={styles.receiptTileDate}
+                                                >
+                                                  {formatOfferDate(
+                                                    receipt.uploadedAt,
+                                                  )}
+                                                </Text>
+                                                <Text
+                                                  style={styles.receiptTileTime}
+                                                >
+                                                  {formatReceiptTime(
+                                                    receipt.uploadedAt,
+                                                  )}
+                                                </Text>
+                                              </TileComponent>
+                                            );
+                                          })}
+                                        </View>
+                                      )}
+                                    </View>
+                                  );
+                                })}
+                              </React.Fragment>
+                            ) : null,
                           )}
                           {pendingRedemptionGroups.length > 0 && (
                             <>
@@ -26047,6 +26562,15 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                                   entry.manualPurchase.amountCents,
                                                 )}{" "}
                                                 · {String(entry.manualPurchase.paymentType || "other")}
+                                              </Text>
+                                            ) : null}
+                                            {entry.requesterBusinessName ? (
+                                              <Text
+                                                style={styles.receiptTileDate}
+                                                numberOfLines={1}
+                                              >
+                                                Requested by{" "}
+                                                {entry.requesterBusinessName}
                                               </Text>
                                             ) : null}
                                             <Text
@@ -27878,16 +28402,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
               statusBarTranslucent={Platform.OS === "android"}
               onRequestClose={closeCashoutVoucherReveal}
             >
-              <SafeAreaView style={styles.cashoutVoucherScreen}>
-                <View
-                  style={[
-                    styles.cashoutVoucherHeader,
-                    modalTopInset > 0 && {
-                      paddingTop: modalTopInset,
-                      minHeight: 56 + modalTopInset,
-                    },
-                  ]}
-                >
+              <SafeAreaView
+                style={styles.cashoutVoucherScreen}
+                edges={["top", "bottom"]}
+              >
+                <View style={styles.cashoutVoucherHeader}>
                   <Text style={styles.cashoutVoucherTitle}>Gift card details</Text>
                   <TouchableOpacity
                     style={styles.cashoutVoucherCloseButton}
@@ -28176,7 +28695,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 setStripeCardSetupLoading(false);
               }}
             >
-              <SafeAreaView style={styles.stripeCardSetupScreen}>
+              <SafeAreaView
+                style={styles.stripeCardSetupScreen}
+                edges={["top", "bottom"]}
+              >
                 <View style={styles.stripeCardSetupHeader}>
                   <Text style={styles.stripeCardSetupTitle}>Card information</Text>
                   <TouchableOpacity
@@ -28290,16 +28812,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
               statusBarTranslucent={Platform.OS === "android"}
               onRequestClose={closeTremendousClaimModal}
             >
-              <SafeAreaView style={styles.tremendousClaimModalScreen}>
-                <View
-                  style={[
-                    styles.tremendousClaimModalHeader,
-                    modalTopInset > 0 && {
-                      paddingTop: modalTopInset,
-                      minHeight: 56 + modalTopInset,
-                    },
-                  ]}
-                >
+              <SafeAreaView
+                style={styles.tremendousClaimModalScreen}
+                edges={["top", "bottom"]}
+              >
+                <View style={styles.tremendousClaimModalHeader}>
                   <Text style={styles.tremendousClaimModalTitle}>
                     Payout options
                   </Text>
@@ -28395,7 +28912,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
               presentationStyle="pageSheet"
               onRequestClose={() => setCashoutCatalogModalVisible(false)}
             >
-              <SafeAreaView style={styles.cashoutCatalogModalScreen}>
+              <SafeAreaView
+                style={styles.cashoutCatalogModalScreen}
+                edges={["top", "bottom"]}
+              >
                 <View style={styles.cashoutCatalogModalHeader}>
                   <Text style={styles.cashoutCatalogModalTitle}>
                     Gift card catalog
@@ -29369,13 +29889,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     sheetPanelAnimatedStyle,
                   ]}
                 >
-              <PanGestureHandler
-                ref={sheetPanRef}
-                enabled={false}
-                activeOffsetY={[-5, 5]}
-                onGestureEvent={handleSheetGestureEvent}
-                onHandlerStateChange={handleSheetGestureStateChange}
-              >
                 {activeTab === "discover" ? (
                   <View />
                 ) : (
@@ -29398,20 +29911,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                           styles.navRow,
                           navNeedsTightFit && styles.navRowTight,
                         ]}
-                        onLayout={handleNavRowLayout}
                       >
-                        {navIndicatorWidth > 0 ? (
-                          <Animated.View
-                            pointerEvents="none"
-                            style={[
-                              styles.navIndicator,
-                              {
-                                width: navIndicatorWidth,
-                                transform: [{ translateX: navIndicatorTranslateX }],
-                              },
-                            ]}
-                          />
-                        ) : null}
                         {visibleTabs.map((tab, index) => {
                           const selected = activeTab === tab.key;
                           const focusAnim = getTabFocusAnim(tab.key);
@@ -29434,12 +29934,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               <Animated.View
                                 style={[
                                   styles.navPillContent,
+                                  selected && styles.navPillContentActive,
+                                  navNeedsTightFit && styles.navPillContentTight,
                                   {
                                     transform: [
                                       {
                                         scale: focusAnim.interpolate({
                                           inputRange: [0, 1],
-                                          outputRange: [1, 1.04],
+                                          outputRange: [1, 1],
                                         }),
                                       },
                                     ],
@@ -29493,7 +29995,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     </View>
                   </View>
                 )}
-              </PanGestureHandler>
               <Reanimated.View
                 pointerEvents={activeTab === "discover" ? "none" : "auto"}
                 style={[styles.sheetMainContent, sheetMainContentAnimatedStyle]}
@@ -29505,121 +30006,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   enabled={!drawerOpen && !businessDetailOpen && !discoverSearchOpen}
                 >
               {activeTab === "discover" ? (
-                <View style={styles.discoverSheetStage}>
-                  <ScrollView
-                    ref={sheetScrollRef}
-                    simultaneousHandlers={sheetPanRef}
-                    style={styles.sheetScroll}
-                    showsVerticalScrollIndicator={false}
-                    persistentScrollbar={false}
-                    overScrollMode="never"
-                    bounces={Platform.OS === "ios"}
-                    alwaysBounceVertical={Platform.OS === "ios"}
-                    onLayout={handleDiscoverScrollLayout}
-                    contentContainerStyle={[
-                      styles.sheetScrollContent,
-                      styles.sheetContentInsets,
-                      {
-                        paddingBottom:
-                          SAFE_BOTTOM + discoverSheetMetrics.closedVisibleHeight + 64,
-                      },
-                      discoverSheetOfferCards.length === 0 &&
-                        styles.sheetScrollContentEmpty,
-                    ]}
-                    contentInset={{
-                      bottom:
-                        SAFE_BOTTOM + discoverSheetMetrics.closedVisibleHeight + 64,
-                    }}
-                    scrollIndicatorInsets={{
-                      bottom:
-                        SAFE_BOTTOM + discoverSheetMetrics.closedVisibleHeight / 2,
-                    }}
-                    keyboardShouldPersistTaps="handled"
-                    keyboardDismissMode="on-drag"
-                    onContentSizeChange={handleDiscoverContentSizeChange}
-                    onTouchStart={handleDiscoverTouchStart}
-                    onTouchMove={handleDiscoverTouchMove}
-                    onTouchEnd={handleDiscoverTouchEnd}
-                    onTouchCancel={handleDiscoverTouchCancel}
-                    onScrollBeginDrag={handleDiscoverScrollBeginDrag}
-                    onScroll={handleDiscoverScroll}
-                    onScrollEndDrag={handleDiscoverScrollEndDrag}
-                    onMomentumScrollBegin={handleDiscoverMomentumScrollBegin}
-                    onMomentumScrollEnd={handleDiscoverMomentumScrollEnd}
-                    scrollEventThrottle={16}
-                  >
-                    {(remoteStatus.loading ||
-                      remoteStatus.error ||
-                      offerStatus.loading ||
-                      offerStatus.error) && (
-                      <View style={styles.remoteNotice}>
-                        <Text style={styles.remoteNoticeText}>
-                          {remoteStatus.loading
-                            ? "Loading businesses from Wello..."
-                            : offerStatus.loading
-                              ? "Loading offers from Wello..."
-                              : remoteStatus.error || offerStatus.error}
-                        </Text>
-                      </View>
-                    )}
-
-                    {discoverSheetOfferCards.length === 0 ? (
-                      <View style={styles.emptyState}>
-                        {!nearbyOriginAvailable ? (
-                          <>
-                            <Text style={styles.emptyTitle}>
-                              Location is needed
-                            </Text>
-                            <Text style={styles.emptyCopy}>
-                              Enable location to see offers within your selected
-                              radius.
-                            </Text>
-                            <TouchableOpacity
-                              style={styles.secondaryButton}
-                              onPress={handleLocateMe}
-                              disabled={locating || nearbyOriginLoading}
-                            >
-                              <Text style={styles.secondaryButtonText}>
-                                {locating || nearbyOriginLoading
-                                  ? "Checking location..."
-                                  : "Use my location"}
-                              </Text>
-                            </TouchableOpacity>
-                          </>
-                        ) : (
-                          <>
-                            <Text style={styles.emptyTitle}>No listings match.</Text>
-                            <Text style={styles.emptyCopy}>
-                              Try a different search or expand your radius.
-                            </Text>
-                          </>
-                        )}
-                      </View>
-                    ) : (
-                      <View style={styles.demoListStack}>
-                        {discoverSheetOfferCards.map((item, index) => (
-                          <OfferCard
-                            key={
-                              item?.id ||
-                              item?.offerId ||
-                              item?.businessId ||
-                              `discover-${index}`
-                            }
-                            item={item}
-                            onPress={() => handleCardPress(item)}
-                            selected={
-                              selectedOfferCardId ===
-                              getOfferCardSelectionKey(item)
-                            }
-                          />
-                        ))}
-                      </View>
-                    )}
-                  </ScrollView>
-                </View>
-              ) : activeTab === "__demo_disabled__" ? (
+                <View />
+             ) : activeTab === "__demo_disabled__" ? (
                 <ScrollView
-                  simultaneousHandlers={sheetPanRef}
                   style={styles.sheetScroll}
                   showsVerticalScrollIndicator={false}
                   bounces={Platform.OS === "ios"}
@@ -29629,7 +30018,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     styles.sheetContentInsets,
                     {
                       paddingBottom:
-                        SAFE_BOTTOM + discoverSheetMetrics.closedVisibleHeight / 2,
+                        insets.bottom + discoverSheetMetrics.closedVisibleHeight / 2,
                     },
                   ]}
                 >
@@ -30314,7 +30703,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 >
                   <ScrollView
                     ref={sheetScrollRef}
-                    simultaneousHandlers={sheetPanRef}
                     showsVerticalScrollIndicator={false}
                     bounces={Platform.OS === "ios"}
                     alwaysBounceVertical={Platform.OS === "ios"}
@@ -30323,7 +30711,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       styles.sheetContentInsets,
                       {
                         paddingBottom:
-                          SAFE_BOTTOM +
+                          insets.bottom +
                           28 +
                           (activeTab === "profile" ? 0 : keyboardInset) +
                           (activeTab === "profile" && isProfilePhoneFocused
@@ -30334,10 +30722,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       },
                     ]}
                     contentInset={{
-                      bottom: SAFE_BOTTOM + 28,
+                      bottom: insets.bottom + 28,
                     }}
                     scrollIndicatorInsets={{
-                      bottom: SAFE_BOTTOM + 12,
+                      bottom: insets.bottom + 12,
                     }}
                     keyboardShouldPersistTaps="handled"
                     keyboardDismissMode="interactive"
@@ -32658,6 +33046,15 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                                   entry.manualPurchase.amountCents,
                                                 )}{" "}
                                                 · {String(entry.manualPurchase.paymentType || "other")}
+                                              </Text>
+                                            ) : null}
+                                            {entry.requesterBusinessName ? (
+                                              <Text
+                                                style={styles.historyEntryRequesterText}
+                                                numberOfLines={1}
+                                              >
+                                                Requesting as{" "}
+                                                {entry.requesterBusinessName}
                                               </Text>
                                             ) : null}
                                           </View>
@@ -37812,6 +38209,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             </View>
           </SafeAreaView>
         </ActiveBusinessProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <AppContent />
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
@@ -38711,8 +39116,6 @@ const styles = StyleSheet.create({
   },
   discoverAllOffersPullTab: {
     width: "100%",
-    height: SAFE_BOTTOM + 78,
-    paddingBottom: SAFE_BOTTOM,
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -38922,6 +39325,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: FONT_SEMIBOLD,
   },
+  discoverSheetListHeader: {
+    paddingTop: 2,
+    paddingBottom: 16,
+  },
+  discoverSheetNoticeWrap: {
+    paddingHorizontal: 18,
+    paddingTop: 12,
+  },
+  discoverSheetListItem: {
+    paddingHorizontal: 22,
+  },
+  discoverSheetListSeparator: {
+    height: 14,
+  },
+  discoverSheetEmptyWrap: {
+    paddingHorizontal: 22,
+  },
   discoverOffersSubtitle: {
     marginTop: 3,
     color: "#64748B",
@@ -39077,10 +39497,10 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
   },
   discoverMiniSheet: {
-    minHeight: 140,
+    minHeight: DISCOVER_RAIL_CARD_HEIGHT + 12,
     paddingLeft: 12,
     paddingRight: 0,
-    paddingBottom: 8,
+    paddingBottom: 4,
     paddingTop: 0,
     backgroundColor: "transparent",
   },
@@ -39117,15 +39537,22 @@ const styles = StyleSheet.create({
     shadowOpacity: 0,
     elevation: 0,
   },
-  discoverMiniBusinessImage: {
+  discoverMiniBusinessImageWrap: {
     width: 108,
     height: 108,
     borderRadius: 8,
+    overflow: "hidden",
     backgroundColor: "#FFFFFF",
+    backfaceVisibility: "hidden",
+  },
+  discoverMiniBusinessImage: {
+    width: "100%",
+    height: "100%",
+    transform: [{ rotate: "0deg" }, { scaleY: 1 }],
   },
   discoverMiniBusinessImageFallback: {
-    width: 108,
-    height: 108,
+    width: "100%",
+    height: "100%",
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
@@ -39203,7 +39630,6 @@ const styles = StyleSheet.create({
     maxWidth: Math.min(SCREEN_WIDTH * 0.82, 340),
   },
   drawerHeader: {
-    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 0) + 24 : 42,
     paddingHorizontal: 18,
     paddingBottom: 18,
   },
@@ -39218,7 +39644,6 @@ const styles = StyleSheet.create({
   },
   drawerCloseButton: {
     position: "absolute",
-    top: Platform.OS === "android" ? (StatusBar.currentHeight || 0) + 14 : 22,
     right: 16,
     width: 36,
     height: 36,
@@ -39367,7 +39792,7 @@ const styles = StyleSheet.create({
   },
   createBusinessPageContent: {
     padding: 18,
-    paddingBottom: SAFE_BOTTOM + 28,
+    paddingBottom: 28,
     gap: 14,
   },
   createBusinessSectionCard: {
@@ -39394,7 +39819,7 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 18,
     paddingTop: 12,
-    paddingBottom: SAFE_BOTTOM + 14,
+    paddingBottom: 14,
     backgroundColor: COLORS.white,
     borderTopWidth: 1,
     borderTopColor: "#E8EDF5",
@@ -39450,7 +39875,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderRadius: 34,
     paddingHorizontal: IS_COMPACT ? 10 : 14,
-    paddingBottom: SAFE_BOTTOM + (IS_COMPACT ? 6 : 8),
+    paddingBottom: IS_COMPACT ? 6 : 8,
     paddingTop: IS_COMPACT ? 6 : 8,
     borderWidth: 1,
     borderColor: "rgba(148, 163, 184, 0.22)",
@@ -39529,7 +39954,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
     paddingHorizontal: 12,
     paddingTop: 24,
-    paddingBottom: SAFE_BOTTOM + 8,
+    paddingBottom: 8,
   },
   offerActivationCard: {
     backgroundColor: COLORS.white,
@@ -39648,6 +40073,21 @@ const styles = StyleSheet.create({
   },
   offerActivationStatStatusValueOpen: {
     color: "#059669",
+  },
+  offerActivationRequesterRow: {
+    minHeight: 34,
+    borderRadius: 12,
+    backgroundColor: "#ECFDF5",
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  offerActivationRequesterText: {
+    flex: 1,
+    fontSize: 13,
+    color: "#0F766E",
+    fontFamily: FONT_MEDIUM,
   },
   offerActivationNotice: {
     minHeight: 62,
@@ -40040,7 +40480,7 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   businessPageHeader: {
-    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 0) + 8 : 18,
+    paddingTop: 8,
     paddingHorizontal: 18,
     paddingBottom: 10,
     flexDirection: "row",
@@ -40795,18 +41235,18 @@ const styles = StyleSheet.create({
     borderRadius: 0,
     paddingVertical: IS_COMPACT ? 3 : 4,
     paddingHorizontal: Platform.select({
-      ios: IS_COMPACT ? 6 : 8,
-      android: IS_COMPACT ? 6 : 8,
-      default: IS_COMPACT ? 8 : 10,
+      ios: IS_COMPACT ? 2 : 3,
+      android: IS_COMPACT ? 2 : 3,
+      default: IS_COMPACT ? 3 : 4,
     }),
     borderWidth: 0,
     position: "relative",
   },
   navPillTight: {
     paddingHorizontal: Platform.select({
-      ios: IS_COMPACT ? 6 : 8,
-      android: IS_COMPACT ? 6 : 8,
-      default: IS_COMPACT ? 8 : 10,
+      ios: IS_COMPACT ? 1 : 2,
+      android: IS_COMPACT ? 1 : 2,
+      default: IS_COMPACT ? 2 : 3,
     }),
   },
   navPillSpaced: {
@@ -40818,7 +41258,19 @@ const styles = StyleSheet.create({
   navPillContent: {
     alignItems: "center",
     justifyContent: "center",
+    alignSelf: "stretch",
     minHeight: IS_COMPACT ? 44 : 48,
+    minWidth: 0,
+    paddingHorizontal: IS_COMPACT ? 4 : 5,
+    paddingVertical: IS_COMPACT ? 5 : 6,
+    borderRadius: 24,
+  },
+  navPillContentActive: {
+    backgroundColor: "#E8EEF9",
+  },
+  navPillContentTight: {
+    minWidth: 0,
+    paddingHorizontal: IS_COMPACT ? 3 : 4,
   },
   navIconOrb: {
     width: IS_COMPACT ? 32 : 36,
@@ -40863,18 +41315,20 @@ const styles = StyleSheet.create({
   },
   navPillLabel: {
     marginTop: 0,
+    alignSelf: "stretch",
+    minWidth: 0,
   },
   navPillTextTight: {
     ...Platform.select({
       ios: {
         fontSize: IS_COMPACT ? 10 : 11,
         lineHeight: IS_COMPACT ? 13 : 14,
-        letterSpacing: -0.1,
+        letterSpacing: 0,
       },
       android: {
         fontSize: IS_COMPACT ? 10 : 11,
         lineHeight: IS_COMPACT ? 13 : 14,
-        letterSpacing: -0.1,
+        letterSpacing: 0,
       },
       default: {},
     }),
@@ -40882,14 +41336,6 @@ const styles = StyleSheet.create({
   navPillTextActive: {
     color: "#1E2A53",
     fontFamily: FONT_MEDIUM,
-  },
-  navIndicator: {
-    position: "absolute",
-    top: 4,
-    bottom: 4,
-    borderRadius: 24,
-    backgroundColor: "rgba(47, 99, 241, 0.1)",
-    opacity: 1,
   },
   navPillBadge: {
     position: "absolute",
@@ -48622,6 +49068,12 @@ const styles = StyleSheet.create({
   historyEntryMissingUploadText: {
     fontSize: 11,
     color: "#B45309",
+    fontFamily: FONT_MEDIUM,
+  },
+  historyEntryRequesterText: {
+    marginTop: 4,
+    fontSize: 11,
+    color: "#0F766E",
     fontFamily: FONT_MEDIUM,
   },
   historyEntrySubtitle: {

@@ -186,4 +186,15 @@ dependencies {
     }
 }
 
-apply plugin: 'com.google.gms.google-services'
+def googleServicesConfig = file("google-services.json")
+def isDebugBuild = gradle.startParameter.taskNames.any { taskName ->
+    taskName.toLowerCase().contains("debug")
+}
+
+if (googleServicesConfig.exists()) {
+    apply plugin: 'com.google.gms.google-services'
+} else if (!isDebugBuild) {
+    throw new GradleException(
+        "android/app/google-services.json is required for release builds."
+    )
+}
