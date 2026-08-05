@@ -1245,29 +1245,15 @@ const createDemoCoordinate = (index = 0) => {
   };
 };
 
-const createPrivacySafeServiceCoordinate = (coordinate, seedValue = "") => {
+const createPrivacySafeServiceCoordinate = (coordinate) => {
   const latitude = Number(coordinate?.latitude);
   const longitude = Number(coordinate?.longitude);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  const seed = String(seedValue || "wello-service-area");
-  let hash = 2166136261;
-  for (let index = 0; index < seed.length; index += 1) {
-    hash ^= seed.charCodeAt(index);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  // Move the public pin roughly 180–320 meters from the private address.
-  const distanceMeters = 180 + (hash % 141);
-  const angle = (((hash >>> 8) % 360) * Math.PI) / 180;
-  const latitudeOffset = (Math.cos(angle) * distanceMeters) / 111320;
-  const longitudeScale = Math.max(
-    0.2,
-    Math.cos((latitude * Math.PI) / 180),
-  );
-  const longitudeOffset =
-    (Math.sin(angle) * distanceMeters) / (111320 * longitudeScale);
+  // Round the center to roughly a neighborhood block. The map renders a
+  // broad service circle rather than an exact pin at this coordinate.
   return {
-    latitude: Math.round((latitude + latitudeOffset) * 10000) / 10000,
-    longitude: Math.round((longitude + longitudeOffset) * 10000) / 10000,
+    latitude: Math.round(latitude * 1000) / 1000,
+    longitude: Math.round(longitude * 1000) / 1000,
   };
 };
 
@@ -1287,6 +1273,9 @@ const mapSupabaseBusiness = (row, index) => {
     (!String(row.postal_code || "").trim() &&
       Boolean(String(row.city || "").trim()) &&
       !/\d/.test(String(row.address || "")));
+  const isShopAndMobileBusiness = rawBusinessTags.includes(
+    "__wello_shop_and_mobile__",
+  );
   const safeIndex = Number.isFinite(index) ? index : 0;
   const latitude = row.latitude !== null ? Number(row.latitude) : null;
   const longitude = row.longitude !== null ? Number(row.longitude) : null;
@@ -1314,6 +1303,7 @@ const mapSupabaseBusiness = (row, index) => {
     rating: Number.isFinite(Number(row.rating)) ? Number(row.rating) : null,
     tags: sanitizeBusinessTags(rawBusinessTags),
     isServiceAreaBusiness: inferredServiceAreaBusiness,
+    isShopAndMobileBusiness,
     isOpen: row.is_open ?? true,
     hours: row.hours || "Hours available upon request",
     phone: row.phone || "",
@@ -3981,6 +3971,28 @@ const fetchGeocodeResult = async (address) => {
   return { latitude, longitude };
 };
 
+const fetchNearestRoadCoordinate = async (coordinate) => {
+  const latitude = Number(coordinate?.latitude);
+  const longitude = Number(coordinate?.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  if (!PLACES_PROXY_ENABLED || !PLACES_PROXY_URL) return null;
+  const payload = await callPlacesProxy({
+    action: "nearestRoad",
+    latitude,
+    longitude,
+  });
+  const snappedLocation = payload?.snappedPoints?.[0]?.location;
+  const snappedLatitude = Number(snappedLocation?.latitude);
+  const snappedLongitude = Number(snappedLocation?.longitude);
+  if (!Number.isFinite(snappedLatitude) || !Number.isFinite(snappedLongitude)) {
+    return null;
+  }
+  return {
+    latitude: snappedLatitude,
+    longitude: snappedLongitude,
+  };
+};
+
 const isBusinessOpenNow = (value) => {
   const status = getBusinessHoursStatus(value, null);
   if (!status.sourceKnown) return null;
@@ -4242,15 +4254,15 @@ const DISCOVER_RADIUS_OPTIONS = [
 const DISCOVER_HOME_TABS = [
   { key: "all", label: "All" },
   { key: "food", label: "Food" },
-  { key: "trades", label: "Trades" },
-  { key: "auto", label: "Auto" },
+  { key: "trades", label: "Home Service" },
+  { key: "auto", label: "Auto Service" },
   { key: "gas", label: "Gas" },
   { key: "beauty", label: "Beauty" },
 ];
 const DISCOVER_SHEET_CATEGORY_TABS = [
-  { key: "all", label: "All" },
-  { key: "auto", label: "Auto" },
-  { key: "trades", label: "Home" },
+  { key: "all", label: "All Services" },
+  { key: "auto", label: "Auto Service" },
+  { key: "trades", label: "Home Service" },
 ];
 
 const CATEGORY_OPTIONS = DISCOVER_HOME_TABS.filter((tab) => tab.key !== "all").map(
@@ -4307,13 +4319,13 @@ const CATEGORY_CONFIG = {
   auto: {
     label: "AU",
     color: "#1E3A8A",
-    display: "Auto",
+    display: "Auto Service",
     icon: "car",
   },
   trades: {
     label: "TR",
     color: "#F59E0B",
-    display: "Trades",
+    display: "Home Service",
     icon: "construct",
   },
   gas: {
@@ -4984,8 +4996,9 @@ const DiscoverSearchScreenContent = ({
                   {business.name || "Business"}
                 </Text>
                 <Text style={styles.searchResultMeta} numberOfLines={1}>
-                  {business.distanceLabel || "Nearby"} {"\u00b7"}{" "}
-                  {business.categoryLabel}
+                  {business.isServiceAreaBusiness
+                    ? business.categoryLabel
+                    : `${business.distanceLabel || "Nearby"} \u00b7 ${business.categoryLabel}`}
                 </Text>
               </View>
               <Ionicons
@@ -5459,6 +5472,9 @@ function OfferCard({ item, onPress, selected }) {
   const cashbackLabel =
     formatPercentOnlyLabel(cashbackRateBps / 100) || null;
   const businessName = String(item?.name || item?.business?.name || "Business").trim();
+  const isServiceAreaBusiness = Boolean(
+    item?.isServiceAreaBusiness || item?.business?.isServiceAreaBusiness,
+  );
   const distanceLabelRaw = String(item?.distanceLabel || item?.distance || "")
     .trim()
     .replace(/\s+/g, " ");
@@ -5557,16 +5573,18 @@ function OfferCard({ item, onPress, selected }) {
             <Text style={styles.liveEditorialStackName} numberOfLines={1}>
               {businessName}
             </Text>
-            <View style={styles.liveEditorialStackHeadlineMetaRow}>
-              <Ionicons
-                name="location-outline"
-                size={13}
-                color="rgba(255,255,255,0.9)"
-              />
-              <Text style={styles.liveEditorialStackHeadlineMeta} numberOfLines={1}>
-                {distanceLabel}
-              </Text>
-            </View>
+            {!isServiceAreaBusiness ? (
+              <View style={styles.liveEditorialStackHeadlineMetaRow}>
+                <Ionicons
+                  name="location-outline"
+                  size={13}
+                  color="rgba(255,255,255,0.9)"
+                />
+                <Text style={styles.liveEditorialStackHeadlineMeta} numberOfLines={1}>
+                  {distanceLabel}
+                </Text>
+              </View>
+            ) : null}
             {cashbackLabel ? (
               <View style={styles.liveEditorialStackBusinessCashbackPill}>
                 <Text style={styles.liveEditorialStackBusinessCashbackText}>
@@ -6256,6 +6274,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     name: "",
     description: "",
     hasBusinessLocation: true,
+    locationMode: "shop",
     address: "",
     addressPlaceId: null,
     addressCoords: null,
@@ -6275,6 +6294,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     name: "",
     description: "",
     hasBusinessLocation: true,
+    locationMode: "shop",
     commissionRateCents: 150,
     address: "",
     addressCoords: null,
@@ -12411,7 +12431,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   </Text>
                 </View>
                 <Text style={styles.discoverMiniBusinessMeta} numberOfLines={1}>
-                  {distanceText} {"\u2022"} {statusText}
+                  {business?.isServiceAreaBusiness
+                    ? statusText
+                    : `${distanceText} \u2022 ${statusText}`}
                 </Text>
                 <Text style={styles.discoverMiniBusinessCashback} numberOfLines={1}>
                   {cashbackLabel} cashback
@@ -13837,6 +13859,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     description:
       business?.profileDescription || business?.offer || "",
     hasBusinessLocation: !business?.isServiceAreaBusiness,
+    locationMode: business?.isServiceAreaBusiness
+      ? "travel"
+      : business?.isShopAndMobileBusiness
+        ? "both"
+        : "shop",
     address: business?.address || "",
     addressPlaceId: null,
     addressCoords: business?.coordinate || null,
@@ -15894,6 +15921,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       name: "",
       description: "",
       hasBusinessLocation: true,
+      locationMode: "shop",
       commissionRateCents: 150,
       address: "",
       addressCoords: null,
@@ -17316,10 +17344,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       });
       return;
     }
-    const usesPrivateServiceAddress = formData.hasBusinessLocation === false;
+    const usesPrivateServiceAddress = formData.locationMode === "travel";
+    const isShopAndMobileBusiness = formData.locationMode === "both";
     const tagList = [
       businessSpecialty.replace(/^Other:\s*/i, "").trim(),
       ...(usesPrivateServiceAddress ? ["__wello_service_area__"] : []),
+      ...(isShopAndMobileBusiness ? ["__wello_shop_and_mobile__"] : []),
     ].filter(Boolean);
     const merchantDescriptorAliases =
       ownerBusiness.merchantDescriptorAliases || [];
@@ -17451,10 +17481,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       });
       return;
     }
-    const usesPrivateServiceAddress = formData.hasBusinessLocation === false;
+    const usesPrivateServiceAddress = formData.locationMode === "travel";
+    const isShopAndMobileBusiness = formData.locationMode === "both";
     const tagList = [
       businessSpecialty.replace(/^Other:\s*/i, "").trim(),
       ...(usesPrivateServiceAddress ? ["__wello_service_area__"] : []),
+      ...(isShopAndMobileBusiness ? ["__wello_shop_and_mobile__"] : []),
     ].filter(Boolean);
     const merchantDescriptorAliases =
       ownerBusiness.merchantDescriptorAliases || [];
@@ -17475,11 +17507,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       ? [trimmedCity, trimmedState].filter(Boolean).join(", ") ||
         "Service-area business"
       : trimmedAddress;
+    let nearestEditRoadCoordinate = null;
+    if (usesPrivateServiceAddress && editAddressCoordinate) {
+      try {
+        nearestEditRoadCoordinate = await fetchNearestRoadCoordinate(editAddressCoordinate);
+      } catch (error) {
+        console.warn("Wello nearest-road lookup failed:", error?.message || error);
+      }
+    }
     const publicEditCoordinate = usesPrivateServiceAddress
-      ? createPrivacySafeServiceCoordinate(
-          editAddressCoordinate || ownerBusiness.coordinate,
-          `${authUserId}:${trimmedName}`,
-        )
+      ? nearestEditRoadCoordinate ||
+        createPrivacySafeServiceCoordinate(editAddressCoordinate || ownerBusiness.coordinate)
       : editAddressCoordinate;
     if (!publicEditCoordinate) {
       setFormMessage({
@@ -23284,18 +23322,25 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         return;
       }
       const usesPrivateServiceAddress =
-        createBusinessForm.hasBusinessLocation === false;
+        createBusinessForm.locationMode === "travel";
+      const isShopAndMobileBusiness =
+        createBusinessForm.locationMode === "both";
       const publicAddress = usesPrivateServiceAddress
         ? [createBusinessForm.city.trim(), createBusinessForm.state.trim()]
             .filter(Boolean)
             .join(", ") || "Service-area business"
         : createBusinessForm.address.trim();
+      let nearestCreateRoadCoordinate = null;
+      if (usesPrivateServiceAddress) {
+        try {
+          nearestCreateRoadCoordinate = await fetchNearestRoadCoordinate(createCoords);
+        } catch (error) {
+          console.warn("Wello nearest-road lookup failed:", error?.message || error);
+        }
+      }
       const publicMapCoords =
         usesPrivateServiceAddress && createCoords
-          ? createPrivacySafeServiceCoordinate(
-              createCoords,
-              `${authUserId}:${createBusinessForm.name.trim()}`,
-            )
+          ? nearestCreateRoadCoordinate || createPrivacySafeServiceCoordinate(createCoords)
           : createCoords;
       const { data, error } = await supabase
         .from("businesses")
@@ -23324,6 +23369,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
               businessSpecialty.replace(/^Other:\s*/i, "").trim(),
               ...(usesPrivateServiceAddress
                 ? ["__wello_service_area__"]
+                : []),
+              ...(isShopAndMobileBusiness
+                ? ["__wello_shop_and_mobile__"]
                 : []),
             ].filter(Boolean)),
           ),
@@ -23394,6 +23442,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         name: "",
         description: "",
         hasBusinessLocation: true,
+        locationMode: "shop",
         commissionRateCents: 150,
         address: "",
         addressCoords: null,
@@ -23587,6 +23636,48 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     ? null
                     : business.fallbackCoordinate);
                 if (!markerCoordinate) return null;
+                if (business.isServiceAreaBusiness) {
+                  return (
+                    <Marker
+                      key={`service-area-${business.id}`}
+                      coordinate={markerCoordinate}
+                      anchor={{ x: 0.5, y: 0.29 }}
+                      zIndex={isSelected ? 3 : 2}
+                      onPress={(event) => {
+                        event?.stopPropagation?.();
+                        handleMarkerPress(business);
+                      }}
+                    >
+                      <View
+                        style={[
+                          styles.markerWrap,
+                          isSelected && styles.markerWrapSelected,
+                        ]}
+                        pointerEvents="none"
+                        collapsable={false}
+                      >
+                        <View
+                          style={[
+                            styles.cashbackMarker,
+                            isSelected && styles.cashbackMarkerSelected,
+                          ]}
+                        >
+                          {markerCategoryIcon ? (
+                            <Ionicons name={markerCategoryIcon} size={14} color="#FFFFFF" />
+                          ) : null}
+                          <Text style={styles.cashbackMarkerText}>
+                            {formatPercentOnlyLabel(
+                              (resolveDisplayedBusinessDefaultCashbackRateBps(business) || DEFAULT_CASHBACK_RATE_BPS) / 100,
+                            )}
+                          </Text>
+                        </View>
+                        <Text style={styles.cashbackMarkerBusinessName} numberOfLines={1}>
+                          {business.name || "Business"}
+                        </Text>
+                      </View>
+                    </Marker>
+                  );
+                }
                 return (
                   <React.Fragment key={business.id}>
                     {Platform.OS === "android" &&
@@ -23775,7 +23866,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                         ]}
                       >
                         <Ionicons
-                          name={isAll ? "grid" : isAuto ? "car-sport" : "home"}
+                          name={
+                            isAll
+                              ? "grid"
+                              : isAuto
+                                ? "car-sport"
+                                : "home"
+                          }
                           size={isAuto ? 33 : 31}
                           color={categoryColor}
                         />
@@ -25135,10 +25232,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                           </View>
 
                           <View style={styles.businessPageDistanceStatusRow}>
-                            <Text style={styles.businessPageDistanceText}>
-                              {displayDistanceLabel} away
-                            </Text>
-                            <Text style={styles.businessPageMetaDot}>•</Text>
+                            {!isServiceAreaBusiness ? (
+                              <>
+                                <Text style={styles.businessPageDistanceText}>
+                                  {displayDistanceLabel} away
+                                </Text>
+                                <Text style={styles.businessPageMetaDot}>•</Text>
+                              </>
+                            ) : null}
                             <Text
                               style={[
                                 styles.businessPageOpenText,
@@ -25148,6 +25249,15 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               {businessProfileHoursText}
                             </Text>
                           </View>
+
+                          {isServiceAreaBusiness ? (
+                            <View style={styles.businessPageTravelRow}>
+                              <Ionicons name="car-outline" size={16} color="#166534" />
+                              <Text style={styles.businessPageTravelText}>
+                                Travels to customers
+                              </Text>
+                            </View>
+                          ) : null}
 
                           <View style={styles.businessPageCashbackBlock}>
                             <Text style={styles.businessPageCashbackHeroText}>
@@ -27441,7 +27551,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                               <Text style={styles.discoverOfferBottomMetaText}>
                                 {Number.isFinite(rating) ? rating.toFixed(1) : "New"}
                                 {` (${Number.isFinite(reviewCount) ? Math.round(reviewCount) : 0})`}
-                                {` · ${distanceText}`}
+                                {!business?.isServiceAreaBusiness ? ` · ${distanceText}` : ""}
                               </Text>
                             </View>
                             <Text style={styles.discoverOfferCashback}>
@@ -40066,6 +40176,17 @@ const styles = StyleSheet.create({
   businessPageClosedText: {
     color: "#64748B",
   },
+  businessPageTravelRow: {
+    marginTop: 7,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  businessPageTravelText: {
+    fontSize: 14,
+    color: "#166534",
+    fontFamily: FONT_SEMIBOLD,
+  },
   businessPageCashbackBlock: {
     marginTop: 12,
     marginBottom: 6,
@@ -49747,6 +49868,46 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowRadius: 16,
     elevation: 14,
+  },
+  serviceAreaMarkerLabel: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#15803D",
+    borderWidth: 3,
+    borderColor: "rgba(255,255,255,0.96)",
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.16,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  serviceAreaMarkerLabelSelected: {
+    backgroundColor: "#166534",
+    borderColor: "#BBF7D0",
+    transform: [{ scale: 1.04 }],
+  },
+  serviceAreaMarkerTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 3,
+  },
+  serviceAreaMarkerPercent: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontFamily: FONT_BOLD,
+  },
+  serviceAreaMarkerName: {
+    width: 51,
+    marginTop: 1,
+    color: "#FFFFFF",
+    fontSize: 8,
+    fontFamily: FONT_SEMIBOLD,
+    textAlign: "center",
+    lineHeight: 9,
   },
   cashbackMarker: {
     minWidth: 54,

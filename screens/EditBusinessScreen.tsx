@@ -85,8 +85,8 @@ export default function EditBusinessScreen({
   const [specialtyMenuOpen, setSpecialtyMenuOpen] = useState(false);
   const [otherSpecialty, setOtherSpecialty] = useState("");
   const industryOptions = [
-    { key: "trades", label: "Home" },
-    { key: "auto", label: "Auto" },
+    { key: "trades", label: "Home Service" },
+    { key: "auto", label: "Auto Service" },
   ];
   const specialtyOptions: Record<string, string[]> = {
     trades: [
@@ -157,7 +157,7 @@ export default function EditBusinessScreen({
               >
                 <Text style={styles.selectInputText}>
                   {industryOptions.find((option) => option.key === selectedIndustry)
-                    ?.label || "Select Home or Auto"}
+                    ?.label || "Select Home Service or Auto Service"}
                 </Text>
                 <Ionicons
                   name={editBusinessCategoryMenuOpen ? "chevron-up" : "chevron-down"}
@@ -337,15 +337,25 @@ export default function EditBusinessScreen({
               <Text style={styles.formLabel}>Do you have a business location?</Text>
               <View style={styles.tagOptionRow}>
                 {[
-                  { value: true, label: "Yes" },
-                  { value: false, label: "No, I travel to customers" },
+                  { value: "shop", label: "I have a shop" },
+                  { value: "travel", label: "I travel to customers" },
+                  { value: "both", label: "Both" },
                 ].map((option) => {
-                  const active = (formData.hasBusinessLocation !== false) === option.value;
+                  const currentMode =
+                    formData.locationMode ||
+                    (formData.hasBusinessLocation === false ? "travel" : "shop");
+                  const active = currentMode === option.value;
                   return (
                     <TouchableOpacity
                       key={option.label}
                       style={[styles.tagOptionPill, active && styles.tagOptionPillActive]}
-                      onPress={() => handleFormChange("hasBusinessLocation", option.value)}
+                      onPress={() => {
+                        handleFormChange("locationMode", option.value);
+                        handleFormChange(
+                          "hasBusinessLocation",
+                          option.value !== "travel",
+                        );
+                      }}
                     >
                       <Text style={[styles.tagOptionText, active && styles.tagOptionTextActive]}>
                         {option.label}
@@ -354,14 +364,20 @@ export default function EditBusinessScreen({
                   );
                 })}
               </View>
-              {formData.hasBusinessLocation === false ? (
+              {formData.locationMode === "travel" ? (
                 <Text style={styles.formHint}>
                   Enter your home or service-area base so we can place you nearby
                   on the map. Your exact address is never shown to customers.
                 </Text>
               ) : null}
+              {formData.locationMode === "both" ? (
+                <Text style={styles.formHint}>
+                  Enter your shop address. Customers can get directions to your
+                  shop and will also know that you travel to them.
+                </Text>
+              ) : null}
               <Text style={styles.formLabel}>
-                {formData.hasBusinessLocation === false
+                {formData.locationMode === "travel"
                   ? "Home or service-area base"
                   : "Business address"}
               </Text>

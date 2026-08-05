@@ -18,6 +18,8 @@ const GOOGLE_PLACES_AUTOCOMPLETE_URL =
   "https://places.googleapis.com/v1/places:autocomplete";
 const GOOGLE_PLACES_DETAILS_URL = "https://places.googleapis.com/v1/places";
 const GOOGLE_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json";
+const GOOGLE_NEAREST_ROADS_URL =
+  "https://roads.googleapis.com/v1/nearestRoads";
 
 const GOOGLE_PLACES_AUTOCOMPLETE_FIELDMASK =
   "suggestions.placePrediction.placeId,suggestions.placePrediction.place,suggestions.placePrediction.text.text,suggestions.placePrediction.structuredFormat.mainText.text,suggestions.placePrediction.structuredFormat.secondaryText.text";
@@ -199,6 +201,36 @@ const runGeocode = async (body: Record<string, unknown>) => {
   return parsed;
 };
 
+const runNearestRoad = async (body: Record<string, unknown>) => {
+  const latitude = Number(body?.latitude);
+  const longitude = Number(body?.longitude);
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    throw new HttpError("Invalid coordinate.", 400, {
+      reason: "invalid_road_coordinate",
+    });
+  }
+  const response = await fetch(
+    `${GOOGLE_NEAREST_ROADS_URL}?points=${encodeURIComponent(`${latitude},${longitude}`)}&key=${encodeURIComponent(GOOGLE_PLACES_SERVER_KEY)}`,
+    { method: "GET" },
+  );
+  const raw = await response.text();
+  const parsed = parseJsonSafe(raw);
+  if (!response.ok) {
+    throw new HttpError("Unable to locate the nearest road right now.", 502, {
+      reason: "google_nearest_road_failed",
+      upstreamStatus: response.status || null,
+    });
+  }
+  return parsed;
+};
+
 serve(async (req: Request) => {
   const corsHeaders = getCorsHeaders(req);
   if (!corsHeaders) {
@@ -218,7 +250,7 @@ serve(async (req: Request) => {
       unknown
     >;
     const action = String(body?.action || "").trim().toLowerCase();
-    if (!["autocomplete", "details", "geocode"].includes(action)) {
+    if (!["autocomplete", "details", "geocode", "nearestroad"].includes(action)) {
       throw new HttpError("Invalid action.", 400, {
         reason: "invalid_action",
       });
@@ -249,6 +281,19 @@ serve(async (req: Request) => {
         supabase,
       });
       const payload = await runDetails(body);
+      return json(payload, 200, corsHeaders);
+    }
+
+    if (action === "nearestroad") {
+      await enforceRateLimit({
+        req,
+        scope: "places:nearest-road",
+        userId,
+        maxRequests: 90,
+        windowSeconds: 10 * 60,
+        supabase,
+      });
+      const payload = await runNearestRoad(body);
       return json(payload, 200, corsHeaders);
     }
 
