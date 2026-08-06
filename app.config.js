@@ -105,6 +105,23 @@ export default ({ config }) => ({
   },
   android: {
     ...config.android,
+    intentFilters: [
+      ...(Array.isArray(config.android?.intentFilters)
+        ? config.android.intentFilters
+        : []),
+      {
+        action: "VIEW",
+        autoVerify: true,
+        data: [
+          {
+            scheme: "https",
+            host: "www.wellopartners.com",
+            pathPrefix: "/business",
+          },
+        ],
+        category: ["BROWSABLE", "DEFAULT"],
+      },
+    ],
     permissions: ANDROID_REQUIRED_PERMISSIONS,
     blockedPermissions: ANDROID_BLOCKED_PERMISSIONS,
     icon: APP_ICON_PATH,

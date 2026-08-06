@@ -259,7 +259,10 @@ export default function AddBusinessScreen({
                 {specialtyMenuOpen ? (
                   <View style={styles.selectMenu}>
                     {(specialtyOptions[selectedIndustry] || []).map((specialty) => {
-                      const isActive = selectedSpecialty === specialty;
+                      const isActive =
+                        specialty === "Other"
+                          ? isOtherSpecialty
+                          : selectedSpecialty === specialty;
                       return (
                         <TouchableOpacity
                           key={specialty}
@@ -290,21 +293,24 @@ export default function AddBusinessScreen({
                   </View>
                 ) : null}
                 {isOtherSpecialty ? (
-                  <AutoFocusInput
-                    style={styles.formInput}
-                    placeholder="Describe what your business does"
-                    placeholderTextColor={colors.muted}
-                    value={otherSpecialty}
-                    onChangeText={(value: string) => {
-                      setOtherSpecialty(value);
-                      setCreateBusinessForm((prev: any) => ({
-                        ...prev,
-                        categoryCustomLabel: value.trim()
-                          ? `Other: ${value}`
-                          : "Other",
-                      }));
-                    }}
-                  />
+                  <>
+                    <Text style={styles.formLabel}>Describe your specialty</Text>
+                    <AutoFocusInput
+                      style={styles.formInput}
+                      placeholder="What service do you provide?"
+                      placeholderTextColor={colors.muted}
+                      value={otherSpecialty}
+                      onChangeText={(value: string) => {
+                        setOtherSpecialty(value);
+                        setCreateBusinessForm((prev: any) => ({
+                          ...prev,
+                          categoryCustomLabel: value.trim()
+                            ? `Other: ${value}`
+                            : "Other",
+                        }));
+                      }}
+                    />
+                  </>
                 ) : null}
               </>
             ) : null}

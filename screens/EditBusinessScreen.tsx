@@ -217,12 +217,16 @@ export default function EditBusinessScreen({
                   </TouchableOpacity>
                   {specialtyMenuOpen ? (
                     <View style={styles.selectMenu}>
-                      {(specialtyOptions[selectedIndustry] || []).map((specialty) => (
-                        <TouchableOpacity
+                      {(specialtyOptions[selectedIndustry] || []).map((specialty) => {
+                        const isActive =
+                          specialty === "Other"
+                            ? isOtherSpecialty
+                            : selectedSpecialty === specialty;
+                        return <TouchableOpacity
                           key={specialty}
                           style={[
                             styles.selectMenuOption,
-                            selectedSpecialty === specialty && styles.selectMenuOptionActive,
+                            isActive && styles.selectMenuOptionActive,
                           ]}
                           onPress={() => {
                             handleFormChange("categoryCustomLabel", specialty);
@@ -233,30 +237,37 @@ export default function EditBusinessScreen({
                           <Text
                             style={[
                               styles.selectMenuOptionText,
-                              selectedSpecialty === specialty &&
-                                styles.selectMenuOptionTextActive,
+                              isActive && styles.selectMenuOptionTextActive,
                             ]}
                           >
                             {specialty}
                           </Text>
-                        </TouchableOpacity>
-                      ))}
+                        </TouchableOpacity>;
+                      })}
                     </View>
                   ) : null}
                   {isOtherSpecialty ? (
-                    <AutoFocusInput
-                      style={styles.formInput}
-                      placeholder="Describe what your business does"
-                      placeholderTextColor={colors.muted}
-                      value={otherSpecialty || selectedSpecialty.replace(/^Other:\s*/i, "")}
-                      onChangeText={(value: string) => {
-                        setOtherSpecialty(value);
-                        handleFormChange(
-                          "categoryCustomLabel",
-                          value.trim() ? `Other: ${value}` : "Other",
-                        );
-                      }}
-                    />
+                    <>
+                      <Text style={styles.formLabel}>Describe your specialty</Text>
+                      <AutoFocusInput
+                        style={styles.formInput}
+                        placeholder="What service do you provide?"
+                        placeholderTextColor={colors.muted}
+                        value={
+                          otherSpecialty ||
+                          (selectedSpecialty.startsWith("Other:")
+                            ? selectedSpecialty.replace(/^Other:\s*/i, "")
+                            : "")
+                        }
+                        onChangeText={(value: string) => {
+                          setOtherSpecialty(value);
+                          handleFormChange(
+                            "categoryCustomLabel",
+                            value.trim() ? `Other: ${value}` : "Other",
+                          );
+                        }}
+                      />
+                    </>
                   ) : null}
                 </>
               ) : null}
