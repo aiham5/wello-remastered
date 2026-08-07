@@ -29326,34 +29326,19 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
               statusBarTranslucent
               onRequestClose={() => setCashoutBankModalVisible(false)}
             >
-              <View style={styles.cashoutSheetOverlay}>
+              <View style={[styles.cashoutSheetOverlay, styles.cashoutBankSheetOverlay]}>
                 <Pressable
                   style={styles.cashoutSheetBackdrop}
                   onPress={() => setCashoutBankModalVisible(false)}
                 />
                 <KeyboardAvoidingView
                   behavior={Platform.OS === "ios" ? "padding" : undefined}
-                  style={styles.cashoutSheetKeyboard}
+                  style={[styles.cashoutSheetKeyboard, styles.cashoutBankSheetKeyboard]}
                 >
-                  <View style={styles.cashoutSheetCard}>
-                    <View style={styles.cashoutSheetHandleWrap}>
-                      <View style={styles.cashoutSheetHandle} />
-                    </View>
-                    <View style={styles.cashoutSheetHeader}>
-                      <View style={styles.cashoutSheetBrandWrap}>
-                        <View style={styles.cashoutSheetBrandIcon}>
-                          <Ionicons name="business-outline" size={20} color="#2563EB" />
-                        </View>
-                        <View style={styles.cashoutSheetBrandCopy}>
-                          <Text style={styles.cashoutSheetTitle}>Bank Transfer</Text>
-                          <Text style={styles.cashoutSheetSubtitle} numberOfLines={1}>
-                            {String(
-                              cashoutCatalogState.bankTile?.bankSummary ||
-                                cashoutStatus.selectedPayoutLabel ||
-                                "Link bank transfer",
-                            ).trim() || "Link bank transfer"}
-                          </Text>
-                        </View>
+                  <View style={[styles.cashoutSheetCard, styles.cashoutBankSheetCard]}>
+                    <View style={styles.cashoutBankSheetHeader}>
+                      <View style={styles.cashoutBankSheetIcon}>
+                        <Ionicons name="business" size={24} color="#2563EB" />
                       </View>
                       <TouchableOpacity
                         style={styles.cashoutSheetCloseButton}
@@ -29362,8 +29347,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                         <Ionicons name="close" size={18} color={COLORS.ink} />
                       </TouchableOpacity>
                     </View>
-                    <View style={styles.cashoutSheetAmountBox}>
-                      <Text style={styles.cashoutSheetAmountLabel}>Enter amount</Text>
+                    <Text style={styles.cashoutBankSheetTitle}>
+                      Enter amount you’d like to transfer
+                    </Text>
+                    <View style={[styles.cashoutSheetAmountBox, styles.cashoutBankAmountBox]}>
                       <View style={styles.cashoutSheetCurrencyInputRow}>
                         <Text style={styles.cashoutSheetCurrencyPrefix}>$</Text>
                         <AutoFocusInput
@@ -29379,149 +29366,19 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                           selectTextOnFocus
                         />
                       </View>
-                      <View style={styles.cashoutSheetQuickAmountsRow}>
-                        {cashoutBankQuickAmountCents.map((amountCents) => {
-                          const selected = cashoutInputAmountCents === amountCents;
-                          const isMax =
-                            amountCents === Math.max(0, Number(cashoutMaxAllowedCents) || 0);
-                          return (
-                            <TouchableOpacity
-                              key={`bank-amount-${amountCents}`}
-                              style={[
-                                styles.cashoutSheetQuickAmountChip,
-                                selected && styles.cashoutSheetQuickAmountChipSelected,
-                              ]}
-                              onPress={() => setCashoutAmountFromCents(amountCents)}
-                              disabled={cashoutActionStatus.loading}
-                            >
-                              <Text
-                                style={[
-                                  styles.cashoutSheetQuickAmountChipText,
-                                  selected && styles.cashoutSheetQuickAmountChipTextSelected,
-                                ]}
-                              >
-                                {isMax ? "Max" : formatCurrencyFromCents(amountCents)}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                      <Text style={styles.cashoutAmountHint}>
-                        Cashout minimum is {formatCurrencyFromCents(MIN_CASHOUT_CENTS)}.
-                      </Text>
                     </View>
-                    <View style={styles.cashoutSheetSummaryRows}>
+                    <View style={[styles.cashoutSheetSummaryRows, styles.cashoutBankSummaryRows]}>
                       <View style={styles.cashoutSheetSummaryRow}>
-                        <Text style={styles.cashoutSheetSummaryLabel}>Transfer amount</Text>
-                        <Text style={styles.cashoutSheetSummaryValue}>
-                          {formatCurrencyFromCents(cashoutInputAmountCents)}
-                        </Text>
-                      </View>
-                      <View style={styles.cashoutSheetSummaryRow}>
-                        <Text style={styles.cashoutSheetSummaryLabel}>Your balance</Text>
-                        <Text style={styles.cashoutSheetSummaryValue}>
+                        <Text style={styles.cashoutBankSummaryLabel}>Available balance</Text>
+                        <Text style={styles.cashoutBankSummaryValue}>
                           {formatCurrencyFromCents(cashbackBalance.availableCents)}
                         </Text>
                       </View>
                       <View style={styles.cashoutSheetSummaryRow}>
-                        <Text style={styles.cashoutSheetSummaryLabel}>Processing</Text>
-                        <Text style={styles.cashoutSheetSummaryValue}>24-48 hours</Text>
-                      </View>
-                      <View style={styles.cashoutSheetSummaryDivider} />
-                      <View style={styles.cashoutSheetSummaryRow}>
-                        <Text style={styles.cashoutSheetSummaryLabel}>Remaining</Text>
-                        <Text
-                          style={
-                            cashoutInputAmountCents > 0
-                              ? styles.cashoutSheetSummaryValue
-                              : styles.cashoutSheetSummaryValueDanger
-                          }
-                        >
-                          {cashoutInputAmountCents > 0
-                            ? formatCurrencyFromCents(cashoutRemainingAfterInputCents)
-                            : "Enter amount"}
-                        </Text>
+                        <Text style={styles.cashoutBankSummaryLabel}>Processing</Text>
+                        <Text style={styles.cashoutBankSummaryValue}>24–48 hours</Text>
                       </View>
                     </View>
-                    {cashoutLinkedPayoutAccounts.length > 0 ? (
-                      <View style={styles.cashoutLinkedAccountOptions}>
-                        <TouchableOpacity
-                          style={styles.cashoutLinkedAccountsToggle}
-                          onPress={openCashoutLinkedBankSelector}
-                          disabled={cashoutActionStatus.loading}
-                        >
-                          <View style={styles.cashoutLinkedAccountsToggleTextWrap}>
-                            <Text style={styles.cashoutLinkedAccountsToggleTitle}>
-                              Linked banks
-                            </Text>
-                            <Text style={styles.cashoutLinkedAccountsToggleSubtext}>
-                              {cashoutSelectedLinkedBankSummary ||
-                                `${cashoutLinkedPayoutAccounts.length} linked ${
-                                  cashoutLinkedPayoutAccounts.length === 1
-                                    ? "bank"
-                                    : "banks"
-                                }`}
-                            </Text>
-                          </View>
-                          <Ionicons
-                            name="chevron-forward"
-                            size={16}
-                            color={COLORS.muted}
-                          />
-                        </TouchableOpacity>
-                      </View>
-                    ) : null}
-                    <TouchableOpacity
-                      style={[
-                        styles.cashoutChangeBankButton,
-                        (!cashoutCanStartBankRelink || cashoutActionStatus.loading) &&
-                          styles.cashoutChangeBankButtonDisabled,
-                      ]}
-                      onPress={() => handleCashoutBankTilePress({ force: true })}
-                      disabled={!cashoutCanStartBankRelink || cashoutActionStatus.loading}
-                    >
-                      <View style={styles.cashoutChangeBankButtonIconWrap}>
-                        <Ionicons
-                          name="add"
-                          size={18}
-                          color={
-                            !cashoutCanStartBankRelink || cashoutActionStatus.loading
-                              ? "#C2C8D2"
-                              : "#98A2B3"
-                          }
-                        />
-                      </View>
-                      <Text style={styles.cashoutChangeBankButtonText}>
-                        {!cashoutCanStartBankRelink
-                          ? "You can add or reconnect your payout bank once every 30 days"
-                          : "Add or reconnect bank"}
-                      </Text>
-                      <Ionicons
-                        name="chevron-forward"
-                        size={14}
-                        color={
-                          !cashoutCanStartBankRelink || cashoutActionStatus.loading
-                            ? "#C2C8D2"
-                            : "#98A2B3"
-                        }
-                      />
-                    </TouchableOpacity>
-                    {cashoutLinkedPayoutAccounts.length > 0 ? (
-                      <TouchableOpacity
-                        style={styles.cashoutUnlinkBankButton}
-                        onPress={confirmUnlinkCashoutBank}
-                        disabled={cashoutActionStatus.loading}
-                      >
-                        <Text style={styles.cashoutUnlinkBankButtonText}>
-                          Unlink selected bank
-                        </Text>
-                        <Ionicons
-                          name="trash-outline"
-                          size={14}
-                          color="#B42318"
-                        />
-                      </TouchableOpacity>
-                    ) : null}
                     {cashoutBankLinkInlineError ? (
                       <Text style={styles.formError}>{cashoutBankLinkInlineError}</Text>
                     ) : null}
@@ -33717,7 +33574,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                         <Ionicons
                                           name="business-outline"
                                           size={20}
-                                          color="#2563EB"
+                                          color="#FFFFFF"
                                         />
                                       </View>
                                       <View style={styles.cashoutTransferRowMain}>
@@ -33740,8 +33597,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                       </View>
                                       <Ionicons
                                         name="chevron-forward"
-                                        size={16}
-                                        color="#94A3B8"
+                                        size={20}
+                                        color="#FFFFFF"
                                       />
                                     </TouchableOpacity>
                                   </View>
@@ -48532,36 +48389,36 @@ const styles = StyleSheet.create({
     marginTop: 8,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
-    backgroundColor: COLORS.white,
-    minHeight: 76,
-    paddingHorizontal: 12,
+    borderColor: "#1D4ED8",
+    backgroundColor: "#2552D6",
+    minHeight: 82,
+    paddingHorizontal: 15,
     flexDirection: "row",
     alignItems: "center",
     gap: 11,
   },
   cashoutTransferRowIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 46,
+    height: 46,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#EEF3FF",
+    backgroundColor: "rgba(255,255,255,0.16)",
   },
   cashoutTransferRowMain: {
     flex: 1,
     minWidth: 0,
   },
   cashoutTransferRowTitle: {
-    fontSize: 18,
-    color: COLORS.ink,
-    fontFamily: FONT_SEMIBOLD,
+    fontSize: 20,
+    color: "#FFFFFF",
+    fontFamily: FONT_BOLD,
   },
   cashoutTransferRowSubtitle: {
-    marginTop: 2,
-    fontSize: 14,
-    color: "#8B97A9",
-    fontFamily: FONT_TEXT,
+    marginTop: 3,
+    fontSize: 15,
+    color: "#DBEAFE",
+    fontFamily: FONT_MEDIUM,
   },
   cashoutMethodTile: {
     width: "48%",
@@ -48992,11 +48849,19 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
     backgroundColor: "rgba(15, 23, 42, 0.42)",
   },
+  cashoutBankSheetOverlay: {
+    justifyContent: "center",
+    paddingHorizontal: 22,
+  },
   cashoutSheetBackdrop: {
     ...StyleSheet.absoluteFillObject,
   },
   cashoutSheetKeyboard: {
     justifyContent: "flex-end",
+  },
+  cashoutBankSheetKeyboard: {
+    flex: 1,
+    justifyContent: "center",
   },
   cashoutSheetCard: {
     backgroundColor: COLORS.white,
@@ -49007,6 +48872,62 @@ const styles = StyleSheet.create({
     paddingTop: 6,
     maxHeight: SCREEN_HEIGHT * 0.88,
     gap: 12,
+  },
+  cashoutBankSheetCard: {
+    width: "100%",
+    borderRadius: 26,
+    paddingTop: 18,
+    paddingBottom: 20,
+    paddingHorizontal: 20,
+    gap: 16,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.25,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 14,
+  },
+  cashoutBankSheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  cashoutBankSheetIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EAF1FF",
+  },
+  cashoutBankSheetTitle: {
+    color: "#0F172A",
+    fontSize: 24,
+    lineHeight: 31,
+    textAlign: "center",
+    fontFamily: FONT_BOLD,
+  },
+  cashoutBankAmountBox: {
+    borderWidth: 2,
+    borderColor: "#BFDBFE",
+    backgroundColor: "#EFF6FF",
+    paddingVertical: 18,
+  },
+  cashoutBankSummaryRows: {
+    borderTopWidth: 0,
+    padding: 16,
+    gap: 15,
+    borderRadius: 17,
+    backgroundColor: "#F8FAFC",
+  },
+  cashoutBankSummaryLabel: {
+    color: "#334155",
+    fontSize: 17,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  cashoutBankSummaryValue: {
+    color: "#0F172A",
+    fontSize: 18,
+    fontFamily: FONT_BOLD,
   },
   cashoutSheetHandleWrap: {
     alignItems: "center",
