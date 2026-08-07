@@ -5821,67 +5821,137 @@ const DiscoverCarouselCard = React.memo(function DiscoverCarouselCard({
       business?.rating_count ??
       0,
   );
+  const businessHoursValue = item?.hours || business?.hours || "";
   const hoursStatus = getBusinessHoursStatus(
-    item?.hours || business?.hours || "",
+    businessHoursValue,
     typeof item?.isOpen === "boolean" ? item.isOpen : business?.isOpen,
   );
+  const isOpen24Seven = isBusinessHoursSchedule24Seven(
+    parseBusinessHoursSchedule(businessHoursValue),
+  );
   const statusText =
-    hoursStatus.isOpen && hoursStatus.closesAtLabel
-      ? `Open until ${hoursStatus.closesAtLabel}`
-      : hoursStatus.statusText;
+    isOpen24Seven
+      ? "Open 24/7"
+      : hoursStatus.isOpen && hoursStatus.closesAtLabel
+        ? `Open until ${hoursStatus.closesAtLabel}`
+        : hoursStatus.isOpen
+          ? "Open now"
+          : "Closed";
   const distanceText = String(
     item?.distanceLabel || item?.distance || "Nearby",
   ).replace(/\bmi\b/i, "miles");
+  const specialty =
+    sanitizeBusinessTags(business?.tags || item?.tags || [])[0] ||
+    getCategoryConfig(business?.categoryKey || item?.categoryKey).display;
+  const categoryKey = normalizeBusinessCategoryKey(
+    business?.categoryKey || item?.categoryKey,
+  );
+  const specialtyIcon = categoryKey === "auto" ? "car-sport" : "home";
+  const specialtyColor = categoryKey === "auto" ? "#1E3A8A" : "#7C3AED";
+  const specialtyBackgroundColor =
+    categoryKey === "auto" ? "#E8EEFF" : "#F3E8FF";
+  const hasReviews =
+    Number.isFinite(reviewCount) && reviewCount > 0 && Number.isFinite(rating);
   return (
     <TouchableOpacity
       style={styles.discoverMiniBusinessCard}
       onPress={() => onPress?.(item)}
       activeOpacity={0.88}
     >
-      <View style={styles.discoverMiniBusinessImageWrap}>
-        {imageUrl ? (
-          <Image
-            source={{ uri: imageUrl }}
-            style={styles.discoverMiniBusinessImage}
-            resizeMode="cover"
-            resizeMethod="resize"
-            onError={(event) => {
-              if (DEBUG_DISCOVER_SCROLL) {
-                console.log("[WelloCarouselImageError]", {
-                  imageUrl,
-                  error: event?.nativeEvent?.error || null,
-                });
-              }
-            }}
-          />
-        ) : (
-          <View style={styles.discoverMiniBusinessImageFallback}>
-            <Ionicons name="business-outline" size={22} color="#166534" />
-          </View>
-        )}
-      </View>
-      <View style={styles.discoverMiniBusinessCopy}>
-        <Text style={styles.discoverMiniBusinessName} numberOfLines={1}>
-          {businessName}
-        </Text>
-        <View style={styles.discoverMiniBusinessRatingRow}>
-          <Ionicons name="star" size={15} color="#FBBF24" />
-          <Text style={styles.discoverMiniBusinessRatingText}>
-            {Number.isFinite(rating) ? rating.toFixed(1) : "New"}
-            {` (${Number.isFinite(reviewCount) ? Math.round(reviewCount) : 0})`}
-          </Text>
+      <View style={styles.discoverMiniBusinessMainRow}>
+        <View style={styles.discoverMiniBusinessImageWrap}>
+          {imageUrl ? (
+            <Image
+              source={{ uri: imageUrl }}
+              style={styles.discoverMiniBusinessImage}
+              resizeMode="cover"
+              resizeMethod="resize"
+            />
+          ) : (
+            <View style={styles.discoverMiniBusinessImageFallback}>
+              <Ionicons name="business-outline" size={25} color="#166534" />
+            </View>
+          )}
         </View>
-        <Text style={styles.discoverMiniBusinessMeta} numberOfLines={1}>
-          {business?.isServiceAreaBusiness
-            ? statusText
-            : `${distanceText} \u2022 ${statusText}`}
-        </Text>
-        <Text style={styles.discoverMiniBusinessCashback} numberOfLines={1}>
-          {cashbackLabel} cashback
-        </Text>
+        <View style={styles.discoverMiniBusinessCopy}>
+          <View style={styles.discoverMiniBusinessTitleRow}>
+            <Text style={styles.discoverMiniBusinessName} numberOfLines={1}>
+              {businessName}
+            </Text>
+            <View style={styles.discoverMiniVerifiedBadge}>
+              <Ionicons name="shield-checkmark" size={13} color="#15803D" />
+              <Text style={styles.discoverMiniVerifiedBadgeText}>Verified</Text>
+            </View>
+          </View>
+          <View
+            style={[
+              styles.discoverMiniSpecialtyBadge,
+              { backgroundColor: specialtyBackgroundColor },
+            ]}
+          >
+            <Ionicons name={specialtyIcon} size={16} color={specialtyColor} />
+            <Text
+              style={[styles.discoverMiniSpecialtyText, { color: specialtyColor }]}
+              numberOfLines={1}
+            >
+              {specialty}
+            </Text>
+          </View>
+          <View style={styles.discoverMiniBusinessRatingRow}>
+            <Ionicons name="star" size={15} color="#FBBF24" />
+            <Text style={styles.discoverMiniBusinessRatingText} numberOfLines={1}>
+              {hasReviews
+                ? `${rating.toFixed(1)} (${Math.round(reviewCount)} reviews)`
+                : "New Business  •  No reviews yet"}
+            </Text>
+          </View>
+          <View style={styles.discoverMiniBusinessMetaRow}>
+            {!business?.isServiceAreaBusiness ? (
+              <Text style={styles.discoverMiniBusinessMeta} numberOfLines={1}>
+                {distanceText} away  •
+              </Text>
+            ) : null}
+            <Text
+              style={[
+                styles.discoverMiniBusinessStatus,
+                hoursStatus.isOpen
+                  ? styles.discoverMiniBusinessStatusOpen
+                  : styles.discoverMiniBusinessStatusClosed,
+              ]}
+              numberOfLines={1}
+            >
+              {statusText}
+            </Text>
+            {!hoursStatus.isOpen && hoursStatus.opensAtLabel ? (
+              <Text style={styles.discoverMiniBusinessNextOpen} numberOfLines={1}>
+                • Opens {hoursStatus.nextOpenDayLabel} {hoursStatus.opensAtLabel}
+              </Text>
+            ) : null}
+          </View>
+          <View style={styles.discoverMiniCashbackRow}>
+            <View style={styles.discoverMiniCashbackCopy}>
+              <Text style={styles.discoverMiniBusinessCashback} numberOfLines={1}>
+                {cashbackLabel} Cashback
+              </Text>
+              <Text style={styles.discoverMiniBusinessRewardText} numberOfLines={1}>
+                Get rewarded on all services
+              </Text>
+            </View>
+            <View style={styles.discoverMiniBusinessArrow}>
+              <Ionicons name="arrow-forward" size={20} color={COLORS.white} />
+            </View>
+          </View>
+        </View>
       </View>
-      <View style={styles.discoverMiniBusinessArrow}>
-        <Ionicons name="arrow-forward" size={21} color={COLORS.white} />
+      <View style={styles.discoverMiniTrustRow}>
+        <View style={styles.discoverMiniTrustBadge}>
+          <Ionicons name="shield-checkmark" size={15} color="#15803D" />
+          <Text style={styles.discoverMiniTrustText}>Verified Business</Text>
+        </View>
+        <View style={styles.discoverMiniTrustBadge}>
+          <Ionicons name="checkmark" size={17} color="#15803D" />
+          <Text style={styles.discoverMiniTrustText}>Cashback Guaranteed</Text>
+        </View>
       </View>
     </TouchableOpacity>
   );
@@ -25937,11 +26007,20 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       businessDetail?.hours || businessDetail?.business?.hours || "",
                       businessDetail?.isOpen ?? true,
                     );
-                    const businessProfileHoursText = hoursStatus.isOpen
-                      ? hoursStatus.closesAtLabel
-                        ? `Open now · until ${hoursStatus.closesAtLabel}`
-                        : "Open now"
-                      : hoursStatus.statusText;
+                    const businessIsOpen24Seven = isBusinessHoursSchedule24Seven(
+                      parseBusinessHoursSchedule(
+                        businessDetail?.hours || businessDetail?.business?.hours || "",
+                      ),
+                    );
+                    const businessProfileHoursText = businessIsOpen24Seven
+                      ? "Open 24/7"
+                      : hoursStatus.isOpen
+                        ? hoursStatus.closesAtLabel
+                          ? `Open now · until ${hoursStatus.closesAtLabel}`
+                          : "Open now"
+                        : hoursStatus.opensAtLabel
+                          ? `Closed · Opens ${hoursStatus.nextOpenDayLabel} ${hoursStatus.opensAtLabel}`
+                          : "Closed";
                     const businessStoreHours = summarizeBusinessHoursValue(
                       businessDetail?.hours || businessDetail?.business?.hours || "",
                     );
@@ -40028,6 +40107,12 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     shadowOpacity: 0,
     elevation: 0,
+  },
+  discoverMiniBusinessMainRow: {
+    flex: 1,
+    minHeight: 0,
+    flexDirection: "row",
+    alignItems: "stretch",
   },
   discoverMiniBusinessImageWrap: {
     width: 108,
