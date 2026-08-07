@@ -41,6 +41,10 @@ import {
   PinchGestureHandler,
   State as GestureState,
 } from "react-native-gesture-handler";
+import BottomSheet, {
+  BottomSheetFlatList,
+  useBottomSheetSpringConfigs,
+} from "@gorhom/bottom-sheet";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Reanimated, {
   configureReanimatedLogger,
@@ -1299,12 +1303,34 @@ const mapSupabaseBusiness = (row, index) => {
   const safeIndex = Number.isFinite(index) ? index : 0;
   const latitude = row.latitude !== null ? Number(row.latitude) : null;
   const longitude = row.longitude !== null ? Number(row.longitude) : null;
+  const publicMarkerLatitude =
+    row.public_marker_latitude !== null &&
+    row.public_marker_latitude !== undefined
+      ? Number(row.public_marker_latitude)
+      : null;
+  const publicMarkerLongitude =
+    row.public_marker_longitude !== null &&
+    row.public_marker_longitude !== undefined
+      ? Number(row.public_marker_longitude)
+      : null;
+  const publicLatitude =
+    inferredServiceAreaBusiness
+      ? Number.isFinite(publicMarkerLatitude)
+        ? publicMarkerLatitude
+        : null
+      : latitude;
+  const publicLongitude =
+    inferredServiceAreaBusiness
+      ? Number.isFinite(publicMarkerLongitude)
+        ? publicMarkerLongitude
+        : null
+      : longitude;
   const demoCoordinate = USE_FAKE_LOCATION
     ? createDemoCoordinate(safeIndex)
     : null;
   const hasCoordinates = USE_FAKE_LOCATION
     ? true
-    : Number.isFinite(latitude) && Number.isFinite(longitude);
+    : Number.isFinite(publicLatitude) && Number.isFinite(publicLongitude);
   const fallbackCoordinate = {
     latitude: MAP_REGION.latitude + safeIndex * 0.002,
     longitude: MAP_REGION.longitude - safeIndex * 0.002,
@@ -1339,7 +1365,7 @@ const mapSupabaseBusiness = (row, index) => {
     coordinate: USE_FAKE_LOCATION
       ? demoCoordinate
       : hasCoordinates
-        ? { latitude, longitude }
+        ? { latitude: publicLatitude, longitude: publicLongitude }
         : null,
     fallbackCoordinate,
     hasCoordinates,
@@ -1429,9 +1455,9 @@ const mapSupabaseOffer = (row) => ({
   id: String(row.id),
   businessId: row.business_id,
   title: row.title || "",
-  description: "",
-  offerType: "cashback",
-  imageUrl: "",
+  description: row.description || "",
+  offerType: row.offer_type || "cashback",
+  imageUrl: row.image_url || "",
   active: row.active ?? true,
   status: row.status || "active",
   startsAt: row.starts_at ? new Date(row.starts_at).getTime() : null,
@@ -1466,6 +1492,30 @@ const mapSupabaseRedemption = (row) => ({
   offerId: row.offer_id || null,
   offer: row.offer || null,
   business: row.business || null,
+  jobStatus: row.job_status || null,
+  ...getRedemptionRequesterContext(row),
+  checkedInAt: row.checked_in_at
+    ? new Date(row.checked_in_at).getTime()
+    : null,
+  checkInCoordinate:
+    Number.isFinite(Number(row.check_in_latitude)) &&
+    Number.isFinite(Number(row.check_in_longitude))
+      ? {
+          latitude: Number(row.check_in_latitude),
+          longitude: Number(row.check_in_longitude),
+        }
+      : null,
+  checkedOutAt: row.checked_out_at
+    ? new Date(row.checked_out_at).getTime()
+    : null,
+  checkOutCoordinate:
+    Number.isFinite(Number(row.check_out_latitude)) &&
+    Number.isFinite(Number(row.check_out_longitude))
+      ? {
+          latitude: Number(row.check_out_latitude),
+          longitude: Number(row.check_out_longitude),
+        }
+      : null,
   manualPurchase: (() => {
     const submission = getManualPurchaseFromRedemption(row);
     if (!submission) return null;
@@ -1914,6 +1964,7 @@ const SCREENSHOT_MOCK_PAYOUT_HISTORY = [
 
 const mapSupabaseReview = (row) => ({
   id: String(row.id),
+  scannedBy: row.scanned_by || row.user_id || null,
   businessId: row.business_id || null,
   redemptionId: row.redemption_id || null,
   offerId: row.offer_id || null,
@@ -3863,7 +3914,31 @@ const openMapsForBusiness = async (business) => {
   Linking.openURL(googleWebUrl).catch(() => null);
 };
 
-const openPhoneForBusiness = async (business) => {
+const logBusinessCallEvent = async ({ business, userId, redemptionId, source }) => {
+  const businessId = String(business?.id || business?.businessId || "").trim();
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !businessId) return;
+  const calledAt = new Date().toISOString();
+  const payload = {
+    business_id: businessId,
+    user_id: userId || null,
+    redemption_id: redemptionId || null,
+    phone: String(
+      business?.phone ||
+        business?.phoneNumber ||
+        business?.contactPhone ||
+        business?.business?.phone ||
+        "",
+    ).trim() || null,
+    called_at: calledAt,
+    source: source || "business_profile",
+  };
+  const { error } = await supabase.from("business_call_events").insert(payload);
+  if (error) {
+    console.warn("Wello call event log failed:", error.message || error);
+  }
+};
+
+const openPhoneForBusiness = async (business, context = {}) => {
   if (!business) return;
   const rawPhone = String(
     business?.phone ||
@@ -3875,6 +3950,12 @@ const openPhoneForBusiness = async (business) => {
   const digits = rawPhone.replace(/[^\d+]/g, "");
   if (!digits) return;
   const telUrl = `tel:${digits}`;
+  await logBusinessCallEvent({
+    business,
+    userId: context.userId,
+    redemptionId: context.redemptionId,
+    source: context.source,
+  }).catch(() => null);
   Linking.openURL(telUrl).catch(() => null);
 };
 
@@ -3972,9 +4053,14 @@ const callPlacesProxy = async (payload) => {
   );
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(
-      data?.error || data?.message || "Address lookup is unavailable right now.",
-    );
+    const details = [
+      data?.reason,
+      data?.geocodeStatus,
+      data?.upstreamStatus ? `upstream:${data.upstreamStatus}` : null,
+    ].filter(Boolean);
+    const baseMessage =
+      data?.error || data?.message || "Address lookup is unavailable right now.";
+    throw new Error(details.length ? `${baseMessage} (${details.join(", ")})` : baseMessage);
   }
   return data;
 };
@@ -4033,6 +4119,8 @@ const fetchNearestRoadCoordinate = async (coordinate) => {
     action: "nearestRoad",
     latitude,
     longitude,
+    maxRadiusMeters: 120,
+    requireNamedRoad: true,
   });
   const snappedLocation = payload?.snappedPoints?.[0]?.location;
   const snappedLatitude = Number(snappedLocation?.latitude);
@@ -4044,6 +4132,10 @@ const fetchNearestRoadCoordinate = async (coordinate) => {
     latitude: snappedLatitude,
     longitude: snappedLongitude,
   };
+};
+
+const resolveServiceAreaPublicMarkerCoordinate = async (privateCoordinate) => {
+  return fetchNearestRoadCoordinate(privateCoordinate);
 };
 
 const isBusinessOpenNow = (value) => {
@@ -5465,6 +5557,13 @@ function formatDistanceMetersLabel(meters) {
   return formatDistanceMilesLabel(miles);
 }
 
+function isRealCoordinate(coordinate) {
+  return (
+    Number.isFinite(Number(coordinate?.latitude)) &&
+    Number.isFinite(Number(coordinate?.longitude))
+  );
+}
+
 function resolveBusinessCoordinateForDistance(business) {
   if (!business || business.hasCoordinates === false) return null;
   const latitude = Number(
@@ -5680,6 +5779,8 @@ export default function App() {
   const handledBusinessDeepLinkUrlRef = useRef("");
   const sheetScrollRef = useRef(null);
   const sheetPanRef = useRef(null);
+  const discoverBottomSheetRef = useRef(null);
+  const discoverSheetListRef = useRef(null);
   const bottomSheetRef = useRef(null);
   const sheetIndexRef = useRef(0);
   const businessDetailReturnSheetIndexRef = useRef(0);
@@ -5758,6 +5859,14 @@ export default function App() {
   const drawerPanelWidth = Math.min(SCREEN_WIDTH * 0.82, 340);
   const drawerTranslateX = useSharedValue(-drawerPanelWidth);
   const drawerOverlayOpacity = useSharedValue(0);
+  const discoverSheetAnimationConfigs = useBottomSheetSpringConfigs({
+    damping: 28,
+    stiffness: 220,
+    mass: 0.85,
+    overshootClamping: false,
+    restDisplacementThreshold: 0.4,
+    restSpeedThreshold: 0.4,
+  });
   const discoverSheetMetrics = useMemo(() => {
     const closedVisibleHeight = 178;
     const midVisibleHeight = Math.max(
@@ -5855,6 +5964,9 @@ export default function App() {
     },
     [discoverSheetMetrics.translateForIndex, sheetTranslateY],
   );
+  const discoverCarouselInteractive =
+    activeTab === "discover" && discoverSheetIndex === 0;
+  const discoverCarouselBottomOffset = 0;
   const sheetMainContentAnimatedStyle = useAnimatedStyle(
     () => {
       return {
@@ -6095,6 +6207,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const [authBusinessDraft, setAuthBusinessDraft] = useState(null);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState(null);
+  const [locationPermissionGate, setLocationPermissionGate] = useState({
+    checking: true,
+    blocked: false,
+    message: "",
+  });
   const [scannerVisible, setScannerVisible] = useState(false);
   const [scannerBusiness, setScannerBusiness] = useState(null);
   const [scannerOffer, setScannerOffer] = useState(null);
@@ -6254,6 +6371,48 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const [expandedAdminOffers, setExpandedAdminOffers] = useState({});
   const [expandedAdminBusinesses, setExpandedAdminBusinesses] = useState({});
   const [adminWorkspaceTab, setAdminWorkspaceTab] = useState("queue");
+  const [adminReceipts, setAdminReceipts] = useState([]);
+  const [adminReceiptsStatus, setAdminReceiptsStatus] = useState({
+    loading: false,
+    error: null,
+  });
+  const [adminReviews, setAdminReviews] = useState([]);
+  const [adminReviewsStatus, setAdminReviewsStatus] = useState({
+    loading: false,
+    error: null,
+  });
+  const [adminBusinessDrafts, setAdminBusinessDrafts] = useState({});
+  const [adminOfferDrafts, setAdminOfferDrafts] = useState({});
+  const [adminCreateOfferDraft, setAdminCreateOfferDraft] = useState({
+    businessId: "",
+    title: "",
+    description: "",
+    active: true,
+  });
+  const [adminOps, setAdminOps] = useState({
+    promoCodes: [],
+    receiptReports: [],
+    cashoutPayouts: [],
+    commissionInvoices: [],
+    auditEvents: [],
+  });
+  const [adminOpsStatus, setAdminOpsStatus] = useState({
+    loading: false,
+    error: null,
+  });
+  const [adminActiveJobs, setAdminActiveJobs] = useState([]);
+  const [adminActiveJobsStatus, setAdminActiveJobsStatus] = useState({
+    loading: false,
+    error: null,
+  });
+  const [adminLocationLookupStatus, setAdminLocationLookupStatus] = useState({
+    loading: false,
+    targetId: null,
+    error: null,
+    success: null,
+  });
+  const [adminLocationLookupResult, setAdminLocationLookupResult] = useState(null);
+  const [adminProfileEditBusiness, setAdminProfileEditBusiness] = useState(null);
   const [accountRecoveryQuery, setAccountRecoveryQuery] = useState("");
   const [accountRecoveryResults, setAccountRecoveryResults] = useState([]);
   const [accountRecoveryStatus, setAccountRecoveryStatus] = useState({
@@ -6282,6 +6441,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const [reviewText, setReviewText] = useState("");
   const [reviewError, setReviewError] = useState(null);
   const [reviewBusy, setReviewBusy] = useState(false);
+  const [jobLocationActionStatus, setJobLocationActionStatus] = useState({
+    targetId: null,
+    action: null,
+    loading: false,
+    error: null,
+  });
   const [businessDetailOpen, setBusinessDetailOpen] = useState(false);
   const [businessDetail, setBusinessDetail] = useState(null);
   const [savedBusinessIds, setSavedBusinessIds] = useState([]);
@@ -7285,6 +7450,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const addressSelectionRef = useRef(false);
   const reachTooltipTimerRef = useRef(null);
   const viewedOfferIdsRef = useRef(new Set());
+  const viewedBusinessIdsRef = useRef(new Set());
+  const answeredLocationLookupIdsRef = useRef(new Set());
   // Use percentage snap points to keep behavior consistent across iOS/Android
   // and avoid device-specific pixel rounding jitter.
   const sheetSnapPoints = useMemo(() => {
@@ -7620,9 +7787,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         sheetTranslateY.value = withSpring(
           nextTranslateY,
           {
-            damping: 32,
-            stiffness: 280,
-            mass: 0.8,
+            damping: 28,
+            stiffness: 220,
+            mass: 0.85,
+            overshootClamping: false,
+            restDisplacementThreshold: 0.4,
+            restSpeedThreshold: 0.4,
           },
           (finished) => {
             if (finished) {
@@ -7699,6 +7869,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   useEffect(() => {
     bottomSheetRef.current = {
       snapToIndex: (nextIndex) => {
+        discoverBottomSheetRef.current?.snapToIndex?.(nextIndex);
         animateSheetToIndex(nextIndex);
       },
     };
@@ -9550,6 +9721,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           if (!isMounted) return;
           upsertUserLocation(DEMO_MAP_REGION);
           setMapRegion(DEMO_MAP_REGION);
+          setLocationPermissionGate({
+            checking: false,
+            blocked: false,
+            message: "",
+          });
           animateMapToRegion(DEMO_MAP_REGION, 700);
           return;
         }
@@ -9561,7 +9737,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             await Location.requestForegroundPermissionsAsync();
           status = requestedPermission.status;
         }
-        if (status !== "granted") return;
+        if (status !== "granted") {
+          if (!isMounted) return;
+          setLocationPermissionGate({
+            checking: false,
+            blocked: true,
+            message:
+              "GPS is required to use Wello discovery, maps, check-ins, and checkout.",
+          });
+          setLocationError("GPS permission is required.");
+          return;
+        }
         let position = await Location.getLastKnownPositionAsync({
           maxAge: 1000 * 60 * 10,
           requiredAccuracy: 250,
@@ -9573,8 +9759,22 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             timeout: 3500,
           });
         }
-        if (!position?.coords) return;
         if (!isMounted) return;
+        if (!position?.coords) {
+          setLocationPermissionGate({
+            checking: false,
+            blocked: true,
+            message:
+              "GPS is required to use Wello discovery, maps, check-ins, and checkout.",
+          });
+          setLocationError("Unable to access GPS location.");
+          return;
+        }
+        setLocationPermissionGate({
+          checking: false,
+          blocked: false,
+          message: "",
+        });
         const nextRegion = {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
@@ -9585,7 +9785,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         upsertUserLocation(position.coords);
         animateMapToRegion(nextRegion, 700);
       } catch (error) {
-        // Keep default region if location lookup fails.
+        if (!isMounted) return;
+        setLocationPermissionGate({
+          checking: false,
+          blocked: true,
+          message:
+            "GPS is required to use Wello discovery, maps, check-ins, and checkout.",
+        });
+        setLocationError("Unable to access GPS location.");
       }
     };
     loadInitialLocation();
@@ -10969,17 +11176,47 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       }
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
       if (!authUserId || !businessId || !offerId) return;
-      const key = String(offerId);
+      const key = String(offerId).trim();
+      if (!key) return;
       if (viewedOfferIdsRef.current.has(key)) return;
       viewedOfferIdsRef.current.add(key);
       const { error } = await supabase.from("offer_views").insert({
         business_id: businessId,
-        offer_id: offerId,
+        offer_id: key,
         user_id: authUserId,
       });
       if (error) {
-        console.warn("Wello offer view insert failed:", error.message);
+        console.warn("Wello offer view insert failed:", {
+          businessId,
+          offerId: key,
+          message: error.message,
+        });
         viewedOfferIdsRef.current.delete(key);
+      }
+    },
+    [authUserId],
+  );
+
+  const trackBusinessView = useCallback(
+    async (businessId) => {
+      if (SCREENSHOT_MOCK_MODE || String(businessId || "").startsWith("ss-")) {
+        return;
+      }
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+      if (!authUserId || !businessId) return;
+      const key = String(businessId).trim();
+      if (!key || viewedBusinessIdsRef.current.has(key)) return;
+      viewedBusinessIdsRef.current.add(key);
+      const { error } = await supabase.from("business_views").insert({
+        business_id: key,
+        user_id: authUserId,
+      });
+      if (error) {
+        console.warn("Wello business view insert failed:", {
+          businessId: key,
+          message: error.message,
+        });
+        viewedBusinessIdsRef.current.delete(key);
       }
     },
     [authUserId],
@@ -12106,6 +12343,55 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       };
     });
   }, [approvedBusinesses, publicOffers, nearbyOrigin]);
+
+  useEffect(() => {
+    if (!__DEV__) return;
+    const previousDistances = distanceOutlierPreviousRef.current;
+    const nextDistances = new Map();
+    offerCards.forEach((card) => {
+      const key = String(card?.businessId || card?.business?.id || "").trim();
+      const miles = normalizeDistanceMiles(card?.distanceMiles);
+      if (!key || miles === null) return;
+      const previous = previousDistances.get(key);
+      const nextOrigin = nearbyOrigin || null;
+      if (
+        previous &&
+        isRealCoordinate(previous.origin) &&
+        isRealCoordinate(nextOrigin) &&
+        Math.abs(miles - previous.miles) > DISTANCE_OUTLIER_DELTA_MILES
+      ) {
+        console.warn("[WelloDistanceOutlier]", {
+          businessId: key,
+          previousMiles: previous.miles,
+          nextMiles: miles,
+          deltaMiles: Math.round(Math.abs(miles - previous.miles) * 10) / 10,
+          previousOrigin: previous.origin,
+          nextOrigin,
+          markerCoordinate: resolveBusinessCoordinateForDistance(card.business),
+        });
+      }
+      nextDistances.set(key, {
+        miles,
+        origin: nextOrigin,
+      });
+    });
+    distanceOutlierPreviousRef.current = nextDistances;
+  }, [offerCards, nearbyOrigin]);
+
+  useEffect(() => {
+    if (!__DEV__ || distanceSanityLoggedRef.current) return;
+    distanceSanityLoggedRef.current = true;
+    DISTANCE_SANITY_CHECK_PAIRS.forEach((pair) => {
+      const meters = distanceBetweenCoordsMeters(pair.from, pair.to);
+      console.log("[WelloDistanceSanity]", {
+        label: pair.label,
+        miles: Number.isFinite(meters)
+          ? Math.round((meters / METERS_PER_MILE) * 10) / 10
+          : null,
+      });
+    });
+  }, []);
+
   const discoverTagFilters = useMemo(() => {
     const tagStats = new Map();
     offerCards.forEach((card) => {
@@ -12914,7 +13200,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           label: "Admin",
           icon: "shield-checkmark-outline",
           iconActive: "shield-checkmark",
-          show: isStaff,
+          show: isAdmin,
         },
         {
           key: "profile",
@@ -12924,7 +13210,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           show: true,
         },
       ].filter((tab) => tab.show),
-    [isOwner, isStaff, showHistoryTab, showCashoutTab],
+    [isOwner, isAdmin, showHistoryTab, showCashoutTab],
   );
   const drawerTabs = useMemo(
     () =>
@@ -13128,11 +13414,21 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
     [offers],
   );
+  const adminPendingReceiptCount = useMemo(
+    () =>
+      adminReceipts.filter(
+        (receipt) =>
+          String(receipt?.reviewStatus || "").toLowerCase() === "pending",
+      ).length,
+    [adminReceipts],
+  );
   const adminQueueCount =
     pendingEditBusinesses.length +
     pendingOffers.length +
-    pendingBusinesses.length;
-  const adminManagementCount = adminOffers.length + adminBusinesses.length;
+    pendingBusinesses.length +
+    adminPendingReceiptCount;
+  const adminManagementCount =
+    adminOffers.length + adminBusinesses.length + adminReviews.length;
   const adminWorkspaceTabs = useMemo(() => {
     return [
       {
@@ -13143,14 +13439,62 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         count: adminQueueCount,
       },
       {
-        key: "management",
-        label: "Management",
-        subtitle: "Live cleanup tools",
+        key: "businesses",
+        label: "Businesses",
+        subtitle: "Listings and rates",
         icon: "briefcase-outline",
-        count: adminManagementCount,
+        count: adminBusinesses.length,
+      },
+      {
+        key: "offers",
+        label: "Offers",
+        subtitle: "Create and edit",
+        icon: "pricetag-outline",
+        count: adminOffers.length,
+      },
+      {
+        key: "receipts",
+        label: "Receipts",
+        subtitle: "Uploads and review",
+        icon: "receipt-outline",
+        count: adminReceipts.length,
+      },
+      {
+        key: "reviews",
+        label: "Reviews",
+        subtitle: "Customer feedback",
+        icon: "star-outline",
+        count: adminReviews.length,
+      },
+      {
+        key: "users",
+        label: "Users",
+        subtitle: "Roles and recovery",
+        icon: "people-outline",
+        count: profileList.length,
+      },
+      {
+        key: "ops",
+        label: "Ops",
+        subtitle: "Promo, billing, audit",
+        icon: "analytics-outline",
+        count:
+          adminOps.promoCodes.length +
+          adminOps.receiptReports.length +
+          adminOps.cashoutPayouts.length,
       },
     ];
-  }, [adminManagementCount, adminQueueCount]);
+  }, [
+    adminOps.cashoutPayouts.length,
+    adminOps.promoCodes.length,
+    adminOps.receiptReports.length,
+    adminBusinesses.length,
+    adminOffers.length,
+    adminQueueCount,
+    adminReceipts.length,
+    adminReviews.length,
+    profileList.length,
+  ]);
   const activeAdminWorkspace = useMemo(
     () =>
       adminWorkspaceTabs.find((tab) => tab.key === adminWorkspaceTab) ||
@@ -13195,7 +13539,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     return () => clearInterval(intervalId);
   }, []);
   useEffect(() => {
-    if (activeTab === "admin" && adminWorkspaceTab === "management") return;
+    if (
+      activeTab === "admin" &&
+      (adminWorkspaceTab === "businesses" || adminWorkspaceTab === "offers")
+    ) {
+      return;
+    }
     setArmedManagementOfferDeletes({});
     setArmedManagementBusinessDeletes({});
   }, [activeTab, adminWorkspaceTab]);
@@ -13204,14 +13553,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     setArmedQueueActions({});
   }, [activeTab, adminWorkspaceTab]);
   useEffect(() => {
-    if (activeTab === "admin" && adminWorkspaceTab === "management") return;
+    if (activeTab === "admin" && adminWorkspaceTab === "users") return;
     setAccountRecoveryStatus({ loading: false, error: null, queried: false });
     setAccountRecoveryQuery("");
     setAccountRecoveryResults([]);
   }, [activeTab, adminWorkspaceTab]);
   useEffect(() => {
     if (
-      !(activeTab === "admin" && adminWorkspaceTab === "management" && isAdmin)
+      !(activeTab === "admin" && adminWorkspaceTab === "users" && isAdmin)
     ) {
       return;
     }
@@ -13917,15 +14266,25 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
   useEffect(() => {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
-    if (activeTab === "admin" && isStaff) {
+    if (activeTab === "admin" && isAdmin) {
       loadChangeRequests({ status: "pending" });
       loadPendingOffers();
+      loadProfiles();
+      loadAdminReceipts();
+      loadAdminReviews();
+      loadAdminOps();
+      loadAdminActiveJobs();
     }
   }, [
     activeTab,
-    isStaff,
+    isAdmin,
+    loadAdminActiveJobs,
+    loadAdminOps,
+    loadAdminReceipts,
+    loadAdminReviews,
     loadChangeRequests,
     loadPendingOffers,
+    loadProfiles,
     SUPABASE_URL,
     SUPABASE_ANON_KEY,
   ]);
@@ -14030,7 +14389,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }, [authUserId, isSignedIn]);
 
   useEffect(() => {
-    if (activeTab === "admin" && !isStaff) {
+    if (activeTab === "admin" && !isAdmin) {
       setActiveTab("discover");
     }
     if (activeTab === "business" && !isOwner) {
@@ -14045,7 +14404,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     if (activeTab === "demo") {
       setActiveTab("discover");
     }
-  }, [activeTab, isOwner, isStaff]);
+  }, [activeTab, isOwner, isStaff, isAdmin]);
 
   useEffect(() => {
     if (!sessionReady || !isSignedIn || !authUserId) return;
@@ -14082,6 +14441,18 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       String(
         business?.imageUrl || business?.coverImageUrl || business?.image_url || "",
       ).trim() || "",
+    commissionPercent: String(
+      (Number(business?.commissionRateCents) || 0) / 10 || "",
+    ),
+    cashbackPercent: String(
+      (Number(business?.defaultCashbackRateBps) || 0) / 100 || "",
+    ),
+    approvalStatus: business?.rejected
+      ? "rejected"
+      : business?.approved
+        ? "approved"
+        : business?.approvalStatus || "pending",
+    status: business?.status || "active",
   });
 
   useEffect(() => {
@@ -16079,6 +16450,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     setPendingEmailChange("");
     setSecurityStatus({ loading: false, type: null, message: null });
     viewedOfferIdsRef.current = new Set();
+    viewedBusinessIdsRef.current = new Set();
     setAuthBusinessDraft(null);
     setSignInError(null);
     setSignUpError(null);
@@ -17093,18 +17465,299 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     }
   };
 
+  const captureJobLocationSnapshot = useCallback(async () => {
+    const permission = await Location.requestForegroundPermissionsAsync();
+    if (permission?.status !== "granted") {
+      throw new Error("GPS permission is required to update this job.");
+    }
+    const position = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.High,
+    });
+    const latitude = Number(position?.coords?.latitude);
+    const longitude = Number(position?.coords?.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      throw new Error("Unable to capture your GPS location.");
+    }
+    return {
+      latitude,
+      longitude,
+      timestamp: new Date().toISOString(),
+    };
+  }, []);
+
+  const handleJobCheckIn = useCallback(
+    async (entry) => {
+      const redemptionId = String(entry?.id || "").trim();
+      if (!redemptionId || entry?.checkedInAt) return;
+      if (!authUserId) {
+        showAppDialog({
+          title: "Sign in required",
+          message: "Sign in before checking in to a job.",
+          options: [{ label: "OK", variant: "primary" }],
+        });
+        return;
+      }
+      if (!ensureSupabaseReady()) return;
+      setJobLocationActionStatus({
+        targetId: redemptionId,
+        action: "check_in",
+        loading: true,
+        error: null,
+      });
+      try {
+        const snapshot = await captureJobLocationSnapshot();
+        const updatePayload = {
+          checked_in_at: snapshot.timestamp,
+          check_in_latitude: snapshot.latitude,
+          check_in_longitude: snapshot.longitude,
+        };
+        const { error } = await supabase
+          .from("redemptions")
+          .update(updatePayload)
+          .eq("id", redemptionId)
+          .eq("scanned_by", authUserId);
+        if (error) throw error;
+        const checkedInAt = new Date(snapshot.timestamp).getTime();
+        setRedemptionHistory((prev) =>
+          prev.map((item) =>
+            String(item?.id || "") === redemptionId
+              ? {
+                  ...item,
+                  checkedInAt,
+                  checkInCoordinate: {
+                    latitude: snapshot.latitude,
+                    longitude: snapshot.longitude,
+                  },
+                }
+              : item,
+          ),
+        );
+        setJobLocationActionStatus({
+          targetId: redemptionId,
+          action: "check_in",
+          loading: false,
+          error: null,
+        });
+      } catch (error) {
+        const message = error?.message || "Unable to check in right now.";
+        setJobLocationActionStatus({
+          targetId: redemptionId,
+          action: "check_in",
+          loading: false,
+          error: message,
+        });
+        showAppDialog({
+          title: "Unable to check in",
+          message,
+          options: [{ label: "OK", variant: "primary" }],
+        });
+      }
+    },
+    [authUserId, captureJobLocationSnapshot, showAppDialog],
+  );
+
+  const handleJobCheckOut = useCallback(
+    async (entry) => {
+      const redemptionId = String(entry?.id || "").trim();
+      if (!redemptionId || !entry?.checkedInAt || entry?.checkedOutAt) return;
+      if (!authUserId) {
+        showAppDialog({
+          title: "Sign in required",
+          message: "Sign in before checking out of a job.",
+          options: [{ label: "OK", variant: "primary" }],
+        });
+        return;
+      }
+      if (!ensureSupabaseReady()) return;
+      setJobLocationActionStatus({
+        targetId: redemptionId,
+        action: "check_out",
+        loading: true,
+        error: null,
+      });
+      try {
+        const snapshot = await captureJobLocationSnapshot();
+        const updatePayload = {
+          checked_out_at: snapshot.timestamp,
+          check_out_latitude: snapshot.latitude,
+          check_out_longitude: snapshot.longitude,
+          job_status: "complete",
+        };
+        const { error } = await supabase
+          .from("redemptions")
+          .update(updatePayload)
+          .eq("id", redemptionId)
+          .eq("scanned_by", authUserId)
+          .not("checked_in_at", "is", null);
+        if (error) throw error;
+        const checkedOutAt = new Date(snapshot.timestamp).getTime();
+        const completedEntry = {
+          ...entry,
+          checkedOutAt,
+          jobStatus: "complete",
+          checkOutCoordinate: {
+            latitude: snapshot.latitude,
+            longitude: snapshot.longitude,
+          },
+        };
+        setRedemptionHistory((prev) =>
+          prev.map((item) =>
+            String(item?.id || "") === redemptionId
+              ? completedEntry
+              : item,
+          ),
+        );
+        setJobLocationActionStatus({
+          targetId: redemptionId,
+          action: "check_out",
+          loading: false,
+          error: null,
+        });
+        if (!reviewedBusinessIds.has(String(entry.businessId || ""))) {
+          setTimeout(() => {
+            openReviewForEntry(
+              completedEntry,
+              entry?.business?.name || businessDetail?.name || "Wello business",
+              { allowPendingCheckoutReview: true },
+            );
+          }, 250);
+        }
+      } catch (error) {
+        const message = error?.message || "Unable to check out right now.";
+        setJobLocationActionStatus({
+          targetId: redemptionId,
+          action: "check_out",
+          loading: false,
+          error: message,
+        });
+        showAppDialog({
+          title: "Unable to check out",
+          message,
+          options: [{ label: "OK", variant: "primary" }],
+        });
+      }
+    },
+    [
+      authUserId,
+      businessDetail?.name,
+      captureJobLocationSnapshot,
+      reviewedBusinessIds,
+      showAppDialog,
+    ],
+  );
+
+  useEffect(() => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !supabase || !authUserId) return;
+    if (isAdmin) return;
+    const respondToLookupRequest = async (request) => {
+      const requestId = String(request?.id || "").trim();
+      if (!requestId || answeredLocationLookupIdsRef.current.has(requestId)) {
+        return;
+      }
+      answeredLocationLookupIdsRef.current.add(requestId);
+      if (AppState.currentState !== "active") {
+        return;
+      }
+      try {
+        const snapshot = await captureJobLocationSnapshot();
+        const { error } = await supabase
+          .from("admin_location_lookup_requests")
+          .update({
+            status: "responded",
+            latitude: snapshot.latitude,
+            longitude: snapshot.longitude,
+            accuracy_meters: null,
+            error_message: null,
+            responded_at: snapshot.timestamp,
+          })
+          .eq("id", requestId)
+          .eq("customer_id", authUserId)
+          .eq("status", "requested");
+        if (error) {
+          console.warn("Wello location lookup response failed:", {
+            requestId,
+            message: error.message,
+          });
+        }
+      } catch (error) {
+        await supabase
+          .from("admin_location_lookup_requests")
+          .update({
+            status: "unavailable",
+            error_message:
+              error?.message || "Customer location unavailable right now.",
+            responded_at: new Date().toISOString(),
+          })
+          .eq("id", requestId)
+          .eq("customer_id", authUserId)
+          .eq("status", "requested");
+      }
+    };
+    const channel = supabase
+      .channel(`wello-location-lookups-${authUserId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "admin_location_lookup_requests",
+          filter: `customer_id=eq.${authUserId}`,
+        },
+        (payload) => {
+          const next = payload?.new || null;
+          if (
+            next &&
+            String(next.status || "") === "requested" &&
+            new Date(next.expires_at || 0).getTime() > Date.now()
+          ) {
+            void respondToLookupRequest(next);
+          }
+        },
+      )
+      .subscribe(async (status) => {
+        if (status !== "SUBSCRIBED" || AppState.currentState !== "active") {
+          return;
+        }
+        const { data } = await supabase
+          .from("admin_location_lookup_requests")
+          .select("id,expires_at,status")
+          .eq("customer_id", authUserId)
+          .eq("status", "requested")
+          .gt("expires_at", new Date().toISOString())
+          .limit(3);
+        (data || []).forEach((request) => {
+          void respondToLookupRequest(request);
+        });
+      });
+    return () => {
+      channel.unsubscribe();
+    };
+  }, [authUserId, captureJobLocationSnapshot, isAdmin]);
+
   const handleLocateMe = async () => {
     try {
       setLocating(true);
       setLocationError(null);
       if (USE_FAKE_LOCATION) {
+        setLocationPermissionGate({
+          checking: false,
+          blocked: false,
+          message: "",
+        });
         setMapRegion(DEMO_MAP_REGION);
         animateMapToRegion(DEMO_MAP_REGION, 700);
         return;
       }
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== "granted") {
-        setLocationError("Location permission denied.");
+        const message =
+          "GPS is required to use Wello discovery, maps, check-ins, and checkout.";
+        setLocationPermissionGate({
+          checking: false,
+          blocked: true,
+          message,
+        });
+        setLocationError("GPS permission is required.");
         return;
       }
       const position = await Location.getCurrentPositionAsync({
@@ -17118,9 +17771,21 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       };
       setMapRegion(nextRegion);
       upsertUserLocation(position.coords);
+      setLocationPermissionGate({
+        checking: false,
+        blocked: false,
+        message: "",
+      });
       animateMapToRegion(nextRegion, 700);
     } catch (error) {
-      setLocationError("Unable to find your location.");
+      const message =
+        "GPS is required to use Wello discovery, maps, check-ins, and checkout.";
+      setLocationPermissionGate({
+        checking: false,
+        blocked: true,
+        message,
+      });
+      setLocationError("Unable to access GPS location.");
     } finally {
       setLocating(false);
     }
@@ -17261,7 +17926,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         const proxyResult = await fetchGeocodeResult(normalizedAddress);
         if (proxyResult) return proxyResult;
       } catch (error) {
-        console.warn("Wello proxy geocode failed:", error?.message || error);
+        console.warn("Wello proxy geocode failed:", {
+          address: normalizedAddress,
+          message: error?.message || String(error),
+        });
       }
     }
     try {
@@ -17273,7 +17941,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         ? { latitude, longitude }
         : null;
     } catch (error) {
-      console.warn("Wello native geocode failed:", error?.message || error);
+      console.warn("Wello native geocode failed:", {
+        address: normalizedAddress,
+        message: error?.message || String(error),
+      });
       return null;
     }
   }, []);
@@ -17294,8 +17965,23 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       for (const business of batch) {
         if (!isMountedRef.current) return;
         if (geocodeCacheRef.current.has(business.id)) continue;
-        const coords = await geocodeAddress(business.address);
-        if (!coords) continue;
+        let coords = await geocodeAddress(business.address);
+        if (!coords) {
+          console.warn("Wello business geocode retrying once:", {
+            businessId: business.id,
+            businessName: business.name || null,
+            address: business.address,
+          });
+          coords = await geocodeAddress(business.address);
+        }
+        if (!coords) {
+          console.warn("Wello business geocode skipped:", {
+            businessId: business.id,
+            businessName: business.name || null,
+            address: business.address,
+          });
+          continue;
+        }
         geocodeCacheRef.current.set(business.id, coords);
         if (isMountedRef.current) {
           setBusinesses((prev) =>
@@ -17330,14 +18016,19 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       console.log("[DiscoverGestureDebug]", "cardPress", {
         sheetIndex: sheetIndexRef.current,
         businessId: card?.businessId || null,
-        offerId: card?.offerId || card?.id || null,
+        offerId: card?.offerId || null,
         offerCardKey,
       });
     }
     const business = resolveBusinessFromCard(card);
     if (!business) return;
     businessDetailOpenedFromOffersRef.current = Boolean(options.fromOffersSheet);
-    trackOfferView(business.id, card?.offerId || card?.id);
+    const offerId = String(card?.offerId || "").trim();
+    if (offerId) {
+      trackOfferView(business.id, offerId);
+    } else {
+      trackBusinessView(business.id);
+    }
     setSelectedId(business.id);
     setSelectedOfferCardId(offerCardKey || null);
     businessDetailReturnSheetIndexRef.current = sheetIndexRef.current;
@@ -17986,6 +18677,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         if (publicEditCoordinate) {
           updatePayload.latitude = publicEditCoordinate.latitude;
           updatePayload.longitude = publicEditCoordinate.longitude;
+          updatePayload.public_marker_latitude = usesPrivateServiceAddress
+            ? publicEditCoordinate.latitude
+            : null;
+          updatePayload.public_marker_longitude = usesPrivateServiceAddress
+            ? publicEditCoordinate.longitude
+            : null;
+          updatePayload.public_marker_source = usesPrivateServiceAddress
+            ? "nearest_named_road"
+            : null;
+          updatePayload.public_marker_offset_miles = null;
         }
       }
 
@@ -22226,6 +22927,853 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     setProfileStatus({ loading: false, error: null });
   }, []);
 
+  const loadAdminReceipts = useCallback(async () => {
+    if (!isAdmin) return;
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setAdminReceiptsStatus({
+        loading: false,
+        error: "Supabase is not configured for receipts.",
+      });
+      return;
+    }
+    setAdminReceiptsStatus({ loading: true, error: null });
+    const { data, error } = await supabase
+      .from("receipt_uploads")
+      .select(
+        [
+          "id",
+          "business_id",
+          "user_id",
+          "redemption_id",
+          "storage_path",
+          "uploaded_at",
+          "review_status",
+          "review_notes",
+          "receipt_total_cents",
+          "retry_allowed",
+          "business:businesses (id, name, category_key, category_label)",
+          "redemption:redemptions (id, created_at, offer:offers (id, title))",
+        ].join(","),
+      )
+      .order("uploaded_at", { ascending: false })
+      .limit(200);
+    if (error) {
+      setAdminReceiptsStatus({
+        loading: false,
+        error: error.message || "Unable to load receipts.",
+      });
+      return;
+    }
+    setAdminReceipts(
+      (data || []).map((row) => ({
+        id: String(row.id),
+        businessId: row.business_id || null,
+        userId: row.user_id || null,
+        redemptionId: row.redemption_id || null,
+        storagePath: row.storage_path || "",
+        uploadedAt: row.uploaded_at
+          ? new Date(row.uploaded_at).getTime()
+          : null,
+        reviewStatus: row.review_status || "pending",
+        reviewNotes: row.review_notes || null,
+        receiptTotalCents: Number(row.receipt_total_cents) || 0,
+        retryAllowed: row.retry_allowed === true,
+        businessName: row.business?.name || "Business",
+        offerTitle: row.redemption?.offer?.title || "Receipt",
+      })),
+    );
+    setAdminReceiptsStatus({ loading: false, error: null });
+  }, [isAdmin]);
+
+  const loadAdminReviews = useCallback(async () => {
+    if (!isAdmin) return;
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setAdminReviewsStatus({
+        loading: false,
+        error: "Supabase is not configured for reviews.",
+      });
+      return;
+    }
+    setAdminReviewsStatus({ loading: true, error: null });
+    const { data, error } = await supabase
+      .from("reviews")
+      .select(
+        "id,business_id,user_id,redemption_id,offer_id,rating,review_text,created_at,business:businesses (id, name)",
+      )
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) {
+      setAdminReviewsStatus({
+        loading: false,
+        error: error.message || "Unable to load reviews.",
+      });
+      return;
+    }
+    setAdminReviews(
+      (data || []).map((row) => ({
+        id: String(row.id),
+        businessId: row.business_id || null,
+        userId: row.user_id || null,
+        rating: Number(row.rating) || 0,
+        reviewText: row.review_text || "",
+        createdAt: row.created_at ? new Date(row.created_at).getTime() : null,
+        businessName: row.business?.name || "Business",
+      })),
+    );
+    setAdminReviewsStatus({ loading: false, error: null });
+  }, [isAdmin]);
+
+  const loadAdminOps = useCallback(async () => {
+    if (!isAdmin) return;
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setAdminOpsStatus({
+        loading: false,
+        error: "Supabase is not configured for admin operations.",
+      });
+      return;
+    }
+    setAdminOpsStatus({ loading: true, error: null });
+    const safeSelect = async (table, select, orderColumn = "created_at") => {
+      const { data, error } = await supabase
+        .from(table)
+        .select(select)
+        .order(orderColumn, { ascending: false })
+        .limit(50);
+      return {
+        table,
+        data: Array.isArray(data) ? data : [],
+        error: error?.message || null,
+      };
+    };
+    const [
+      promoCodes,
+      receiptReports,
+      cashoutPayouts,
+      commissionInvoices,
+      auditEvents,
+    ] = await Promise.all([
+      safeSelect(
+        "promo_codes",
+        "id,code,active,cashback_rate_bps,starts_at,expires_at,created_at",
+      ),
+      safeSelect(
+        "receipt_reports",
+        "id,receipt_upload_id,business_id,reason,status,created_at,updated_at",
+      ),
+      safeSelect(
+        "cashout_payouts",
+        "id,user_id,amount_cents,status,provider,created_at,updated_at",
+      ),
+      safeSelect(
+        "commission_invoices",
+        "id,business_id,period_start,period_end,total_cents,status,created_at",
+      ),
+      safeSelect(
+        "admin_action_logs",
+        "id,actor_id,actor_role,action,entity,entity_id,status,created_at",
+      ),
+    ]);
+    setAdminOps({
+      promoCodes: promoCodes.data,
+      receiptReports: receiptReports.data,
+      cashoutPayouts: cashoutPayouts.data,
+      commissionInvoices: commissionInvoices.data,
+      auditEvents: auditEvents.data,
+    });
+    const errors = [
+      promoCodes,
+      receiptReports,
+      cashoutPayouts,
+      commissionInvoices,
+      auditEvents,
+    ]
+      .filter((result) => result.error)
+      .map((result) => `${result.table}: ${result.error}`);
+    setAdminOpsStatus({
+      loading: false,
+      error: errors.length ? errors.join("\n") : null,
+    });
+  }, [isAdmin]);
+
+  const loadAdminActiveJobs = useCallback(async () => {
+    if (!isAdmin) return;
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      setAdminActiveJobsStatus({
+        loading: false,
+        error: "Supabase is not configured for jobs.",
+      });
+      return;
+    }
+    setAdminActiveJobsStatus({ loading: true, error: null });
+    const { data, error } = await supabase
+      .from("redemptions")
+      .select(
+        [
+          "id",
+          "scanned_by",
+          "business_id",
+          "offer_id",
+          "created_at",
+          "checked_in_at",
+          "check_in_latitude",
+          "check_in_longitude",
+          "checked_out_at",
+          "business:businesses (id, name)",
+          "offer:offers (id, title)",
+        ].join(","),
+      )
+      .not("checked_in_at", "is", null)
+      .is("checked_out_at", null)
+      .order("checked_in_at", { ascending: false })
+      .limit(100);
+    if (error) {
+      setAdminActiveJobsStatus({
+        loading: false,
+        error: error.message || "Unable to load active jobs.",
+      });
+      return;
+    }
+    setAdminActiveJobs(
+      (data || []).map((row) => ({
+        id: String(row.id),
+        customerId: row.scanned_by || null,
+        businessId: row.business_id || null,
+        businessName: row.business?.name || "Business",
+        offerTitle: row.offer?.title || "Job",
+        checkedInAt: row.checked_in_at
+          ? new Date(row.checked_in_at).getTime()
+          : null,
+        checkInCoordinate:
+          Number.isFinite(Number(row.check_in_latitude)) &&
+          Number.isFinite(Number(row.check_in_longitude))
+            ? {
+                latitude: Number(row.check_in_latitude),
+                longitude: Number(row.check_in_longitude),
+              }
+            : null,
+      })),
+    );
+    setAdminActiveJobsStatus({ loading: false, error: null });
+  }, [isAdmin]);
+
+  const requestAdminCustomerLocation = useCallback(
+    async (job) => {
+      if (!isAdmin || !job?.id || !job?.customerId) return;
+      if (!ensureSupabaseReady()) return;
+      setAdminLocationLookupResult(null);
+      setAdminLocationLookupStatus({
+        loading: true,
+        targetId: job.id,
+        error: null,
+        success: null,
+      });
+      const { data, error } = await supabase
+        .from("admin_location_lookup_requests")
+        .insert({
+          redemption_id: job.id,
+          business_id: job.businessId || null,
+          customer_id: job.customerId,
+          requested_by: authUserId,
+        })
+        .select("id,status,latitude,longitude,error_message,expires_at")
+        .maybeSingle();
+      if (error || !data) {
+        setAdminLocationLookupStatus({
+          loading: false,
+          targetId: job.id,
+          error: error?.message || "Unable to request customer location.",
+          success: null,
+        });
+        return;
+      }
+      const requestId = data.id;
+      const startedAt = Date.now();
+      let finalRow = null;
+      while (Date.now() - startedAt < 45000) {
+        await new Promise((resolve) => setTimeout(resolve, 1800));
+        const { data: row, error: pollError } = await supabase
+          .from("admin_location_lookup_requests")
+          .select(
+            "id,status,latitude,longitude,accuracy_meters,error_message,responded_at",
+          )
+          .eq("id", requestId)
+          .maybeSingle();
+        if (pollError) {
+          setAdminLocationLookupStatus({
+            loading: false,
+            targetId: job.id,
+            error: pollError.message || "Unable to read location response.",
+            success: null,
+          });
+          return;
+        }
+        if (row && row.status !== "requested") {
+          finalRow = row;
+          break;
+        }
+      }
+      if (!finalRow) {
+        await supabase
+          .from("admin_location_lookup_requests")
+          .update({
+            status: "expired",
+            error_message: "Customer app was not foregrounded or reachable.",
+            responded_at: new Date().toISOString(),
+          })
+          .eq("id", requestId);
+        setAdminLocationLookupStatus({
+          loading: false,
+          targetId: job.id,
+          error: "Customer location unavailable. Their app was not foregrounded or reachable.",
+          success: null,
+        });
+        return;
+      }
+      if (finalRow.status !== "responded") {
+        setAdminLocationLookupStatus({
+          loading: false,
+          targetId: job.id,
+          error:
+            finalRow.error_message ||
+            "Customer location unavailable right now.",
+          success: null,
+        });
+        return;
+      }
+      const latitude = Number(finalRow.latitude);
+      const longitude = Number(finalRow.longitude);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        setAdminLocationLookupStatus({
+          loading: false,
+          targetId: job.id,
+          error: "Customer returned an invalid location.",
+          success: null,
+        });
+        return;
+      }
+      setAdminLocationLookupResult({
+        job,
+        latitude,
+        longitude,
+        accuracyMeters: Number(finalRow.accuracy_meters) || null,
+        respondedAt: finalRow.responded_at
+          ? new Date(finalRow.responded_at).getTime()
+          : Date.now(),
+      });
+      setAdminLocationLookupStatus({
+        loading: false,
+        targetId: job.id,
+        error: null,
+        success: "Customer location received.",
+      });
+    },
+    [authUserId, ensureSupabaseReady, isAdmin],
+  );
+
+  const saveAdminBusinessDraft = useCallback(
+    async (business) => {
+      if (!isAdmin || !business?.id) return;
+      const draft = adminBusinessDrafts[business.id] || {};
+      if (!ensureSupabaseReady()) return;
+      setAdminActionStatus({ loading: true, error: null, success: null });
+      const commissionRateCents = Math.round(
+        Number(draft.commissionPercent || business.commissionRateCents / 10) *
+          10,
+      );
+      const cashbackRateBps = Math.round(
+        Number(draft.cashbackPercent || business.defaultCashbackRateBps / 100) *
+          100,
+      );
+      const { data, error } = await supabase
+        .from("businesses")
+        .update({
+          name: String(draft.name || business.name || "").trim(),
+          address: String(draft.address || business.address || "").trim(),
+          category_label: String(
+            draft.categoryLabel || business.categoryLabel || "",
+          ).trim() || null,
+          category_key: String(
+            draft.categoryKey || business.categoryKey || "",
+          ).trim() || null,
+          commission_rate_cents: Number.isFinite(commissionRateCents)
+            ? commissionRateCents
+            : business.commissionRateCents,
+          default_cashback_rate_bps: Number.isFinite(cashbackRateBps)
+            ? cashbackRateBps
+            : business.defaultCashbackRateBps,
+          approval_status: String(
+            draft.approvalStatus ||
+              (business.rejected
+                ? "rejected"
+                : business.approved
+                  ? "approved"
+                  : "pending"),
+          ).trim(),
+          status: String(draft.status || business.status || "active").trim(),
+        })
+        .eq("id", business.id)
+        .select("*")
+        .maybeSingle();
+      if (error || !data) {
+        setAdminActionStatus({
+          loading: false,
+          error: error?.message || "Unable to save business.",
+          success: null,
+        });
+        return;
+      }
+      const mapped = mapSupabaseBusiness(data, 0);
+      setBusinesses((prev) =>
+        prev.map((item) => (item.id === mapped.id ? mapped : item)),
+      );
+      setAdminBusinessDrafts((prev) => {
+        const next = { ...prev };
+        delete next[business.id];
+        return next;
+      });
+      setAdminActionStatus({
+        loading: false,
+        error: null,
+        success: "Business saved.",
+      });
+    },
+    [adminBusinessDrafts, ensureSupabaseReady, isAdmin],
+  );
+
+  const openAdminBusinessProfileEditor = useCallback(
+    (business) => {
+      if (!isAdmin || !business?.id) return;
+      setAdminProfileEditBusiness(business);
+      setFormData(buildFormFromBusiness(business));
+      setEditHoursSchedule(
+        parseBusinessHoursSchedule(business.hours) ||
+          createDefaultBusinessHoursSchedule(),
+      );
+      setEditBusinessImage(null);
+      setEditBusinessImageStatus({ uploading: false, error: null });
+      setBusinessCategoryMenuOpen(false);
+      setFormMessage(null);
+      setEditBusinessPageOpen(true);
+    },
+    [buildFormFromBusiness, isAdmin],
+  );
+
+  const closeAdminBusinessProfileEditor = useCallback(() => {
+    setAdminProfileEditBusiness(null);
+    setEditBusinessImage(null);
+    setEditBusinessImageStatus({ uploading: false, error: null });
+    setBusinessCategoryMenuOpen(false);
+    setFormMessage(null);
+    setBusinessSaveBusy(false);
+    setEditBusinessPageOpen(false);
+  }, []);
+
+  const handleSaveAdminBusinessProfile = useCallback(async () => {
+    const business = adminProfileEditBusiness;
+    if (!isAdmin || !business?.id) return;
+    if (!ensureSupabaseReady()) return;
+    const trimmedName = String(formData.name || "").trim();
+    const trimmedAddress = String(formData.address || "").trim();
+    const trimmedCity = String(formData.city || "").trim();
+    const trimmedState = String(formData.state || "").trim();
+    const trimmedPostal = String(formData.postalCode || "").trim();
+    const description = String(formData.description || "").trim();
+    const phone = String(formData.phone || "").trim();
+    if (!trimmedName || !trimmedAddress || !description) {
+      setFormMessage({
+        type: "error",
+        text: "Name, address, and profile description are required.",
+      });
+      return;
+    }
+    const categorySelection = resolveSelectedCategory(
+      formData.categoryKey,
+      formData.categoryCustomLabel,
+    );
+    if (!categorySelection.ok) {
+      setFormMessage({ type: "error", text: categorySelection.error });
+      return;
+    }
+    const commissionRateCents = Math.round(
+      Number(formData.commissionPercent || 0) * 10,
+    );
+    const defaultCashbackRateBps = Math.round(
+      Number(formData.cashbackPercent || 0) * 100,
+    );
+    if (
+      !Number.isFinite(commissionRateCents) ||
+      commissionRateCents < 0 ||
+      !Number.isFinite(defaultCashbackRateBps) ||
+      defaultCashbackRateBps < 0
+    ) {
+      setFormMessage({
+        type: "error",
+        text: "Enter valid commission and cashback percentages.",
+      });
+      return;
+    }
+    setBusinessSaveBusy(true);
+    setFormMessage(null);
+    try {
+      let nextImageUrl = String(formData.imageUrl || "").trim() || null;
+      const currentImageUrl =
+        String(business.imageUrl || business.coverImageUrl || "").trim() || null;
+      let uploadedBusinessImageUrl = null;
+      if (editBusinessImage?.uri) {
+        const upload = await uploadBusinessImage(editBusinessImage, business.id);
+        if (upload.error || !upload.url) {
+          setFormMessage({
+            type: "error",
+            text: upload.error || "Unable to upload business photo.",
+          });
+          return;
+        }
+        uploadedBusinessImageUrl = upload.url;
+        nextImageUrl = upload.url;
+      }
+      const usesPrivateServiceAddress = formData.locationMode === "travel";
+      const isShopAndMobileBusiness = formData.locationMode === "both";
+      let coordinate = formData.addressCoords;
+      if (!coordinate && trimmedAddress) {
+        coordinate = await geocodeAddress(
+          [trimmedAddress, trimmedCity, trimmedState, trimmedPostal]
+            .filter(Boolean)
+            .join(", "),
+        );
+      }
+      const publicAddress = usesPrivateServiceAddress
+        ? [trimmedCity, trimmedState].filter(Boolean).join(", ") ||
+          "Service-area business"
+        : trimmedAddress;
+      let publicCoordinate = coordinate || business.coordinate || null;
+      if (usesPrivateServiceAddress && coordinate) {
+        try {
+          const nearestRoad = await resolveServiceAreaPublicMarkerCoordinate(
+            coordinate,
+          );
+          if (nearestRoad) publicCoordinate = nearestRoad;
+        } catch (error) {
+          console.warn("Wello admin service marker lookup failed:", {
+            businessId: business.id,
+            address: trimmedAddress,
+            message: error?.message || String(error),
+          });
+        }
+      }
+      const specialty = String(formData.categoryCustomLabel || "")
+        .replace(/^Other:\s*/i, "")
+        .trim();
+      const tags = Array.from(
+        new Set([
+          ...normalizeTagsInput(formData.tags),
+          specialty,
+          ...(usesPrivateServiceAddress ? ["__wello_service_area__"] : []),
+          ...(isShopAndMobileBusiness ? ["__wello_shop_and_mobile__"] : []),
+        ].filter(Boolean)),
+      );
+      const updatePayload = {
+        name: trimmedName,
+        address: publicAddress,
+        private_address: usesPrivateServiceAddress ? trimmedAddress : null,
+        private_latitude:
+          usesPrivateServiceAddress && coordinate ? coordinate.latitude : null,
+        private_longitude:
+          usesPrivateServiceAddress && coordinate ? coordinate.longitude : null,
+        city: trimmedCity || null,
+        state: trimmedState || null,
+        postal_code: usesPrivateServiceAddress ? null : trimmedPostal || null,
+        phone: phone || null,
+        category_key: categorySelection.categoryKey,
+        category_label: categorySelection.categoryLabel,
+        offer_highlight: description,
+        hours: formatBusinessHoursScheduleForStorage(editHoursSchedule),
+        tags,
+        merchant_descriptor_aliases: normalizeMerchantDescriptorAliasesInput(
+          formData.merchantDescriptorAliases,
+        ),
+        is_open: formData.isOpen !== false,
+        image_url: nextImageUrl,
+        commission_rate_cents: commissionRateCents,
+        default_cashback_rate_bps: defaultCashbackRateBps,
+        approval_status: String(formData.approvalStatus || "pending").trim(),
+        status: String(formData.status || "active").trim(),
+        latitude: publicCoordinate?.latitude ?? null,
+        longitude: publicCoordinate?.longitude ?? null,
+        public_marker_latitude: usesPrivateServiceAddress
+          ? publicCoordinate?.latitude ?? null
+          : null,
+        public_marker_longitude: usesPrivateServiceAddress
+          ? publicCoordinate?.longitude ?? null
+          : null,
+        public_marker_source: usesPrivateServiceAddress
+          ? "nearest_named_road"
+          : null,
+        public_marker_offset_miles: null,
+      };
+      const { data, error } = await supabase
+        .from("businesses")
+        .update(updatePayload)
+        .eq("id", business.id)
+        .select("*")
+        .maybeSingle();
+      if (error || !data) {
+        if (uploadedBusinessImageUrl) {
+          await removeBusinessImageByUrl(uploadedBusinessImageUrl);
+        }
+        setFormMessage({
+          type: "error",
+          text: error?.message || "Unable to save business.",
+        });
+        return;
+      }
+      const mapped = mapSupabaseBusiness(data, 0);
+      setBusinesses((prev) =>
+        prev.map((item) => (item.id === mapped.id ? mapped : item)),
+      );
+      setBusinessDetail((prev) =>
+        prev && prev.id === mapped.id ? { ...prev, ...mapped } : prev,
+      );
+      if (
+        currentImageUrl &&
+        currentImageUrl !== nextImageUrl &&
+        (uploadedBusinessImageUrl || !nextImageUrl)
+      ) {
+        await removeBusinessImageByUrl(currentImageUrl);
+      }
+      closeAdminBusinessProfileEditor();
+      setAdminActionStatus({
+        loading: false,
+        error: null,
+        success: "Business profile updated.",
+      });
+    } finally {
+      setBusinessSaveBusy(false);
+    }
+  }, [
+    adminProfileEditBusiness,
+    closeAdminBusinessProfileEditor,
+    editBusinessImage,
+    editHoursSchedule,
+    ensureSupabaseReady,
+    formData,
+    geocodeAddress,
+    isAdmin,
+  ]);
+
+  const saveAdminOfferDraft = useCallback(
+    async (offer) => {
+      if (!isAdmin || !offer?.id) return;
+      const draft = adminOfferDrafts[offer.id] || {};
+      if (!ensureSupabaseReady()) return;
+      setAdminActionStatus({ loading: true, error: null, success: null });
+      const { data, error } = await supabase
+        .from("offers")
+        .update({
+          title: String(draft.title || offer.title || "").trim(),
+          description: String(draft.description || offer.description || "").trim() || null,
+          active:
+            typeof draft.active === "boolean" ? draft.active : Boolean(offer.active),
+          approval_status: String(
+            draft.approvalStatus || offer.approvalStatus || "approved",
+          ).trim(),
+          offer_honor_commitment_accepted: true,
+          offer_honor_commitment_version: OFFER_HONOR_POLICY_VERSION,
+          offer_honor_commitment_accepted_at: new Date().toISOString(),
+          offer_honor_commitment_accepted_by: authUserId || null,
+        })
+        .eq("id", offer.id)
+        .select(
+          [
+            "id",
+            "business_id",
+            "title",
+            "description",
+            "offer_type",
+            "image_url",
+            "active",
+            "status",
+            "starts_at",
+            "expires_at",
+            "approval_status",
+            "redemption_limit_period",
+            "redemption_limit_count",
+            "created_at",
+            "business:businesses (id, name, image_url, category_key, category_label, created_at)",
+          ].join(","),
+        )
+        .maybeSingle();
+      if (error || !data) {
+        setAdminActionStatus({
+          loading: false,
+          error: error?.message || "Unable to save offer.",
+          success: null,
+        });
+        return;
+      }
+      const mapped = mapSupabaseOffer(data);
+      mergeOffers([mapped]);
+      setPendingOffers((prev) =>
+        prev.filter((item) => item.id !== mapped.id),
+      );
+      setAdminOfferDrafts((prev) => {
+        const next = { ...prev };
+        delete next[offer.id];
+        return next;
+      });
+      setAdminActionStatus({
+        loading: false,
+        error: null,
+        success: "Offer saved.",
+      });
+    },
+    [adminOfferDrafts, authUserId, ensureSupabaseReady, isAdmin, mergeOffers],
+  );
+
+  const createAdminOffer = useCallback(async () => {
+    if (!isAdmin) return;
+    const businessId = String(adminCreateOfferDraft.businessId || "").trim();
+    const title = String(adminCreateOfferDraft.title || "").trim();
+    if (!businessId || !title) {
+      setAdminActionStatus({
+        loading: false,
+        error: "Business and title are required.",
+        success: null,
+      });
+      return;
+    }
+    if (!ensureSupabaseReady()) return;
+    setAdminActionStatus({ loading: true, error: null, success: null });
+    const { data, error } = await supabase
+      .from("offers")
+      .insert({
+        business_id: businessId,
+        title,
+        description:
+          String(adminCreateOfferDraft.description || "").trim() || null,
+        offer_type: "cashback",
+        active: adminCreateOfferDraft.active !== false,
+        approval_status: "approved",
+        offer_honor_commitment_accepted: true,
+        offer_honor_commitment_version: OFFER_HONOR_POLICY_VERSION,
+        offer_honor_commitment_accepted_at: new Date().toISOString(),
+        offer_honor_commitment_accepted_by: authUserId || null,
+      })
+      .select(
+        [
+          "id",
+          "business_id",
+          "title",
+          "description",
+          "offer_type",
+          "image_url",
+          "active",
+          "status",
+          "starts_at",
+          "expires_at",
+          "approval_status",
+          "redemption_limit_period",
+          "redemption_limit_count",
+          "created_at",
+          "business:businesses (id, name, image_url, category_key, category_label, created_at)",
+        ].join(","),
+      )
+      .maybeSingle();
+    if (error || !data) {
+      setAdminActionStatus({
+        loading: false,
+        error: error?.message || "Unable to create offer.",
+        success: null,
+      });
+      return;
+    }
+    mergeOffers([mapSupabaseOffer(data)]);
+    setAdminCreateOfferDraft({
+      businessId: "",
+      title: "",
+      description: "",
+      active: true,
+    });
+    setAdminActionStatus({
+      loading: false,
+      error: null,
+      success: "Offer created.",
+    });
+  }, [
+    adminCreateOfferDraft,
+    authUserId,
+    ensureSupabaseReady,
+    isAdmin,
+    mergeOffers,
+  ]);
+
+  const updateAdminReceiptStatus = useCallback(
+    async (receipt, nextStatus) => {
+      if (!isAdmin || !receipt?.id) return;
+      if (!ensureSupabaseReady()) return;
+      setAdminActionStatus({ loading: true, error: null, success: null });
+      const { data, error } = await supabase
+        .from("receipt_uploads")
+        .update({
+          review_status: nextStatus,
+          reviewed_by: authUserId || null,
+          reviewed_at: new Date().toISOString(),
+          retry_allowed: nextStatus === "rejected",
+        })
+        .eq("id", receipt.id)
+        .select("id,review_status,reviewed_at,retry_allowed")
+        .maybeSingle();
+      if (error || !data) {
+        setAdminActionStatus({
+          loading: false,
+          error: error?.message || "Unable to update receipt.",
+          success: null,
+        });
+        return;
+      }
+      setAdminReceipts((prev) =>
+        prev.map((item) =>
+          item.id === receipt.id
+            ? {
+                ...item,
+                reviewStatus: data.review_status,
+                retryAllowed: data.retry_allowed === true,
+              }
+            : item,
+        ),
+      );
+      setAdminActionStatus({
+        loading: false,
+        error: null,
+        success: `Receipt ${nextStatus}.`,
+      });
+    },
+    [authUserId, ensureSupabaseReady, isAdmin],
+  );
+
+  const deleteAdminReview = useCallback(
+    async (review) => {
+      if (!isAdmin || !review?.id) return;
+      if (!ensureSupabaseReady()) return;
+      setAdminActionStatus({ loading: true, error: null, success: null });
+      const { error } = await supabase.from("reviews").delete().eq("id", review.id);
+      if (error) {
+        setAdminActionStatus({
+          loading: false,
+          error: error.message || "Unable to delete review.",
+          success: null,
+        });
+        return;
+      }
+      setAdminReviews((prev) => prev.filter((item) => item.id !== review.id));
+      setAdminActionStatus({
+        loading: false,
+        error: null,
+        success: "Review removed.",
+      });
+    },
+    [ensureSupabaseReady, isAdmin],
+  );
+
   const handleAccountRecoveryLookup = useCallback(async () => {
     const query = String(accountRecoveryQuery || "").trim();
     if (query.length < 2) {
@@ -22335,7 +23883,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         "business_id",
         "offer_id",
         "qr_payload",
+        "job_status",
         "created_at",
+        "checked_in_at",
+        "check_in_latitude",
+        "check_in_longitude",
+        "checked_out_at",
+        "check_out_latitude",
+        "check_out_longitude",
+        "requester_role",
+        "requester_business_id",
+        "requester_business_name_snapshot",
         "offer:offers (id, title, description, offer_type, image_url)",
         "business:businesses (id, name, category_key, category_label, default_cashback_rate_bps)",
         "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference, cashback_events (amount_cents, status))",
@@ -22347,7 +23905,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         "business_id",
         "offer_id",
         "qr_payload",
+        "job_status",
         "created_at",
+        "checked_in_at",
+        "check_in_latitude",
+        "check_in_longitude",
+        "checked_out_at",
+        "check_out_latitude",
+        "check_out_longitude",
+        "requester_role",
+        "requester_business_id",
+        "requester_business_name_snapshot",
         "offer:offers (id, title, description, offer_type, image_url)",
         "business:businesses (id, name, category_key, category_label, default_cashback_rate_bps)",
         "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference)",
@@ -22358,7 +23926,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         "business_id",
         "offer_id",
         "qr_payload",
+        "job_status",
         "created_at",
+        "checked_in_at",
+        "check_in_latitude",
+        "check_in_longitude",
+        "checked_out_at",
+        "check_out_latitude",
+        "check_out_longitude",
         "offer:offers (id, title, description, offer_type, image_url)",
         "business:businesses (id, name, category_key, category_label, default_cashback_rate_bps)",
         "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference)",
@@ -22368,7 +23943,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         "business_id",
         "offer_id",
         "qr_payload",
+        "job_status",
         "created_at",
+        "checked_in_at",
+        "check_in_latitude",
+        "check_in_longitude",
+        "checked_out_at",
+        "check_out_latitude",
+        "check_out_longitude",
       ].join(",");
 
       let { data, error } = await supabase
@@ -23091,9 +24673,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         .select(
           [
             "id",
+            "scanned_by",
             "business_id",
             "offer_id",
             "qr_payload",
+            "job_status",
+            "checked_in_at",
+            "check_in_latitude",
+            "check_in_longitude",
+            "checked_out_at",
+            "check_out_latitude",
+            "check_out_longitude",
             "created_at",
             "offer:offers (id, title, description, offer_type, image_url)",
             "receipt_uploads (id, uploaded_at, storage_path)",
@@ -23111,9 +24701,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           .select(
             [
               "id",
+              "scanned_by",
               "business_id",
               "offer_id",
               "qr_payload",
+              "job_status",
+              "checked_in_at",
+              "check_in_latitude",
+              "check_in_longitude",
+              "checked_out_at",
+              "check_out_latitude",
+              "check_out_longitude",
               "created_at",
               "offer:offers (id, title, description, offer_type, image_url)",
               "receipt_uploads (id, uploaded_at, storage_path)",
@@ -23588,6 +25186,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     setBusinessReviewsPageOpen(true);
   }, []);
 
+  const openBusinessDetailReviewsPage = useCallback(() => {
+    if (!businessDetail?.id) return;
+    setSelectedBusinessReviewsGroup({
+      businessId: businessDetail.id,
+      businessName: businessDetail.name || "Business Reviews",
+      reviews: businessDetailReviews,
+    });
+    setBusinessReviewsPageOpen(true);
+  }, [businessDetail?.id, businessDetail?.name, businessDetailReviews]);
+
   const closeBusinessReviewsPage = useCallback(() => {
     setBusinessReviewsPageOpen(false);
     setSelectedBusinessReviewsGroup(null);
@@ -23723,6 +25331,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           is_open: true,
           latitude: publicMapCoords?.latitude ?? null,
           longitude: publicMapCoords?.longitude ?? null,
+          public_marker_latitude: usesPrivateServiceAddress
+            ? publicMapCoords?.latitude ?? null
+            : null,
+          public_marker_longitude: usesPrivateServiceAddress
+            ? publicMapCoords?.longitude ?? null
+            : null,
+          public_marker_source: usesPrivateServiceAddress
+            ? "nearest_named_road"
+            : null,
+          public_marker_offset_miles: null,
           offer_honor_policy_accepted: true,
           offer_honor_policy_version: OFFER_HONOR_POLICY_VERSION,
           offer_honor_policy_accepted_at: offerHonorAcceptedAt,
@@ -23884,6 +25502,129 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       success: "Supervisor access removed.",
     });
   };
+
+  const renderDiscoverOfferItem = ({ item }) => (
+    <View style={styles.discoverSheetListItem}>
+      <OfferCard
+        item={item}
+        onPress={() => void handleCardPress(item)}
+        selected={selectedOfferCardId === getOfferCardSelectionKey(item)}
+      />
+    </View>
+  );
+
+  const discoverSheetListHeader = (
+    <View style={styles.discoverSheetListHeader}>
+      <View style={styles.discoverOffersHeader}>
+        <Text style={styles.discoverOffersTitle}>Nearby</Text>
+        <Text style={styles.discoverOffersNearbyCount}>
+          {discoverSheetOfferCards.length} nearby
+        </Text>
+      </View>
+      <View style={styles.discoverOffersCategoryRow}>
+        {DISCOVER_SHEET_CATEGORY_TABS.map((tab) => {
+          const selected = discoverCategoryTab === tab.key;
+          const tabColor =
+            tab.key === "auto"
+              ? "#1E3A8A"
+              : tab.key === "trades"
+                ? "#7C3AED"
+                : "#111827";
+          return (
+            <TouchableOpacity
+              key={`sheet-${tab.key}`}
+              style={[
+                styles.discoverOffersCategoryButton,
+                selected && { borderColor: tabColor, borderWidth: 2 },
+              ]}
+              onPress={() => setDiscoverCategoryTab(tab.key)}
+            >
+              <Ionicons
+                name={
+                  tab.key === "auto"
+                    ? "car-sport"
+                    : tab.key === "trades"
+                      ? "home"
+                      : "grid"
+                }
+                size={20}
+                color={tabColor}
+              />
+              <Text style={styles.discoverOffersCategoryText}>{tab.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+      {remoteStatus.loading ||
+      remoteStatus.error ||
+      offerStatus.loading ||
+      offerStatus.error ? (
+        <View style={styles.discoverSheetNoticeWrap}>
+          <View style={styles.remoteNotice}>
+            <Text style={styles.remoteNoticeText}>
+              {remoteStatus.loading
+                ? "Loading businesses from Wello..."
+                : offerStatus.loading
+                  ? "Loading offers from Wello..."
+                  : remoteStatus.error || offerStatus.error}
+            </Text>
+          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+
+  const gpsPermissionBlocked =
+    !USE_FAKE_LOCATION &&
+    !locationPermissionGate.checking &&
+    locationPermissionGate.blocked;
+
+  const discoverSheetEmptyState = (
+    <View style={styles.discoverSheetEmptyWrap}>
+      <View style={styles.emptyState}>
+        {gpsPermissionBlocked ? (
+          <>
+            <Text style={styles.emptyTitle}>GPS is required</Text>
+            <Text style={styles.emptyCopy}>
+              {locationPermissionGate.message ||
+                "Enable GPS to use Wello discovery and maps."}
+            </Text>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={() => Linking.openSettings().catch(() => {})}
+            >
+              <Text style={styles.secondaryButtonText}>Open Settings</Text>
+            </TouchableOpacity>
+          </>
+        ) : !nearbyOriginAvailable ? (
+          <>
+            <Text style={styles.emptyTitle}>Location is needed</Text>
+            <Text style={styles.emptyCopy}>
+              Enable location to see offers within your selected radius.
+            </Text>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={handleLocateMe}
+              disabled={locating || nearbyOriginLoading}
+            >
+              <Text style={styles.secondaryButtonText}>
+                {locating || nearbyOriginLoading
+                  ? "Checking location..."
+                  : "Use my location"}
+              </Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <Text style={styles.emptyTitle}>No listings match.</Text>
+            <Text style={styles.emptyCopy}>
+              Try a different search or expand your radius.
+            </Text>
+          </>
+        )}
+      </View>
+    </View>
+  );
 
   if (!sessionReady && showLaunchOverlay) {
     return (
@@ -24099,117 +25840,111 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
               })}
             </MapView>
 
+            {gpsPermissionBlocked ? (
+              <View style={styles.gpsRequiredOverlay} pointerEvents="auto">
+                <View style={styles.gpsRequiredCard}>
+                  <View style={styles.gpsRequiredIcon}>
+                    <Ionicons name="location-outline" size={24} color="#FFFFFF" />
+                  </View>
+                  <Text style={styles.gpsRequiredTitle}>GPS is required</Text>
+                  <Text style={styles.gpsRequiredBody}>
+                    {locationPermissionGate.message ||
+                      "Enable GPS to use Wello discovery, maps, check-ins, and checkout."}
+                  </Text>
+                  <View style={styles.gpsRequiredActions}>
+                    <TouchableOpacity
+                      style={styles.gpsRequiredPrimary}
+                      onPress={() => Linking.openSettings().catch(() => {})}
+                    >
+                      <Text style={styles.gpsRequiredPrimaryText}>
+                        Open Settings
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.gpsRequiredSecondary}
+                      onPress={handleLocateMe}
+                      disabled={locating}
+                    >
+                      <Text style={styles.gpsRequiredSecondaryText}>
+                        {locating ? "Checking..." : "Try Again"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            ) : null}
+
             {activeTab === "discover" &&
+            !gpsPermissionBlocked &&
             !businessDetailOpen &&
             !discoverSearchOpen &&
-            !fullScreenOverlayOpen &&
-            discoverSheetOfferCards.length > 0 ? (
-              <Animated.View
-                style={[
+            !fullScreenOverlayOpen ? (
+              <SheetPeekRow
+                offers={discoverSheetOfferCards}
+                onCardPress={(item) => void handleCardPress(item)}
+                interactive={discoverCarouselInteractive}
+                cardListRef={cardListRef}
+                carouselUserDraggingRef={carouselUserDraggingRef}
+                carouselVisibleItemRef={carouselVisibleItemRef}
+                focusCarouselBusiness={focusCarouselBusiness}
+                animatedStyle={[
                   styles.discoverBottomBusinessCarousel,
-                  { bottom: 0 },
-                  {
-                    transform: [
-                      {
-                        translateY: discoverOffersPullY.interpolate({
-                          inputRange: [-220, 0],
-                          outputRange: [-220, 0],
-                          extrapolate: "clamp",
-                        }),
-                      },
-                    ],
-                  },
+                  discoverMiniAnimatedStyle,
+                  { bottom: discoverCarouselBottomOffset },
                 ]}
+              />
+            ) : null}
+
+            {activeTab === "discover" &&
+            !gpsPermissionBlocked &&
+            !businessDetailOpen &&
+            !discoverSearchOpen &&
+            !fullScreenOverlayOpen ? (
+                <BottomSheet
+                  ref={discoverBottomSheetRef}
+                  index={0}
+                  snapPoints={sheetSnapPoints}
+                  topInset={insets.top}
+                  onChange={handleSheetChange}
+                  onAnimate={handleSheetAnimate}
+                  animatedPosition={sheetTranslateY}
+                  animationConfigs={discoverSheetAnimationConfigs}
+                  handleComponent={renderSheetHandle}
+                enablePanDownToClose={false}
+                enableOverDrag={false}
+                enableDynamicSizing={false}
+                enableHandlePanningGesture
+                enableContentPanningGesture
+                backgroundStyle={styles.sheetBackground}
+                keyboardBehavior="extend"
+                keyboardBlurBehavior="restore"
+                android_keyboardInputMode="adjustResize"
               >
-                {SheetPeekRow({
-                  offers: discoverSheetOfferCards,
-                  onCardPress: handleCardPress,
-                  interactive: true,
-                })}
-                <PanGestureHandler
-                  activeOffsetY={[-8, 8]}
-                  failOffsetX={[-18, 18]}
-                  onGestureEvent={Animated.event(
-                    [{ nativeEvent: { translationY: discoverOffersPullY } }],
-                    { useNativeDriver: true },
+                <BottomSheetFlatList
+                  ref={discoverSheetListRef}
+                  data={discoverSheetOfferCards}
+                  keyExtractor={(item, index) =>
+                    getOfferCardSelectionKey(item) || `discover-${index}`
+                  }
+                  renderItem={renderDiscoverOfferItem}
+                  ListHeaderComponent={discoverSheetListHeader}
+                  ListEmptyComponent={discoverSheetEmptyState}
+                  ItemSeparatorComponent={() => (
+                    <View style={styles.discoverSheetListSeparator} />
                   )}
-                  onHandlerStateChange={(event) => {
-                    if (event.nativeEvent.state === GestureState.END) {
-                      if (event.nativeEvent.translationY < -28) {
-                        discoverOffersPullY.setValue(0);
-                        setDiscoverOffersSheet({ visible: true, business: null });
-                      } else {
-                        Animated.spring(discoverOffersPullY, {
-                          toValue: 0,
-                          useNativeDriver: true,
-                          speed: 22,
-                          bounciness: 0,
-                        }).start();
-                      }
-                    }
-                    if (
-                      event.nativeEvent.state === GestureState.CANCELLED ||
-                      event.nativeEvent.state === GestureState.FAILED
-                    ) {
-                      Animated.spring(discoverOffersPullY, {
-                        toValue: 0,
-                        useNativeDriver: true,
-                        speed: 22,
-                        bounciness: 0,
-                      }).start();
-                    }
+                  contentContainerStyle={{
+                    paddingBottom: insets.bottom + 28,
                   }}
-                >
-                  <View style={styles.discoverAllOffersPullTab}>
-                    <View style={styles.discoverAllOffersDragHandle} />
-                    <Text style={styles.discoverCollapsedSwipeCue}>
-                      Swipe up to see offers
-                    </Text>
-                    <View style={styles.discoverCollapsedOffersHeader}>
-                      <Text style={styles.discoverCollapsedOffersTitle}>Nearby</Text>
-                      <Text style={styles.discoverCollapsedOffersCount}>
-                        {filteredOfferCards.length} nearby
-                      </Text>
-                    </View>
-                    <View style={styles.discoverCollapsedCategoryRow}>
-                      {DISCOVER_SHEET_CATEGORY_TABS.map((tab) => {
-                        const selected = discoverCategoryTab === tab.key;
-                        const tabColor =
-                          tab.key === "auto"
-                            ? "#1E3A8A"
-                            : tab.key === "trades"
-                              ? "#7C3AED"
-                              : "#111827";
-                        const tabIcon =
-                          tab.key === "auto"
-                            ? "car-sport"
-                            : tab.key === "trades"
-                              ? "home"
-                              : "grid";
-                        return (
-                          <TouchableOpacity
-                            key={`collapsed-${tab.key}`}
-                            style={[
-                              styles.discoverCollapsedCategoryButton,
-                              selected && {
-                                borderColor: tabColor,
-                                borderWidth: 2,
-                              },
-                            ]}
-                            onPress={() => setDiscoverCategoryTab(tab.key)}
-                            activeOpacity={0.85}
-                          >
-                            <Ionicons name={tabIcon} size={20} color={tabColor} />
-                            <Text style={styles.discoverCollapsedCategoryText} numberOfLines={1}>
-                              {tab.label}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  </View>
-                </PanGestureHandler>
-              </Animated.View>
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  keyboardDismissMode="on-drag"
+                  initialNumToRender={4}
+                  maxToRenderPerBatch={4}
+                  windowSize={5}
+                  removeClippedSubviews={Platform.OS === "android"}
+                  onScrollToIndexFailed={handleScrollToIndexFailed}
+                />
+              </BottomSheet>
             ) : null}
 
             {activeTab === "discover" &&
@@ -24278,7 +26013,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 ownerBusinessScreen === "dashboard")) &&
             !businessDetailOpen &&
             !discoverSearchOpen &&
-            !fullScreenOverlayOpen ? (
+            !fullScreenOverlayOpen &&
+            !gpsPermissionBlocked ? (
               <View
                 style={[styles.discoverTopActionsDock, { top: topTabBarOffset + 96 }]}
                 pointerEvents="box-none"
@@ -24646,8 +26382,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 selectedEditTags={selectedBusinessTags}
                 businessSaveBusy={businessSaveBusy}
                 formMessage={formMessage}
-                handleSaveBusiness={handleSaveBusiness}
-                closeEditBusinessPage={closeEditBusinessPage}
+                handleSaveBusiness={
+                  adminProfileEditBusiness
+                    ? handleSaveAdminBusinessProfile
+                    : handleSaveBusiness
+                }
+                closeEditBusinessPage={
+                  adminProfileEditBusiness
+                    ? closeAdminBusinessProfileEditor
+                    : closeEditBusinessPage
+                }
+                adminMode={Boolean(adminProfileEditBusiness && isAdmin)}
               />
             ) : null}
             {reviewsPageOpen ? (
@@ -24939,6 +26684,64 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   </View>
                 </Pressable>
               </Pressable>
+            </Modal>
+
+            <Modal
+              transparent
+              visible={Boolean(adminLocationLookupResult)}
+              animationType="slide"
+              presentationStyle="overFullScreen"
+              statusBarTranslucent
+              onRequestClose={() => setAdminLocationLookupResult(null)}
+            >
+              <View style={styles.appDialogOverlay}>
+                <View style={styles.adminLocationModalCard}>
+                  <View style={styles.modalHeader}>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.modalTitle}>Customer location</Text>
+                      <Text style={styles.modalSubtitle}>
+                        {adminLocationLookupResult?.job?.businessName ||
+                          "Active job"}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.modalCloseButton}
+                      onPress={() => setAdminLocationLookupResult(null)}
+                    >
+                      <Ionicons name="close" size={18} color={COLORS.ink} />
+                    </TouchableOpacity>
+                  </View>
+                  {adminLocationLookupResult ? (
+                    <>
+                      <MapView
+                        style={styles.adminLocationMap}
+                        initialRegion={{
+                          latitude: adminLocationLookupResult.latitude,
+                          longitude: adminLocationLookupResult.longitude,
+                          latitudeDelta: 0.01,
+                          longitudeDelta: 0.01,
+                        }}
+                      >
+                        <Marker
+                          coordinate={{
+                            latitude: adminLocationLookupResult.latitude,
+                            longitude: adminLocationLookupResult.longitude,
+                          }}
+                          title="Customer current location"
+                          description="One-time foreground response"
+                        />
+                      </MapView>
+                      <Text style={styles.formHint}>
+                        {`Captured ${formatHistoryTimestamp(
+                          adminLocationLookupResult.respondedAt,
+                        )}. Coordinates: ${adminLocationLookupResult.latitude.toFixed(
+                          6,
+                        )}, ${adminLocationLookupResult.longitude.toFixed(6)}`}
+                      </Text>
+                    </>
+                  ) : null}
+                </View>
+              </View>
             </Modal>
 
             <Modal
@@ -25615,6 +27418,25 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                   }
                                 />
                               </TouchableOpacity>
+                              {isAdmin ? (
+                                <TouchableOpacity
+                                  style={styles.businessPageHeroButton}
+                                  onPress={() =>
+                                    openAdminBusinessProfileEditor(businessDetail)
+                                  }
+                                  activeOpacity={0.85}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`Edit ${
+                                    businessDetail?.name || "business"
+                                  }`}
+                                >
+                                  <Ionicons
+                                    name="create-outline"
+                                    size={22}
+                                    color="#0F172A"
+                                  />
+                                </TouchableOpacity>
+                              ) : null}
                             </View>
                           </View>
                           <View style={styles.businessPageFeaturedBadge}>
@@ -25634,14 +27456,27 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                             </View>
                           </View>
 
-                          <View style={styles.businessPageRatingRow}>
+                          <TouchableOpacity
+                            style={styles.businessPageRatingRow}
+                            onPress={openBusinessDetailReviewsPage}
+                            activeOpacity={0.75}
+                            accessibilityRole="button"
+                            accessibilityLabel={`View reviews for ${
+                              businessDetail?.name || "this business"
+                            }`}
+                          >
                             <Ionicons name="star" size={18} color="#FBBF24" />
                             <Text style={styles.businessPageRatingText}>
                               {reviewCount > 0 && reviewAverage
                                 ? `${reviewAverage.toFixed(1)} (${reviewCount} reviews)`
                                 : "New Business  •  No reviews yet"}
                             </Text>
-                          </View>
+                            <Ionicons
+                              name="chevron-forward"
+                              size={16}
+                              color={COLORS.muted}
+                            />
+                          </TouchableOpacity>
 
                           <View style={styles.businessPageDistanceStatusRow}>
                             {!isServiceAreaBusiness ? (
@@ -25707,7 +27542,15 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 label: "Call",
                                 icon: "call-outline",
                                 disabled: !hasBusinessPhone,
-                                onPress: () => openPhoneForBusiness(businessDetail),
+                                onPress: () =>
+                                  openPhoneForBusiness(businessDetail, {
+                                    userId: authUserId,
+                                    redemptionId:
+                                      businessDetail?.activeRedemptionId ||
+                                      businessDetail?.redemptionId ||
+                                      null,
+                                    source: "business_profile",
+                                  }),
                               },
                               {
                                 key: "directions",
@@ -33008,6 +34851,31 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                     const cashbackCents = Number(
                                       entry.receipt?.cashbackCents,
                                     );
+                                    const isJobComplete = Boolean(
+                                      entry.checkedOutAt ||
+                                        String(entry.jobStatus || "").toLowerCase() ===
+                                          "complete" ||
+                                        entry.manualPurchase?.status === "paid" ||
+                                        cashbackStatus === "paid",
+                                    );
+                                    const canCheckInJob =
+                                      !entry.checkedInAt && !isJobComplete;
+                                    const canCheckOutJob =
+                                      Boolean(entry.checkedInAt) &&
+                                      !entry.checkedOutAt &&
+                                      !isJobComplete;
+                                    const isCheckingInJob =
+                                      jobLocationActionStatus.loading &&
+                                      jobLocationActionStatus.targetId ===
+                                        String(entry.id) &&
+                                      jobLocationActionStatus.action ===
+                                        "check_in";
+                                    const isCheckingOutJob =
+                                      jobLocationActionStatus.loading &&
+                                      jobLocationActionStatus.targetId ===
+                                        String(entry.id) &&
+                                      jobLocationActionStatus.action ===
+                                        "check_out";
                                     const receiptRejectionReason =
                                       receiptReviewStatus === "rejected"
                                         ? String(
@@ -33212,6 +35080,90 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                           >
                                             {receiptRejectionReason}
                                           </Text>
+                                        ) : null}
+                                        {entry.checkedInAt ? (
+                                          <Text style={styles.historyStatusReasonText}>
+                                            Checked in{" "}
+                                            {formatHistoryTimestamp(
+                                              entry.checkedInAt,
+                                            )}
+                                          </Text>
+                                        ) : null}
+                                        {entry.checkedOutAt ? (
+                                          <Text style={styles.historyStatusReasonText}>
+                                            Checked out{" "}
+                                            {formatHistoryTimestamp(
+                                              entry.checkedOutAt,
+                                            )}
+                                          </Text>
+                                        ) : null}
+                                        {canCheckInJob ? (
+                                          <TouchableOpacity
+                                            style={[
+                                              styles.historyVerifyButton,
+                                              isCheckingInJob &&
+                                                styles.businessPageQuickActionDisabled,
+                                            ]}
+                                            disabled={isCheckingInJob}
+                                            onPress={() => handleJobCheckIn(entry)}
+                                          >
+                                            <Ionicons
+                                              name="location-outline"
+                                              size={14}
+                                              color="#FFFFFF"
+                                            />
+                                            <Text style={styles.historyVerifyButtonText}>
+                                              {isCheckingInJob
+                                                ? "Checking in..."
+                                                : "Check In"}
+                                            </Text>
+                                          </TouchableOpacity>
+                                        ) : null}
+                                        {canCheckOutJob ? (
+                                          <TouchableOpacity
+                                            style={[
+                                              styles.historyVerifyButton,
+                                              isCheckingOutJob &&
+                                                styles.businessPageQuickActionDisabled,
+                                            ]}
+                                            disabled={isCheckingOutJob}
+                                            onPress={() => handleJobCheckOut(entry)}
+                                          >
+                                            <Ionicons
+                                              name="checkmark-circle-outline"
+                                              size={14}
+                                              color="#FFFFFF"
+                                            />
+                                            <Text style={styles.historyVerifyButtonText}>
+                                              {isCheckingOutJob
+                                                ? "Checking out..."
+                                                : "Check Out"}
+                                            </Text>
+                                          </TouchableOpacity>
+                                        ) : null}
+                                        {hasReceipt ? (
+                                          <TouchableOpacity
+                                            style={styles.historyVerifyButton}
+                                            onPress={() =>
+                                              handleOpenReceiptPreview(
+                                                {
+                                                  ...entry.receipt,
+                                                  businessId: entry.businessId,
+                                                  offerTitle: cashbackTitle,
+                                                },
+                                                cashbackTitle,
+                                              )
+                                            }
+                                          >
+                                            <Ionicons
+                                              name="receipt-outline"
+                                              size={14}
+                                              color="#FFFFFF"
+                                            />
+                                            <Text style={styles.historyVerifyButtonText}>
+                                              View Receipt
+                                            </Text>
+                                          </TouchableOpacity>
                                         ) : null}
                                         {isReceiptActionable && (
                                           <View
@@ -35112,7 +37064,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                   Enter the one-time code sent to{" "}
                                   {businessOtpSentEmail ||
                                     businessEmail.trim().toLowerCase()}
-                                  }.
+                                  .
                                 </Text>
 
                                 <Text style={styles.formLabel}>
@@ -36361,7 +38313,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                           </>
                         )}
                       </>
-                    ) : activeTab === "admin" && isStaff ? (
+                    ) : activeTab === "admin" && isAdmin ? (
                       <>
                         <View style={styles.sectionBlock}>
                           <Text style={styles.sectionTitleAlt}>
@@ -36479,9 +38431,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                             </Text>
                             <Text style={styles.adminWorkspaceLeadCopy}>
                               {activeAdminWorkspace.subtitle}
-                              {isAdmin
-                                ? " You have full admin access."
-                                : " You are using supervisor permissions."}
+                              {" You have full admin access."}
                             </Text>
                           </View>
                         )}
@@ -37702,6 +39652,767 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 );
                               })
                             )}
+                          </>
+                        )}
+
+                        {adminWorkspaceTab === "businesses" && (
+                          <>
+                            <View style={styles.sectionBlock}>
+                              <Text style={styles.sectionTitleAlt}>
+                                Business listings
+                              </Text>
+                              <Text style={styles.sectionBody}>
+                                Edit listing details, approval, cashback, and active status.
+                              </Text>
+                            </View>
+                            {adminBusinesses.map((business) => {
+                              const draft = adminBusinessDrafts[business.id] || {};
+                              const approvalStatus =
+                                draft.approvalStatus ??
+                                (business.rejected
+                                  ? "rejected"
+                                  : business.approved
+                                    ? "approved"
+                                    : "pending");
+                              const activeStatus =
+                                draft.status ?? business.status ?? "active";
+                              return (
+                                <View key={business.id} style={styles.adminCard}>
+                                  <View style={styles.adminHeader}>
+                                    <Text style={styles.adminTitle}>{business.name}</Text>
+                                    <Text style={styles.adminMeta}>{business.address || "No address"}</Text>
+                                  </View>
+                                  <TextInput
+                                    style={styles.formInput}
+                                    value={draft.name ?? business.name ?? ""}
+                                    placeholder="Business name"
+                                    onChangeText={(value) =>
+                                      setAdminBusinessDrafts((prev) => ({
+                                        ...prev,
+                                        [business.id]: {
+                                          ...(prev[business.id] || {}),
+                                          name: value,
+                                        },
+                                      }))
+                                    }
+                                  />
+                                  <TextInput
+                                    style={styles.formInput}
+                                    value={draft.address ?? business.address ?? ""}
+                                    placeholder="Address"
+                                    onChangeText={(value) =>
+                                      setAdminBusinessDrafts((prev) => ({
+                                        ...prev,
+                                        [business.id]: {
+                                          ...(prev[business.id] || {}),
+                                          address: value,
+                                        },
+                                      }))
+                                    }
+                                  />
+                                  <TextInput
+                                    style={styles.formInput}
+                                    value={
+                                      draft.categoryLabel ??
+                                      business.categoryLabel ??
+                                      getCategoryConfig(business.categoryKey).display
+                                    }
+                                    placeholder="Category"
+                                    onChangeText={(value) =>
+                                      setAdminBusinessDrafts((prev) => ({
+                                        ...prev,
+                                        [business.id]: {
+                                          ...(prev[business.id] || {}),
+                                          categoryLabel: value,
+                                        },
+                                      }))
+                                    }
+                                  />
+                                  <View style={styles.adminInlineFields}>
+                                    <TextInput
+                                      style={[styles.formInput, styles.adminInlineInput]}
+                                      value={String(
+                                        draft.commissionPercent ??
+                                          (Number(business.commissionRateCents) || 0) / 10,
+                                      )}
+                                      placeholder="Commission %"
+                                      keyboardType="decimal-pad"
+                                      onChangeText={(value) =>
+                                        setAdminBusinessDrafts((prev) => ({
+                                          ...prev,
+                                          [business.id]: {
+                                            ...(prev[business.id] || {}),
+                                            commissionPercent: value,
+                                          },
+                                        }))
+                                      }
+                                    />
+                                    <TextInput
+                                      style={[styles.formInput, styles.adminInlineInput]}
+                                      value={String(
+                                        draft.cashbackPercent ??
+                                          (Number(business.defaultCashbackRateBps) || 0) / 100,
+                                      )}
+                                      placeholder="Cashback %"
+                                      keyboardType="decimal-pad"
+                                      onChangeText={(value) =>
+                                        setAdminBusinessDrafts((prev) => ({
+                                          ...prev,
+                                          [business.id]: {
+                                            ...(prev[business.id] || {}),
+                                            cashbackPercent: value,
+                                          },
+                                        }))
+                                      }
+                                    />
+                                  </View>
+                                  <View style={styles.adminActions}>
+                                    {["pending", "approved", "rejected"].map((status) => (
+                                      <TouchableOpacity
+                                        key={status}
+                                        style={[
+                                          styles.adminApprove,
+                                          approvalStatus !== status && styles.adminGhostAction,
+                                        ]}
+                                        onPress={() =>
+                                          setAdminBusinessDrafts((prev) => ({
+                                            ...prev,
+                                            [business.id]: {
+                                              ...(prev[business.id] || {}),
+                                              approvalStatus: status,
+                                            },
+                                          }))
+                                        }
+                                      >
+                                        <Text style={styles.adminActionText}>{status}</Text>
+                                      </TouchableOpacity>
+                                    ))}
+                                  </View>
+                                  <View style={styles.adminActions}>
+                                    {["active", "inactive"].map((status) => (
+                                      <TouchableOpacity
+                                        key={status}
+                                        style={[
+                                          styles.adminApprove,
+                                          activeStatus !== status && styles.adminGhostAction,
+                                        ]}
+                                        onPress={() =>
+                                          setAdminBusinessDrafts((prev) => ({
+                                            ...prev,
+                                            [business.id]: {
+                                              ...(prev[business.id] || {}),
+                                              status,
+                                            },
+                                          }))
+                                        }
+                                      >
+                                        <Text style={styles.adminActionText}>{status}</Text>
+                                      </TouchableOpacity>
+                                    ))}
+                                    <TouchableOpacity
+                                      style={styles.adminApprove}
+                                      onPress={() => saveAdminBusinessDraft(business)}
+                                    >
+                                      <Text style={styles.adminActionText}>Save</Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
+                              );
+                            })}
+                          </>
+                        )}
+
+                        {adminWorkspaceTab === "offers" && (
+                          <>
+                            <View style={styles.sectionBlock}>
+                              <Text style={styles.sectionTitleAlt}>Offers</Text>
+                              <Text style={styles.sectionBody}>
+                                Create, edit, approve, and deactivate offers per business.
+                              </Text>
+                            </View>
+                            <View style={styles.adminCard}>
+                              <Text style={styles.adminTitle}>Create offer</Text>
+                              <TextInput
+                                style={styles.formInput}
+                                value={adminCreateOfferDraft.businessId}
+                                placeholder="Business ID"
+                                autoCapitalize="none"
+                                onChangeText={(value) =>
+                                  setAdminCreateOfferDraft((prev) => ({
+                                    ...prev,
+                                    businessId: value,
+                                  }))
+                                }
+                              />
+                              <TextInput
+                                style={styles.formInput}
+                                value={adminCreateOfferDraft.title}
+                                placeholder="Offer title"
+                                onChangeText={(value) =>
+                                  setAdminCreateOfferDraft((prev) => ({
+                                    ...prev,
+                                    title: value,
+                                  }))
+                                }
+                              />
+                              <TextInput
+                                style={[styles.formInput, styles.formTextarea]}
+                                value={adminCreateOfferDraft.description}
+                                placeholder="Description"
+                                multiline
+                                onChangeText={(value) =>
+                                  setAdminCreateOfferDraft((prev) => ({
+                                    ...prev,
+                                    description: value,
+                                  }))
+                                }
+                              />
+                              <TouchableOpacity
+                                style={styles.adminApprove}
+                                onPress={createAdminOffer}
+                              >
+                                <Text style={styles.adminActionText}>Create approved offer</Text>
+                              </TouchableOpacity>
+                            </View>
+                            {adminOffers.map((offer) => {
+                              const draft = adminOfferDrafts[offer.id] || {};
+                              const active =
+                                typeof draft.active === "boolean"
+                                  ? draft.active
+                                  : Boolean(offer.active);
+                              return (
+                                <View key={offer.id} style={styles.adminCard}>
+                                  <View style={styles.adminHeader}>
+                                    <Text style={styles.adminTitle}>{offer.title || "Offer"}</Text>
+                                    <Text style={styles.adminMeta}>
+                                      {offer.business?.name || offer.businessId}
+                                    </Text>
+                                  </View>
+                                  <TextInput
+                                    style={styles.formInput}
+                                    value={draft.title ?? offer.title ?? ""}
+                                    placeholder="Offer title"
+                                    onChangeText={(value) =>
+                                      setAdminOfferDrafts((prev) => ({
+                                        ...prev,
+                                        [offer.id]: {
+                                          ...(prev[offer.id] || {}),
+                                          title: value,
+                                        },
+                                      }))
+                                    }
+                                  />
+                                  <TextInput
+                                    style={[styles.formInput, styles.formTextarea]}
+                                    value={draft.description ?? offer.description ?? ""}
+                                    placeholder="Description"
+                                    multiline
+                                    onChangeText={(value) =>
+                                      setAdminOfferDrafts((prev) => ({
+                                        ...prev,
+                                        [offer.id]: {
+                                          ...(prev[offer.id] || {}),
+                                          description: value,
+                                        },
+                                      }))
+                                    }
+                                  />
+                                  <View style={styles.adminActions}>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.adminApprove,
+                                        !active && styles.adminGhostAction,
+                                      ]}
+                                      onPress={() =>
+                                        setAdminOfferDrafts((prev) => ({
+                                          ...prev,
+                                          [offer.id]: {
+                                            ...(prev[offer.id] || {}),
+                                            active: true,
+                                            approvalStatus: "approved",
+                                          },
+                                        }))
+                                      }
+                                    >
+                                      <Text style={styles.adminActionText}>Active</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.adminReject,
+                                        active && styles.adminGhostAction,
+                                      ]}
+                                      onPress={() =>
+                                        setAdminOfferDrafts((prev) => ({
+                                          ...prev,
+                                          [offer.id]: {
+                                            ...(prev[offer.id] || {}),
+                                            active: false,
+                                          },
+                                        }))
+                                      }
+                                    >
+                                      <Text style={[styles.adminActionText, styles.adminActionTextDark]}>
+                                        Inactive
+                                      </Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      style={styles.adminApprove}
+                                      onPress={() => saveAdminOfferDraft(offer)}
+                                    >
+                                      <Text style={styles.adminActionText}>Save</Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
+                              );
+                            })}
+                          </>
+                        )}
+
+                        {adminWorkspaceTab === "receipts" && (
+                          <>
+                            <View style={styles.sectionBlock}>
+                              <Text style={styles.sectionTitleAlt}>Uploaded receipts</Text>
+                              <Text style={styles.sectionBody}>
+                                Review receipt uploads across all users and jobs.
+                              </Text>
+                            </View>
+                            {adminReceiptsStatus.loading ? (
+                              <Text style={styles.formHint}>Loading receipts...</Text>
+                            ) : adminReceiptsStatus.error ? (
+                              <Text style={styles.formError}>{adminReceiptsStatus.error}</Text>
+                            ) : null}
+                            {adminReceipts.map((receipt) => (
+                              <View key={receipt.id} style={styles.adminCard}>
+                                <View style={styles.adminHeader}>
+                                  <Text style={styles.adminTitle}>{receipt.businessName}</Text>
+                                  <Text style={styles.adminMeta}>
+                                    {`${receipt.reviewStatus} • ${formatHistoryTimestamp(receipt.uploadedAt)}`}
+                                  </Text>
+                                </View>
+                                <Text style={styles.adminOffer}>
+                                  {`${receipt.offerTitle} • ${formatCurrencyFromCents(receipt.receiptTotalCents)}`}
+                                </Text>
+                                <View style={styles.adminActions}>
+                                  <TouchableOpacity
+                                    style={styles.adminApprove}
+                                    onPress={() =>
+                                      handleOpenReceiptPreview(
+                                        {
+                                          id: receipt.id,
+                                          businessId: receipt.businessId,
+                                          storagePath: receipt.storagePath,
+                                          reviewStatus: receipt.reviewStatus,
+                                          uploadedAt: receipt.uploadedAt,
+                                        },
+                                        receipt.offerTitle,
+                                      )
+                                    }
+                                  >
+                                    <Text style={styles.adminActionText}>Open</Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={styles.adminApprove}
+                                    onPress={() =>
+                                      updateAdminReceiptStatus(receipt, "verified")
+                                    }
+                                  >
+                                    <Text style={styles.adminActionText}>Verify</Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={styles.adminReject}
+                                    onPress={() =>
+                                      updateAdminReceiptStatus(receipt, "rejected")
+                                    }
+                                  >
+                                    <Text style={[styles.adminActionText, styles.adminActionTextDark]}>
+                                      Reject
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                              </View>
+                            ))}
+                          </>
+                        )}
+
+                        {adminWorkspaceTab === "reviews" && (
+                          <>
+                            <View style={styles.sectionBlock}>
+                              <Text style={styles.sectionTitleAlt}>Reviews</Text>
+                              <Text style={styles.sectionBody}>
+                                View and remove customer reviews when moderation is needed.
+                              </Text>
+                            </View>
+                            {adminReviewsStatus.loading ? (
+                              <Text style={styles.formHint}>Loading reviews...</Text>
+                            ) : adminReviewsStatus.error ? (
+                              <Text style={styles.formError}>{adminReviewsStatus.error}</Text>
+                            ) : null}
+                            {adminReviews.map((review) => (
+                              <View key={review.id} style={styles.adminCard}>
+                                <View style={styles.adminHeader}>
+                                  <Text style={styles.adminTitle}>{review.businessName}</Text>
+                                  <Text style={styles.adminMeta}>
+                                    {`${review.rating}/5 • ${formatHistoryTimestamp(review.createdAt)}`}
+                                  </Text>
+                                </View>
+                                <Text style={styles.adminOffer}>
+                                  {review.reviewText || "No review text."}
+                                </Text>
+                                <TouchableOpacity
+                                  style={styles.adminReject}
+                                  onPress={() =>
+                                    showAppDialog({
+                                      title: "Remove review?",
+                                      message: "This deletes the review from the business profile.",
+                                      dismissOnBackdrop: false,
+                                      options: [
+                                        { label: "Keep review", variant: "ghost" },
+                                        {
+                                          label: "Remove",
+                                          variant: "primary",
+                                          onPress: () => deleteAdminReview(review),
+                                        },
+                                      ],
+                                    })
+                                  }
+                                >
+                                  <Text style={[styles.adminActionText, styles.adminActionTextDark]}>
+                                    Remove review
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            ))}
+                          </>
+                        )}
+
+                        {adminWorkspaceTab === "users" && (
+                          <>
+                            <View style={styles.sectionBlock}>
+                              <Text style={styles.sectionTitleAlt}>Users and roles</Text>
+                              <Text style={styles.sectionBody}>
+                                Mirror the web admin role tools and account recovery lookup.
+                              </Text>
+                            </View>
+                            <View style={styles.adminRecoveryCard}>
+                              <Text style={styles.adminRecoveryTitle}>
+                                Account recovery lookup
+                              </Text>
+                              <Text style={styles.adminRecoverySubtitle}>
+                                Search by name, phone, or possible email to help users recover sign-in access.
+                              </Text>
+                              <AutoFocusInput
+                                style={styles.formInput}
+                                placeholder="Search by name, phone, or email"
+                                placeholderTextColor={COLORS.muted}
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                                value={accountRecoveryQuery}
+                                onChangeText={(value) => {
+                                  setAccountRecoveryQuery(value);
+                                  if (accountRecoveryStatus.error) {
+                                    setAccountRecoveryStatus((prev) => ({
+                                      ...prev,
+                                      error: null,
+                                    }));
+                                  }
+                                }}
+                                returnKeyType="search"
+                                onSubmitEditing={() => {
+                                  if (!accountRecoveryStatus.loading) {
+                                    handleAccountRecoveryLookup();
+                                  }
+                                }}
+                              />
+                              <View style={styles.adminRecoveryActions}>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.primaryButton,
+                                    styles.adminRecoveryActionButton,
+                                    accountRecoveryStatus.loading &&
+                                      styles.primaryButtonDisabled,
+                                  ]}
+                                  disabled={accountRecoveryStatus.loading}
+                                  onPress={handleAccountRecoveryLookup}
+                                >
+                                  <Text style={styles.primaryButtonText}>
+                                    {accountRecoveryStatus.loading
+                                      ? "Searching..."
+                                      : "Search profiles"}
+                                  </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.secondaryButton,
+                                    styles.adminRecoveryActionButton,
+                                  ]}
+                                  onPress={() => {
+                                    setAccountRecoveryQuery("");
+                                    setAccountRecoveryResults([]);
+                                    setAccountRecoveryStatus({
+                                      loading: false,
+                                      error: null,
+                                      queried: false,
+                                    });
+                                  }}
+                                >
+                                  <Text style={styles.secondaryButtonText}>Clear</Text>
+                                </TouchableOpacity>
+                              </View>
+                              {accountRecoveryStatus.error ? (
+                                <Text style={styles.formError}>
+                                  {accountRecoveryStatus.error}
+                                </Text>
+                              ) : null}
+                              {accountRecoveryResults.map((profile) => (
+                                <View key={profile.id} style={styles.adminRecoveryResult}>
+                                  <Text style={styles.adminTitle}>
+                                    {profile.full_name || "Unnamed account"}
+                                  </Text>
+                                  <Text style={styles.adminRecoveryLine}>
+                                    {`Email: ${maskRecoveryEmail(profile.email)}`}
+                                  </Text>
+                                  <Text style={styles.adminRecoveryLine}>
+                                    {`Phone: ${maskRecoveryPhone(profile.phone)}`}
+                                  </Text>
+                                  {profile.email ? (
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.secondaryButton,
+                                        styles.adminRecoveryMiniButton,
+                                      ]}
+                                      onPress={() =>
+                                        Clipboard.setStringAsync(
+                                          String(profile.email),
+                                        ).catch(() => null)
+                                      }
+                                    >
+                                      <Text style={styles.secondaryButtonText}>
+                                        Copy email
+                                      </Text>
+                                    </TouchableOpacity>
+                                  ) : null}
+                                </View>
+                              ))}
+                            </View>
+                            <TouchableOpacity
+                              style={styles.secondaryButton}
+                              onPress={loadProfiles}
+                            >
+                              <Text style={styles.secondaryButtonText}>Refresh users</Text>
+                            </TouchableOpacity>
+                            {profileStatus.error ? (
+                              <Text style={styles.formError}>{profileStatus.error}</Text>
+                            ) : null}
+                            {profileList.map((profile) => (
+                              <View key={profile.id} style={styles.adminCard}>
+                                <View style={styles.adminHeader}>
+                                  <Text style={styles.adminTitle}>
+                                    {profile.full_name || "Unnamed account"}
+                                  </Text>
+                                  <Text style={styles.adminMeta}>
+                                    {profile.email || profile.id}
+                                  </Text>
+                                </View>
+                                <View style={styles.adminQuickMetaRow}>
+                                  <View style={styles.adminQuickMetaChip}>
+                                    <Text style={styles.adminQuickMetaText}>
+                                      {profile.role || "consumer"}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <View style={styles.adminActions}>
+                                  <TouchableOpacity
+                                    style={styles.adminApprove}
+                                    onPress={() => handlePromoteSupervisor(profile)}
+                                  >
+                                    <Text style={styles.adminActionText}>Supervisor</Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={styles.adminApprove}
+                                    onPress={() => handlePromoteBusinessOwner(profile)}
+                                  >
+                                    <Text style={styles.adminActionText}>Business</Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={styles.adminReject}
+                                    onPress={() => handleRemoveSupervisor(profile)}
+                                  >
+                                    <Text style={[styles.adminActionText, styles.adminActionTextDark]}>
+                                      Consumer
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                              </View>
+                            ))}
+                          </>
+                        )}
+
+                        {adminWorkspaceTab === "ops" && (
+                          <>
+                            <View style={styles.sectionBlock}>
+                              <Text style={styles.sectionTitleAlt}>Operations</Text>
+                              <Text style={styles.sectionBody}>
+                                Promo codes, receipt reports, billing/cashout status, and audit events.
+                              </Text>
+                            </View>
+                            <TouchableOpacity
+                              style={styles.secondaryButton}
+                              onPress={loadAdminOps}
+                            >
+                              <Text style={styles.secondaryButtonText}>Refresh ops</Text>
+                            </TouchableOpacity>
+                            {adminOpsStatus.loading ? (
+                              <Text style={styles.formHint}>Loading operations...</Text>
+                            ) : adminOpsStatus.error ? (
+                              <Text style={styles.formError}>{adminOpsStatus.error}</Text>
+                            ) : null}
+
+                            <View style={styles.adminCard}>
+                              <Text style={styles.adminTitle}>Active jobs</Text>
+                              <Text style={styles.adminMeta}>
+                                One-time customer GPS lookups are available only for checked-in jobs.
+                              </Text>
+                              {adminActiveJobsStatus.loading ? (
+                                <Text style={styles.formHint}>Loading active jobs...</Text>
+                              ) : adminActiveJobsStatus.error ? (
+                                <Text style={styles.formError}>
+                                  {adminActiveJobsStatus.error}
+                                </Text>
+                              ) : adminActiveJobs.length === 0 ? (
+                                <Text style={styles.formHint}>No active checked-in jobs.</Text>
+                              ) : (
+                                adminActiveJobs.map((job) => {
+                                  const loading =
+                                    adminLocationLookupStatus.loading &&
+                                    adminLocationLookupStatus.targetId === job.id;
+                                  return (
+                                    <View key={job.id} style={styles.adminMiniRow}>
+                                      <Text style={styles.adminMiniTitle}>
+                                        {job.businessName}
+                                      </Text>
+                                      <Text style={styles.adminMiniMeta}>
+                                        {`${job.offerTitle} • checked in ${formatHistoryTimestamp(job.checkedInAt)}`}
+                                      </Text>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.adminApprove,
+                                          loading && styles.primaryButtonDisabled,
+                                        ]}
+                                        disabled={loading}
+                                        onPress={() =>
+                                          requestAdminCustomerLocation(job)
+                                        }
+                                      >
+                                        <Text style={styles.adminActionText}>
+                                          {loading
+                                            ? "Requesting..."
+                                            : "Request current location"}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    </View>
+                                  );
+                                })
+                              )}
+                              {adminLocationLookupStatus.error ? (
+                                <Text style={styles.formError}>
+                                  {adminLocationLookupStatus.error}
+                                </Text>
+                              ) : adminLocationLookupStatus.success ? (
+                                <Text style={styles.formSuccess}>
+                                  {adminLocationLookupStatus.success}
+                                </Text>
+                              ) : null}
+                            </View>
+
+                            <View style={styles.adminCard}>
+                              <Text style={styles.adminTitle}>Promotions</Text>
+                              {adminOps.promoCodes.length === 0 ? (
+                                <Text style={styles.formHint}>No promo codes found.</Text>
+                              ) : (
+                                adminOps.promoCodes.slice(0, 12).map((promo) => (
+                                  <View key={promo.id} style={styles.adminMiniRow}>
+                                    <Text style={styles.adminMiniTitle}>{promo.code}</Text>
+                                    <Text style={styles.adminMiniMeta}>
+                                      {`${promo.active ? "active" : "inactive"} • ${
+                                        (Number(promo.cashback_rate_bps) || 0) / 100
+                                      }%`}
+                                    </Text>
+                                  </View>
+                                ))
+                              )}
+                            </View>
+
+                            <View style={styles.adminCard}>
+                              <Text style={styles.adminTitle}>Receipt reports</Text>
+                              {adminOps.receiptReports.length === 0 ? (
+                                <Text style={styles.formHint}>No receipt reports found.</Text>
+                              ) : (
+                                adminOps.receiptReports.slice(0, 12).map((report) => (
+                                  <View key={report.id} style={styles.adminMiniRow}>
+                                    <Text style={styles.adminMiniTitle}>
+                                      {report.reason || "Report"}
+                                    </Text>
+                                    <Text style={styles.adminMiniMeta}>
+                                      {`${report.status || "open"} • ${formatHistoryTimestamp(report.created_at)}`}
+                                    </Text>
+                                  </View>
+                                ))
+                              )}
+                            </View>
+
+                            <View style={styles.adminCard}>
+                              <Text style={styles.adminTitle}>Cashout payouts</Text>
+                              {adminOps.cashoutPayouts.length === 0 ? (
+                                <Text style={styles.formHint}>No cashout payouts found.</Text>
+                              ) : (
+                                adminOps.cashoutPayouts.slice(0, 12).map((payout) => (
+                                  <View key={payout.id} style={styles.adminMiniRow}>
+                                    <Text style={styles.adminMiniTitle}>
+                                      {formatCurrencyFromCents(payout.amount_cents)}
+                                    </Text>
+                                    <Text style={styles.adminMiniMeta}>
+                                      {`${payout.status || "pending"} • ${payout.provider || "provider"}`}
+                                    </Text>
+                                  </View>
+                                ))
+                              )}
+                            </View>
+
+                            <View style={styles.adminCard}>
+                              <Text style={styles.adminTitle}>Commission invoices</Text>
+                              {adminOps.commissionInvoices.length === 0 ? (
+                                <Text style={styles.formHint}>No commission invoices found.</Text>
+                              ) : (
+                                adminOps.commissionInvoices.slice(0, 12).map((invoice) => (
+                                  <View key={invoice.id} style={styles.adminMiniRow}>
+                                    <Text style={styles.adminMiniTitle}>
+                                      {formatCurrencyFromCents(invoice.total_cents)}
+                                    </Text>
+                                    <Text style={styles.adminMiniMeta}>
+                                      {`${invoice.status || "draft"} • ${formatHistoryTimestamp(invoice.created_at)}`}
+                                    </Text>
+                                  </View>
+                                ))
+                              )}
+                            </View>
+
+                            <View style={styles.adminCard}>
+                              <Text style={styles.adminTitle}>Audit events</Text>
+                              {adminOps.auditEvents.length === 0 ? (
+                                <Text style={styles.formHint}>No audit events found.</Text>
+                              ) : (
+                                adminOps.auditEvents.slice(0, 12).map((event) => (
+                                  <View key={event.id} style={styles.adminMiniRow}>
+                                    <Text style={styles.adminMiniTitle}>
+                                      {event.action || "admin_action"}
+                                    </Text>
+                                    <Text style={styles.adminMiniMeta}>
+                                      {`${event.entity || "entity"} • ${event.status || "success"}`}
+                                    </Text>
+                                  </View>
+                                ))
+                              )}
+                            </View>
                           </>
                         )}
 
@@ -39098,6 +41809,80 @@ const styles = StyleSheet.create({
   },
   map: {
     ...StyleSheet.absoluteFillObject,
+  },
+  gpsRequiredOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 35,
+    backgroundColor: "rgba(248, 250, 252, 0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 22,
+  },
+  gpsRequiredCard: {
+    width: "100%",
+    maxWidth: 360,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 18,
+    paddingVertical: 20,
+    alignItems: "center",
+    ...ELEVATION.soft,
+  },
+  gpsRequiredIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: COLORS.pine,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  gpsRequiredTitle: {
+    fontSize: 20,
+    color: COLORS.ink,
+    fontFamily: FONT_DISPLAY,
+    textAlign: "center",
+  },
+  gpsRequiredBody: {
+    marginTop: 8,
+    fontSize: 14,
+    lineHeight: 20,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+    textAlign: "center",
+  },
+  gpsRequiredActions: {
+    width: "100%",
+    marginTop: 16,
+    gap: 10,
+  },
+  gpsRequiredPrimary: {
+    minHeight: 46,
+    borderRadius: 14,
+    backgroundColor: COLORS.pine,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gpsRequiredPrimaryText: {
+    color: COLORS.white,
+    fontSize: 14,
+    fontFamily: FONT_SEMIBOLD,
+  },
+  gpsRequiredSecondary: {
+    minHeight: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.sand,
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gpsRequiredSecondaryText: {
+    color: COLORS.pine,
+    fontSize: 14,
+    fontFamily: FONT_SEMIBOLD,
   },
   mapShade: {
     ...StyleSheet.absoluteFillObject,
@@ -50441,6 +53226,38 @@ const styles = StyleSheet.create({
     fontFamily: FONT_TEXT,
     marginBottom: 10,
   },
+  adminMiniRow: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.sand,
+    paddingTop: 8,
+    marginTop: 8,
+  },
+  adminMiniTitle: {
+    fontSize: 13,
+    color: COLORS.ink,
+    fontFamily: FONT_MEDIUM,
+  },
+  adminMiniMeta: {
+    marginTop: 2,
+    fontSize: 12,
+    color: COLORS.muted,
+    fontFamily: FONT_TEXT,
+  },
+  adminLocationModalCard: {
+    width: "92%",
+    maxWidth: 440,
+    maxHeight: "82%",
+    borderRadius: 18,
+    backgroundColor: COLORS.white,
+    padding: 14,
+    ...ELEVATION.soft,
+  },
+  adminLocationMap: {
+    width: "100%",
+    height: 320,
+    borderRadius: 14,
+    marginBottom: 10,
+  },
   adminQuickMetaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -50459,6 +53276,16 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.muted,
     fontFamily: FONT_MEDIUM,
+  },
+  adminInlineFields: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  adminInlineInput: {
+    flex: 1,
+  },
+  adminGhostAction: {
+    opacity: 0.52,
   },
   adminDetails: {
     borderTopWidth: 1,

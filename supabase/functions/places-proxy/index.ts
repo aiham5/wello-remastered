@@ -60,6 +60,21 @@ const parseJsonSafe = (raw: string) => {
   }
 };
 
+const googleErrorDetails = (
+  parsed: Record<string, unknown>,
+  raw: string,
+) => {
+  const error = parsed?.error && typeof parsed.error === "object"
+    ? parsed.error as Record<string, unknown>
+    : null;
+  return {
+    googleErrorCode: error?.code ?? null,
+    googleErrorStatus: error?.status ?? null,
+    googleErrorMessage: error?.message ?? null,
+    upstreamBody: error ? undefined : raw.slice(0, 500),
+  };
+};
+
 const normalizeSessionToken = (value: unknown) => {
   const normalized = String(value || "")
     .trim()
@@ -226,6 +241,7 @@ const runNearestRoad = async (body: Record<string, unknown>) => {
     throw new HttpError("Unable to locate the nearest road right now.", 502, {
       reason: "google_nearest_road_failed",
       upstreamStatus: response.status || null,
+      ...googleErrorDetails(parsed, raw),
     });
   }
   return parsed;

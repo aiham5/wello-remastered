@@ -46,6 +46,7 @@ type EditBusinessScreenProps = {
   formMessage: { type?: string; text?: string } | null;
   handleSaveBusiness: () => void;
   closeEditBusinessPage: () => void;
+  adminMode?: boolean;
 };
 
 export default function EditBusinessScreen({
@@ -80,6 +81,7 @@ export default function EditBusinessScreen({
   formMessage,
   handleSaveBusiness,
   closeEditBusinessPage,
+  adminMode = false,
 }: EditBusinessScreenProps) {
   const insets = useSafeAreaInsets();
   const [specialtyMenuOpen, setSpecialtyMenuOpen] = useState(false);
@@ -474,6 +476,92 @@ export default function EditBusinessScreen({
                 keyboardType="phone-pad"
               />
             </View>
+
+            {adminMode ? (
+              <View style={styles.createBusinessSectionCard}>
+                <Text style={styles.createBusinessSectionTitle}>Admin controls</Text>
+                <View style={styles.formRow}>
+                  <View style={styles.formField}>
+                    <Text style={styles.formLabel}>Commission %</Text>
+                    <AutoFocusInput
+                      style={styles.formInput}
+                      placeholder="15"
+                      placeholderTextColor={colors.muted}
+                      value={String(formData.commissionPercent || "")}
+                      onChangeText={(value: string) =>
+                        handleFormChange("commissionPercent", value)
+                      }
+                      keyboardType="decimal-pad"
+                    />
+                  </View>
+                  <View style={styles.formField}>
+                    <Text style={styles.formLabel}>Cashback %</Text>
+                    <AutoFocusInput
+                      style={styles.formInput}
+                      placeholder="10"
+                      placeholderTextColor={colors.muted}
+                      value={String(formData.cashbackPercent || "")}
+                      onChangeText={(value: string) =>
+                        handleFormChange("cashbackPercent", value)
+                      }
+                      keyboardType="decimal-pad"
+                    />
+                  </View>
+                </View>
+                <Text style={styles.formLabel}>Approval status</Text>
+                <View style={styles.tagOptionRow}>
+                  {["pending", "approved", "rejected"].map((status) => {
+                    const active =
+                      String(formData.approvalStatus || "").toLowerCase() === status;
+                    return (
+                      <TouchableOpacity
+                        key={status}
+                        style={[
+                          styles.tagOptionPill,
+                          active && styles.tagOptionPillActive,
+                        ]}
+                        onPress={() => handleFormChange("approvalStatus", status)}
+                      >
+                        <Text
+                          style={[
+                            styles.tagOptionText,
+                            active && styles.tagOptionTextActive,
+                          ]}
+                        >
+                          {status}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <Text style={styles.formLabel}>Listing status</Text>
+                <View style={styles.tagOptionRow}>
+                  {["active", "inactive"].map((status) => {
+                    const active =
+                      String(formData.status || "active").toLowerCase() === status;
+                    return (
+                      <TouchableOpacity
+                        key={status}
+                        style={[
+                          styles.tagOptionPill,
+                          active && styles.tagOptionPillActive,
+                        ]}
+                        onPress={() => handleFormChange("status", status)}
+                      >
+                        <Text
+                          style={[
+                            styles.tagOptionText,
+                            active && styles.tagOptionTextActive,
+                          ]}
+                        >
+                          {status}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : null}
 
             <View style={styles.createBusinessSectionCard}>
               <Text style={styles.createBusinessSectionTitle}>Hours</Text>
