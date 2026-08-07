@@ -1,5 +1,4 @@
 import dotenv from "dotenv";
-import { existsSync } from "node:fs";
 
 dotenv.config();
 dotenv.config({ path: ".env.local", override: true });
@@ -13,7 +12,6 @@ const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 const APP_ICON_PATH = "./assets/logo/app-icon.png";
 const APP_LOGO_PATH = "./assets/logo/logo.png";
 const APP_NOTIFICATION_ICON_PATH = "./assets/logo/tinyico.png";
-const GOOGLE_SERVICES_PATH = "./google-services.json";
 const DEFAULT_BRAND_BACKGROUND = "#FFF03B";
 const DEFAULT_NOTIFICATION_COLOR = "#0B2147";
 const ANDROID_REQUIRED_PERMISSIONS = [
@@ -130,10 +128,8 @@ export default ({ config }) => ({
       foregroundImage: APP_LOGO_PATH,
       backgroundColor: DEFAULT_BRAND_BACKGROUND,
     },
-    // Local debug builds can run without Firebase; release Gradle builds still require this file.
-    googleServicesFile: existsSync(GOOGLE_SERVICES_PATH)
-      ? GOOGLE_SERVICES_PATH
-      : undefined,
+    // Required for Android push tokens in dev/prod builds. File is uploaded to EAS via `.easignore`.
+    googleServicesFile: "./google-services.json",
     config: {
       ...(config.android?.config ?? {}),
       googleMaps: {
