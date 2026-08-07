@@ -5751,6 +5751,11 @@ export default function App() {
     [discoverBusinessPanelGestureY],
   );
   const [receiptCountdownNow, setReceiptCountdownNow] = useState(Date.now());
+
+  useEffect(() => {
+    discoverOffersPullY.stopAnimation();
+    discoverOffersPullY.setValue(0);
+  }, [activeTab, discoverOffersSheet.visible, discoverOffersPullY]);
   const [ownerBusinessScreen, setOwnerBusinessScreen] = useState("dashboard");
   const [navRowWidth, setNavRowWidth] = useState(0);
   const activeTabRef = useRef("discover");
@@ -24200,8 +24205,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     transform: [
                       {
                         translateY: discoverOffersPullY.interpolate({
-                          inputRange: [-220, 0],
-                          outputRange: [-220, 0],
+                          inputRange: [-90, 0],
+                          outputRange: [-72, 0],
                           extrapolate: "clamp",
                         }),
                       },
@@ -24223,8 +24228,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   )}
                   onHandlerStateChange={(event) => {
                     if (event.nativeEvent.state === GestureState.END) {
-                      if (event.nativeEvent.translationY < -28) {
-                        discoverOffersPullY.setValue(0);
+                      const shouldOpen = event.nativeEvent.translationY < -38;
+                      discoverOffersPullY.stopAnimation();
+                      discoverOffersPullY.setValue(0);
+                      if (shouldOpen) {
                         setDiscoverOffersSheet({ visible: true, business: null });
                       } else {
                         Animated.spring(discoverOffersPullY, {
@@ -24239,12 +24246,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       event.nativeEvent.state === GestureState.CANCELLED ||
                       event.nativeEvent.state === GestureState.FAILED
                     ) {
-                      Animated.spring(discoverOffersPullY, {
-                        toValue: 0,
-                        useNativeDriver: true,
-                        speed: 22,
-                        bounciness: 0,
-                      }).start();
+                      discoverOffersPullY.stopAnimation();
+                      discoverOffersPullY.setValue(0);
                     }
                   }}
                 >
@@ -27967,10 +27970,22 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 <View>
                 <View style={styles.discoverOffersHandle} />
                 <View style={styles.discoverOffersHeader}>
-                  <Text style={styles.discoverOffersTitle}>Nearby</Text>
-                  <Text style={styles.discoverOffersNearbyCount}>
-                    {filteredOfferCards.length} nearby
-                  </Text>
+                  <View style={styles.discoverOffersHeaderCopy}>
+                    <Text style={styles.discoverOffersTitle}>Nearby</Text>
+                    <Text style={styles.discoverOffersNearbyCount}>
+                      {filteredOfferCards.length} nearby
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.discoverOffersCollapseButton}
+                    onPress={() =>
+                      setDiscoverOffersSheet({ visible: false, business: null })
+                    }
+                    accessibilityRole="button"
+                    accessibilityLabel="Collapse offers"
+                  >
+                    <Ionicons name="chevron-down" size={22} color="#334155" />
+                  </TouchableOpacity>
                 </View>
                 <View style={styles.discoverOffersCategoryRow}>
                   {DISCOVER_SHEET_CATEGORY_TABS.map((tab) => {
@@ -39695,6 +39710,16 @@ const styles = StyleSheet.create({
     marginTop: 9,
     flexDirection: "row",
     gap: 12,
+  },
+  discoverOffersCollapseButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
   },
   discoverOfferTrustItem: {
     flexDirection: "row",
