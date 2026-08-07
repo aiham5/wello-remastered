@@ -28125,7 +28125,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   </Text>
                   <Text style={styles.checkoutVerifyBody}>
                     {checkoutVerification.step === "choice"
-                      ? "Recommended for faster cashback: upload your receipt so we can verify your purchase sooner."
+                      ? "Upload your receipt directly from this screen for faster cashback verification."
                       : checkoutVerification.step === "receipt_uploading"
                         ? "Please wait while your receipt is uploaded securely."
                       : "Enter the exact amount paid and payment method. Inaccurate or unverifiable information may delay approval or make the purchase ineligible for cashback."}
@@ -28139,14 +28139,32 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                         </Text>
                       ) : null}
                       <TouchableOpacity
-                        style={styles.checkoutVerifyPrimary}
+                        style={[
+                          styles.checkoutVerifyPrimary,
+                          styles.checkoutVerifyRecommendedReceipt,
+                        ]}
                         onPress={() => {
                           const entry = checkoutVerification.entry;
                           setCheckoutVerification((prev) => ({ ...prev, error: null }));
                           void handleUploadReceipt(entry, "camera");
                         }}
+                        accessibilityRole="button"
+                        accessibilityLabel="Upload receipt, recommended"
                       >
-                        <Text style={styles.checkoutVerifyPrimaryText}>Yes, Take Receipt Photo</Text>
+                        <View style={styles.checkoutVerifyRecommendedHeader}>
+                          <Ionicons name="camera" size={20} color="#FFFFFF" />
+                          <Text style={styles.checkoutVerifyRecommendedTitle}>
+                            UPLOAD RECEIPT
+                          </Text>
+                          <View style={styles.checkoutVerifyRecommendedBadge}>
+                            <Text style={styles.checkoutVerifyRecommendedBadgeText}>
+                              RECOMMENDED
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={styles.checkoutVerifyRecommendedSubtext}>
+                          Open camera and take a photo now
+                        </Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={styles.checkoutVerifySecondary}
@@ -47740,6 +47758,49 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 15,
     fontFamily: FONT_DISPLAY,
+  },
+  checkoutVerifyRecommendedReceipt: {
+    minHeight: 72,
+    paddingVertical: 12,
+    paddingHorizontal: 13,
+    borderWidth: 2,
+    borderColor: "#86EFAC",
+    shadowColor: "#166534",
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 5,
+  },
+  checkoutVerifyRecommendedHeader: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+  checkoutVerifyRecommendedTitle: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    letterSpacing: 0.3,
+    fontFamily: FONT_DISPLAY,
+  },
+  checkoutVerifyRecommendedBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "#DCFCE7",
+  },
+  checkoutVerifyRecommendedBadgeText: {
+    color: "#14532D",
+    fontSize: 8,
+    letterSpacing: 0.45,
+    fontFamily: FONT_BOLD,
+  },
+  checkoutVerifyRecommendedSubtext: {
+    marginTop: 5,
+    color: "rgba(255,255,255,0.88)",
+    fontSize: 11,
+    fontFamily: FONT_MEDIUM,
   },
   checkoutVerifySecondary: {
     minHeight: 52,
