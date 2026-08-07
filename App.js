@@ -6288,6 +6288,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const [savedBusinessesHydrated, setSavedBusinessesHydrated] = useState(false);
   const [lockedWelloPlans, setLockedWelloPlans] = useState({});
   const [businessCheckInState, setBusinessCheckInState] = useState("idle");
+  const [businessCheckedInAt, setBusinessCheckedInAt] = useState(null);
   const [checkoutVerification, setCheckoutVerification] = useState({
     visible: false,
     step: "choice",
@@ -16518,6 +16519,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const openBusinessDetail = (business) => {
     if (!business) return;
     setBusinessCheckInState("idle");
+    setBusinessCheckedInAt(null);
     setBusinessDetail(business);
     setBusinessDetailOpen(true);
   };
@@ -16617,6 +16619,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       setDiscoverOffersSheet({ visible: true, business: null });
     }
     setBusinessCheckInState("idle");
+    setBusinessCheckedInAt(null);
     setBusinessDetailOpen(false);
     setBusinessDetail(null);
     setBusinessDetailStatus({ loading: false, error: null });
@@ -16930,6 +16933,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   };
 
   const beginPostCheckoutVerification = async () => {
+    if (!businessCheckedInAt || businessCheckInState !== "checkout_confirm") {
+      setBusinessCheckInState("idle");
+      setBusinessCheckedInAt(null);
+      showAppDialog({
+        title: "Check in first",
+        message: "Confirm your check-in before starting checkout verification.",
+        options: [{ label: "OK", variant: "primary" }],
+      });
+      return;
+    }
     if (!isSignedIn || !authUserId) {
       setSignInError("Sign in to check in and submit purchase verification.");
       setAuthView("signin");
@@ -16983,8 +16996,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         lastCheckedAt: Date.now(),
       },
     };
-    setRedemptionHistory((prev) => [entry, ...prev]);
     setBusinessCheckInState("idle");
+    setBusinessCheckedInAt(null);
     setCheckoutVerification({
       visible: true,
       step: "choice",
@@ -17059,13 +17072,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         reasonDetail: "Processing until approved by Wello.",
       },
     };
-    setRedemptionHistory((prev) =>
-      prev.map((item) =>
-        item.id === entry.id
-          ? { ...item, ...submittedEntry }
-          : item,
-      ),
-    );
+    setRedemptionHistory((prev) => {
+      const exists = prev.some((item) => String(item?.id) === String(entry.id));
+      if (!exists) return [submittedEntry, ...prev];
+      return prev.map((item) =>
+        item.id === entry.id ? { ...item, ...submittedEntry } : item,
+      );
+    });
     setCheckoutVerification((prev) => ({ ...prev, visible: false, submitting: false }));
     closeBusinessDetail();
     openSheet("history");
@@ -20857,13 +20870,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             rejectedAt: null,
           },
         };
-        setRedemptionHistory((prev) =>
-          prev.map((item) =>
+        setRedemptionHistory((prev) => {
+          const exists = prev.some(
+            (item) => String(item?.id) === String(entry.id),
+          );
+          if (!exists) return [submittedReceiptEntry, ...prev];
+          return prev.map((item) =>
             item.id === entry.id
               ? { ...item, ...submittedReceiptEntry }
               : item,
-          ),
-        );
+          );
+        });
         setReceiptUploadStatus({
           uploading: false,
           error: null,
@@ -25797,6 +25814,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                       void beginPostCheckoutVerification();
                                       return;
                                     }
+                                    setBusinessCheckedInAt(Date.now());
                                     setBusinessCheckInState("checked_in");
                                   }}
                                 >
@@ -25809,11 +25827,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 <TouchableOpacity
                                   style={styles.businessPageCheckInCancelButton}
                                   onPress={() =>
-                                    setBusinessCheckInState(
-                                      businessCheckInState === "checkout_confirm"
-                                        ? "checked_in"
-                                        : "idle",
-                                    )
+                                    {
+                                      const returningToCheckedIn =
+                                        businessCheckInState === "checkout_confirm";
+                                      setBusinessCheckInState(
+                                        returningToCheckedIn ? "checked_in" : "idle",
+                                      );
+                                      if (!returningToCheckedIn) {
+                                        setBusinessCheckedInAt(null);
+                                      }
+                                    }
                                   }
                                 >
                                   <Text style={styles.businessPageCheckInCancelText}>
@@ -28102,10 +28125,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                   </Text>
                   <Text style={styles.checkoutVerifyBody}>
                     {checkoutVerification.step === "choice"
-                      ? "A receipt helps us verify your cashback faster."
+                      ? "Recommended for faster cashback: upload your receipt so we can verify your purchase sooner."
                       : checkoutVerification.step === "receipt_uploading"
                         ? "Please wait while your receipt is uploaded securely."
-                      : "Enter the amount paid and how you paid."}
+                      : "Enter the exact amount paid and payment method. Inaccurate or unverifiable information may delay approval or make the purchase ineligible for cashback."}
                   </Text>
 
                   {checkoutVerification.step === "choice" ? (
