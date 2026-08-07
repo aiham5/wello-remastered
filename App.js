@@ -1473,6 +1473,8 @@ const mapSupabaseRedemption = (row) => ({
       id: String(submission.id),
       amountCents: Number(submission.amount_cents) || 0,
       paymentType: submission.payment_type || "other",
+      paymentMethodDetail:
+        String(submission.payment_method_detail || "").trim() || null,
       status: submission.status || "processing",
       createdAt: submission.created_at
         ? new Date(submission.created_at).getTime()
@@ -6295,6 +6297,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     entry: null,
     amount: "",
     paymentType: "card",
+    otherPaymentMethod: "",
     submitting: false,
     error: null,
   });
@@ -13299,7 +13302,11 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const historyGroups = useMemo(() => {
     const grouped = new Map();
     redemptionHistory.forEach((entry) => {
-      const businessName = entry.business?.name || "Wello business";
+      const linkedBusiness = businesses.find(
+        (business) => String(business?.id) === String(entry.businessId),
+      );
+      const businessName =
+        entry.business?.name || linkedBusiness?.name || "Wello business";
       const key = entry.businessId || businessName;
       if (!grouped.has(key)) {
         grouped.set(key, {
@@ -13351,6 +13358,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   }, [
     receiptCountdownNow,
     redemptionHistory,
+    businesses,
     reviewedBusinessIds,
     isReviewEligibleEntry,
   ]);
@@ -16943,6 +16951,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       });
       return;
     }
+    if (checkoutVerification.entry?.id) {
+      setBusinessCheckInState("checked_in");
+      setCheckoutVerification((prev) => ({
+        ...prev,
+        visible: true,
+        submitting: false,
+        error: null,
+      }));
+      return;
+    }
     if (!isSignedIn || !authUserId) {
       setSignInError("Sign in to check in and submit purchase verification.");
       setAuthView("signin");
@@ -16996,17 +17014,45 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         lastCheckedAt: Date.now(),
       },
     };
-    setBusinessCheckInState("idle");
-    setBusinessCheckedInAt(null);
+    setBusinessCheckInState("checked_in");
     setCheckoutVerification({
       visible: true,
       step: "choice",
       entry,
       amount: "",
       paymentType: "card",
+      otherPaymentMethod: "",
       submitting: false,
       error: null,
     });
+  };
+
+  const cancelCheckoutVerification = async () => {
+    const entryId = checkoutVerification.entry?.id;
+    Keyboard.dismiss();
+    setCheckoutVerification((prev) => ({
+      ...prev,
+      visible: false,
+      step: "choice",
+      entry: null,
+      amount: "",
+      paymentType: "card",
+      otherPaymentMethod: "",
+      submitting: false,
+      error: null,
+    }));
+    setBusinessCheckInState("idle");
+    setBusinessCheckedInAt(null);
+    if (entryId && authUserId && SUPABASE_URL && SUPABASE_ANON_KEY) {
+      await supabase
+        .from("redemptions")
+        .delete()
+        .eq("id", entryId)
+        .eq("scanned_by", authUserId);
+    }
+    setRedemptionHistory((prev) =>
+      prev.filter((item) => String(item?.id) !== String(entryId)),
+    );
   };
 
   const submitNoReceiptPurchase = async () => {
@@ -17019,11 +17065,24 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       }));
       return;
     }
+    const otherPaymentMethod = String(
+      checkoutVerification.otherPaymentMethod || "",
+    ).trim();
+    if (checkoutVerification.paymentType === "other" && !otherPaymentMethod) {
+      setCheckoutVerification((prev) => ({
+        ...prev,
+        error: "Describe how you paid.",
+      }));
+      return;
+    }
+    const submittedPaymentType = checkoutVerification.paymentType;
     setCheckoutVerification((prev) => ({ ...prev, submitting: true, error: null }));
     const manualPayload = {
       id: `manual-${entry.id}`,
       amount_cents: Math.round(amount * 100),
-      payment_type: checkoutVerification.paymentType,
+      payment_type: submittedPaymentType,
+      payment_method_detail:
+        submittedPaymentType === "other" ? otherPaymentMethod : null,
       status: "processing",
       created_at: new Date().toISOString(),
     };
@@ -17032,9 +17091,28 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       business_id: entry.businessId,
       user_id: authUserId,
       amount_cents: manualPayload.amount_cents,
-      payment_type: checkoutVerification.paymentType,
+      payment_type: submittedPaymentType,
+      payment_method_detail:
+        submittedPaymentType === "other" ? otherPaymentMethod : null,
       status: "processing",
     });
+    const paymentDetailColumnMissing =
+      error &&
+      (String(error.code || "") === "PGRST204" ||
+        String(error.message || "")
+          .toLowerCase()
+          .includes("payment_method_detail"));
+    if (paymentDetailColumnMissing) {
+      const retry = await supabase.from("manual_purchase_submissions").insert({
+        redemption_id: entry.id,
+        business_id: entry.businessId,
+        user_id: authUserId,
+        amount_cents: manualPayload.amount_cents,
+        payment_type: submittedPaymentType,
+        status: "processing",
+      });
+      error = retry.error;
+    }
     const tableMissing =
       error &&
       (String(error.code || "") === "PGRST205" ||
@@ -17048,6 +17126,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         .eq("id", entry.id)
         .eq("scanned_by", authUserId);
       error = fallback.error;
+    } else if (!error) {
+      await supabase
+        .from("redemptions")
+        .update({
+          qr_payload: `wello_manual_purchase:${JSON.stringify(manualPayload)}`,
+        })
+        .eq("id", entry.id)
+        .eq("scanned_by", authUserId);
     }
     if (error) {
       setCheckoutVerification((prev) => ({
@@ -17061,7 +17147,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       ...entry,
       manualPurchase: {
         amountCents: Math.round(amount * 100),
-        paymentType: checkoutVerification.paymentType,
+        paymentType: submittedPaymentType,
+        paymentMethodDetail:
+          submittedPaymentType === "other" ? otherPaymentMethod : null,
         status: "processing",
         createdAt: Date.now(),
       },
@@ -22340,7 +22428,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         "business:businesses (id, name, category_key, category_label, default_cashback_rate_bps)",
         "receipt_uploads (id, uploaded_at, storage_path, review_status, review_notes, retry_allowed, verification_source, verification_reference, cashback_events (amount_cents, status))",
         "purchase_verifications (id, source, status, reason_code, reason_detail, last_checked_at, confirmed_at, rejected_at)",
-        "manual_purchase_submissions (id, amount_cents, payment_type, status, created_at, reviewed_at, review_notes)",
+        "manual_purchase_submissions (id, amount_cents, payment_type, payment_method_detail, status, created_at, reviewed_at, review_notes)",
       ].join(",");
       const selectBasic = [
         "id",
@@ -23097,7 +23185,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             "created_at",
             "offer:offers (id, title, description, offer_type, image_url)",
             "receipt_uploads (id, uploaded_at, storage_path)",
-            "manual_purchase_submissions (id, amount_cents, payment_type, status, created_at, reviewed_at, review_notes)",
+            "manual_purchase_submissions (id, amount_cents, payment_type, payment_method_detail, status, created_at, reviewed_at, review_notes)",
           ].join(","),
         )
         .eq("business_id", businessId)
@@ -28123,12 +28211,20 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                         ? "Submitting receipt"
                       : "Purchase details"}
                   </Text>
-                  <Text style={styles.checkoutVerifyBody}>
+                  <Text
+                    style={[
+                      styles.checkoutVerifyBody,
+                      checkoutVerification.step === "choice" &&
+                        styles.checkoutVerifyBodyRecommended,
+                      checkoutVerification.step === "manual" &&
+                        styles.checkoutVerifyBodyManual,
+                    ]}
+                  >
                     {checkoutVerification.step === "choice"
-                      ? "Upload your receipt directly from this screen for faster cashback verification."
+                      ? "Upload a receipt for faster cashback verification."
                       : checkoutVerification.step === "receipt_uploading"
                         ? "Please wait while your receipt is uploaded securely."
-                      : "Enter the exact amount paid and payment method. Inaccurate or unverifiable information may delay approval or make the purchase ineligible for cashback."}
+                      : "Enter the exact amount paid and payment method. Inaccurate information will make your cashback ineligible."}
                   </Text>
 
                   {checkoutVerification.step === "choice" ? (
@@ -28162,9 +28258,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                             </Text>
                           </View>
                         </View>
-                        <Text style={styles.checkoutVerifyRecommendedSubtext}>
-                          Open camera and take a photo now
-                        </Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={styles.checkoutVerifySecondary}
@@ -28238,6 +28331,28 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                           );
                         })}
                       </View>
+                      {checkoutVerification.paymentType === "other" ? (
+                        <View style={styles.checkoutVerifyOtherPaymentWrap}>
+                          <Text style={styles.checkoutVerifyLabel}>
+                            How did you pay?
+                          </Text>
+                          <TextInput
+                            style={styles.checkoutVerifyOtherPaymentInput}
+                            value={checkoutVerification.otherPaymentMethod}
+                            onChangeText={(otherPaymentMethod) =>
+                              setCheckoutVerification((prev) => ({
+                                ...prev,
+                                otherPaymentMethod,
+                                error: null,
+                              }))
+                            }
+                            placeholder="Describe your payment method"
+                            placeholderTextColor="#94A3B8"
+                            maxLength={80}
+                            returnKeyType="done"
+                          />
+                        </View>
+                      ) : null}
                       {checkoutVerification.error ? (
                         <Text style={styles.checkoutVerifyError}>{checkoutVerification.error}</Text>
                       ) : null}
@@ -28269,6 +28384,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       </TouchableOpacity>
                     </View>
                   )}
+                  {checkoutVerification.step !== "receipt_uploading" ? (
+                    <TouchableOpacity
+                      style={styles.checkoutVerifyCancel}
+                      disabled={checkoutVerification.submitting}
+                      onPress={() => void cancelCheckoutVerification()}
+                    >
+                      <Text style={styles.checkoutVerifyCancelText}>
+                        Cancel Checkout
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
                 </Pressable>
                 </Pressable>
               </KeyboardAvoidingView>
@@ -47732,6 +47858,20 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontFamily: FONT_TEXT,
   },
+  checkoutVerifyBodyRecommended: {
+    marginTop: 12,
+    color: "#14532D",
+    fontSize: 18,
+    lineHeight: 24,
+    fontFamily: FONT_BOLD,
+  },
+  checkoutVerifyBodyManual: {
+    marginTop: 10,
+    color: "#334155",
+    fontSize: 16,
+    lineHeight: 23,
+    fontFamily: FONT_MEDIUM,
+  },
   checkoutVerifyReceiptProgress: {
     minHeight: 132,
     alignItems: "center",
@@ -47760,8 +47900,8 @@ const styles = StyleSheet.create({
     fontFamily: FONT_DISPLAY,
   },
   checkoutVerifyRecommendedReceipt: {
-    minHeight: 72,
-    paddingVertical: 12,
+    minHeight: 68,
+    paddingVertical: 14,
     paddingHorizontal: 13,
     borderWidth: 2,
     borderColor: "#86EFAC",
@@ -47780,19 +47920,19 @@ const styles = StyleSheet.create({
   },
   checkoutVerifyRecommendedTitle: {
     color: "#FFFFFF",
-    fontSize: 16,
+    fontSize: 18,
     letterSpacing: 0.3,
     fontFamily: FONT_DISPLAY,
   },
   checkoutVerifyRecommendedBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: "#DCFCE7",
   },
   checkoutVerifyRecommendedBadgeText: {
     color: "#14532D",
-    fontSize: 8,
+    fontSize: 10,
     letterSpacing: 0.45,
     fontFamily: FONT_BOLD,
   },
@@ -47818,7 +47958,7 @@ const styles = StyleSheet.create({
   checkoutVerifyLabel: {
     marginBottom: 7,
     color: "#334155",
-    fontSize: 13,
+    fontSize: 16,
     fontFamily: FONT_DISPLAY,
   },
   checkoutVerifyAmountRow: {
@@ -47850,11 +47990,15 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   checkoutVerifyPaymentChip: {
+    minHeight: 48,
+    minWidth: 74,
     borderWidth: 1,
     borderColor: "#CBD5E1",
     borderRadius: 999,
-    paddingHorizontal: 15,
-    paddingVertical: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: "#FFFFFF",
   },
   checkoutVerifyPaymentChipSelected: {
@@ -47863,7 +48007,7 @@ const styles = StyleSheet.create({
   },
   checkoutVerifyPaymentText: {
     color: "#475569",
-    fontSize: 13,
+    fontSize: 16,
     fontFamily: FONT_TEXT,
   },
   checkoutVerifyPaymentTextSelected: {
@@ -47879,13 +48023,45 @@ const styles = StyleSheet.create({
   },
   checkoutVerifyBack: {
     alignSelf: "center",
-    paddingHorizontal: 18,
-    paddingVertical: 13,
+    minWidth: 120,
+    minHeight: 48,
+    paddingHorizontal: 22,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
   },
   checkoutVerifyBackText: {
-    color: "#64748B",
-    fontSize: 14,
+    color: "#334155",
+    fontSize: 17,
     fontFamily: FONT_DISPLAY,
+  },
+  checkoutVerifyOtherPaymentWrap: {
+    marginTop: -5,
+    marginBottom: 18,
+  },
+  checkoutVerifyOtherPaymentInput: {
+    minHeight: 54,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 14,
+    paddingHorizontal: 15,
+    color: "#0F172A",
+    backgroundColor: "#FFFFFF",
+    fontSize: 16,
+    fontFamily: FONT_TEXT,
+  },
+  checkoutVerifyCancel: {
+    alignSelf: "center",
+    minHeight: 44,
+    marginTop: 2,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkoutVerifyCancelText: {
+    color: "#B42318",
+    fontSize: 15,
+    fontFamily: FONT_SEMIBOLD,
   },
   appDialogOverlay: {
     flex: 1,
