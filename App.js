@@ -1540,7 +1540,25 @@ const mapSupabaseRedemption = (row) => ({
     const receipt = Array.isArray(row.receipt_uploads)
       ? row.receipt_uploads[0]
       : row.receipt_uploads;
-    if (!receipt) return null;
+    if (!receipt) {
+      if (String(row?.qr_payload || "") !== "checkout_receipt_submitted") {
+        return null;
+      }
+      return {
+        id: `submitted-${row.id}`,
+        storagePath: "",
+        verificationSource: "receipt",
+        verificationReference: null,
+        reviewStatus: "pending",
+        retryAllowed: false,
+        reviewNotes: null,
+        uploadedAt: row.created_at
+          ? new Date(row.created_at).getTime()
+          : Date.now(),
+        cashbackCents: 0,
+        cashbackStatus: null,
+      };
+    }
     const cashbackEvent = (() => {
       const events = Array.isArray(receipt.cashback_events)
         ? receipt.cashback_events
@@ -3760,6 +3778,43 @@ const parseCashoutAmountToCents = (value) => {
   const cents = Number(digits);
   return Number.isFinite(cents) ? cents : null;
 };
+
+const BankTransferAmountInput = React.memo(function BankTransferAmountInput({
+  style,
+  resetKey,
+  onAmountChange,
+}) {
+  const [value, setValue] = useState("0.00");
+  const updateTimerRef = useRef(null);
+  useEffect(() => {
+    setValue("0.00");
+    onAmountChange("0.00");
+  }, [resetKey, onAmountChange]);
+  useEffect(
+    () => () => {
+      if (updateTimerRef.current) clearTimeout(updateTimerRef.current);
+    },
+    [],
+  );
+  return (
+    <TextInput
+      style={style}
+      value={value}
+      onChangeText={(nextValue) => {
+        const formatted = formatCashoutAmountInput(nextValue);
+        setValue(formatted);
+        if (updateTimerRef.current) clearTimeout(updateTimerRef.current);
+        updateTimerRef.current = setTimeout(() => onAmountChange(formatted), 100);
+      }}
+      onBlur={() => onAmountChange(value)}
+      placeholder="0.00"
+      placeholderTextColor={COLORS.muted}
+      keyboardType="decimal-pad"
+      returnKeyType="done"
+      selectTextOnFocus
+    />
+  );
+});
 
 const computeContainedSize = (
   viewportWidth,
@@ -6296,6 +6351,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const [lockedWelloPlans, setLockedWelloPlans] = useState({});
   const [businessCheckInState, setBusinessCheckInState] = useState("idle");
   const [businessCheckedInAt, setBusinessCheckedInAt] = useState(null);
+  const [activeBusinessCheckIn, setActiveBusinessCheckIn] = useState(null);
   const [checkoutVerification, setCheckoutVerification] = useState({
     visible: false,
     step: "choice",
@@ -6596,6 +6652,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   );
   const cashoutIdempotencyKeyRef = useRef(null);
   const [cashoutAmountText, setCashoutAmountText] = useState("0.00");
+  const [cashoutBankAmountResetKey, setCashoutBankAmountResetKey] = useState(0);
   const [cashoutGiftCardRecipientEmail, setCashoutGiftCardRecipientEmail] =
     useState("");
   const [cashoutHistoryExpanded, setCashoutHistoryExpanded] = useState(false);
@@ -6702,6 +6759,15 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const setCashoutAmountFromCents = useCallback((value) => {
     const next = Math.max(0, Math.round(Number(value) || 0));
     setCashoutAmountText((next / 100).toFixed(2));
+  }, []);
+  const handleBankTransferAmountChange = useCallback((value) => {
+    setCashoutAmountText(value);
+  }, []);
+  const closeBankTransferCashoutModal = useCallback(() => {
+    Keyboard.dismiss();
+    setCashoutBankModalVisible(false);
+    setCashoutAmountText("0.00");
+    setCashoutBankAmountResetKey((current) => current + 1);
   }, []);
   const stepCashoutAmountCents = useCallback(
     (deltaCents) => {
@@ -8873,6 +8939,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   const openBankTransferCashoutModal = useCallback(async () => {
     setCashoutGiftModalVisible(false);
     setCashoutMethodType("bank_transfer");
+    setCashoutAmountText("0.00");
+    setCashoutBankAmountResetKey((current) => current + 1);
     setCashoutBankModalVisible(true);
     if (!cashoutBankReady) {
       if (cashoutLinkedAccountCount > 0) {
@@ -16529,10 +16597,49 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     setReviewBusy(false);
   };
 
+  const activeCheckInStorageKey = `wello:active-checkin:${authUserId || "guest"}`;
+  const saveActiveBusinessCheckIn = useCallback(
+    (nextCheckIn) => {
+      setActiveBusinessCheckIn(nextCheckIn);
+      if (nextCheckIn) {
+        void AsyncStorage.setItem(
+          activeCheckInStorageKey,
+          JSON.stringify(nextCheckIn),
+        ).catch(() => null);
+      } else {
+        void AsyncStorage.removeItem(activeCheckInStorageKey).catch(() => null);
+      }
+    },
+    [activeCheckInStorageKey],
+  );
+
+  useEffect(() => {
+    let active = true;
+    AsyncStorage.getItem(activeCheckInStorageKey)
+      .then((raw) => {
+        if (!active) return;
+        const parsed = raw ? JSON.parse(raw) : null;
+        setActiveBusinessCheckIn(
+          parsed?.businessId && Number(parsed?.checkedInAt) > 0 ? parsed : null,
+        );
+      })
+      .catch(() => {
+        if (active) setActiveBusinessCheckIn(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeCheckInStorageKey]);
+
   const openBusinessDetail = (business) => {
     if (!business) return;
-    setBusinessCheckInState("idle");
-    setBusinessCheckedInAt(null);
+    const storedForBusiness =
+      activeBusinessCheckIn &&
+      String(activeBusinessCheckIn.businessId) === String(business.id);
+    setBusinessCheckInState(storedForBusiness ? "checked_in" : "idle");
+    setBusinessCheckedInAt(
+      storedForBusiness ? Number(activeBusinessCheckIn.checkedInAt) : null,
+    );
     setBusinessDetail(business);
     setBusinessDetailOpen(true);
   };
@@ -16631,8 +16738,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     if (shouldRestoreOffersSheet) {
       setDiscoverOffersSheet({ visible: true, business: null });
     }
-    setBusinessCheckInState("idle");
-    setBusinessCheckedInAt(null);
     setBusinessDetailOpen(false);
     setBusinessDetail(null);
     setBusinessDetailStatus({ loading: false, error: null });
@@ -16647,6 +16752,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       });
     }
   };
+
+  useEffect(() => {
+    if (!businessDetailOpen || !businessDetail?.id || !activeBusinessCheckIn) return;
+    if (String(activeBusinessCheckIn.businessId) !== String(businessDetail.id)) return;
+    setBusinessCheckedInAt(Number(activeBusinessCheckIn.checkedInAt));
+    setBusinessCheckInState("checked_in");
+  }, [activeBusinessCheckIn, businessDetail?.id, businessDetailOpen]);
 
   const handleSubmitReview = async () => {
     if (!reviewTarget?.entry) return;
@@ -16961,6 +17073,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       setCheckoutVerification((prev) => ({
         ...prev,
         visible: true,
+        step: "choice",
         submitting: false,
         error: null,
       }));
@@ -16982,7 +17095,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       .insert({
         business_id: business.id,
         offer_id: selectedBusinessDetailCard?.offerId || null,
-        qr_payload: "checkout",
+        qr_payload: "checkout_draft",
         scanned_by: authUserId,
       })
       .select("id, business_id, offer_id, created_at")
@@ -17048,6 +17161,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     }));
     setBusinessCheckInState("idle");
     setBusinessCheckedInAt(null);
+    saveActiveBusinessCheckIn(null);
     if (entryId && authUserId && SUPABASE_URL && SUPABASE_ANON_KEY) {
       await supabase
         .from("redemptions")
@@ -17172,7 +17286,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         item.id === entry.id ? { ...item, ...submittedEntry } : item,
       );
     });
-    setCheckoutVerification((prev) => ({ ...prev, visible: false, submitting: false }));
+    setCheckoutVerification({
+      visible: false,
+      step: "choice",
+      entry: null,
+      amount: "",
+      paymentType: "card",
+      otherPaymentMethod: "",
+      submitting: false,
+      error: null,
+    });
+    saveActiveBusinessCheckIn(null);
     closeBusinessDetail();
     openSheet("history");
     if (!reviewedBusinessIds.has(String(entry.businessId || ""))) {
@@ -20642,6 +20766,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
 
   const handleUploadReceipt = async (entry, source = "library") => {
     if (!entry?.id || !entry.businessId) return;
+    let checkoutReceiptSubmitted = false;
     logReceiptUploadDebug("start", {
       source,
       entryId: entry?.id || null,
@@ -20963,6 +21088,14 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             rejectedAt: null,
           },
         };
+        if (entry?.purchaseVerification?.source === "checkout") {
+          await supabase
+            .from("redemptions")
+            .update({ qr_payload: "checkout_receipt_submitted" })
+            .eq("id", entry.id)
+            .eq("scanned_by", authUserId);
+          checkoutReceiptSubmitted = true;
+        }
         setRedemptionHistory((prev) => {
           const exists = prev.some(
             (item) => String(item?.id) === String(entry.id),
@@ -20987,12 +21120,17 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           { autoHideMs: 1600 },
         );
         if (entry?.purchaseVerification?.source === "checkout") {
-          setCheckoutVerification((prev) => ({
-            ...prev,
+          setCheckoutVerification({
             visible: false,
+            step: "choice",
+            entry: null,
+            amount: "",
+            paymentType: "card",
+            otherPaymentMethod: "",
             submitting: false,
             error: null,
-          }));
+          });
+          saveActiveBusinessCheckIn(null);
           closeBusinessDetail();
           setDiscoverOffersSheet({ visible: false, business: null });
           openSheet("history");
@@ -21011,6 +21149,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         if (pickerPendingTimer) {
           clearTimeout(pickerPendingTimer);
         }
+        if (
+          entry?.purchaseVerification?.source === "checkout" &&
+          !checkoutReceiptSubmitted
+        ) {
+          setCheckoutVerification((prev) => ({
+            ...prev,
+            step: "choice",
+            submitting: false,
+          }));
+        }
       }
     } catch (error) {
       logReceiptUploadDebug("exception", {
@@ -21027,6 +21175,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         error?.message || "Unable to upload receipt. Please try again.",
         { autoHideMs: 2200 },
       );
+      if (entry?.purchaseVerification?.source === "checkout") {
+        setCheckoutVerification((prev) => ({
+          ...prev,
+          step: "choice",
+          submitting: false,
+        }));
+      }
     }
   };
 
@@ -22523,7 +22678,25 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           recentlyUnredeemedRef.current.delete(id);
         }
       }
-      const mappedRows = (data || [])
+      const submittedRows = (data || []).filter((row) => {
+        const payload = String(row?.qr_payload || "");
+        const receipts = Array.isArray(row?.receipt_uploads)
+          ? row.receipt_uploads
+          : row?.receipt_uploads
+            ? [row.receipt_uploads]
+            : [];
+        const manualSubmissions = Array.isArray(row?.manual_purchase_submissions)
+          ? row.manual_purchase_submissions
+          : row?.manual_purchase_submissions
+            ? [row.manual_purchase_submissions]
+            : [];
+        if (payload === "checkout_draft") return false;
+        if (payload === "checkout" && !receipts.length && !manualSubmissions.length) {
+          return false;
+        }
+        return true;
+      });
+      const mappedRows = submittedRows
         .map(mapSupabaseRedemption)
         .filter(
           (row) =>
@@ -22531,15 +22704,31 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             (Number(row?.createdAt) || 0) >= HISTORY_DISPLAY_RESET_AT,
         );
       setRedemptionHistory((prev) => {
+        const previousById = new Map(
+          (Array.isArray(prev) ? prev : []).map((entry) => [
+            String(entry?.id || ""),
+            entry,
+          ]),
+        );
+        const hydratedRows = mappedRows.map((row) => {
+          const previous = previousById.get(String(row?.id || ""));
+          if (!previous) return row;
+          return {
+            ...row,
+            receipt: row.receipt || previous.receipt || null,
+            manualPurchase:
+              row.manualPurchase || previous.manualPurchase || null,
+          };
+        });
         const optimisticRows = (Array.isArray(prev) ? prev : []).filter(
           (entry) =>
             entry?.optimistic === true &&
-            !mappedRows.some(
+            !hydratedRows.some(
               (row) => String(row?.id || "") === String(entry?.id || ""),
             ) &&
             now - (Number(entry?.createdAt) || 0) < 10 * 60 * 1000,
         );
-        return [...optimisticRows, ...mappedRows].sort(
+        return [...optimisticRows, ...hydratedRows].sort(
           (a, b) => (Number(b?.createdAt) || 0) - (Number(a?.createdAt) || 0),
         );
       });
@@ -25905,8 +26094,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                       void beginPostCheckoutVerification();
                                       return;
                                     }
-                                    setBusinessCheckedInAt(Date.now());
+                                    const checkedInAt = Date.now();
+                                    setBusinessCheckedInAt(checkedInAt);
                                     setBusinessCheckInState("checked_in");
+                                    saveActiveBusinessCheckIn({
+                                      businessId: businessDetail?.id,
+                                      checkedInAt,
+                                    });
                                   }}
                                 >
                                   <Text style={styles.businessPageCheckInButtonText}>
@@ -25954,6 +26148,16 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                 </Text>
                               </TouchableOpacity>
                             )}
+                            {businessCheckInState === "checked_in" ? (
+                              <TouchableOpacity
+                                style={styles.businessPageCheckInCancelButton}
+                                onPress={() => void cancelCheckoutVerification()}
+                              >
+                                <Text style={styles.businessPageCheckInCancelText}>
+                                  Cancel Check In
+                                </Text>
+                              </TouchableOpacity>
+                            ) : null}
                           </View>
 
                           {false ? <>
@@ -29339,12 +29543,12 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
               animationType="fade"
               presentationStyle="overFullScreen"
               statusBarTranslucent
-              onRequestClose={() => setCashoutBankModalVisible(false)}
+              onRequestClose={closeBankTransferCashoutModal}
             >
               <View style={[styles.cashoutSheetOverlay, styles.cashoutBankSheetOverlay]}>
                 <Pressable
                   style={styles.cashoutSheetBackdrop}
-                  onPress={() => setCashoutBankModalVisible(false)}
+                  onPress={closeBankTransferCashoutModal}
                 />
                 <KeyboardAvoidingView
                   behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -29357,7 +29561,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                       </View>
                       <TouchableOpacity
                         style={styles.cashoutSheetCloseButton}
-                        onPress={() => setCashoutBankModalVisible(false)}
+                        onPress={closeBankTransferCashoutModal}
                       >
                         <Ionicons name="close" size={18} color={COLORS.ink} />
                       </TouchableOpacity>
@@ -29368,17 +29572,10 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                     <View style={[styles.cashoutSheetAmountBox, styles.cashoutBankAmountBox]}>
                       <View style={styles.cashoutSheetCurrencyInputRow}>
                         <Text style={styles.cashoutSheetCurrencyPrefix}>$</Text>
-                        <AutoFocusInput
+                        <BankTransferAmountInput
                           style={styles.cashoutSheetCurrencyInput}
-                          value={cashoutAmountText}
-                          onChangeText={(value) =>
-                            setCashoutAmountText(formatCashoutAmountInput(value))
-                          }
-                          placeholder="0.00"
-                          placeholderTextColor={COLORS.muted}
-                          keyboardType="decimal-pad"
-                          returnKeyType="done"
-                          selectTextOnFocus
+                          resetKey={cashoutBankAmountResetKey}
+                          onAmountChange={handleBankTransferAmountChange}
                         />
                       </View>
                     </View>
@@ -33078,7 +33275,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                       if (receiptReviewStatus === "pending") {
                                         return {
                                           icon: "time-outline",
-                                          text: "Review in progress",
+                                          text: "Processing",
                                           tone: "pending",
                                         };
                                       }
