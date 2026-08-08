@@ -41,8 +41,14 @@ import {
   PinchGestureHandler,
   State as GestureState,
 } from "react-native-gesture-handler";
+import BottomSheet, {
+  BottomSheetScrollView,
+  BottomSheetView,
+  useBottomSheetSpringConfigs,
+} from "@gorhom/bottom-sheet";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Reanimated, {
+  cancelAnimation,
   configureReanimatedLogger,
   Easing as ReanimatedEasing,
   Extrapolation,
@@ -270,6 +276,14 @@ const logReceiptUploadDebug = (event, payload) => {
 };
 const SHEET_MIN = IS_SHORT ? 140 : 160;
 const SHEET_MAX = Math.min(SCREEN_HEIGHT * 0.72, IS_SHORT ? 560 : 620);
+const DISCOVER_SHEET_SPRING_CONFIG = {
+  damping: 34,
+  stiffness: 280,
+  mass: 0.9,
+  overshootClamping: false,
+  restDisplacementThreshold: 0.5,
+  restSpeedThreshold: 0.5,
+};
 const SAFE_TOP =
   Platform.OS === "android"
     ? (StatusBar.currentHeight || 0) + (IS_COMPACT ? 8 : 12)
@@ -5742,6 +5756,8 @@ export default function App() {
   const businessDetailReturnSheetIndexRef = useRef(0);
   const businessDetailOpenedFromOffersRef = useRef(false);
   const sheetDragStartYRef = useRef(0);
+  const sheetGestureActiveRef = useRef(false);
+  const pendingSheetSnapIndexRef = useRef(null);
   const pendingMapCollapseClearRef = useRef(false);
   const discoverScrollDebugRef = useRef({
     sessionId: `${Date.now().toString(36)}-${Math.random()
@@ -5778,11 +5794,25 @@ export default function App() {
   const [discoverSheetExpanded, setDiscoverSheetExpanded] = useState(false);
   const [discoverSearchOpen, setDiscoverSearchOpen] = useState(false);
   const [discoverBusinessListOpen, setDiscoverBusinessListOpen] = useState(false);
-  const [discoverOffersSheet, setDiscoverOffersSheet] = useState({
-    visible: false,
-    business: null,
+  const discoverOffersBottomSheetRef = useRef(null);
+  const [discoverOffersSheetIndex, setDiscoverOffersSheetIndex] = useState(0);
+  const [discoverOffersSheetBusiness, setDiscoverOffersSheetBusiness] =
+    useState(null);
+  const discoverOffersBottomSheetSnapPoints = useMemo(
+    () => [
+      DISCOVER_RAIL_CARD_HEIGHT + SAFE_BOTTOM + 135,
+      Math.round(SCREEN_HEIGHT * 0.68),
+    ],
+    [],
+  );
+  const discoverOffersSheetAnimationConfigs = useBottomSheetSpringConfigs({
+    damping: 34,
+    stiffness: 280,
+    mass: 0.9,
+    overshootClamping: false,
+    restDisplacementThreshold: 0.5,
+    restSpeedThreshold: 0.5,
   });
-  const discoverOffersPullY = useRef(new Animated.Value(0)).current;
   const discoverBusinessPanelBaseY = useRef(new Animated.Value(0)).current;
   const discoverBusinessPanelGestureY = useRef(new Animated.Value(0)).current;
   const discoverBusinessPanelTranslateY = useMemo(
@@ -5797,20 +5827,38 @@ export default function App() {
       }),
     [discoverBusinessPanelBaseY, discoverBusinessPanelGestureY],
   );
-  const handleDiscoverBusinessPanelGesture = useMemo(
-    () =>
-      Animated.event(
-        [{ nativeEvent: { translationY: discoverBusinessPanelGestureY } }],
-        { useNativeDriver: true },
-      ),
+  const handleDiscoverBusinessPanelGesture = useCallback(
+    (event) => {
+      discoverBusinessPanelGestureY.setValue(
+        Number(event?.nativeEvent?.translationY) || 0,
+      );
+    },
     [discoverBusinessPanelGestureY],
   );
+  const animateDiscoverOffersSheetOpen = useCallback(() => {
+    setDiscoverOffersSheetBusiness(null);
+    discoverOffersBottomSheetRef.current?.snapToIndex(
+      1,
+      discoverOffersSheetAnimationConfigs,
+    );
+  }, [discoverOffersSheetAnimationConfigs]);
+  const animateDiscoverOffersSheetClosed = useCallback(() => {
+    discoverOffersBottomSheetRef.current?.snapToIndex(
+      0,
+      discoverOffersSheetAnimationConfigs,
+    );
+  }, [discoverOffersSheetAnimationConfigs]);
+  const handleDiscoverOffersSheetChange = useCallback((index) => {
+    setDiscoverOffersSheetIndex(index);
+  }, []);
   const [receiptCountdownNow, setReceiptCountdownNow] = useState(Date.now());
 
   useEffect(() => {
-    discoverOffersPullY.stopAnimation();
-    discoverOffersPullY.setValue(0);
-  }, [activeTab, discoverOffersSheet.visible, discoverOffersPullY]);
+    discoverOffersBottomSheetRef.current?.snapToIndex(
+      0,
+      discoverOffersSheetAnimationConfigs,
+    );
+  }, [activeTab, discoverOffersSheetAnimationConfigs]);
   const [ownerBusinessScreen, setOwnerBusinessScreen] = useState("dashboard");
   const [navRowWidth, setNavRowWidth] = useState(0);
   const activeTabRef = useRef("discover");
@@ -7682,35 +7730,23 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
   );
   const animateSheetToIndex = useCallback(
     (nextIndex, options = {}) => {
-      const { gestureDriven = false } = options;
+      const { gestureDriven = false, velocityY = 0 } = options;
       const normalizedIndex = Math.max(0, Math.min(2, Number(nextIndex) || 0));
+      if (sheetGestureActiveRef.current && !gestureDriven) {
+        pendingSheetSnapIndexRef.current = normalizedIndex;
+        return;
+      }
       const fromIndex = sheetIndexRef.current;
       const nextTranslateY =
         discoverSheetMetrics.translateForIndex[normalizedIndex];
       handleSheetAnimate(fromIndex, normalizedIndex);
       sheetIndexRef.current = normalizedIndex;
       setDiscoverSheetExpanded(normalizedIndex > 0);
-      if (gestureDriven) {
-        sheetTranslateY.value = withSpring(
-          nextTranslateY,
-          {
-            damping: 32,
-            stiffness: 280,
-            mass: 0.8,
-          },
-          (finished) => {
-            if (finished) {
-              runOnJS(applySheetIndexChange)(normalizedIndex);
-            }
-          },
-        );
-        return;
-      }
-      sheetTranslateY.value = withTiming(
+      sheetTranslateY.value = withSpring(
         nextTranslateY,
         {
-          duration: 300,
-          easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
+          ...DISCOVER_SHEET_SPRING_CONFIG,
+          velocity: Number(velocityY) || 0,
         },
         (finished) => {
           if (finished) {
@@ -7745,6 +7781,9 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       const nativeEvent = event?.nativeEvent;
       if (!nativeEvent) return;
       if (nativeEvent.oldState === GestureState.ACTIVE) {
+        const deferredSnapIndex = pendingSheetSnapIndexRef.current;
+        sheetGestureActiveRef.current = false;
+        pendingSheetSnapIndexRef.current = null;
         const offsets = discoverSheetMetrics.translateForIndex;
         const current = sheetTranslateY.value;
         let nextIndex = 0;
@@ -7761,11 +7800,32 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
         } else if ((nativeEvent.velocityY || 0) > 500 && nextIndex > 0) {
           nextIndex -= 1;
         }
-        animateSheetToIndex(nextIndex, { gestureDriven: true });
+        animateSheetToIndex(
+          deferredSnapIndex == null ? nextIndex : deferredSnapIndex,
+          {
+            gestureDriven: true,
+            velocityY: Number(nativeEvent.velocityY) || 0,
+          },
+        );
         return;
       }
       if (nativeEvent.state === GestureState.BEGAN) {
+        sheetGestureActiveRef.current = true;
+        pendingSheetSnapIndexRef.current = null;
+        cancelAnimation(sheetTranslateY);
         sheetDragStartYRef.current = sheetTranslateY.value;
+        return;
+      }
+      if (
+        nativeEvent.state === GestureState.CANCELLED ||
+        nativeEvent.state === GestureState.FAILED
+      ) {
+        const deferredSnapIndex = pendingSheetSnapIndexRef.current;
+        sheetGestureActiveRef.current = false;
+        pendingSheetSnapIndexRef.current = null;
+        if (deferredSnapIndex != null) {
+          animateSheetToIndex(deferredSnapIndex);
+        }
       }
     },
     [animateSheetToIndex, discoverSheetMetrics.translateForIndex, sheetTranslateY],
@@ -7780,11 +7840,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       bottomSheetRef.current = null;
     };
   }, [animateSheetToIndex]);
-  useEffect(() => {
-    sheetTranslateY.value = discoverSheetMetrics.translateForIndex[
-      sheetIndexRef.current
-    ];
-  }, [discoverSheetMetrics.translateForIndex, sheetTranslateY]);
   useEffect(() => {
     const savedIndex = pendingTabSwitchSheetIndexRef.current;
     pendingTabSwitchSheetIndexRef.current = null;
@@ -14626,6 +14681,13 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
       setNotificationPermissionStatus("unsupported");
       return;
     }
+    if (Platform.OS === "android" && Constants.appOwnership === "expo") {
+      setNotificationPermissionStatus("unsupported");
+      setTokenError(
+        "Android push notifications require a development build; Expo Go no longer supports remote notifications.",
+      );
+      return;
+    }
     try {
       setTokenError(null);
       if (Platform.OS === "android") {
@@ -16736,7 +16798,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     const shouldRestoreOffersSheet = businessDetailOpenedFromOffersRef.current;
     businessDetailOpenedFromOffersRef.current = false;
     if (shouldRestoreOffersSheet) {
-      setDiscoverOffersSheet({ visible: true, business: null });
+      animateDiscoverOffersSheetOpen();
     }
     setBusinessDetailOpen(false);
     setBusinessDetail(null);
@@ -19261,21 +19323,19 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     return { maxX, maxY };
   }, []);
 
-  const onOfferCropPinchEvent = Animated.event(
-    [{ nativeEvent: { scale: offerCropPinchScale } }],
-    { useNativeDriver: true },
+  const onOfferCropPinchEvent = useCallback(
+    (event) => {
+      offerCropPinchScale.setValue(Number(event?.nativeEvent?.scale) || 1);
+    },
+    [offerCropPinchScale],
   );
 
-  const onOfferCropPanEvent = Animated.event(
-    [
-      {
-        nativeEvent: {
-          translationX: offerCropPanX,
-          translationY: offerCropPanY,
-        },
-      },
-    ],
-    { useNativeDriver: true },
+  const onOfferCropPanEvent = useCallback(
+    (event) => {
+      offerCropPanX.setValue(Number(event?.nativeEvent?.translationX) || 0);
+      offerCropPanY.setValue(Number(event?.nativeEvent?.translationY) || 0);
+    },
+    [offerCropPanX, offerCropPanY],
   );
 
   const onOfferCropPinchStateChange = useCallback(
@@ -21132,7 +21192,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
           });
           saveActiveBusinessCheckIn(null);
           closeBusinessDetail();
-          setDiscoverOffersSheet({ visible: false, business: null });
+          animateDiscoverOffersSheetClosed();
           openSheet("history");
           if (!reviewedBusinessIds.has(String(entry.businessId || ""))) {
             setTimeout(() => {
@@ -21715,21 +21775,19 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
     }, 180);
   };
 
-  const onReceiptPinchEvent = Animated.event(
-    [{ nativeEvent: { scale: receiptPinchScale } }],
-    { useNativeDriver: true },
+  const onReceiptPinchEvent = useCallback(
+    (event) => {
+      receiptPinchScale.setValue(Number(event?.nativeEvent?.scale) || 1);
+    },
+    [receiptPinchScale],
   );
 
-  const onReceiptPanEvent = Animated.event(
-    [
-      {
-        nativeEvent: {
-          translationX: receiptPanX,
-          translationY: receiptPanY,
-        },
-      },
-    ],
-    { useNativeDriver: true },
+  const onReceiptPanEvent = useCallback(
+    (event) => {
+      receiptPanX.setValue(Number(event?.nativeEvent?.translationX) || 0);
+      receiptPanY.setValue(Number(event?.nativeEvent?.translationY) || 0);
+    },
+    [receiptPanX, receiptPanY],
   );
 
   const resetReceiptZoom = useCallback(() => {
@@ -24386,110 +24444,289 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             !discoverSearchOpen &&
             !fullScreenOverlayOpen &&
             discoverSheetOfferCards.length > 0 ? (
-              <Animated.View
-                style={[
-                  styles.discoverBottomBusinessCarousel,
-                  { bottom: 0 },
-                  {
-                    transform: [
-                      {
-                        translateY: discoverOffersPullY.interpolate({
-                          inputRange: [-90, 0],
-                          outputRange: [-72, 0],
-                          extrapolate: "clamp",
-                        }),
-                      },
-                    ],
-                  },
-                ]}
-              >
-                {SheetPeekRow({
-                  offers: discoverSheetOfferCards,
-                  onCardPress: handleCardPress,
-                  interactive: true,
-                })}
-                <PanGestureHandler
-                  activeOffsetY={[-8, 8]}
-                  failOffsetX={[-18, 18]}
-                  onGestureEvent={Animated.event(
-                    [{ nativeEvent: { translationY: discoverOffersPullY } }],
-                    { useNativeDriver: true },
-                  )}
-                  onHandlerStateChange={(event) => {
-                    if (event.nativeEvent.state === GestureState.END) {
-                      const shouldOpen = event.nativeEvent.translationY < -38;
-                      discoverOffersPullY.stopAnimation();
-                      discoverOffersPullY.setValue(0);
-                      if (shouldOpen) {
-                        setDiscoverOffersSheet({ visible: true, business: null });
-                      } else {
-                        Animated.spring(discoverOffersPullY, {
-                          toValue: 0,
-                          useNativeDriver: true,
-                          speed: 22,
-                          bounciness: 0,
-                        }).start();
-                      }
-                    }
-                    if (
-                      event.nativeEvent.state === GestureState.CANCELLED ||
-                      event.nativeEvent.state === GestureState.FAILED
-                    ) {
-                      discoverOffersPullY.stopAnimation();
-                      discoverOffersPullY.setValue(0);
-                    }
-                  }}
-                >
-                  <View style={styles.discoverAllOffersPullTab}>
-                    <View style={styles.discoverAllOffersDragHandle} />
-                    <Text style={styles.discoverCollapsedSwipeCue}>
-                      Swipe up to see offers
-                    </Text>
-                    <View style={styles.discoverCollapsedOffersHeader}>
-                      <Text style={styles.discoverCollapsedOffersTitle}>Nearby</Text>
-                      <Text style={styles.discoverCollapsedOffersCount}>
-                        {filteredOfferCards.length} nearby
-                      </Text>
-                    </View>
-                    <View style={styles.discoverCollapsedCategoryRow}>
-                      {DISCOVER_SHEET_CATEGORY_TABS.map((tab) => {
-                        const selected = discoverCategoryTab === tab.key;
-                        const tabColor =
-                          tab.key === "auto"
-                            ? "#1E3A8A"
-                            : tab.key === "trades"
-                              ? "#7C3AED"
-                              : "#111827";
-                        const tabIcon =
-                          tab.key === "auto"
-                            ? "car-sport"
-                            : tab.key === "trades"
-                              ? "home"
-                              : "grid";
-                        return (
-                          <TouchableOpacity
-                            key={`collapsed-${tab.key}`}
-                            style={[
-                              styles.discoverCollapsedCategoryButton,
-                              selected && {
-                                borderColor: tabColor,
-                                borderWidth: 2,
-                              },
-                            ]}
-                            onPress={() => setDiscoverCategoryTab(tab.key)}
-                            activeOpacity={0.85}
-                          >
-                            <Ionicons name={tabIcon} size={20} color={tabColor} />
-                            <Text style={styles.discoverCollapsedCategoryText} numberOfLines={1}>
-                              {tab.label}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
+              <View style={styles.discoverOffersLayer} pointerEvents="box-none">
+                {discoverOffersSheetIndex > 0 ? (
+                  <View style={styles.discoverOffersBackdrop}>
+                    <Pressable
+                      style={StyleSheet.absoluteFillObject}
+                      onPress={animateDiscoverOffersSheetClosed}
+                    />
                   </View>
-                </PanGestureHandler>
-              </Animated.View>
+                ) : null}
+                <BottomSheet
+                  ref={discoverOffersBottomSheetRef}
+                  index={0}
+                  snapPoints={discoverOffersBottomSheetSnapPoints}
+                  onChange={handleDiscoverOffersSheetChange}
+                  animationConfigs={discoverOffersSheetAnimationConfigs}
+                  animateOnMount={false}
+                  enableDynamicSizing={false}
+                  enableContentPanningGesture
+                  enablePanDownToClose={false}
+                  handleComponent={null}
+                  backgroundStyle={styles.discoverOffersBottomSheetBackground}
+                  style={styles.discoverBottomBusinessCarousel}
+                >
+                  {discoverOffersSheetIndex === 0 ? (
+                    <BottomSheetView>
+                      {SheetPeekRow({
+                        offers: discoverSheetOfferCards,
+                        onCardPress: handleCardPress,
+                        interactive: true,
+                      })}
+                      <View style={styles.discoverAllOffersPullTab}>
+                        <View style={styles.discoverAllOffersDragHandle} />
+                        <Text style={styles.discoverCollapsedSwipeCue}>
+                          Swipe up to see offers
+                        </Text>
+                        <View style={styles.discoverCollapsedOffersHeader}>
+                          <Text style={styles.discoverCollapsedOffersTitle}>Nearby</Text>
+                          <Text style={styles.discoverCollapsedOffersCount}>
+                            {filteredOfferCards.length} nearby
+                          </Text>
+                        </View>
+                        <View style={styles.discoverCollapsedCategoryRow}>
+                          {DISCOVER_SHEET_CATEGORY_TABS.map((tab) => {
+                            const selected = discoverCategoryTab === tab.key;
+                            const tabColor =
+                              tab.key === "auto"
+                                ? "#1E3A8A"
+                                : tab.key === "trades"
+                                  ? "#7C3AED"
+                                  : "#111827";
+                            const tabIcon =
+                              tab.key === "auto"
+                                ? "car-sport"
+                                : tab.key === "trades"
+                                  ? "home"
+                                  : "grid";
+                            return (
+                              <TouchableOpacity
+                                key={`collapsed-${tab.key}`}
+                                style={[
+                                  styles.discoverCollapsedCategoryButton,
+                                  selected && {
+                                    borderColor: tabColor,
+                                    borderWidth: 2,
+                                  },
+                                ]}
+                                onPress={() => setDiscoverCategoryTab(tab.key)}
+                                activeOpacity={0.85}
+                              >
+                                <Ionicons name={tabIcon} size={20} color={tabColor} />
+                                <Text style={styles.discoverCollapsedCategoryText} numberOfLines={1}>
+                                  {tab.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    </BottomSheetView>
+                  ) : (
+                    <BottomSheetView style={styles.discoverOffersExpandedContent}>
+                      <View>
+                        <View style={styles.discoverOffersHandle} />
+                        <View style={styles.discoverOffersHeader}>
+                          <View style={styles.discoverOffersHeaderCopy}>
+                            <Text style={styles.discoverOffersTitle}>Nearby</Text>
+                            <Text style={styles.discoverOffersNearbyCount}>
+                              {filteredOfferCards.length} nearby
+                            </Text>
+                          </View>
+                          <TouchableOpacity
+                            style={styles.discoverOffersCollapseButton}
+                            onPress={animateDiscoverOffersSheetClosed}
+                            accessibilityRole="button"
+                            accessibilityLabel="Collapse offers"
+                          >
+                            <Ionicons name="chevron-down" size={22} color="#334155" />
+                          </TouchableOpacity>
+                        </View>
+                        <View style={styles.discoverOffersCategoryRow}>
+                          {DISCOVER_SHEET_CATEGORY_TABS.map((tab) => {
+                            const selected = discoverCategoryTab === tab.key;
+                            const tabColor =
+                              tab.key === "auto"
+                                ? "#1E3A8A"
+                                : tab.key === "trades"
+                                  ? "#7C3AED"
+                                  : "#111827";
+                            return (
+                              <TouchableOpacity
+                                key={`offers-${tab.key}`}
+                                style={[
+                                  styles.discoverOffersCategoryButton,
+                                  selected && { borderColor: tabColor, borderWidth: 2 },
+                                ]}
+                                onPress={() => setDiscoverCategoryTab(tab.key)}
+                              >
+                                <Ionicons
+                                  name={
+                                    tab.key === "auto"
+                                      ? "car-sport"
+                                      : tab.key === "trades"
+                                        ? "home"
+                                        : "grid"
+                                  }
+                                  size={20}
+                                  color={tabColor}
+                                />
+                                <Text style={styles.discoverOffersCategoryText}>
+                                  {tab.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </View>
+                      <BottomSheetScrollView
+                        showsVerticalScrollIndicator={false}
+                        contentContainerStyle={styles.discoverOffersContent}
+                      >
+                        {filteredOfferCards
+                          .filter((offer) =>
+                            discoverOffersSheetBusiness?.id
+                              ? String(offer.businessId || "") ===
+                                String(discoverOffersSheetBusiness.id)
+                              : true,
+                          )
+                          .map((offer, index) => {
+                            const business =
+                              businesses.find(
+                                (item) => String(item.id) === String(offer.businessId),
+                              ) || offer.business || discoverOffersSheetBusiness || offer;
+                            const cashbackRateBps =
+                              resolveDisplayedBusinessDefaultCashbackRateBps(business) ||
+                              DEFAULT_CASHBACK_RATE_BPS;
+                            const offerHoursValue = offer.hours || business?.hours || "";
+                            const hoursStatus = getBusinessHoursStatus(
+                              offerHoursValue,
+                              typeof offer.isOpen === "boolean"
+                                ? offer.isOpen
+                                : business?.isOpen,
+                            );
+                            const isOpen24Seven = isBusinessHoursSchedule24Seven(
+                              parseBusinessHoursSchedule(offerHoursValue),
+                            );
+                            const statusText = isOpen24Seven
+                              ? "Open 24/7"
+                              : hoursStatus.isOpen
+                                ? hoursStatus.closesAtLabel
+                                ? `Open until ${hoursStatus.closesAtLabel}`
+                                : "Open now"
+                              : hoursStatus.opensAtLabel
+                                ? `Closed · Opens ${hoursStatus.nextOpenDayLabel} ${hoursStatus.opensAtLabel}`
+                                : "Closed";
+                            const distanceText = String(
+                              offer.distanceLabel || offer.distance || business?.distance || "Nearby",
+                            ).replace(/\bmi\b/i, "miles");
+                            const imageUrl = String(
+                              business?.imageUrl || offer.imageUrl || "",
+                            ).trim();
+                            const categoryLabel = getCategoryConfig(
+                              business?.categoryKey || business?.category_key || offer.categoryKey,
+                            ).display;
+                            const categoryKey = normalizeBusinessCategoryKey(
+                              business?.categoryKey || business?.category_key || offer.categoryKey,
+                            );
+                            const specialty =
+                              sanitizeBusinessTags(business?.tags || offer?.tags || [])[0] ||
+                              categoryLabel;
+                            const categoryIcon = categoryKey === "auto" ? "car-sport" : "home";
+                            const categoryColor = categoryKey === "auto" ? "#1E3A8A" : "#7C3AED";
+                            return (
+                              <TouchableOpacity
+                                key={getOfferCardSelectionKey(offer) || `offer-${index}`}
+                                style={styles.discoverOfferRow}
+                                activeOpacity={0.88}
+                                onPress={() => {
+                                  void handleCardPress(offer, { fromOffersSheet: true });
+                                }}
+                              >
+                                {imageUrl ? (
+                                  <Image
+                                    source={{ uri: imageUrl }}
+                                    style={styles.discoverOfferBackgroundImage}
+                                    resizeMode="cover"
+                                  />
+                                ) : (
+                                  <View style={styles.discoverOfferBackgroundFallback}>
+                                    <Ionicons name="business-outline" size={42} color="#15803D" />
+                                  </View>
+                                )}
+                                <LinearGradient
+                                  colors={["rgba(15,23,42,0.10)", "rgba(15,23,42,0.82)"]}
+                                  start={{ x: 0.5, y: 0 }}
+                                  end={{ x: 0.5, y: 1 }}
+                                  style={StyleSheet.absoluteFillObject}
+                                />
+                                <View style={styles.discoverOfferTopRow}>
+                                  <View style={styles.discoverOfferTopNameBadge}>
+                                    <Text style={styles.discoverOfferTopNameText} numberOfLines={1}>
+                                      {business?.name || offer.name || "Business"}
+                                    </Text>
+                                    <Ionicons name="shield-checkmark" size={15} color="#15803D" />
+                                  </View>
+                                  <View
+                                    style={[
+                                      styles.discoverOfferBadgeLight,
+                                      { backgroundColor: categoryColor },
+                                    ]}
+                                  >
+                                    <Ionicons name={categoryIcon} size={15} color="#FFFFFF" />
+                                    <Text style={styles.discoverOfferBadgeText} numberOfLines={1}>
+                                      {specialty}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <View style={styles.discoverOfferBottomContent}>
+                                  {!business?.isServiceAreaBusiness ? (
+                                    <Text style={styles.discoverOfferDistanceText}>
+                                      {distanceText} away
+                                    </Text>
+                                  ) : null}
+                                  <View style={styles.discoverOfferCashbackStatusRow}>
+                                    <View style={styles.discoverOfferCashbackCopy}>
+                                      <Text style={styles.discoverOfferCashback}>
+                                        {formatPercentOnlyLabel(cashbackRateBps / 100)} Cashback
+                                      </Text>
+                                      <Text style={styles.discoverOfferRewardText}>
+                                        Get rewarded on all services
+                                      </Text>
+                                    </View>
+                                    <View
+                                      style={[
+                                        styles.discoverOfferBottomStatusBadge,
+                                        hoursStatus.isOpen
+                                          ? styles.discoverOfferBadgeOpen
+                                          : styles.discoverOfferBadgeClosed,
+                                      ]}
+                                    >
+                                      <Text style={styles.discoverOfferBadgeText} numberOfLines={2}>
+                                        {statusText}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                  <View style={styles.discoverOfferTrustRow}>
+                                    <View style={styles.discoverOfferTrustItem}>
+                                      <Ionicons name="shield-checkmark" size={13} color="#FFFFFF" />
+                                      <Text style={styles.discoverOfferTrustText}>Verified Business</Text>
+                                    </View>
+                                    <View style={styles.discoverOfferTrustItem}>
+                                      <Ionicons name="checkmark-circle" size={13} color="#FFFFFF" />
+                                      <Text style={styles.discoverOfferTrustText}>Cashback Guaranteed</Text>
+                                    </View>
+                                  </View>
+                                </View>
+                              </TouchableOpacity>
+                            );
+                          })}
+                      </BottomSheetScrollView>
+                    </BottomSheetView>
+                  )}
+                </BottomSheet>
+              </View>
             ) : null}
 
             {activeTab === "discover" &&
@@ -28148,234 +28385,6 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
             </View>
             ) : null}
 
-            {discoverOffersSheet.visible ? (
-            <View style={styles.discoverOffersLayer}>
-              <View style={styles.discoverOffersBackdrop}>
-              <Pressable
-                style={StyleSheet.absoluteFillObject}
-                onPress={() =>
-                  setDiscoverOffersSheet({ visible: false, business: null })
-                }
-              />
-              </View>
-              <View style={styles.discoverOffersPanel}>
-                <PanGestureHandler
-                  activeOffsetY={[-10, 10]}
-                  failOffsetX={[-24, 24]}
-                  onHandlerStateChange={(event) => {
-                    if (
-                      event.nativeEvent.state === GestureState.END &&
-                      event.nativeEvent.translationY > 55
-                    ) {
-                      setDiscoverOffersSheet({ visible: false, business: null });
-                    }
-                  }}
-                >
-                <View>
-                <View style={styles.discoverOffersHandle} />
-                <View style={styles.discoverOffersHeader}>
-                  <View style={styles.discoverOffersHeaderCopy}>
-                    <Text style={styles.discoverOffersTitle}>Nearby</Text>
-                    <Text style={styles.discoverOffersNearbyCount}>
-                      {filteredOfferCards.length} nearby
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.discoverOffersCollapseButton}
-                    onPress={() =>
-                      setDiscoverOffersSheet({ visible: false, business: null })
-                    }
-                    accessibilityRole="button"
-                    accessibilityLabel="Collapse offers"
-                  >
-                    <Ionicons name="chevron-down" size={22} color="#334155" />
-                  </TouchableOpacity>
-                </View>
-                <View style={styles.discoverOffersCategoryRow}>
-                  {DISCOVER_SHEET_CATEGORY_TABS.map((tab) => {
-                    const selected = discoverCategoryTab === tab.key;
-                    const tabColor =
-                      tab.key === "auto"
-                        ? "#1E3A8A"
-                        : tab.key === "trades"
-                          ? "#7C3AED"
-                          : "#111827";
-                    return (
-                      <TouchableOpacity
-                        key={`offers-${tab.key}`}
-                        style={[
-                          styles.discoverOffersCategoryButton,
-                          selected && { borderColor: tabColor, borderWidth: 2 },
-                        ]}
-                        onPress={() => setDiscoverCategoryTab(tab.key)}
-                      >
-                        <Ionicons
-                          name={
-                            tab.key === "auto"
-                              ? "car-sport"
-                              : tab.key === "trades"
-                                ? "home"
-                                : "grid"
-                          }
-                          size={20}
-                          color={tabColor}
-                        />
-                        <Text style={styles.discoverOffersCategoryText}>
-                          {tab.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-                </View>
-                </PanGestureHandler>
-                <ScrollView
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={styles.discoverOffersContent}
-                >
-                  {filteredOfferCards
-                    .filter((offer) =>
-                      discoverOffersSheet.business?.id
-                        ? String(offer.businessId || "") ===
-                          String(discoverOffersSheet.business.id)
-                        : true,
-                    )
-                    .map((offer, index) => {
-                      const business =
-                        businesses.find(
-                          (item) => String(item.id) === String(offer.businessId),
-                        ) || offer.business || discoverOffersSheet.business || offer;
-                      const cashbackRateBps =
-                        resolveDisplayedBusinessDefaultCashbackRateBps(business) ||
-                        DEFAULT_CASHBACK_RATE_BPS;
-                      const offerHoursValue = offer.hours || business?.hours || "";
-                      const hoursStatus = getBusinessHoursStatus(
-                        offerHoursValue,
-                        typeof offer.isOpen === "boolean"
-                          ? offer.isOpen
-                          : business?.isOpen,
-                      );
-                      const isOpen24Seven = isBusinessHoursSchedule24Seven(
-                        parseBusinessHoursSchedule(offerHoursValue),
-                      );
-                      const statusText = isOpen24Seven
-                        ? "Open 24/7"
-                        : hoursStatus.isOpen
-                          ? hoursStatus.closesAtLabel
-                          ? `Open until ${hoursStatus.closesAtLabel}`
-                          : "Open now"
-                        : hoursStatus.opensAtLabel
-                          ? `Closed · Opens ${hoursStatus.nextOpenDayLabel} ${hoursStatus.opensAtLabel}`
-                          : "Closed";
-                      const distanceText = String(
-                        offer.distanceLabel || offer.distance || business?.distance || "Nearby",
-                      ).replace(/\bmi\b/i, "miles");
-                      const imageUrl = String(
-                        business?.imageUrl || offer.imageUrl || "",
-                      ).trim();
-                      const categoryLabel = getCategoryConfig(
-                        business?.categoryKey || business?.category_key || offer.categoryKey,
-                      ).display;
-                      const categoryKey = normalizeBusinessCategoryKey(
-                        business?.categoryKey || business?.category_key || offer.categoryKey,
-                      );
-                      const specialty =
-                        sanitizeBusinessTags(business?.tags || offer?.tags || [])[0] ||
-                        categoryLabel;
-                      const categoryIcon = categoryKey === "auto" ? "car-sport" : "home";
-                      const categoryColor = categoryKey === "auto" ? "#1E3A8A" : "#7C3AED";
-                      return (
-                        <TouchableOpacity
-                          key={getOfferCardSelectionKey(offer) || `offer-${index}`}
-                          style={styles.discoverOfferRow}
-                          activeOpacity={0.88}
-                          onPress={() => {
-                            void handleCardPress(offer, { fromOffersSheet: true });
-                          }}
-                        >
-                          {imageUrl ? (
-                            <Image
-                              source={{ uri: imageUrl }}
-                              style={styles.discoverOfferBackgroundImage}
-                              resizeMode="cover"
-                            />
-                          ) : (
-                            <View style={styles.discoverOfferBackgroundFallback}>
-                              <Ionicons name="business-outline" size={42} color="#15803D" />
-                            </View>
-                          )}
-                          <LinearGradient
-                            colors={["rgba(15,23,42,0.10)", "rgba(15,23,42,0.82)"]}
-                            start={{ x: 0.5, y: 0 }}
-                            end={{ x: 0.5, y: 1 }}
-                            style={StyleSheet.absoluteFillObject}
-                          />
-                          <View style={styles.discoverOfferTopRow}>
-                            <View style={styles.discoverOfferTopNameBadge}>
-                              <Text style={styles.discoverOfferTopNameText} numberOfLines={1}>
-                                {business?.name || offer.name || "Business"}
-                              </Text>
-                              <Ionicons name="shield-checkmark" size={15} color="#15803D" />
-                            </View>
-                            <View
-                              style={[
-                                styles.discoverOfferBadgeLight,
-                                { backgroundColor: categoryColor },
-                              ]}
-                            >
-                              <Ionicons name={categoryIcon} size={15} color="#FFFFFF" />
-                              <Text style={styles.discoverOfferBadgeText} numberOfLines={1}>
-                                {specialty}
-                              </Text>
-                            </View>
-                          </View>
-                          <View style={styles.discoverOfferBottomContent}>
-                            {!business?.isServiceAreaBusiness ? (
-                              <Text style={styles.discoverOfferDistanceText}>
-                                {distanceText} away
-                              </Text>
-                            ) : null}
-                            <View style={styles.discoverOfferCashbackStatusRow}>
-                              <View style={styles.discoverOfferCashbackCopy}>
-                                <Text style={styles.discoverOfferCashback}>
-                                  {formatPercentOnlyLabel(cashbackRateBps / 100)} Cashback
-                                </Text>
-                                <Text style={styles.discoverOfferRewardText}>
-                                  Get rewarded on all services
-                                </Text>
-                              </View>
-                              <View
-                                style={[
-                                  styles.discoverOfferBottomStatusBadge,
-                                  hoursStatus.isOpen
-                                    ? styles.discoverOfferBadgeOpen
-                                    : styles.discoverOfferBadgeClosed,
-                                ]}
-                              >
-                                <Text style={styles.discoverOfferBadgeText} numberOfLines={2}>
-                                  {statusText}
-                                </Text>
-                              </View>
-                            </View>
-                            <View style={styles.discoverOfferTrustRow}>
-                              <View style={styles.discoverOfferTrustItem}>
-                                <Ionicons name="shield-checkmark" size={13} color="#FFFFFF" />
-                                <Text style={styles.discoverOfferTrustText}>Verified Business</Text>
-                              </View>
-                              <View style={styles.discoverOfferTrustItem}>
-                                <Ionicons name="checkmark-circle" size={13} color="#FFFFFF" />
-                                <Text style={styles.discoverOfferTrustText}>Cashback Guaranteed</Text>
-                              </View>
-                            </View>
-                          </View>
-                        </TouchableOpacity>
-                      );
-                    })}
-                </ScrollView>
-              </View>
-            </View>
-            ) : null}
-
             <Modal
               transparent
               visible={checkoutVerification.visible}
@@ -30087,133 +30096,131 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 >
               <PanGestureHandler
                 ref={sheetPanRef}
-                enabled={false}
+                enabled={activeTab === "discover"}
                 activeOffsetY={[-5, 5]}
                 onGestureEvent={handleSheetGestureEvent}
                 onHandlerStateChange={handleSheetGestureStateChange}
               >
-                {activeTab === "discover" ? (
-                  <View />
-                ) : (
-                  <View
-                    style={[
-                      styles.fullScreenTabHeader,
-                      { paddingTop: modalTopInset + 8 },
-                    ]}
-                  >
+                <Reanimated.View style={styles.sheetGestureSurface}>
+                  {activeTab !== "discover" ? (
                     <View
                       style={[
-                        styles.navContainer,
-                        styles.fullScreenTabNavContainer,
-                        navNeedsTightFit && styles.navContainerTight,
-                        { width: navContainerWidth },
+                        styles.fullScreenTabHeader,
+                        { paddingTop: modalTopInset + 8 },
                       ]}
                     >
                       <View
                         style={[
-                          styles.navRow,
-                          navNeedsTightFit && styles.navRowTight,
+                          styles.navContainer,
+                          styles.fullScreenTabNavContainer,
+                          navNeedsTightFit && styles.navContainerTight,
+                          { width: navContainerWidth },
                         ]}
-                        onLayout={handleNavRowLayout}
                       >
-                        {navIndicatorWidth > 0 ? (
-                          <Animated.View
-                            pointerEvents="none"
-                            style={[
-                              styles.navIndicator,
-                              {
-                                width: navIndicatorWidth,
-                                transform: [{ translateX: navIndicatorTranslateX }],
-                              },
-                            ]}
-                          />
-                        ) : null}
-                        {visibleTabs.map((tab, index) => {
-                          const selected = activeTab === tab.key;
-                          const focusAnim = getTabFocusAnim(tab.key);
-                          const historyBadgeCount =
-                            tab.key === "history" ? pendingHistoryCount : 0;
-                          return (
-                            <TouchableOpacity
-                              key={tab.key}
+                        <View
+                          style={[
+                            styles.navRow,
+                            navNeedsTightFit && styles.navRowTight,
+                          ]}
+                          onLayout={handleNavRowLayout}
+                        >
+                          {navIndicatorWidth > 0 ? (
+                            <Animated.View
+                              pointerEvents="none"
                               style={[
-                                styles.navPill,
-                                index > 0 &&
-                                  (navNeedsTightFit
-                                    ? styles.navPillSpacedTight
-                                    : styles.navPillSpaced),
-                                navNeedsTightFit && styles.navPillTight,
+                                styles.navIndicator,
+                                {
+                                  width: navIndicatorWidth,
+                                  transform: [{ translateX: navIndicatorTranslateX }],
+                                },
                               ]}
-                              onPress={() => applyDrawerTabChange(tab.key)}
-                              activeOpacity={0.88}
-                            >
-                              <Animated.View
+                            />
+                          ) : null}
+                          {visibleTabs.map((tab, index) => {
+                            const selected = activeTab === tab.key;
+                            const focusAnim = getTabFocusAnim(tab.key);
+                            const historyBadgeCount =
+                              tab.key === "history" ? pendingHistoryCount : 0;
+                            return (
+                              <TouchableOpacity
+                                key={tab.key}
                                 style={[
-                                  styles.navPillContent,
-                                  {
-                                    transform: [
-                                      {
-                                        scale: focusAnim.interpolate({
-                                          inputRange: [0, 1],
-                                          outputRange: [1, 1.04],
-                                        }),
-                                      },
-                                    ],
-                                  },
+                                  styles.navPill,
+                                  index > 0 &&
+                                    (navNeedsTightFit
+                                      ? styles.navPillSpacedTight
+                                      : styles.navPillSpaced),
+                                  navNeedsTightFit && styles.navPillTight,
                                 ]}
+                                onPress={() => applyDrawerTabChange(tab.key)}
+                                activeOpacity={0.88}
                               >
-                                <View
+                                <Animated.View
                                   style={[
-                                    styles.navIconOrb,
-                                    selected && styles.navIconOrbActive,
+                                    styles.navPillContent,
+                                    {
+                                      transform: [
+                                        {
+                                          scale: focusAnim.interpolate({
+                                            inputRange: [0, 1],
+                                            outputRange: [1, 1.04],
+                                          }),
+                                        },
+                                      ],
+                                    },
                                   ]}
                                 >
-                                  <Ionicons
-                                    name={selected ? tab.iconActive : tab.icon}
-                                    size={18}
+                                  <View
                                     style={[
-                                      styles.navPillIcon,
-                                      selected && styles.navPillIconActive,
+                                      styles.navIconOrb,
+                                      selected && styles.navIconOrbActive,
                                     ]}
-                                  />
-                                </View>
-                                <View style={styles.navPillLabel}>
-                                  <Text
-                                    style={[
-                                      styles.navPillText,
-                                      navNeedsTightFit &&
-                                        styles.navPillTextTight,
-                                      selected && styles.navPillTextActive,
-                                    ]}
-                                    numberOfLines={1}
                                   >
-                                    {tab.key === "business"
-                                      ? "Dashboard"
-                                      : tab.label}
-                                  </Text>
-                                </View>
-                                {historyBadgeCount > 0 ? (
-                                  <View style={styles.navPillBadge}>
-                                    <Text style={styles.navPillBadgeText}>
-                                      {historyBadgeCount > 9
-                                        ? "9+"
-                                        : historyBadgeCount}
+                                    <Ionicons
+                                      name={selected ? tab.iconActive : tab.icon}
+                                      size={18}
+                                      style={[
+                                        styles.navPillIcon,
+                                        selected && styles.navPillIconActive,
+                                      ]}
+                                    />
+                                  </View>
+                                  <View style={styles.navPillLabel}>
+                                    <Text
+                                      style={[
+                                        styles.navPillText,
+                                        navNeedsTightFit &&
+                                          styles.navPillTextTight,
+                                        selected && styles.navPillTextActive,
+                                      ]}
+                                      numberOfLines={1}
+                                    >
+                                      {tab.key === "business"
+                                        ? "Dashboard"
+                                        : tab.label}
                                     </Text>
                                   </View>
-                                ) : null}
-                              </Animated.View>
-                            </TouchableOpacity>
-                          );
-                        })}
+                                  {historyBadgeCount > 0 ? (
+                                    <View style={styles.navPillBadge}>
+                                      <Text style={styles.navPillBadgeText}>
+                                        {historyBadgeCount > 9
+                                          ? "9+"
+                                          : historyBadgeCount}
+                                      </Text>
+                                    </View>
+                                  ) : null}
+                                </Animated.View>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
                       </View>
                     </View>
-                  </View>
-                )}
-              </PanGestureHandler>
-              <Reanimated.View
-                pointerEvents={activeTab === "discover" ? "none" : "auto"}
-                style={[styles.sheetMainContent, sheetMainContentAnimatedStyle]}
-              >
+                  ) : null}
+                  <Reanimated.View
+                    pointerEvents="auto"
+                    style={[styles.sheetMainContent, sheetMainContentAnimatedStyle]}
+                  >
                 <SwipeableTabView
                   tabs={swipeableDrawerTabs}
                   activeIndex={swipeActiveIndex}
@@ -35325,7 +35332,7 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                                   Enter the one-time code sent to{" "}
                                   {businessOtpSentEmail ||
                                     businessEmail.trim().toLowerCase()}
-                                  }.
+                                  .
                                 </Text>
 
                                 <Text style={styles.formLabel}>
@@ -38505,6 +38512,8 @@ const [businessCategoryKey, setBusinessCategoryKey] = useState("");
                 </SwipeableTabView>
               </Reanimated.View>
                 </Reanimated.View>
+              </PanGestureHandler>
+                </Reanimated.View>
               </>
             ) : null}
             {showLaunchOverlay && (
@@ -39423,9 +39432,9 @@ const styles = StyleSheet.create({
   },
   discoverAllOffersPullTab: {
     width: "100%",
-    height: SAFE_BOTTOM + 138,
+    height: SAFE_BOTTOM + 122,
     paddingBottom: SAFE_BOTTOM,
-    paddingTop: 9,
+    paddingTop: 6,
     paddingHorizontal: 14,
     borderTopWidth: 1,
     borderColor: "#CBD5E1",
@@ -39434,11 +39443,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   discoverAllOffersDragHandle: {
-    width: 44,
-    height: 5,
+    width: 56,
+    height: 6,
     borderRadius: 999,
     alignSelf: "center",
-    backgroundColor: "#94A3B8",
+    backgroundColor: "#64748B",
+    marginBottom: 2,
   },
   discoverAllOffersPullTabText: {
     color: "#334155",
@@ -39446,7 +39456,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_SEMIBOLD,
   },
   discoverCollapsedOffersHeader: {
-    marginTop: 7,
+    marginTop: 5,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -39462,7 +39472,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT_BOLD,
   },
   discoverCollapsedCategoryRow: {
-    marginTop: 10,
+    marginTop: 7,
     flexDirection: "row",
     gap: 7,
   },
@@ -39617,12 +39627,11 @@ const styles = StyleSheet.create({
     zIndex: 35,
     elevation: 35,
   },
-  discoverOffersPanel: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    top: SCREEN_HEIGHT * 0.32,
-    bottom: 0,
+  discoverOffersBottomSheetBackground: {
+    backgroundColor: "transparent",
+  },
+  discoverOffersExpandedContent: {
+    flex: 1,
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
     backgroundColor: "#FFFFFF",
@@ -42324,6 +42333,9 @@ const styles = StyleSheet.create({
   },
   discoverSheetHidden: {
     display: "none",
+  },
+  sheetGestureSurface: {
+    flex: 1,
   },
   reanimatedSheetContainerFullScreen: {
     top: 0,

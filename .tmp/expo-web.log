@@ -1,0 +1,7 @@
+
+> wello@1.0.0 web
+> expo start --web --port 8091 --non-interactive
+
+env: load .env.local
+env: export EXPO_PUBLIC_GOOGLE_MAPS_API_KEY EXPO_PUBLIC_SUPABASE_URL EXPO_PUBLIC_SUPABASE_ANON_KEY
+Starting project at D:\codex2026wello\wello-remastered

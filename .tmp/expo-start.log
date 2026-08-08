@@ -1,0 +1,23 @@
+
+> wello@1.0.0 start
+> expo start --port 8092
+
+env: load .env.local
+env: export EXPO_PUBLIC_GOOGLE_MAPS_API_KEY EXPO_PUBLIC_SUPABASE_URL EXPO_PUBLIC_SUPABASE_ANON_KEY
+Starting project at D:\codex2026wello\wello-remastered
+Metro is running in CI mode, reloads are disabled. Remove CI=true to enable watch mode.
+Starting Metro Bundler
+Waiting on http://localhost:8092
+Logs for your project will appear below.
+Android node_modules\expo\AppEntry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Android node_modules\expo\AppEntry.js ▓▓▓▓▓░░░░░░░░░░░ 34.4% (25/58)
+Android node_modules\expo\AppEntry.js ▓▓▓▓▓▓▓▓▓▓▓▓░░░░ 77.5% (456/518)
+Android node_modules\expo\AppEntry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.7% (694/695)
+Android node_modules\expo\AppEntry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.7% (694/695)
+Android node_modules\expo\AppEntry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Android node_modules\expo\AppEntry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% ( 983/1182)
+Android node_modules\expo\AppEntry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Android node_modules\expo\AppEntry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 99.9% (1568/1568)
+Android node_modules\expo\AppEntry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Android Bundled 76266ms node_modules\expo\AppEntry.js (1568 modules)
+Android Bundled 7233ms node_modules\expo\AppEntry.js (1 module)
